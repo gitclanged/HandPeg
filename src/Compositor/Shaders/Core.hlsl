@@ -373,3 +373,29 @@ float4 PSRgbToNv12Chroma(VsOut i) : SV_Target
     float y = dot(rgb, Nv12Luma);
     return float4((128.0 + 224.0 * (rgb.b - y) / 1.8556) / 255.0, (128.0 + 224.0 * (rgb.r - y) / 1.5748) / 255.0, 0, 1);
 }
+
+// ----- An HDR export's picture as P010 (5.4B, FlagReadbackP010) -----
+//
+// The finished frame (drawn into a 16-bit float target, its R'G'B' still in the project's PQ or HLG code values and BT.2020 primaries:
+// nothing tone-maps it) into P010's two planes: BT.2020's non-constant-luminance matrix, limited range (Y 64-940, C 64-960 in 10-bit
+// terms), each sample's 10 bits in the top of its 16 (R16_UNORM, R16G16_UNORM). Each code is rounded here, so the render target's own
+// rounding leaves the low 6 bits clear.
+static const float3 P010Luma = float3(0.2627, 0.6780, 0.0593);
+
+float P010Code(float code) { return round(clamp(code, 0.0, 1023.0)) * 64.0 / 65535.0; }
+
+// The Y plane, the frame's own size (R16).
+float4 PSRgbToP010(VsOut i) : SV_Target
+{
+    float y = P010Code(64.0 + 876.0 * dot(saturate(Nv12Source(int2(i.Position.xy))), P010Luma));
+    return float4(y, y, y, 1);
+}
+
+// The UV plane, half the size each way (R16G16): each sample the mean of the four pixels it covers, as NV12's.
+float4 PSRgbToP010Chroma(VsOut i) : SV_Target
+{
+    int2 at = int2(i.Position.xy) * 2;
+    float3 rgb = saturate((Nv12Source(at) + Nv12Source(at + int2(1, 0)) + Nv12Source(at + int2(0, 1)) + Nv12Source(at + int2(1, 1))) / 4);
+    float y = dot(rgb, P010Luma);
+    return float4(P010Code(512.0 + 896.0 * (rgb.b - y) / 1.8814), P010Code(512.0 + 896.0 * (rgb.r - y) / 1.4746), 0, 1);
+}

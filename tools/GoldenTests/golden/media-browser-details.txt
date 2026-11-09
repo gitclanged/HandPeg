@@ -1,0 +1,12 @@
+# The List view's details: kept in the browser's cache as their own kind, worded as people write them, and sorted with what is not known last.
+ok: the "details" kind's text: version 1, seconds, width, height, rate, codec, sound streams (invariant), read back the same
+ok: the tiles' three-part "probe" text, another version, or a number that is not one: no details; a bar in a codec never breaks the text
+ok: before its details: the second line is what Info says, the cells empty
+ok: with them: 1920x1080, 60 fps, 2:03, H.264, 1, and the Filmstrip line "1920x1080 • 60 fps • 2:03"
+ok: frame rates: 59.94 fps, 360 fps, 23.98 fps; none for 0 or not a number
+ok: codecs as people write them: H.264, HEVC, AV1, VP9, ProRes, MPEG-2, any other in capitals
+ok: sound streams: none known, None, 3; no resolution without both sides; the line joins only what is known
+ok: the orders (ascending / descending): Resolution: folder c a b u / folder b a c u; Framerate: folder b a c u / folder c a b u; Duration: folder b a c u / folder c a b u; Codec: folder c a b u / folder b a c u; Audio: folder c a b u / folder b a c u
+ok: each column sorts both ways, the folder first and the file with nothing known last either way
+ok: a header click sorts by its column ascending (the Sort box blank), again descending, both kept; the Sort box's Size then takes over
+ok: a pane made with a column's sort kept sorts by it, the Sort box blank

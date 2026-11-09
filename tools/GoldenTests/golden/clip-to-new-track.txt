@@ -1,0 +1,23 @@
+# A clip onto a new track above or below (5.4A): past its track's Cutout lanes, its stream sounds and Cutouts on lanes under the new track, one step of Undo.
+ok: set up: B's three streams on its track's shared lanes
+ok: B may go onto a new track above its own
+ok: B moved onto a new track above
+ok: on a new top-level video track, at its own time (3 to 6 s)
+ok: the new track lies past its old track's Cutout lane: nothing comes between a track and its Cutouts
+ok: its three stream sounds on lanes under the new track, still its children, at its time
+ok: each on the lane of its stream place (Stream 1 to 3), its own stream number kept
+ok: its Cutout on a lane under the new track, just over it
+ok: the old track's lanes keep only A's streams
+ok: and its Cutout lane only A's Cutout
+ok: five tracks more: the new track, its three stream lanes and its Cutout lane
+ok: the document holds together
+ok: one Undo puts B back on its track, the tracks as they were
+ok: with its streams and its Cutout on their old lanes
+ok: Redo moves it again
+ok: B moved onto a new track below, dragged to 10 s
+ok: the new track lies just under the track (B's Cutout lane between them, over its own track), over the track under it
+ok: at 10 s, its streams with it in time and on its lanes
+ok: a clip alone on its track: neither seam of its own track (a no-op)
+ok: but past the next track it may go
+ok: a Cutout is refused
+ok: a stream's sound is refused

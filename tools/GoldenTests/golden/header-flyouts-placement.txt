@@ -10,7 +10,6 @@ UiScale.FlyoutCorner, a button at (600, 40) 48 x 33, a flyout 420 x 300, 9 apart
   the same with no room: where it falls (Windows keeps it on the screen): its top left at (-272, 82)
 MainWindow.xaml, each placed in code by UiScale.PlaceAgainst (no Placement, PlacementTarget or offsets of its own):
   LayoutSelector
-  LayoutFlyout
   AddMediaFlyout
   SettingsFlyout
   ViewsPopup
@@ -20,6 +19,7 @@ a window at HandPeg's scale, its panes laid out by a DockManager in Standard Edi
   Color & Effects previewed under it: the flyout has not moved
   Assembly & Media previewed under it: the flyout has not moved
   Vertical & Shorts Studio previewed under it: the flyout has not moved
+  Vertical Creator Split previewed under it: the flyout has not moved
   the layouts moved the button (or took it out) at least once, so the test proves something
   the panes put back as they were: the flyout has not moved
   opened again over another layout: under the button where it is now, right edges level, 6 DIPs down

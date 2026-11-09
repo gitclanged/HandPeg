@@ -1,0 +1,15 @@
+# Project Settings on the document: colour space, pixel aspect, sample rate, left out of the file at their defaults, kept by Clone, Undo and a transaction.
+ok: a document at the defaults writes no colorSpace, pixelAspect, sampleRate or explicit flags (a project file stays as it was)
+ok: a file without them reads BT.709 SDR, square pixels, 48 kHz, nothing chosen on purpose
+ok: set, they are written by name: colorSpace HdrPq, pixelAspect SixteenNine, sampleRate 44100, explicitFrame, explicitFrameRate
+ok: and read back
+ok: a sample rate other than 44100, 48000 or 96000 reads as 48000
+ok: the read-only ProjectSettings view holds the natural size, vertical, rate, colour space, pixel aspect and sample rate
+ok: Clone(deep: false) copies them (project tabs, queue jobs, autosave)
+ok: Clone(deep: true) copies them (project tabs, queue jobs, autosave)
+ok: an undo step (UndoSteps.Pack and Unpack) keeps them
+ok: a transfer characteristic's colour space: smpte2084 HDR10 PQ, arib-std-b67 HLG, anything else BT.709 SDR
+ok: their labels, and the sample aspect each asks an export for (none for square pixels)
+ok: a transaction disposed without a commit puts them back, and raises nothing
+ok: committed, they change (12345 Hz taken as 48 kHz) and Committed is raised once with no clip or track touched (a step of Undo)
+ok: the same values again change nothing and raise nothing

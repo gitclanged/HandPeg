@@ -1,0 +1,23 @@
+# The title bar's tabs, their × and + take their clicks; the gaps and the bar right of + stay the caption (the main window's frame hook).
+ok: drawn by the card: a tab's own face is the window's (HTCLIENT)
+ok: drawn by the card: so is the tab's name on it (the property is inherited)
+ok: drawn by the card: and its ×
+ok: drawn by the card: the second tab (with its unsaved dot)
+ok: drawn by the card: + is the window's
+ok: drawn by the card: the gap between two tabs is the caption (HTCAPTION)
+ok: drawn by the card: the bar just right of + is the caption
+ok: drawn by the card: and so is the bar far right of +, to drag the window and maximize it
+ok: drawn by the processor: a tab's own face is the window's (HTCLIENT)
+ok: drawn by the processor: so is the tab's name on it (the property is inherited)
+ok: drawn by the processor: and its ×
+ok: drawn by the processor: the second tab (with its unsaved dot)
+ok: drawn by the processor: + is the window's
+ok: drawn by the processor: the gap between two tabs is the caption (HTCAPTION)
+ok: drawn by the processor: the bar just right of + is the caption
+ok: drawn by the processor: and so is the bar far right of +, to drag the window and maximize it
+ok: MainWindow.xaml: ProjectTabStrip sits in TitleBar, right after TitleText
+ok: ProjectTabStrip.xaml: a tab, its ×, and + are IsHitTestVisibleInChrome
+ok: and none of them is taller than the caption (26)
+ok: automation names: "Project Tab: <name>", "Close Project Tab", "New Project Tab"
+ok: the status (5.4C): 300 wide in a bar of 1000 with buttons of 200 sits in the middle (350) while the tabs end at 150; tabs to 450 push it right to 450; tabs to 600 leave it the 200 between them, trimmed; tabs to 750 leave under 64 and it hides
+ok: tabs share the room with their names: 2 in 1000 are 200 (the widest), 5 in 624 (600 after +) are 118 each with their gaps

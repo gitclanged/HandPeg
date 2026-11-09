@@ -23,8 +23,10 @@ namespace HandPegApp.Views;
 /// </summary>
 public partial class MediaBrowserPane : UserControl
 {
-    // The size slider: below this the files are a list; above it, tiles from the smallest width to the largest.
-    private const double ListBelow = 8, SmallestTile = 96, LargestTile = 420;
+    // The tile size (0 to 100, the tab menu's Tile Size): below this the files are the List view (5.4C: as the size slider's smallest
+    // steps were); above it, tiles from the smallest width to the largest.
+    internal const double ListBelow = 8;
+    private const double SmallestTile = 96, LargestTile = 420;
 
     // What a tile has round its picture, across: the template's margin and the list item's edge and padding.
     private const double TileChrome = 22;
@@ -47,10 +49,9 @@ public partial class MediaBrowserPane : UserControl
     private readonly ObservableCollection<MediaBrowserItem> _items = [];
     private readonly DispatcherTimer _visibleCheck = new() { Interval = TimeSpan.FromMilliseconds(150) };
     private readonly DispatcherTimer _sizeSettled = new() { Interval = TimeSpan.FromMilliseconds(300) };
-    private bool? _listView;
     private double _tileWidth = 200;
 
-    // The width the tiles' pictures are shown at: the slider's, stretched by the panel to fill the pane (5.3.1).
+    // The width the tiles' pictures are shown at: the tile size's, stretched by the panel to fill the pane (5.3.1).
     private double _shownTileWidth;
     private readonly List<MediaBrowserItem> _queue = [];
 
@@ -70,9 +71,23 @@ public partial class MediaBrowserPane : UserControl
     private ModifierKeys _pressKeys;
     private bool _keepSelection;
 
-    public MediaBrowserPane()
+    public MediaBrowserPane() : this(pickerMode: false)
     {
+    }
+
+    /// <param name="pickerMode">
+    /// The pane as the New Project studio's media picker (5.4A, <see cref="PickerMode"/>) rather than the dock's Media pane.
+    /// </param>
+    public MediaBrowserPane(bool pickerMode)
+    {
+        PickerMode = pickerMode;
+
+        // The XAML names its title slot as the Media pane's, which takes the dock's slot over: a picker gives it back.
+        var mediaSlot = pickerMode ? Docking.PaneTitleSlot.Of("Media") : null;
         InitializeComponent();
+        if (pickerMode)
+            Docking.PaneTitleSlot.Restore("Media", mediaSlot);
+
         Items.ItemsSource = _items;
         _visibleCheck.Tick += (_, _) =>
         {
@@ -99,21 +114,26 @@ public partial class MediaBrowserPane : UserControl
         };
 
         var settings = AppSettings.Current;
-        var sort = Array.IndexOf(SortKeys, settings.BrowserSort);
-        SortBox.SelectedIndex = sort < 0 ? 0 : sort;
+        InitializeSort(settings);
         SortDirectionButton.IsChecked = settings.BrowserSortDescending;
-        SizeSlider.Value = Math.Clamp(settings.BrowserTileSize, 0, 100);
-        ApplySize(SizeSlider.Value);
+        InitializeView(settings);
+
+        // A fast wheel coasts the list on (5.4C, CLAUDE.md 10.2): O(1) here, the coast made when the wheel first turns.
+        ScrollMomentum.Attach(Items);
+        if (!pickerMode)
+            Items.SelectionChanged += Items_SelectionChanged;
 
         _libraryMode = settings.BrowserShowsLibrary;
-        _projectMode = !_libraryMode && settings.BrowserShowsProject;
+        _projectMode = !_libraryMode && settings.BrowserShowsProject && !pickerMode;
         (_libraryMode ? LibrarySide : _projectMode ? ProjectSide : FolderSide).IsChecked = true;
+        if (pickerMode)
+            StartPicking();
         ShowBars();
         _projectSettled.Tick += (_, _) =>
         {
             _projectSettled.Stop();
             if (_projectMode && _started && IsVisible)
-                _ = ListProjectAsync();
+                _ = ListProjectAsync(always: false);
         };
         _searchSettled.Tick += (_, _) =>
         {
@@ -121,6 +141,142 @@ public partial class MediaBrowserPane : UserControl
             if (_libraryMode && _started)
                 _ = ListLibraryAsync();
         };
+    }
+
+    // ----- The picker (5.4A: the New Project studio's media) -----
+    // The same pane in a dialog, for choosing the files a New Project starts with: Folder Browser or Clip Library (no Project Media:
+    // there is no project yet), a click choosing a file or letting it go (and a double-click or Enter the same), the files chosen kept
+    // across folders in the order they were chosen. It never writes the Media pane's remembered settings (folder, sort, size, mode),
+    // never takes the dock's title slot, drags nothing out, and gives back what it holds when its dialog closes (Release).
+
+    /// <summary>Whether this is the New Project studio's picker rather than the dock's Media pane (set by the constructor).</summary>
+    public bool PickerMode { get; }
+
+    // The files chosen, in the order they were chosen (paths, compared without case).
+    private readonly List<string> _picked = [];
+
+    /// <summary>The files chosen in the picker, in the order they were chosen, across every folder shown.</summary>
+    public IReadOnlyList<string> SelectedFiles => _picked;
+
+    /// <summary>The picker's choice of files changed.</summary>
+    public event Action? SelectedFilesChanged;
+
+    private void StartPicking()
+    {
+        ProjectSide.Visibility = Visibility.Collapsed;
+        Items.SelectionMode = SelectionMode.Multiple;
+        Items.SelectionChanged += Picker_SelectionChanged;
+
+        // A file chosen in one folder is chosen again when it comes back into the list (another folder shown, then this one again).
+        _items.CollectionChanged += (_, e) =>
+        {
+            if (e.NewItems is { Count: > 0 } added && _picked.Count > 0)
+                Dispatcher.BeginInvoke(() => SelectPicked(added.OfType<MediaBrowserItem>()), DispatcherPriority.Background);
+        };
+    }
+
+    private bool _selectingPicked;
+
+    private void SelectPicked(IEnumerable<MediaBrowserItem> items)
+    {
+        _selectingPicked = true;
+        try
+        {
+            foreach (var item in items)
+            {
+                if (item.IsFile && _items.Contains(item) && !Items.SelectedItems.Contains(item) && _picked.Contains(item.Path, StringComparer.OrdinalIgnoreCase))
+                    Items.SelectedItems.Add(item);
+            }
+        }
+        finally
+        {
+            _selectingPicked = false;
+        }
+    }
+
+    private void Picker_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_selectingPicked)
+            return;
+
+        var changed = false;
+        foreach (var item in e.AddedItems.OfType<MediaBrowserItem>())
+        {
+            if (!item.IsFile)
+            {
+                // A folder is opened, never chosen.
+                Items.SelectedItems.Remove(item);
+                continue;
+            }
+
+            if (!_picked.Contains(item.Path, StringComparer.OrdinalIgnoreCase))
+            {
+                _picked.Add(item.Path);
+                changed = true;
+            }
+        }
+
+        // Let go by the user (still listed); a file that left the list as another folder was shown stays chosen.
+        foreach (var item in e.RemovedItems.OfType<MediaBrowserItem>())
+        {
+            if (item.IsFile && _items.Contains(item) && _picked.RemoveAll(p => string.Equals(p, item.Path, StringComparison.OrdinalIgnoreCase)) > 0)
+                changed = true;
+        }
+
+        if (changed)
+            SelectedFilesChanged?.Invoke();
+    }
+
+    /// <summary>A file chosen, or let go if it was (the picker's double-click and Enter).</summary>
+    private void TogglePick(MediaBrowserItem item)
+    {
+        if (Items.SelectedItems.Contains(item))
+            Items.SelectedItems.Remove(item);
+        else
+            Items.SelectedItems.Add(item);
+    }
+
+    /// <summary>Lets go of every file chosen.</summary>
+    public void ClearSelectedFiles()
+    {
+        _picked.Clear();
+        _selectingPicked = true;
+        try
+        {
+            Items.SelectedItems.Clear();
+        }
+        finally
+        {
+            _selectingPicked = false;
+        }
+
+        SelectedFilesChanged?.Invoke();
+    }
+
+    /// <summary>
+    /// Gives back what the pane holds, as its dialog closes (the picker): the listing and the folder's indexing stopped, every timer
+    /// stopped (a running timer would keep the pane alive), the pictures and strips let go, and their memory handed back once idle.
+    /// </summary>
+    public void Release()
+    {
+        _listing.Cancel();
+        StopIndexing();
+        StopStripOnDemand();
+        StopAutoScroll();
+        foreach (var timer in (DispatcherTimer?[])[_visibleCheck, _sizeSettled, _rest, _projectSettled, _searchSettled, _restTimer, _indexDwell])
+            timer?.Stop();
+
+        (_prefetching, _restingOn) = (false, null);
+        ReleasePreview();
+        _detailsWanted.Clear();
+        _queue.Clear();
+        _stripsWanted.Clear();
+        _strips.Clear();
+        _inSight.Clear();
+        foreach (var item in _items)
+            (item.Poster, item.HoverFrame, item.PreviewRequested) = (null, null, false);
+        _items.Clear();
+        GiveBackMemory();
     }
 
     // ----- Project Media, Folder Browser or Clip Library -----
@@ -164,9 +320,11 @@ public partial class MediaBrowserPane : UserControl
         _listing = new CancellationTokenSource();
         var token = _listing.Token;
         _queue.Clear();
+        _detailsWanted.Clear();
         _stripsWanted.Clear();
         _strips.Clear();
         _items.Clear();
+        _projectListed = null;
 
         var search = SearchBox.Text.Trim();
         List<MediaBrowserItem> entries;
@@ -206,10 +364,14 @@ public partial class MediaBrowserPane : UserControl
     }
     private readonly DispatcherTimer _projectSettled = new() { Interval = TimeSpan.FromMilliseconds(400) };
 
-    /// <summary>The media files the open project uses, for Project Media.</summary>
+    /// <summary>The files of Project Media (5.4C: the project's bin, MainViewModel.ProjectMediaFiles), in the order they came in.</summary>
     public Func<IReadOnlyList<string>>? ProjectFiles { get; set; }
 
-    /// <summary>The project's files have changed (a clip added or removed, another video loaded): Project Media lists them again, once things settle.</summary>
+    /// <summary>
+    /// The project's files may have changed (a clip added or removed, a file put in or taken out of the bin, another project): Project
+    /// Media lists them again once things settle, only when the files differ from those listed (an edit of the timeline that changes
+    /// none of them leaves the list, its selection and the preview alone).
+    /// </summary>
     public void ProjectChanged()
     {
         if (!_projectMode)
@@ -226,25 +388,36 @@ public partial class MediaBrowserPane : UserControl
             return;
 
         (_projectMode, _libraryMode) = (project, library);
-        (AppSettings.Current.BrowserShowsProject, AppSettings.Current.BrowserShowsLibrary) = (project, library);
+        if (!PickerMode)
+            (AppSettings.Current.BrowserShowsProject, AppSettings.Current.BrowserShowsLibrary) = (project, library);
         ShowBars();
         if (_started)
             _ = ListAgain();
     }
 
-    /// <summary>Lists the files the open project uses, sorted as the folder's would be; a file that is gone says so.</summary>
-    private async Task ListProjectAsync()
+    // The files Project Media listed last (null after another listing), so an edit that changes none of them lists nothing again.
+    private List<string>? _projectListed;
+
+    /// <summary>Lists Project Media's files, sorted as the folder's would be; a file that is gone says so. The files chosen stay chosen.</summary>
+    private async Task ListProjectAsync(bool always = true)
     {
+        var files = ProjectFiles?.Invoke() ?? [];
+        if (!always && _projectListed is { } listed && listed.SequenceEqual(files, StringComparer.OrdinalIgnoreCase))
+            return;
+
+        var chosen = Selected().Select(i => i.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
         StopIndexing();
         _listing.Cancel();
         _listing = new CancellationTokenSource();
         var token = _listing.Token;
         _queue.Clear();
+        _detailsWanted.Clear();
         _stripsWanted.Clear();
         _strips.Clear();
+        _relistingFor = token;
         _items.Clear();
+        _projectListed = [.. files];
 
-        var files = ProjectFiles?.Invoke() ?? [];
         List<MediaBrowserItem> entries;
         try
         {
@@ -264,6 +437,7 @@ public partial class MediaBrowserPane : UserControl
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException or ArgumentException or NotSupportedException)
         {
             StatusText.Text = $"The project's files could not be read: {ex.Message}";
+            _relistingFor = null;
             return;
         }
 
@@ -271,12 +445,30 @@ public partial class MediaBrowserPane : UserControl
             return;
 
         StatusText.Text = entries.Count == 0
-            ? "The project uses no media files yet: open a video, or drop files onto the timeline."
-            : $"{entries.Count} file{(entries.Count == 1 ? "" : "s")} in this project. Drag them onto the timeline again.";
-        if (_items.Count > 0)
+            ? "Project Media is empty: drop files here, or onto the timeline, to put them in the project."
+            : $"{entries.Count} file{(entries.Count == 1 ? "" : "s")} in Project Media. Drag them onto the timeline; drop more here to keep them in the project.";
+        var again = _items.Where(i => chosen.Contains(i.Path)).ToList();
+        if (again.Count > 0)
+        {
+            foreach (var item in again)
+                Items.SelectedItems.Add(item);
+            Items.ScrollIntoView(again[0]);
+        }
+        else if (_items.Count > 0)
+        {
             Items.ScrollIntoView(_items[0]);
+        }
+
+        if (_relistingFor == token)
+            _relistingFor = null;
         ScheduleVisibleCheck();
     }
+
+    // The Project Media relist under way (5.4C review): while it empties and refills the list, the file shown in the cutter is kept with its
+    // In, Out and playhead (ShowChosen), rather than let go as the list empties and taken up afresh as it comes back selected.
+    private CancellationToken? _relistingFor;
+
+    private bool Relisting => _relistingFor is { IsCancellationRequested: false };
 
     /// <summary>
     /// Where Folder Browser starts when no folder was shown before: the remembered one, the video's, or Videos. It asks
@@ -328,13 +520,6 @@ public partial class MediaBrowserPane : UserControl
             PrewarmRequested?.Invoke(item.Path, false);
     }
 
-    /// <summary>How large the files are shown (the size slider, 0 a list to 100 the largest tiles): the Media tab's menu sets it (4.2B-2).</summary>
-    public double TileSize
-    {
-        get => SizeSlider.Value;
-        set => SizeSlider.Value = Math.Clamp(value, SizeSlider.Minimum, SizeSlider.Maximum);
-    }
-
     /// <summary>Files were asked to be put on the timeline at the playhead: as clips, or (true) as sound clips of their own.</summary>
     public event Action<IReadOnlyList<string>, bool>? AddRequested;
 
@@ -345,7 +530,7 @@ public partial class MediaBrowserPane : UserControl
     public Func<string?>? SuggestFolder { get; set; }
 
     // The height a tile's picture is decoded at, in real pixels.
-    private int PictureHeight => (int)Math.Ceiling((_listView == true ? 36 : Math.Round(ShownTileWidth * 9 / 16)) * VisualTreeHelper.GetDpi(this).DpiScaleY);
+    private int PictureHeight => (int)Math.Ceiling((_view != MediaBrowserView.Grid ? 36 : Math.Round(ShownTileWidth * 9 / 16)) * VisualTreeHelper.GetDpi(this).DpiScaleY);
 
     private double ShownTileWidth => _shownTileWidth > 0 ? _shownTileWidth : _tileWidth;
 
@@ -366,6 +551,9 @@ public partial class MediaBrowserPane : UserControl
             // what the first frame waits for. A folder of 290 videos, its tiles all made at once, held it back half a second.
             _started = true;
             Dispatcher.BeginInvoke(() => _ = ListAgain(fromStart: true), DispatcherPriority.ContextIdle);
+
+            // The parts of the view made at first need (5.4C, Law 1): the List view's header, the preview and the cutter.
+            Dispatcher.BeginInvoke(BuildDeferredParts, DispatcherPriority.ContextIdle);
         }
         else
         {
@@ -407,9 +595,11 @@ public partial class MediaBrowserPane : UserControl
         _listing = new CancellationTokenSource();
         var token = _listing.Token;
         _queue.Clear();
+        _detailsWanted.Clear();
         _stripsWanted.Clear();
         _strips.Clear();
         _items.Clear();
+        _projectListed = null;
 
         folder = string.IsNullOrWhiteSpace(folder) ? null : folder.Trim().Trim('"');
         var (remembered, suggested) = fromStart ? (AppSettings.Current.BrowserFolder, SuggestFolder?.Invoke()) : ("", null);
@@ -449,7 +639,7 @@ public partial class MediaBrowserPane : UserControl
         if (!await AddInTurnsAsync(Sorted(entries), token))
             return;
 
-        if (folder is not null)
+        if (folder is not null && !PickerMode)
             AppSettings.Current.BrowserFolder = folder;
 
         var files = entries.Count(e => e.IsFile);
@@ -474,7 +664,8 @@ public partial class MediaBrowserPane : UserControl
     private void StartIndexDwell()
     {
         var delay = AppSettings.Current.BrowserIndexDelaySeconds;
-        if (_folder is null || !FolderMode || !IsVisible || delay <= 0 || _indexing is not null)
+        // (Not the picker, 5.4A: a dialog open for a moment prepares only the tiles it shows.)
+        if (_folder is null || !FolderMode || !IsVisible || delay <= 0 || _indexing is not null || PickerMode)
             return;
 
         if (!_indexHooked)
@@ -615,13 +806,27 @@ public partial class MediaBrowserPane : UserControl
 
     // ----- The view: its order and its size -----
 
-    /// <summary>The entries in the order chosen: drives and folders first (by name, or by date when sorting by date), then the files.</summary>
-    private static List<MediaBrowserItem> Sorted(IEnumerable<MediaBrowserItem> entries)
+    /// <summary>
+    /// The entries in the order the pane's own Sort box and direction button choose (5.4A: set from the Browser settings as the pane is
+    /// made, so the docked pane sorts as before, while the New Project picker sorts by its own choice and writes none of them).
+    /// </summary>
+    private List<MediaBrowserItem> Sorted(IEnumerable<MediaBrowserItem> entries) => SortedBy(entries, _sortKey, SortDirectionButton.IsChecked == true);
+
+    /// <summary>
+    /// The entries in an order: drives and folders first (by name, or by date when sorting by date), then the files. Besides the Sort
+    /// box's Name, Date, Size and Type, the List view's columns (5.4C): Resolution (its pixels), Framerate, Duration, Codec and Audio (its
+    /// sound streams), a file whose value is not known yet last whichever way.
+    /// </summary>
+    internal static List<MediaBrowserItem> SortedBy(IEnumerable<MediaBrowserItem> entries, string key, bool descending)
     {
-        var settings = AppSettings.Current;
-        var (key, descending) = (settings.BrowserSort, settings.BrowserSortDescending);
         var comparer = StringComparer.CurrentCultureIgnoreCase;
         var all = entries.ToList();
+        IOrderedEnumerable<MediaBrowserItem> By<T>(IEnumerable<MediaBrowserItem> items, Func<MediaBrowserItem, bool> known, Func<MediaBrowserItem, T> value, IComparer<T>? order = null)
+        {
+            var unknownLast = items.OrderBy(i => known(i) ? 0 : 1);
+            return descending ? unknownLast.ThenByDescending(value, order) : unknownLast.ThenBy(value, order);
+        }
+
         IEnumerable<MediaBrowserItem> Order(IEnumerable<MediaBrowserItem> items, bool files)
         {
             IOrderedEnumerable<MediaBrowserItem> ordered = (key, files) switch
@@ -631,6 +836,11 @@ public partial class MediaBrowserPane : UserControl
                 ("Type", true) => descending
                     ? items.OrderByDescending(i => Path.GetExtension(i.Name), comparer)
                     : items.OrderBy(i => Path.GetExtension(i.Name), comparer),
+                ("Resolution", true) => By(items, i => i.VideoWidth > 0 && i.VideoHeight > 0, i => (long)i.VideoWidth * i.VideoHeight),
+                ("Framerate", true) => By(items, i => i.FrameRate > 0, i => i.FrameRate),
+                ("Duration", true) => By(items, i => i.Seconds > 0, i => i.Seconds),
+                ("Codec", true) => By(items, i => i.Codec.Length > 0, i => i.CodecText, comparer),
+                ("Audio", true) => By(items, i => i.AudioStreams >= 0, i => i.AudioStreams),
                 _ => descending ? items.OrderByDescending(i => i.Name, comparer) : items.OrderBy(i => i.Name, comparer),
             };
             return ordered.ThenBy(i => i.Name, comparer);
@@ -650,47 +860,32 @@ public partial class MediaBrowserPane : UserControl
 
     private void SortBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        AppSettings.Current.BrowserSort = SortKeys[Math.Max(SortBox.SelectedIndex, 0)];
+        // Emptied by a column of the List view chosen to sort by (a key the box does not list): nothing to do.
+        if (_syncingSort || SortBox.SelectedIndex < 0)
+            return;
+
+        _sortKey = SortKeys[SortBox.SelectedIndex];
+        if (!PickerMode)
+            AppSettings.Current.BrowserSort = _sortKey;
+        ShowSortInHeader();
         if (_items.Count > 0)
             Resort();
     }
 
     private void SortDirection_Changed(object sender, RoutedEventArgs e)
     {
-        AppSettings.Current.BrowserSortDescending = SortDirectionButton.IsChecked == true;
+        if (!PickerMode)
+            AppSettings.Current.BrowserSortDescending = SortDirectionButton.IsChecked == true;
+        ShowSortInHeader();
         if (_items.Count > 0)
             Resort();
     }
 
-    private void SizeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    /// <summary>The tiles' width for a tile size (0 to 100; below <see cref="ListBelow"/> the smallest): the panel stretches them to fill the pane.</summary>
+    private void ApplyTileWidth(double value)
     {
-        if (!IsInitialized)
-            return;
-
-        AppSettings.Current.BrowserTileSize = (int)Math.Round(e.NewValue);
-        ApplySize(e.NewValue);
-
-        // The pictures are scaled at once; once the slider rests, those now drawn larger than they were made are made again.
-        _sizeSettled.Stop();
-        _sizeSettled.Start();
-    }
-
-    /// <summary>The list, or tiles of a width: from the size slider's value.</summary>
-    private void ApplySize(double value)
-    {
-        var list = value < ListBelow;
         _tileWidth = Math.Round(SmallestTile + (Math.Max(value, ListBelow) - ListBelow) / (100 - ListBelow) * (LargestTile - SmallestTile));
         Resources["TileWidth"] = _tileWidth + TileChrome;
-        if (_listView == list)
-            return;
-
-        // Both views make only what is in view (the tiles' panel scrolls itself by pixels).
-        _listView = list;
-        Items.ItemTemplate = (DataTemplate)Resources[list ? "RowTemplate" : "TileTemplate"];
-        Items.ItemsPanel = (ItemsPanelTemplate)Resources[list ? "RowPanel" : "TilePanel"];
-        VirtualizingPanel.SetIsVirtualizing(Items, true);
-        ScrollViewer.SetCanContentScroll(Items, true);
-        ScheduleVisibleCheck();
     }
 
     // The tiles' panel (made again whenever the view switches back to tiles) said how wide it stretched them. Wider pictures than they
@@ -878,6 +1073,9 @@ public partial class MediaBrowserPane : UserControl
         _inSight.Clear();
         foreach (var (item, box) in boxes.Where(b => b.Box.IntersectsWith(view)))
             _inSight.Add(item);
+
+        // The List and Filmstrip views' details, for the rows in sight (5.4C).
+        WantDetails();
 
         var wanted = _items.Where(i => _inSight.Contains(i) && i.IsFile && !i.PreviewRequested).ToList();
         _queue.RemoveAll(wanted.Contains);
@@ -1294,6 +1492,13 @@ public partial class MediaBrowserPane : UserControl
             return;
         }
 
+        // The picker opens nothing: the file is chosen, or let go.
+        if (PickerMode)
+        {
+            TogglePick(item);
+            return;
+        }
+
         if (HasVideo?.Invoke() == true)
             AddRequested?.Invoke([item.Path], item.Kind == MediaBrowserKind.Audio);
         else if (item.Kind != MediaBrowserKind.Image)
@@ -1321,6 +1526,12 @@ public partial class MediaBrowserPane : UserControl
             Open(item);
             e.Handled = true;
         }
+        else if (e.Key == Key.Delete && Keyboard.Modifiers == ModifierKeys.None && _projectMode && !PickerMode)
+        {
+            // Project Media's own (5.4C, OwnsKey): the files chosen taken out of the bin.
+            RemoveSelectedFromProject();
+            e.Handled = true;
+        }
     }
 
     private void Items_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -1332,7 +1543,8 @@ public partial class MediaBrowserPane : UserControl
         // A press on one of several selected files keeps them all selected, so that all of them can be dragged: with Ctrl or Shift still
         // held from selecting them too (the list would take one away, or start the range again, on the press). What the press would have
         // done is done on the release, when no drag came of it (Items_PreviewMouseLeftButtonUp).
-        if (e.ClickCount == 1 && _pressed is not null && Items.SelectedItems.Count > 1 && Items.SelectedItems.Contains(_pressed))
+        // (Not in the picker: there a click chooses a file or lets it go, and nothing is dragged.)
+        if (!PickerMode && e.ClickCount == 1 && _pressed is not null && Items.SelectedItems.Count > 1 && Items.SelectedItems.Contains(_pressed))
         {
             (_keepSelection, _pressKeys) = (true, Keyboard.Modifiers);
             e.Handled = true;
@@ -1341,7 +1553,7 @@ public partial class MediaBrowserPane : UserControl
 
     private void Items_PreviewMouseMove(object sender, MouseEventArgs e)
     {
-        if (_pressAt is not { } from || e.LeftButton != MouseButtonState.Pressed || _pressed is not { IsFile: true } pressed)
+        if (PickerMode || _pressAt is not { } from || e.LeftButton != MouseButtonState.Pressed || _pressed is not { IsFile: true } pressed)
             return;
 
         var moved = e.GetPosition(Items) - from;
@@ -1412,6 +1624,8 @@ public partial class MediaBrowserPane : UserControl
         if (e.ChangedButton != MouseButton.Middle || Scroller is not { ScrollableHeight: > 0 } || !Items.CaptureMouse())
             return;
 
+        // The auto-scroll takes over from a coast of the wheel (5.4C).
+        ScrollMomentum.Stop(Items);
         _autoScrollAnchor = _autoScrollPointer = e.GetPosition(Items);
         (_autoScrollDragged, _autoScrollLast) = (false, TimeSpan.Zero);
         Items.Cursor = Cursors.ScrollNS;
@@ -1502,7 +1716,7 @@ public partial class MediaBrowserPane : UserControl
         }
 
         var under = FindItem(e.OriginalSource as DependencyObject);
-        if (under is not null && !Items.SelectedItems.Contains(under))
+        if (under is not null && !Items.SelectedItems.Contains(under) && !PickerMode)
             Items.SelectedItem = under;
 
         var files = Selected().Where(i => i.IsFile).ToList();
@@ -1510,6 +1724,12 @@ public partial class MediaBrowserPane : UserControl
         if (under is { IsFile: false })
         {
             Add("Open", () => _ = NavigateAsync(under.Path));
+        }
+        else if (PickerMode)
+        {
+            // The picker opens and adds nothing (its files are chosen by a click), and leaves the choice as it is.
+            if (under is { IsFile: true })
+                Add("Show in Explorer", () => ShowInExplorer(under.Path));
         }
         else if (files.Count > 0)
         {
@@ -1520,6 +1740,7 @@ public partial class MediaBrowserPane : UserControl
                 loaded && files.Any(f => f.Kind != MediaBrowserKind.Audio));
             Add("Add as Audio at Playhead", () => AddRequested?.Invoke([.. playable.Select(f => f.Path)], true), loaded && playable.Count > 0);
             menu.Items.Add(new Separator());
+            AddProjectMediaItems(menu, files);
             Add("Show in Explorer", () => ShowInExplorer(files[0].Path));
 
             // The Clip Library's own (5.2C): its clips taken out of it, their files with them.

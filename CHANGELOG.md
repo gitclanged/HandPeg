@@ -3,6 +3,82 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v5.4.0 — Project Tabs, One Export Tab With a Live Encoded Preview, a Project Media Bin and Dockable Studios
+
+### User-Facing Highlights
+- **Project tabs in the title bar.** Open several projects at once, browser-style: `+` (Ctrl+T) starts a new one, Ctrl+W closes,
+  Ctrl+Tab moves between them, and tabs drag to reorder. A tab behind the front one gives its GPU memory and decoders back and
+  comes back where it was: playhead, zoom, selection and undo. Resting on a tab shows a card with its picture in its
+  own shape. A right-click saves, renames, duplicates or closes it. The strip stays hidden until there is a project.
+- **Each tab keeps its own window layout and 3D view.** With "Each project tab remembers its own layout" on (the default, in the
+  Layout selector and Settings), bringing a tab to the front puts its own arrangement of panes back. A tab left in the 3D Exploded
+  View comes back in 3D at the same camera angle, and its hover card shows the 3D picture.
+- **One visual Layout selector, and a Default layout.** The Layout button opens the visual layout cards on a click or a rest.
+  `☆ Set Default` on any card (built-in or your own) chooses the layout HandPeg opens in; `★ Default` marks it. The selector's footer
+  holds the per-tab layout switch, `+ New Side Window` and your side windows, and `Save Current Layout...`.
+- **Two layouts for vertical video.** The Vertical & Shorts Studio now keeps the Subtitle Studio as a tab beside Effects,
+  Keyframes and Canvas. The new **Vertical Creator Split** layout has a full-height player at the left, the tools, playback controls
+  and timeline in the middle, and the Media Browser as a filmstrip at the right.
+- **Dock splitters drag across their full range.** A border between panes now takes room from the panes beyond its neighbour once
+  the neighbour reaches its smallest size, and a double-click splits the two sides evenly.
+- **First-class Project Settings.** Every project has its frame size, frame rate, colour space (SDR BT.709, HDR PQ, HLG), pixel
+  aspect and sample rate, set by the first video, a Game Preset or the new **New Project** studio. Export defaults to
+  **Match Project Settings**. An HDR project exports as true 10-bit HDR when every picture is HDR.
+- **The Export tab in three columns, with one Export Presets list.** 28 built-in presets (Platform & Social, Studio & Archive,
+  Audio Only: FLAC, WAV and a -16 LUFS podcast MP3), then your own. Every encoder starts at its slowest, best step (NVENC p7, QuickSync
+  veryslow, AMF high_quality, Media Foundation quality-first, x264/x265 veryslow). Fast Proxy is the one exception: it runs at the
+  encoder's fastest step. VBR with an automatic bitrate, and Web Optimized, are on by default.
+- **Live Encoded Preview on the player bar.** The eye button beside the 3D View shows the picture as the export would encode it:
+  the encoded frame, a split wipe, or the difference x10. It is on the player bar by default. Its new **Magnifier** puts the 4x loupe
+  under the pointer over the compare.
+- **A Project Media bin and three Media Browser views.** Files dropped on the Media Browser go into the project's own bin, even
+  with nothing open. Grid, List (resolution, frame rate, duration, codec, audio, size) and **Filmstrip**, a source cutter with In/Out
+  marks and J/K/L, inserts sub-clips. Removing a file that clips use offers to delete those clips too, in one undo step.
+- **Studios as dock panes, and side windows.** The Subtitle Studio, Voiceover Studio, Render Queue and the new Video Scopes
+  (Histogram, Luma Waveform, RGB Parade) are panes you can dock anywhere or tear off into any number of side windows. A Live Video
+  Preview side window mirrors the player on another monitor.
+- **Momentum scrolling** on the timeline, the filmstrips and the Media Browser: a flick keeps coasting, a touch stops it.
+- **Editing fixes.** Drag a clip above, below or between tracks to put it on a new track (or Alt+Up / Alt+Down). Media dropped
+  anywhere goes to the playhead. An export no longer ends on black frames past the last picture. The Background Blur sits under
+  every picture. The Game Presets' save, import and export are in the Settings flyout and the clip and track menus.
+- **Progress shows over the tabs.** The title bar's progress wash now lies over the project tabs, with a 2-pixel accent rail
+  along its foot. The bottom status bar is hidden for everyone (the title bar carries the work; Views > Tabs & Panes still
+  brings it back).
+- **Instant tab switching.** A tab you have been in stays live in memory: switching back swaps it in, with no reload from disk,
+  and its paused picture covers the player until the first frame. Its recovery copy is written in the background after the
+  switch. A video dropped on a new tab names the tab at once.
+- **Smarter frame-cache memory.** Instant Seek's frame cache starts at about 2 GB and grows when a project needs more. On a
+  graphics card with more than 4 GB of its own memory it fills toward the card's limit and keeps a tab's frames across tab
+  switches; on shared-memory laptops it stays small. Settings > GPU has a new **Maximum Frame Cache (GB)**. Putting a tab behind
+  now gives the compositor's spare memory back to Windows.
+
+### Under the Hood & Fixes
+- Dock borders are Thumbs of their own with a cascading share (a border takes room from the panes beyond its neighbour once the
+  neighbour is at its minimum); per-pane minimums of 180 DIP (280 for the Filmstrip Media Browser), refreshed in place; a joined
+  header no longer holds its column open; double-click evens a split (the scrubber's edge resets its height).
+- `AppSettings.DefaultStartupLayout` (a built-in's name or `saved:N`) and `PerTabWindowLayouts`; the cold boot still makes one
+  dock build, from the Default layout (or the last arrangement when it has the same shape, studios aside). Settings from before
+  5.4 keep their arrangement (view-defaults step 9).
+- `PlaybackControlSet` version 3 shows the Live Encoded Preview once; the Magnifier is a pointer loupe drawn by the compositor
+  (`FlagLoopbackLoupe`). `EncodingPreset.SpeedFirst` gives Fast Proxy p1 / veryfast / speed / ultrafast (Media Foundation
+  `-compression_level 0`), and a hardware failure retries at the matching software step.
+- Project tabs: `ProjectTabHeader` carries the 3D pose, the window layout and the Media Browser view; live tabs are a
+  `TabProjectContext` (the Sequence, kept Layer views, history and fingerprints) swapped in about 1 ms of view-model work; a tab's
+  `.hptab` is written on its own disk chain from a frozen copy, claimed atomically so a crash write never races it; late adds
+  (drops, voiceovers, beats) never land in another tab.
+- Compositor worker: counted Clear and Trim requests (a later command can no longer overwrite them); a trim releases the free
+  list, pooled and idle renderer textures, readback staging and the driver's kept memory (`IDXGIDevice3::Trim`, deferred until
+  250 ms of quiet); on big cards a retired source's frames are parked by file and taken back unchanged.
+- An Export Preset that names no frame shape (Match Project — Master Quality, the "p" sizes) keeps the Sequence's own: a vertical
+  project is no longer laid on its side, and a turn an earlier preset made is still undone.
+- Managed heap: project files are streamed to disk (temp file, then moved), and one compacting collection runs on the UI
+  thread only when nothing plays, after a tab is closed or let go.
+- Measured (10 tabs of a quick-cut project, switching in a ring): a switch returns in 9.2 ms with its frame up at 10 ms on an
+  RX 7900 XTX desktop, and in 23 ms on a Snapdragon X laptop (150 ms before); closing back to one tab gives about 600 MB back.
+- Golden tests: 246 (from 151 at 5.3.2), among them `dock-splitter-range`, `layout-selector-unified`, `dock-default-startup-layout`,
+  `dock-vertical-creator-layout`, `live-encoded-preview-magnifier`, `fast-proxy-fastest-step`, `project-media-remove-with-clips`,
+  `project-tabs-exploded-pose`, `project-tabs-window-layouts`, `tab-perf-*`, `worker-*` and `memory-hygiene-*`.
+
 ## HandPeg v5.3.2 — A Timecode That Holds Still at High Frame Rates, in Frames by Default
 
 ### User-Facing Highlights

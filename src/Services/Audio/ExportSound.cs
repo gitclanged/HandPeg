@@ -54,8 +54,11 @@ public sealed record ExportSoundPlan(IReadOnlyList<ExportSoundTrack> Tracks, Aud
     /// <summary>The most mixer buses one export renders (every output track's pairs).</summary>
     public const int MaxBuses = 32;
 
-    /// <summary>The loudness normalization's aim (what FFmpeg's loudnorm was given): -16 LUFS integrated, -1.5 dBTP.</summary>
+    /// <summary>The loudness normalization's aim by default (what FFmpeg's loudnorm was given): -16 LUFS integrated, -1.5 dBTP.</summary>
     public const double TargetLufs = -16, CeilingDb = -1.5;
+
+    /// <summary>The integrated loudness this export's normalization aims at (5.4B: the state's, -16 or -14 LUFS; <see cref="TargetLufs"/> by default).</summary>
+    public double LoudnessLufs { get; init; } = TargetLufs;
 
     public int BusCount => Tracks.Count == 0 ? 0 : Tracks.SelectMany(t => t.Buses).DefaultIfEmpty(-1).Max() + 1;
 
@@ -70,13 +73,28 @@ public sealed record ExportSoundPlan(IReadOnlyList<ExportSoundTrack> Tracks, Aud
     /// output is copied as it is only while it is exactly one sound played plainly from a file the whole Sequence is one clip of
     /// (<see cref="SequenceSpans.WholeFiles"/>), nothing mixed into it and nothing done to the whole. Merge Audio Tracks: one mix of
     /// them all. Empty for a picture-only output (GIF, WebP) and a sequence with nothing to hear. Every track is heard, whatever is
-    /// soloed.
+    /// soloed. An audio-only output (<see cref="EncoderCommand.IsAudioOnly"/>) is planned as <see cref="For(SequenceExportState, bool, bool)"/> plans it.
     /// </summary>
-    public static ExportSoundPlan For(SequenceExportState state, bool pictureOnly)
+    public static ExportSoundPlan For(SequenceExportState state, bool pictureOnly) => For(state, pictureOnly, !pictureOnly && EncoderCommand.IsAudioOnly(state));
+
+    /// <summary>
+    /// The sound of an export, as <see cref="For(SequenceExportState, bool)"/> plans it; with <paramref name="audioOnly"/> (5.4C: a FLAC,
+    /// WAV or MP3 file, which holds one stream) always one rendered track: every stream place and the loose sounds mixed on bus 0
+    /// (each place's own choice, dropped or copied, does not apply), never copied as it is, stereo (mono when the Audio tab says so),
+    /// encoded with the file's own codec (<see cref="EncoderCommand.AudioOnlyCodec"/>) at <see cref="SequenceExportState.AudioBitrate"/>,
+    /// normalized as asked. No tracks when nothing is heard.
+    /// </summary>
+    public static ExportSoundPlan For(SequenceExportState state, bool pictureOnly, bool audioOnly) =>
+        PlanOf(state, pictureOnly, audioOnly) is var plan && plan.LoudnessLufs != state.LoudnessTargetLufs ? plan with { LoudnessLufs = state.LoudnessTargetLufs } : plan;
+
+    private static ExportSoundPlan PlanOf(SequenceExportState state, bool pictureOnly, bool audioOnly)
     {
-        var rate = state.AudioSampleRate > 0 ? Math.Clamp(state.AudioSampleRate, 8000, 192000) : 48000;
+        // 0, "Match Project Settings" (5.4A): the project's own rate (48 kHz unless it says otherwise).
+        var rate = state.AudioSampleRate > 0 ? Math.Clamp(state.AudioSampleRate, 8000, 192000) : state.Timeline.SampleRate;
         if (pictureOnly)
             return new ExportSoundPlan([], AudioBusLayout.AllOnOne, rate, false);
+        if (audioOnly)
+            return AudioOnlyPlan(state, rate);
 
         var document = state.Timeline;
         var lowering = TimelineLowering.Lowering(state);
@@ -160,6 +178,29 @@ public sealed record ExportSoundPlan(IReadOnlyList<ExportSoundTrack> Tracks, Aud
 
         // The loose sounds and the voiceover go into the first output's first bus (its left and right, for a surround one).
         return new ExportSoundPlan(tracks, new AudioBusLayout(buses, looseBus >= 0 ? looseBus : 0), rate, state.NormalizeAudio);
+    }
+
+    // An audio-only file's one track (5.4C): every stream place that holds a clip with sound, and the loose sounds and the voiceover,
+    // on bus 0; nothing left out by a place's choice, nothing copied; the file's own codec.
+    private static ExportSoundPlan AudioOnlyPlan(SequenceExportState state, int rate)
+    {
+        var lowering = TimelineLowering.Lowering(state);
+        var sounds = AudioProgramBuilder.Heard(state, lowering, solo: false);
+        var voiceover = state.IncludeVoiceover && AudioProgramBuilder.Clean(state.VoiceoverPath).Length > 0;
+        var places = new SortedSet<int>();
+        foreach (var track in state.Timeline.Tracks)
+        {
+            if (track.StreamOrdinal is >= 0 and var ordinal && track.Clips.Exists(c => c.HasSound))
+                places.Add(ordinal);
+        }
+
+        if (places.Count == 0 && !voiceover && !sounds.Exists(s => s.Ordinal < 0))
+            return new ExportSoundPlan([], AudioBusLayout.AllOnOne, rate, false);
+
+        var channels = state.AudioChannels == AudioChannelChoice.Mono ? 1 : 2;
+        var codec = EncoderCommand.AudioOnlyCodec(EncoderCommand.Extension(state));
+        return new ExportSoundPlan([new ExportSoundTrack("", codec, state.AudioBitrate, channels, [0])],
+            new AudioBusLayout(places.ToDictionary(n => n, _ => new[] { 0 }), 0), rate, state.NormalizeAudio);
     }
 
     // A sound played as its file has it: from the Sequence's start to its end, from the file's start at its own speed, with no slip,
@@ -315,7 +356,7 @@ public sealed record ExportSoundPlan(IReadOnlyList<ExportSoundTrack> Tracks, Aud
             return 1f;
 
         // The sample peak with half a decibel kept back for the peaks between samples (a true-peak meter's 4x look, roughly).
-        var wanted = TargetLufs - loudness;
+        var wanted = LoudnessLufs - loudness;
         var room = CeilingDb - 0.5 - 20 * Math.Log10(peak);
         var gainDb = Math.Min(wanted, room);
         AppLog.Write(string.Create(CultureInfo.InvariantCulture,

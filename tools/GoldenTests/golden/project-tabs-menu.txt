@@ -1,0 +1,17 @@
+# A tab's right-click menu (its lines, keys and rules), the rename rules, and the hover card of a tab behind (an inspector card placed against its tab).
+ok: the tab in front's menu: Save Project, Save Project As..., Rename Project..., Duplicate Project in New Tab, Open Containing Folder, a line, Close Tab, Close Other Tabs, with their keys
+ok: its keys are read from the key map as it opens (Save Project and Close Tab have keys)
+ok: a tab behind: no keys (they act on the tab in front); never saved, no folder to open; alone, no other tabs to close
+ok: a plain name will do (spaces round it trimmed)
+ok: refused: nothing typed, a character no file name holds, dots alone, a trailing dot
+ok: a saved project renamed stays where it is under the new name, its extension kept
+ok: the tab in front keeps its text tooltip; a tab behind has none (its hover card instead)
+ok: the card's last line: not saved yet, or saved with its file
+ok: or unsaved changes, with its file
+ok: ProjectTabStrip.xaml: HoverCard is a Popup that takes no clicks
+ok: its surface is an inspector card (the theme's card brushes, a 1 px border, 6 px corners), nothing inside its edge
+ok: its picture fills the card (5.4C), the tab's still or thumbnail
+ok: in its own shape: 16:9 is 318 x 179, 9:16 191 x 340 (never cropped to 16:9), square 318 x 318; with no picture the card is 318 wide
+ok: its title, frame and saved line lie over the picture's foot on a dark band fading up into it
+ok: a tab's tooltip is the tab in front's text alone
+ok: the card is placed under its tab by UiScale.PlaceAgainst, never by a Bottom or Relative placement

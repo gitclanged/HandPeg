@@ -1,0 +1,22 @@
+# A project tab put behind (its project and undo history in the cache) and brought back as it was; the clipboard crosses tabs.
+ok: tab 1: a Sequence of dropped files, as it was last saved
+ok: two edits: the first clip trimmed to 3 s, the second deleted
+ok: the clip on track 2 copied (Ctrl+C)
+ok: tab 1 has unsaved changes
+ok: its state carries the two undo steps and nothing to redo
+ok: written to <folder>\<session>\<id>.hptab (the window's is %Cache%\project-tabs\<session>)
+ok: the .hptab is a project file of this version's format (6)
+ok: with its undo history (two Brotli-packed steps), read back as an open reads it
+ok: and its saved state's fingerprint (it has unsaved changes) and its header beside it
+ok: tab 2: a new, empty project (no prompt)
+ok: Ctrl+V in tab 2 pastes the clip copied in tab 1: a new id, the same file (the clipboard crosses tabs)
+ok: tab 2 saved: no unsaved changes
+ok: a clean tab keeps no saved fingerprint
+ok: its header read back as it was written (title, file, dirty, playhead 2.5 s, view 1.5 s + 4 s, scrolled 24)
+ok: its Sequence is back exactly: every clip, its id, its file and its times
+ok: its changes are still unsaved (the open took it as saved; the tab put that right)
+ok: Save writes its project file again
+ok: Undo goes on where it left off: the deleted clip is back
+ok: and the tab still has unsaved changes after it
+ok: a clean tab comes back clean, with its pasted clip, and no project file
+ok: a closed tab's .hptab, header and saved fingerprint are deleted

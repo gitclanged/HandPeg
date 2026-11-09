@@ -1,0 +1,13 @@
+# ScrollMomentum on a list: a notch moves its usual step, a fast wheel stream coasts on, a press and both ends stop it, and nothing is made until the first wheel.
+ok: attached, it has made nothing yet (its state comes with the first wheel): cheap enough for a pane's constructor before Frame 1
+ok: a 5000 DIP list in a 300 DIP view: 4700 DIPs of room
+ok: one notch scrolls 16 DIPs a wheel line (Windows' setting; 48 at the usual 3) and does not coast
+ok: three quick notches scroll three steps and coast on (no frame hooked off screen: a test steps it)
+ok: stepped, it coasts on further every frame for 100 ms, where it aimed (the ScrollViewer's offset caught up with the aim)
+ok: a press on the list stops the coast where it is
+ok: near the bottom, a fast stream coasts into the end and stops there
+ok: up from near the top, it coasts into the top and stops there
+ok: ScrollMomentum.Stop halts it (the browser's middle-click auto-scroll taking over)
+ok: a list with nothing to scroll does not take the wheel: it passes on
+ok: on a ListBox the ScrollViewer of its template is found at the first wheel and scrolls the step
+ok: switched off, its state is dropped

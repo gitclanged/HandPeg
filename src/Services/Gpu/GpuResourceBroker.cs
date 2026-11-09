@@ -417,6 +417,33 @@ public sealed class GpuResourceBroker : IDisposable
         return true;
     }
 
+    /// <summary>
+    /// Lets go of every source (the UI thread; a project tab put behind, Pass 5.4A): each id is cleared in the worker's table
+    /// (CompositorClient.ClearSource), whose decoder pool then retires the source at its next turn (its decoders disposed, its cached
+    /// frames forgotten), and the ids are free for the next project. The textures are kept: the worker has no command that empties a
+    /// resource, their ids are found again by their content's hash (a Game Preset's masks are the next project's too), and the table
+    /// lets the least recently used go as it fills.
+    /// </summary>
+    public void ReleaseAll()
+    {
+        for (var id = 0; id < _sources.Length; id++)
+        {
+            if (_sources[id] is null)
+                continue;
+            _sources[id] = null;
+            try
+            {
+                _client?.ClearSource(id);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException)
+            {
+                AppLog.Write("The GPU engine's source table could not let a file go", ex);
+            }
+        }
+
+        _sourceIds.Clear();
+    }
+
     // ----- The tables' room -----
 
     /// <summary>An empty slot, else the one used longest ago that the newest plan does not use; -1 when every one is the newest plan's.</summary>

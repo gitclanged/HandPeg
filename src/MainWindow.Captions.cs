@@ -65,7 +65,7 @@ public partial class MainWindow
         Add("Generate Auto-Captions...", () => GenerateCaptionsFrom(target), hasSource,
             $"Transcribes the speech and puts the captions on the timeline, where they follow the clips they were heard in. Listening to: {_viewModel.CaptionSourceSummary}");
         Add("Edit Captions...", EditCaptions, hasSource && (_viewModel.HasSubtitleCues || _viewModel.AutoCaptions),
-            "Opens the Subtitle Editor: the words, their times and where each word begins. With no captions yet, they are made first.");
+            "Opens the Subtitle Studio: the words, their times and where each word begins. With no captions yet, they are made first.");
         Add("Import Subtitles...", ImportSubtitles, true,
             "Reads an .srt, .vtt, .ass or picture subtitle file in as the subtitle track, replacing the one there is.");
         menu.Items.Add(new Separator());
@@ -128,8 +128,8 @@ public partial class MainWindow
             _viewModel.ImportSubtitles(dialog.FileName);
     }
 
-    /// <summary>Edit Captions: the Subtitle Editor on the subtitle track.</summary>
-    internal void EditCaptions() => _ = OpenSubtitleEditorAsync();
+    /// <summary>Edit Captions: the Subtitle Studio on the subtitle track.</summary>
+    internal void EditCaptions() => _ = OpenSubtitleStudioAsync();
 
     /// <summary>Caption Style: the style's dialog; what is changed there is one step of Undo.</summary>
     internal void OpenCaptionStyle()
@@ -143,30 +143,15 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Opens the Subtitle Editor on the subtitle track. With no track yet and captions on, the track is first made from
-    /// them, so that what was transcribed is what is edited. While the editor is open the main player draws no subtitles:
-    /// the editor's own preview does.
+    /// Opens the Subtitle Studio pane on the subtitle track (5.4C: a dock pane, not a modal window). With no track yet and captions on,
+    /// the track is first made from them, so that what was transcribed is what is edited. The main player goes on drawing the captions
+    /// and the main Undo goes on working while it is open: the studio commits each gesture as a step (MainViewModel.CommitSubtitleEdits).
     /// </summary>
-    private async Task OpenSubtitleEditorAsync()
+    private async Task OpenSubtitleStudioAsync()
     {
-        if (_viewModel.IsSubtitleEditorOpen)
-            return;
-
         if (!_viewModel.HasSubtitleCues && _viewModel.AutoCaptions && _viewModel.HasSource)
             await _viewModel.ConvertCaptionsToCuesAsync();
 
-        if (PlayerIsPlaying)
-            PlayerSetPause(true);
-        _viewModel.IsSubtitleEditorOpen = true;
-        try
-        {
-            new Views.SubtitleEditorWindow(_viewModel) { Owner = this }.ShowDialog();
-        }
-        finally
-        {
-            _viewModel.IsSubtitleEditorOpen = false;
-            _viewModel.ReprojectCaptions();
-            ScheduleClipRedraw();
-        }
+        OpenStudio(SubtitleStudioId);
     }
 }

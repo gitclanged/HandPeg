@@ -140,6 +140,12 @@ public sealed class ProjectUndoStep
 {
     public string What { get; set; } = "";
     public string State { get; set; } = "";
+
+    /// <summary>
+    /// The step as Undo keeps it (packed), when it is being written (5.4D-TabPerf): written as the Base64 <see cref="State"/> would be,
+    /// a few kilobytes at a time, without the text itself ever being made (a step of a big Sequence is a few hundred kilobytes of it).
+    /// </summary>
+    internal byte[]? Packed { get; init; }
 }
 
 /// <summary>
@@ -176,11 +182,36 @@ internal sealed class UndoStepsConverter : JsonConverter<List<ProjectUndoStep>>
         {
             writer.WriteStartObject();
             writer.WriteString("what", step.What);
-            writer.WriteString("state", step.State);
+            if (step.Packed is { } packed)
+                WriteBase64(writer, "state", packed);
+            else
+                writer.WriteString("state", step.State);
             writer.WriteEndObject();
         }
 
         writer.WriteEndArray();
+    }
+
+    // The input of one piece: a multiple of 3 bytes, so the pieces' Base64 joins up with no padding until the last.
+    private const int PieceBytes = 3 * 1024;
+
+    /// <summary>
+    /// Writes bytes as the JSON string Convert.ToBase64String's text would be, the very same bytes (escaped as the writer escapes any
+    /// text: a "+" as \u002B), from a 4 KB buffer on the stack instead of a string of the whole.
+    /// </summary>
+    private static void WriteBase64(Utf8JsonWriter writer, string name, byte[] bytes)
+    {
+        writer.WritePropertyName(name);
+        Span<byte> piece = stackalloc byte[PieceBytes / 3 * 4];
+        var at = 0;
+        do
+        {
+            var length = Math.Min(PieceBytes, bytes.Length - at);
+            System.Buffers.Text.Base64.EncodeToUtf8(bytes.AsSpan(at, length), piece, out _, out var written);
+            at += length;
+            writer.WriteStringValueSegment(piece[..written], isFinalSegment: at >= bytes.Length);
+        }
+        while (at < bytes.Length);
     }
 }
 
@@ -394,7 +425,7 @@ public static class ProjectStore
 
         var path = Path.Combine(Folder, fileName + Extension);
         RefuseNewer(path);
-        File.WriteAllText(path, Serialize(state));
+        WriteProject(state, path);
         return path;
     }
 
@@ -405,8 +436,21 @@ public static class ProjectStore
     public static string SaveTo(ProjectState state, string path)
     {
         RefuseNewer(path);
-        WriteWhole(path, Serialize(state));
+        WriteProject(state, path);
         return path;
+    }
+
+    /// <summary>
+    /// The state written as <see cref="Serialize"/> would make its text, the very same bytes (UTF-8, no byte order mark), but
+    /// straight into the file (5.4D-TabPerf): the JSON goes out to it in pieces of about 16 KB as it is made, so the whole text is
+    /// never held, nor a buffer of all of it (a tab put behind writes one of these, on the pool, at every switch). Only the undo
+    /// history goes out as one piece (UndoStepsConverter writes it whole), its steps' Base64 made as it goes. Whole or not at all
+    /// (<see cref="WriteWhole(string, Action{Stream})"/>): what goes wrong while it is written leaves the old file as it was.
+    /// </summary>
+    private static void WriteProject(ProjectState state, string path)
+    {
+        var file = ToFile(state);
+        WriteWhole(path, stream => JsonSerializer.Serialize(stream, file, JsonOptions));
     }
 
     /// <summary>
@@ -514,14 +558,68 @@ public static class ProjectStore
         return Path.Combine(Folder, (fileName.Length > 0 ? fileName : "Untitled") + AutosaveSuffix + Extension);
     }
 
-    /// <summary>Writes a file so that it is either the old one or the new one, never half of each: beside it first, then moved over it.</summary>
+    /// <summary>
+    /// Writes a file so that it is either the old one or the new one, never half of each: beside it first, then moved over it. Should
+    /// it fail part of the way, the half-written one beside it is deleted and the failure is passed on.
+    /// </summary>
     public static void WriteWhole(string path, string content)
     {
         if (Path.GetDirectoryName(path) is { Length: > 0 } folder)
             Directory.CreateDirectory(folder);
-        var partial = path + ".tmp";
-        File.WriteAllText(partial, content);
-        File.Move(partial, path, overwrite: true);
+        var partial = PartialPath(path);
+        try
+        {
+            File.WriteAllText(partial, content);
+            File.Move(partial, path, overwrite: true);
+        }
+        catch
+        {
+            TryDeletePartial(partial);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// The file a whole write goes into before it is moved over <paramref name="path"/>: a name of its own each time (5.4D-TabPerf review),
+    /// <c>&lt;path&gt;.&lt;32 hex digits&gt;.tmp</c>, so two writes of the same file at once (a tab's cache file written on the thread pool
+    /// and again as HandPeg falls over) never open the same one; the last to be moved in wins, whole. Still a ".tmp" for the clean-ups.
+    /// </summary>
+    internal static string PartialPath(string path) => path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+
+    private static void TryDeletePartial(string partial)
+    {
+        try
+        {
+            File.Delete(partial);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Left for the tabs' own clean-up of a half-written file (any ".tmp" in a session's folder).
+        }
+    }
+
+    /// <summary>
+    /// <see cref="WriteWhole(string, string)"/> for content made as it is written (5.4D-TabPerf): <paramref name="write"/> writes it
+    /// into the file beside the old one, which is then moved over it. Should it fail part of the way (it throws, the disk fills),
+    /// the old file is left as it was and the half-written one beside it is deleted, and the failure is passed on.
+    /// </summary>
+    public static void WriteWhole(string path, Action<Stream> write)
+    {
+        if (Path.GetDirectoryName(path) is { Length: > 0 } folder)
+            Directory.CreateDirectory(folder);
+        var partial = PartialPath(path);
+        try
+        {
+            // As File.WriteAllText opens it (shared for reading); unbuffered, since what writes into it hands it pieces of 16 KB or more.
+            using (var stream = new FileStream(partial, FileMode.Create, FileAccess.Write, FileShare.Read, bufferSize: 0))
+                write(stream);
+            File.Move(partial, path, overwrite: true);
+        }
+        catch
+        {
+            TryDeletePartial(partial);
+            throw;
+        }
     }
 
     /// <summary>The state as a format 6 file. The state is left as it was: its timeline is written from a copy of its own.</summary>
@@ -564,7 +662,7 @@ public static class ProjectStore
     public static ProjectState Deserialize(string json, bool unpackMasks = false, bool allowNewer = false)
     {
         // The header first: a file of another format is refused as what it is, not for a part of it this version reads otherwise.
-        if (ReadHeader(Encoding.UTF8.GetBytes(json), isFinalBlock: true) is not { Format: ProjectFile.FormatName } header)
+        if (HeaderOf(json) is not { Format: ProjectFile.FormatName } header)
             throw new InvalidDataException("This is not a HandPeg project.");
         if (header.Version > ProjectFile.CurrentVersion && !allowNewer)
             throw new NewerProjectFormatException(header.Version, header.WrittenBy);
@@ -582,6 +680,25 @@ public static class ProjectStore
             throw new InvalidDataException("This project has no timeline: a format 6 project keeps its tracks and clips there.");
 
         return FromFile(file, timeline, unpackMasks);
+    }
+
+    // How much of a project's text its header is looked for in first: HandPeg writes it at the very start.
+    private const int HeaderChars = 4096;
+
+    /// <summary>
+    /// What a project's text says it is, as <see cref="ReadHeader"/> reads it from the whole text, from its first few kilobytes when
+    /// all three values are there (5.4D-TabPerf: the whole text was copied to UTF-8 for this alone, megabytes on every tab brought
+    /// back). A text that does not give all three there (a file written by hand, its header further on) is read whole, as before.
+    /// </summary>
+    private static (string? Format, int Version, string? WrittenBy)? HeaderOf(string json)
+    {
+        if (json.Length > HeaderChars
+            && ReadHeader(Encoding.UTF8.GetBytes(json, 0, HeaderChars), isFinalBlock: false) is { Format: not null, Version: not 0, WrittenBy: not null } found)
+        {
+            return found;
+        }
+
+        return ReadHeader(Encoding.UTF8.GetBytes(json), isFinalBlock: true);
     }
 
     // ----- Projects of the shape before 5.2-AuditB (converted as they are opened: MainViewModel.ConvertLegacy) -----
@@ -783,10 +900,13 @@ public static class ProjectStore
             }
             : track;
 
-    /// <summary>A history as the file carries it: its newest twenty steps, oldest first, each in Base64; null when empty.</summary>
+    /// <summary>
+    /// A history as the file carries it: its newest twenty steps, oldest first, each in Base64; null when empty. The packed steps
+    /// themselves are handed on (shared, never changed), and their Base64 is made only as it is written (<see cref="ProjectUndoStep.Packed"/>).
+    /// </summary>
     private static List<ProjectUndoStep>? StepsOf(List<UndoStepState>? steps) =>
         steps is { Count: > 0 }
-            ? [.. steps.Where(s => s is { State.Length: > 0 }).TakeLast(ProjectFile.MaximumUndoSteps).Select(s => new ProjectUndoStep { What = s.What, State = Convert.ToBase64String(s.State) })]
+            ? [.. steps.Where(s => s is { State.Length: > 0 }).TakeLast(ProjectFile.MaximumUndoSteps).Select(s => new ProjectUndoStep { What = s.What, Packed = s.State })]
             : null;
 
     /// <summary>

@@ -9,15 +9,20 @@ using HandPegApp.Services;
 
 namespace HandPegApp;
 
-// ----- The Layout button: built-in layouts, the user's own, its menu and the Layout Selector -----
-// The header's Layout button has the Layout Selector (resting on it, Pass 4.1B: a card for each layout, shown in the window while the pointer is on it, and a row of themes, put on live the same way)
-// and one menu (a click: the side window, the layouts, Save Current Layout, Reset Layout). A layout arranges the main
-// window; the side window is left as it is (DockManager.Prepared). The player floats over its place (DockPane.Floats),
-// so a preview only moves it.
+// ----- The Layout button: built-in layouts, the user's own, the Layout Selector and the Default layout -----
+// The header's Layout button has the Layout Selector (resting on it or a click, Pass 4.1B; 5.4D: the one Layout UI, the click's menu
+// retired): a card for each layout, shown in the window while the pointer is on it, its pill making it the Default layout HandPeg opens
+// in; a row of themes, put on live the same way; and a footer with each project tab's own layout, the side windows and Save Current
+// Layout. A layout arranges the main window; the side windows are left as they are (DockManager.Prepared). The player floats over its
+// place (DockPane.Floats), so a preview only moves it.
 public partial class MainWindow
 {
-    /// <summary>A layout the Layout button offers: its name, what it is for, the arrangement, and its place when it is one of the user's own.</summary>
-    private sealed record LayoutChoice(string Name, string About, DockLayoutState Layout, int? Slot);
+    /// <summary>
+    /// A layout the Layout button offers: its name, what it is for, the arrangement, its place when it is one of the user's own, and
+    /// what it sets besides the arrangement (5.4C: the Vertical &amp; Shorts Studio's Media Browser in its Filmstrip view), run when it is
+    /// taken up, kept from the Layout Selector or chosen in the first-run window, never while a card is only previewed.
+    /// </summary>
+    private sealed record LayoutChoice(string Name, string About, DockLayoutState Layout, int? Slot, Action? Then = null);
 
     // The settings tabs as one group, in their order; the one shown first named.
     private static DockNode TabsGroup(IReadOnlyList<string> tabIds, string? active = null, params string[] without)
@@ -114,18 +119,18 @@ public partial class MainWindow
 
     /// <summary>
     /// Color and Effects: a large player with the Canvas beside it; two tall inspector columns at the right, the
-    /// effects and keyframes, and the header joined over the media browser with the Summary; under them the Sequence
-    /// Overview Scrubber, and the timeline with the other settings tabs at its right.
+    /// effects and keyframes, and the header joined over the media browser; under them the Sequence Overview Scrubber, and the
+    /// timeline with the settings tabs at its right. (5.4A: the Summary tab that shared the media browser's group is retired.)
     /// </summary>
     internal static DockLayoutState InspectorLayout(IReadOnlyList<string> tabIds)
     {
         var player = DockNode.Split(true, (DockNode.Split(false, (DockNode.Group("Player"), 72), (DockNode.Group("Layout"), 28)), 1), (DockNode.Group("Playback"), 1));
         var inspector = DockNode.Group("Effects", "Keyframes");
-        var media = DockNode.Split(true, (DockNode.Group("Header"), 1), (DockNode.Group("Media", "Tab:Summary"), 1));
+        var media = DockNode.Split(true, (DockNode.Group("Header"), 1), (DockNode.Group("Media"), 1));
         var top = DockNode.Split(false, (player, 60), (inspector, 20), (media, 20));
         return new DockLayoutState
         {
-            Main = DockNode.Split(true, (top, 66), (DockNode.Group("Timeline"), 1), (DockNode.Group("Presets"), 1), (TimelineBeside(TabsGroup(tabIds, null, "Tab:Summary")), 34)),
+            Main = DockNode.Split(true, (top, 66), (DockNode.Group("Timeline"), 1), (DockNode.Group("Presets"), 1), (TimelineBeside(TabsGroup(tabIds)), 34)),
         };
     }
 
@@ -147,59 +152,200 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Vertical and Shorts Studio, for 9:16 shorts and highlights: a tall player and the Canvas side by side at the top
-    /// left (each a tall frame), with the playback controls under them; the header joined over the media, effects and
-    /// keyframes at the top right; the Sequence Overview Scrubber across the whole window, and under it the timeline with the
-    /// settings tabs at its right, Export and Audio first (the others after them).
+    /// Vertical and Shorts Studio, for 9:16 shorts and highlights (5.4C, the user's picture of it; 5.4D: the Subtitle Studio a tab of the
+    /// left group): at the top a left column of the effects, keyframes, Canvas and Subtitle Studio as tabs, the player in the middle (a 9:16
+    /// frame needs little width), and the header joined over the media at the right (its Media Browser in the Filmstrip view:
+    /// <see cref="BuiltInLayouts"/>' Then); the playback controls along the bottom of the left column and the player; under all of it the
+    /// Sequence Overview Scrubber across the whole window, the Preset Bar, and the timeline, the first tab of the settings tabs (Timeline |
+    /// Filters | Audio | Export). The Master Meter, left out, goes in with the effects when shown (its home in Standard Editing).
     /// </summary>
     internal static DockLayoutState ShortsLayout(IReadOnlyList<string> tabIds)
     {
-        var stage = DockNode.Split(false, (DockNode.Group("Player"), 50), (DockNode.Group("Layout"), 50));
-        var player = DockNode.Split(true, (stage, 1), (DockNode.Group("Playback"), 1));
-        var side = DockNode.Split(true, (DockNode.Group("Header"), 1), (DockNode.Group("Media", "Effects", "Keyframes"), 1));
-        var top = DockNode.Split(false, (player, 64), (side, 36));
-        string[] first = [ExportId, "Tab:Audio"];
-        var tabs = DockNode.Group([.. first, .. tabIds.Where(id => !first.Contains(id))]);
+        var left = DockNode.Group("Effects", "Keyframes", "Layout", SubtitleStudioId);
+        var stage = DockNode.Split(false, (left, 40), (DockNode.Group("Player"), 60));
+        var body = DockNode.Split(true, (stage, 1), (DockNode.Group("Playback"), 1));
+        var right = DockNode.Split(true, (DockNode.Group("Header"), 1), (DockNode.Group("Media"), 1));
+        var top = DockNode.Split(false, (body, 70), (right, 30));
         return new DockLayoutState
         {
-            Main = DockNode.Split(true, (top, 60), (DockNode.Group("Timeline"), 1), (DockNode.Group("Presets"), 1), (TimelineBeside(tabs), 40)),
+            Main = DockNode.Split(true, (top, 60), (DockNode.Group("Timeline"), 1), (DockNode.Group("Presets"), 1), (TimelineFirst(TabsGroup(tabIds)), 40)),
         };
     }
+
+    /// <summary>
+    /// Vertical Creator Split (5.4D, the user's picture of it): the player at the left, the whole height of the window (a 9:16 frame stands
+    /// tall); in the middle the effects, keyframes, Canvas and Subtitle Studio as tabs over the playback controls, and under them the
+    /// Sequence Overview Scrubber, the Preset Bar and the timeline, the first tab of the settings tabs; at the right the header joined over
+    /// the media (its Media Browser in the Filmstrip view: <see cref="BuiltInLayouts"/>' Then). The Master Meter, left out, goes in with the
+    /// effects when shown.
+    /// </summary>
+    internal static DockLayoutState VerticalCreatorLayout(IReadOnlyList<string> tabIds)
+    {
+        var tools = DockNode.Group("Effects", "Keyframes", "Layout", SubtitleStudioId);
+        var center = DockNode.Split(true, (tools, 48), (DockNode.Group("Playback"), 1), (DockNode.Group("Timeline"), 1), (DockNode.Group("Presets"), 1),
+            (TimelineFirst(TabsGroup(tabIds)), 52));
+        var right = DockNode.Split(true, (DockNode.Group("Header"), 1), (DockNode.Group("Media"), 1));
+        return new DockLayoutState { Main = DockNode.Split(false, (DockNode.Group("Player"), 28), (center, 46), (right, 26)) };
+    }
+
+    /// <summary>
+    /// What taking up the Vertical &amp; Shorts Studio or the Vertical Creator Split sets besides the arrangement: the Media Browser in its
+    /// Filmstrip view (kept in the settings).
+    /// </summary>
+    private void ShowShortsMedia() => MediaBrowser.ViewMode = Views.MediaBrowserView.Filmstrip;
 
     private IEnumerable<LayoutChoice> BuiltInLayouts() =>
     [
         new("Standard Editing", "The player at the top left, the effects, keyframes and Canvas as tabs beside it, the media at the right; the Sequence Overview Scrubber, and the timeline below, the first of the settings tabs. Where HandPeg starts.", StandardLayout(), null),
-        new("Color & Effects", "A large player, tall effects and keyframes and media and Summary columns at the right; the timeline below, with the other tabs beside it.", InspectorLayout(TabIds), null),
+        new("Color & Effects", "A large player, tall effects and keyframes and media columns at the right; the timeline below, with the other tabs beside it.", InspectorLayout(TabIds), null),
         new("Assembly & Media", "The player at the left, a wide media column with the Canvas at the right; the timeline, the settings tabs and the effects and keyframes side by side below.", AssemblyLayout(TabIds), null),
-        new("Vertical & Shorts Studio", "For 9:16 shorts: a tall player and Canvas side by side, media, effects and keyframes at the right; the timeline below, with the Export and Audio tabs beside it.", ShortsLayout(TabIds), null),
+        new("Vertical & Shorts Studio", "For 9:16 shorts: the effects, keyframes, Canvas and Subtitle Studio as tabs at the left, a tall player in the middle with the playback controls under both, the media as a filmstrip at the right; the timeline below, the first of the settings tabs.", ShortsLayout(TabIds), null, ShowShortsMedia),
+        new(VerticalCreatorName, "For 9:16 creators: the player the whole height at the left; in the middle the effects, keyframes, Canvas and Subtitle Studio as tabs over the playback controls, the timeline below them; the media as a filmstrip at the right.", VerticalCreatorLayout(TabIds), null, ShowShortsMedia),
     ];
 
-    /// <summary>The four built-in layouts by name, for the settings tabs given: window-free, for the goldens (header-flyouts-placement).</summary>
+    /// <summary>The Vertical Creator Split's name (5.4D), as the Layout Selector, the first-run window and AppSettings.DefaultStartupLayout know it.</summary>
+    internal const string VerticalCreatorName = "Vertical Creator Split";
+
+    /// <summary>The five built-in layouts by name, for the settings tabs given: window-free, for the goldens (header-flyouts-placement, dock-splitter-range).</summary>
     internal static IReadOnlyList<(string Name, DockLayoutState Layout)> BuiltInLayoutStates(IReadOnlyList<string> tabIds) =>
     [
         ("Standard Editing", StandardLayout(tabIds)), ("Color & Effects", InspectorLayout(tabIds)),
         ("Assembly & Media", AssemblyLayout(tabIds)), ("Vertical & Shorts Studio", ShortsLayout(tabIds)),
+        (VerticalCreatorName, VerticalCreatorLayout(tabIds)),
     ];
 
     /// <summary>
     /// The built-in layout chosen in the first-run window (AppSettings.FirstRunLayout) as an arrangement to load: written
-    /// into AppSettings.DockLayout, and the choice cleared. Null when no choice is waiting (or it names no layout).
+    /// into AppSettings.DockLayout, and the choice cleared; it becomes the Default layout too (5.4D: HandPeg opens in it from then on).
+    /// Null when no choice is waiting (or it names no layout).
     /// </summary>
     private string? TakeFirstRunLayout()
     {
         if (AppSettings.Current.FirstRunLayout is not { } name)
             return null;
 
-        var json = BuiltInLayouts().FirstOrDefault(l => l.Name == name) is { } choice ? System.Text.Json.JsonSerializer.Serialize(choice.Layout) : null;
-        _viewModel.SavePaneLayout(s => (s.DockLayout, s.FirstRunLayout) = (json ?? s.DockLayout, null));
+        var chosen = BuiltInLayouts().FirstOrDefault(l => l.Name == name);
+        var json = chosen is not null ? System.Text.Json.JsonSerializer.Serialize(chosen.Layout, AppSettingsJsonContext.Default.DockLayoutState) : null;
+        _viewModel.SavePaneLayout(s => (s.DockLayout, s.FirstRunLayout, s.DefaultStartupLayout) = (json ?? s.DockLayout, null, chosen is not null ? chosen.Name : s.DefaultStartupLayout));
+        chosen?.Then?.Invoke();
         return json;
+    }
+
+    // ----- The Default layout (5.4D): where HandPeg opens, and what Reset Layout puts back -----
+
+    /// <summary>The Default layout when none is chosen (AppSettings.DefaultStartupLayout's own default), and when the user's own one chosen is deleted.</summary>
+    internal const string DefaultLayoutName = "Standard Editing";
+
+    /// <summary>How AppSettings.DefaultStartupLayout names a layout: a built-in one by its name, one of the user's own by its place ("saved:2"), so a rename never loses it.</summary>
+    private static string LayoutKey(LayoutChoice choice) => choice.Slot is { } slot ? $"saved:{slot}" : choice.Name;
+
+    /// <summary>The layout a key names (<see cref="LayoutKey"/>): among the built-in layouts, then the user's own; null for none, an empty key or one no longer there.</summary>
+    private LayoutChoice? FindLayout(string? key) => string.IsNullOrWhiteSpace(key) ? null
+        : BuiltInLayouts().FirstOrDefault(l => l.Name == key) ?? SavedLayoutChoices().FirstOrDefault(l => LayoutKey(l) == key);
+
+    /// <summary>The user's Default layout (AppSettings.DefaultStartupLayout); null when it names none.</summary>
+    private LayoutChoice? DefaultLayoutChoice() => FindLayout(AppSettings.Current.DefaultStartupLayout);
+
+    /// <summary>
+    /// The arrangement the window opens in (5.4D, CLAUDE.md 2 and 8: cold boot starts in the user's Default layout), for the one dock build
+    /// before the first frame: the arrangement as it was left while it still has the Default layout's shape (DockManager.LoadsAlike: the
+    /// borders the user dragged survive), else the Default layout itself, its Then run first (the Media Browser's Filmstrip view); with no
+    /// Default layout found (an empty name, one unknown, a saved layout deleted), the arrangement as it was left. Builds nothing.
+    /// <para>With no Default at all (null or empty: settings from before 5.4D, AppSettings.Load's step 9, so an upgrade keeps the arrangement
+    /// the user had), the built-in layout the arrangement left has the shape of becomes the Default, saved (no layout made for it), so its
+    /// card has the ★.</para>
+    /// </summary>
+    private string? StartupLayoutJson()
+    {
+        var last = AppSettings.Current.DockLayout;
+        if (string.IsNullOrEmpty(AppSettings.Current.DefaultStartupLayout))
+        {
+            if (BuiltInLayouts().FirstOrDefault(l => _dock.LoadsAlike(last, l.Layout, AppSettings.Current.SideWindows)) is { } alike)
+                _viewModel.SavePaneLayout(s => s.DefaultStartupLayout = alike.Name);
+            return last;
+        }
+
+        if (DefaultLayoutChoice() is not { } chosen || _dock.LoadsAlike(last, chosen.Layout, AppSettings.Current.SideWindows))
+            return last;
+
+        chosen.Then?.Invoke();
+        return System.Text.Json.JsonSerializer.Serialize(chosen.Layout, AppSettingsJsonContext.Default.DockLayoutState);
+    }
+
+    /// <summary>
+    /// Reset Layout (the Views menu's Reset Panes Layout, 5.4D): the user's Default layout put back (Standard Editing when it names none),
+    /// every Pane Docker closed (DockManager.Reset), and what the layout sets besides set (its Then).
+    /// </summary>
+    private void ResetToDefaultLayout()
+    {
+        var choice = DefaultLayoutChoice();
+        _dock.Reset(choice?.Layout);
+        FinishRecordingUnlessShown();
+        choice?.Then?.Invoke();
+        _viewModel.StatusText = $"Layout reset to {choice?.Name ?? DefaultLayoutName}.";
+    }
+
+    /// <summary>A card's pill clicked (5.4D): its layout is the one HandPeg opens in from now on, saved at once; the cards drawn again with the ★ on it.</summary>
+    private void SetDefaultLayout(LayoutChoice choice)
+    {
+        _viewModel.SavePaneLayout(s => s.DefaultStartupLayout = LayoutKey(choice));
+        RemakeLayoutCards();
+        _viewModel.StatusText = $"Default layout: {choice.Name}. HandPeg opens in it, and Reset Layout puts it back.";
+    }
+
+    /// <summary>
+    /// The cards drawn again with the selector open (the Default layout changed, a layout deleted). From the keyboard, the keyboard is kept on
+    /// the card it was on; from the pointer, it goes back where it was before the selector opened (<see cref="LeaveSelectorToPointer"/>).
+    /// </summary>
+    private void RemakeLayoutCards()
+    {
+        var focused = LayoutCards.Children.OfType<Button>().ToList().FindIndex(c => c.IsKeyboardFocusWithin);
+        _cardsKey = null;
+        _remakingCards = true;
+        try
+        {
+            MakeLayoutCards();
+        }
+        finally
+        {
+            _remakingCards = false;
+        }
+
+        if (!FromKeyboard)
+            LeaveSelectorToPointer();
+        else if (focused >= 0 && LayoutCards.Children.Count > 0)
+            (LayoutCards.Children[Math.Min(focused, LayoutCards.Children.Count - 1)] as Button)?.Focus();
+    }
+
+    // The cards being drawn again (RemakeLayoutCards): the card with the keyboard taken out is no move of the keyboard off the cards.
+    private bool _remakingCards;
+
+    // What had the keyboard as the Layout Selector opened (OpeningLayoutSelector), to give it back after a click in the selector.
+    private IInputElement? _focusBeforeSelector;
+
+    /// <summary>Whether what is being done now came from the keyboard (Enter or Space on a pill, a CheckBox, the Layout button), not the pointer, a touch or a pen.</summary>
+    private static bool FromKeyboard => InputManager.Current.MostRecentInputDevice is KeyboardDevice;
+
+    /// <summary>
+    /// After a click with the pointer on a pill, a "×" or the footer's CheckBox (5.4D): the keyboard goes back where it was before the selector
+    /// opened (nothing has it when that is gone), and the selector lets go, so the pointer leaving it closes it again (HoverFlyout holds it
+    /// open while it has the keyboard).
+    /// </summary>
+    private void LeaveSelectorToPointer()
+    {
+        if (!(_focusBeforeSelector is UIElement { IsVisible: true } before && !before.IsDescendantOf(LayoutSelectorPanel) && before.Focus()))
+            Keyboard.ClearFocus();
+        _layoutHover.Release();
     }
 
     /// <summary>The first-run window opened again from the settings: the layout chosen there, put on at once.</summary>
     public void ApplyFirstRunLayout()
     {
         if (TakeFirstRunLayout() is { } json && DockLayoutState.Read(json) is { } layout)
+        {
             _dock.Apply(_dock.Prepared(layout));
+            FinishRecordingUnlessShown();
+        }
     }
 
     /// <summary>The user's own layouts, by place.</summary>
@@ -207,141 +353,106 @@ public partial class MainWindow
         .Select(s => DockLayoutState.Read(s.Layout) is { } layout ? new LayoutChoice(s.Name, $"Your layout, kept in place {s.Slot}.", layout, s.Slot) : null)
         .OfType<LayoutChoice>();
 
-    // ----- The menu (a click on the Layout button) -----
+    // ----- Opening the Layout Selector (5.4D: a click as well as resting on the button; its menu retired) -----
 
-    /// <summary>A click on the Layout button: its menu, beside it. A click on it while the menu is open closes it (CloseLayoutMenuOnPress).</summary>
+    /// <summary>
+    /// A click on the Layout button: the Layout Selector, when it is not open already (a click usually lands after resting on the button
+    /// has opened it, so it never closes it: Escape and the pointer leaving it do). Enter or Space (a click from the keyboard) opens it with
+    /// its first card chosen, as Down does.
+    /// </summary>
     private void LayoutButton_Click(object sender, RoutedEventArgs e)
     {
-        _layoutHover.Close();
-        if (sender is FrameworkElement button)
-            OpenLayoutMenu(button);
-    }
-
-    /// <summary>The menu: its rows made for the layouts, the side window's tick, and its place beside the button clicked.</summary>
-    private void OpenLayoutMenu(FrameworkElement host)
-    {
-        UpdateSideWindowCheck();
-        FillLayoutRows(BuiltInLayoutRows, BuiltInLayouts());
-        var saved = SavedLayoutChoices().ToList();
-        FillLayoutRows(SavedLayoutRows, saved);
-        SavedLayoutsTitle.Visibility = saved.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-
-        PlaceHeaderFlyout(LayoutFlyout, host);
-        _layoutMenuFrom = host;
-        LayoutFlyout.IsOpen = true;
-    }
-
-    // The button the menu was opened from, to give the keyboard back to when it closes by Escape.
-    private FrameworkElement? _layoutMenuFrom;
-
-    /// <summary>Closes the menu (a choice made in it, Escape, a press anywhere else in the window, the window left).</summary>
-    private void CloseLayoutMenu() => LayoutFlyout.IsOpen = false;
-
-    /// <summary>
-    /// A press in the window while the menu is open closes it (the menu is a window of its own: presses on it never come
-    /// here, nor do those on a saved layout's right-click menu). A press on the Layout button closes it and is kept from
-    /// opening it again, so the button opens and closes its menu.
-    /// </summary>
-    private void CloseLayoutMenuOnPress(object sender, MouseButtonEventArgs e)
-    {
-        if (!LayoutFlyout.IsOpen)
+        if (sender is not FrameworkElement button)
             return;
 
-        CloseLayoutMenu();
-        if (LayoutButton.IsMouseOver)
-            e.Handled = true;
-    }
-
-    /// <summary>A row for each layout: a click takes it up; one of the user's own can be deleted from its right-click menu.</summary>
-    private void FillLayoutRows(Panel rows, IEnumerable<LayoutChoice> choices)
-    {
-        rows.Children.Clear();
-        foreach (var choice in choices)
-        {
-            var row = new Button { Content = choice.Name, ToolTip = choice.About };
-            AutomationProperties.SetName(row, choice.Name);
-            row.Click += (_, _) =>
-            {
-                CloseLayoutMenu();
-                TakeUpLayout(choice);
-            };
-            if (choice.Slot is { } slot)
-            {
-                var delete = new MenuItem { Header = $"Delete \"{choice.Name}\"" };
-                delete.Click += (_, _) => DeleteSavedLayout(slot);
-                row.ContextMenu = new ContextMenu { Items = { delete } };
-            }
-
-            rows.Children.Add(row);
-        }
-    }
-
-    private void TakeUpLayout(LayoutChoice choice)
-    {
-        _dock.Apply(_dock.Prepared(choice.Layout));
-        _viewModel.StatusText = $"Layout: {choice.Name}.";
-    }
-
-    private void LayoutFlyout_KeyDown(object sender, KeyEventArgs e)
-    {
-        if (e.Key != Key.Escape)
-            return;
-
-        CloseLayoutMenu();
-        _layoutMenuFrom?.Focus();
-        e.Handled = true;
+        if (FromKeyboard)
+            OpenLayoutSelectorOnFirstCard(button);
+        else if (!LayoutSelector.IsOpen)
+            _layoutHover.Open(button);
     }
 
     /// <summary>
-    /// From the keyboard: Down on the Layout button opens the Layout Selector with its first card chosen (a card with
-    /// the keyboard is shown as one under the pointer is); the menu key opens the menu with its first row chosen. Enter
-    /// and Space click it (the menu).
+    /// From the keyboard: Down or the menu key on the Layout button opens the Layout Selector (when it is not open) with its first card
+    /// chosen (a card with the keyboard is shown as one under the pointer is). Enter and Space click it (the same). Escape closes it, the
+    /// keyboard still on the button.
     /// </summary>
     private void LayoutButton_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (e.Key == Key.Escape && LayoutSelector.IsOpen)
+        {
+            _layoutHover.Close();
+            e.Handled = true;
+            return;
+        }
+
         if (e.Key is not (Key.Down or Key.Apps) || sender is not FrameworkElement button)
             return;
 
-        if (e.Key == Key.Down)
-        {
-            _layoutHover.Open(button);
-            Dispatcher.BeginInvoke(() => LayoutCards.Children.OfType<Button>().FirstOrDefault()?.Focus(), System.Windows.Threading.DispatcherPriority.Input);
-        }
-        else
-        {
-            _layoutHover.Close();
-            OpenLayoutMenu(button);
-            Dispatcher.BeginInvoke(() => LayoutFlyoutPanel.MoveFocus(new TraversalRequest(FocusNavigationDirection.First)), System.Windows.Threading.DispatcherPriority.Input);
-        }
-
+        OpenLayoutSelectorOnFirstCard(button);
         e.Handled = true;
+    }
+
+    /// <summary>The Layout Selector opened from the keyboard (when it is not open), its first card given the keyboard once it is up.</summary>
+    private void OpenLayoutSelectorOnFirstCard(FrameworkElement button)
+    {
+        if (!LayoutSelector.IsOpen)
+            _layoutHover.Open(button);
+        Dispatcher.BeginInvoke(() => LayoutCards.Children.OfType<Button>().FirstOrDefault()?.Focus(), System.Windows.Threading.DispatcherPriority.Input);
     }
 
     // ----- The user's own layouts -----
 
-    /// <summary>Save Current Layout: the panes as they are now, named, into one of the three places.</summary>
+    /// <summary>
+    /// Save Current Layout (the Layout Selector's footer): the panes as they are now, named, into one of the three places. A layout only
+    /// previewed is put back and the selector closed first, so the modal window never saves a preview (nor opens under an open popup).
+    /// </summary>
     private void SaveCurrentLayout_Click(object sender, RoutedEventArgs e)
     {
-        CloseLayoutMenu();
+        RestoreLayoutBeforePreview();
+        _layoutHover.Close();
         var kept = AppSettings.Current.SavedLayouts;
         var dialog = new SaveLayoutDialog(kept) { Owner = this };
         if (dialog.ShowDialog() != true)
             return;
 
-        var layout = System.Text.Json.JsonSerializer.Serialize(_dock.Current);
+        var layout = _dock.Save();
         var saved = kept.Where(s => s.Slot != dialog.Slot).Append(new SavedDockLayout { Slot = dialog.Slot, Name = dialog.LayoutName, Layout = layout }).OrderBy(s => s.Slot).ToList();
         _viewModel.SavePaneLayout(s => s.SavedLayouts = saved);
         _cardsKey = null;
-        _viewModel.StatusText = $"Layout saved as \"{dialog.LayoutName}\" (place {dialog.Slot}): the Layout button offers it.";
+
+        // Written over the Default layout's place, it is the Default still (the place is the key, LayoutKey): said, so it is never a surprise.
+        _viewModel.StatusText = AppSettings.Current.DefaultStartupLayout == $"saved:{dialog.Slot}"
+            ? $"Layout saved as \"{dialog.LayoutName}\": your Default layout (place {dialog.Slot}), so HandPeg opens in it and Reset Layout puts it back."
+            : $"Layout saved as \"{dialog.LayoutName}\" (place {dialog.Slot}): the Layout Selector offers it.";
     }
 
+    /// <summary>
+    /// A saved card's "×" (5.4D): the user's own layout in that place deleted, the selector left open and its cards drawn again; the layout
+    /// only previewed is put back first. When it was the Default layout, Standard Editing is the Default again.
+    /// </summary>
     private void DeleteSavedLayout(int slot)
     {
-        CloseLayoutMenu();
+        RestoreLayoutBeforePreview();
         var name = AppSettings.Current.SavedLayouts.FirstOrDefault(s => s.Slot == slot)?.Name;
-        _viewModel.SavePaneLayout(s => s.SavedLayouts = s.SavedLayouts.Where(l => l.Slot != slot).ToList());
-        _cardsKey = null;
-        _viewModel.StatusText = $"Layout \"{name}\" deleted.";
+        var wasDefault = AppSettings.Current.DefaultStartupLayout == $"saved:{slot}";
+        _viewModel.SavePaneLayout(s =>
+        {
+            s.SavedLayouts = s.SavedLayouts.Where(l => l.Slot != slot).ToList();
+            if (wasDefault)
+                s.DefaultStartupLayout = DefaultLayoutName;
+        });
+        RemakeLayoutCards();
+        _viewModel.StatusText = wasDefault ? $"Layout \"{name}\" deleted: HandPeg opens in {DefaultLayoutName} again." : $"Layout \"{name}\" deleted.";
+    }
+
+    /// <summary>The footer's "Each project tab remembers its own layout" (5.4D; the same setting as the Settings window's): saved at once.</summary>
+    private void PerTabLayoutsBox_Click(object sender, RoutedEventArgs e)
+    {
+        var on = PerTabLayoutsBox.IsChecked == true;
+        _viewModel.SavePaneLayout(s => s.PerTabWindowLayouts = on);
+        _viewModel.StatusText = on ? "Each project tab remembers its own layout." : "Every project tab shares the window's layout.";
+        if (!FromKeyboard)
+            LeaveSelectorToPointer();
     }
 
     // ----- The Layout Selector -----
@@ -364,12 +475,16 @@ public partial class MainWindow
     /// </summary>
     private void OpeningLayoutSelector()
     {
-        CloseLayoutMenu();
+        _focusBeforeSelector = Keyboard.FocusedElement;
         _layoutBeforePreview = _dock.Save();
         _themeBeforePreview = ThemeManager.Current;
         (_previewing, _layoutKept, _themeKept) = (-1, false, false);
         MakeLayoutCards();
         MakeThemeCards();
+
+        // The footer (5.4D): the setting as it is now (the Settings window sets it too), and a row for each side window open.
+        PerTabLayoutsBox.IsChecked = AppSettings.Current.PerTabWindowLayouts;
+        UpdateSideWindowCheck();
         PlaceLayoutSelector(_layoutHover.OpenedFrom);
     }
 
@@ -396,7 +511,11 @@ public partial class MainWindow
         // (DockManager.SameShape: the panes in the same splits and groups, however wide each part was dragged).
         var inUse = DockLayoutState.Read(_layoutBeforePreview) ?? _dock.Current;
         var active = _cardLayouts.Select(l => DockManager.SameShape(l, inUse)).ToList();
-        var key = string.Join("", active.Select(a => a ? '1' : '0')) + "|" + string.Join("|", _cardLayouts.Select(l => System.Text.Json.JsonSerializer.Serialize(l))) + "|" + string.Join(",", choices.Select(c => c.Name))
+
+        // The Default layout's card (5.4D): its key, as AppSettings.DefaultStartupLayout has it (and so in the cards' key, below).
+        var defaultKey = DefaultLayoutChoice() is { } chosen ? LayoutKey(chosen) : null;
+        var key = string.Join("", active.Select(a => a ? '1' : '0')) + "|" + string.Join("|", _cardLayouts.Select(l => System.Text.Json.JsonSerializer.Serialize(l, AppSettingsJsonContext.Default.DockLayoutState)))
+            + "|" + string.Join(",", choices.Select(c => c.Name)) + "|" + defaultKey
             + "|" + string.Join(",", _viewModel.IsMediaBrowserVisible, _viewModel.ShowKeyframesPane, _viewModel.ShowEffectsPane,
                 _viewModel.IsArrangeActive, _viewModel.ShowAdvancedPlayback, _viewModel.ShowPresetBarAtTop, _viewModel.ShowCommandPreviewTab)
             + "|" + string.Join(",", new[] { part, band, text, accent }.Select(b => (b as SolidColorBrush)?.Color.ToString()));
@@ -414,6 +533,40 @@ public partial class MainWindow
                 Child = new Image { Source = _dock.Miniature(_cardLayouts[i], new Size(CardPictureWidth, CardPictureHeight), part, band, text, accent), Width = CardPictureWidth, Height = CardPictureHeight },
             };
             picture.SetResourceReference(Border.BackgroundProperty, "WindowBackgroundBrush");
+
+            // Its pill at the picture's top right (5.4D): "★ Default" on the Default layout, always shown; "☆ Set Default" on the others, and
+            // "×" on the user's own, while the card is pointed at or has the keyboard. Their clicks are their own (Handled), never the card's.
+            var isDefault = LayoutKey(choice) == defaultKey;
+            var pills = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 5, 5, 0) };
+            var pill = new Button
+            {
+                Content = isDefault ? "★ Default" : "☆ Set Default", Tag = isDefault ? "default" : null,
+                ToolTip = isDefault ? $"{choice.Name} is your Default layout: HandPeg opens in it, and Reset Layout puts it back." : $"Make {choice.Name} your Default layout: HandPeg opens in it, and Reset Layout puts it back.",
+            };
+            pill.SetResourceReference(StyleProperty, "LayoutPill");
+            AutomationProperties.SetName(pill, isDefault ? $"{choice.Name}: the Default layout" : $"Set {choice.Name} as the Default layout");
+            pill.Click += (_, e) =>
+            {
+                e.Handled = true;
+                if (!isDefault)
+                    SetDefaultLayout(choice);
+            };
+            pills.Children.Add(pill);
+            Button? delete = null;
+            if (choice.Slot is { } place)
+            {
+                delete = new Button { Content = "×", ToolTip = $"Deletes your layout \"{choice.Name}\" (place {place})." };
+                delete.SetResourceReference(StyleProperty, "LayoutPill");
+                AutomationProperties.SetName(delete, $"Delete {choice.Name}");
+                delete.Click += (_, e) =>
+                {
+                    e.Handled = true;
+                    DeleteSavedLayout(place);
+                };
+                pills.Children.Add(delete);
+            }
+
+            var face = new Grid { Children = { picture, pills } };
             var name = new TextBlock { Text = choice.Name, FontWeight = FontWeights.SemiBold, Margin = new Thickness(2, 6, 2, 0), TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = CardPictureWidth + 4 };
             var kind = new TextBlock { Text = choice.Slot is { } slot ? $"Saved, place {slot}" : "Built-in", Margin = new Thickness(2, 1, 2, 0), FontSize = 11 };
             kind.SetResourceReference(TextBlock.ForegroundProperty, "MutedTextBrush");
@@ -422,14 +575,30 @@ public partial class MainWindow
                 footer.Children.Add(InUseBadge());
             footer.Children.Add(kind);
 
-            var card = new Button { Content = new StackPanel { Children = { picture, name, footer } }, ToolTip = active[i] ? $"In use. {choice.About}" : choice.About };
+            var card = new Button { Content = new StackPanel { Children = { face, name, footer } }, ToolTip = active[i] ? $"In use. {choice.About}" : choice.About };
             card.SetResourceReference(StyleProperty, "LayoutCard");
             card.Tag = active[i] ? "active" : null;
-            AutomationProperties.SetName(card, active[i] ? $"{choice.Name} (in use)" : choice.Name);
+            var named = isDefault ? $"{choice.Name}, the Default layout" : choice.Name;
+            AutomationProperties.SetName(card, active[i] ? $"{named} (in use)" : named);
             AutomationProperties.SetHelpText(card, choice.About);
-            card.MouseEnter += (_, _) => PreviewLayout(index);
+            void ShowPills()
+            {
+                var pointed = card.IsMouseOver || card.IsKeyboardFocusWithin;
+                pill.Visibility = isDefault || pointed ? Visibility.Visible : Visibility.Hidden;
+                if (delete is not null)
+                    delete.Visibility = pointed ? Visibility.Visible : Visibility.Collapsed;
+            }
+
+            ShowPills();
+            card.MouseEnter += (_, _) =>
+            {
+                ShowPills();
+                PreviewLayout(index);
+            };
+            card.MouseLeave += (_, _) => ShowPills();
+            card.IsKeyboardFocusWithinChanged += (_, _) => ShowPills();
             card.GotKeyboardFocus += (_, _) => PreviewLayout(index);
-            card.Click += (_, _) => KeepLayout(index, choice.Name);
+            card.Click += (_, _) => KeepLayout(index, choice);
             LayoutCards.Children.Add(card);
         }
     }
@@ -567,8 +736,8 @@ public partial class MainWindow
         _dock.Preview(_cardLayouts[index]);
     }
 
-    /// <summary>A card clicked: its layout is kept (it is already laid out) and saved.</summary>
-    private void KeepLayout(int index, string name)
+    /// <summary>A card clicked: its layout is kept (it is already laid out) and saved, and what it sets besides is set (the preview set nothing).</summary>
+    private void KeepLayout(int index, LayoutChoice choice)
     {
         if (index >= _cardLayouts.Count)
             return;
@@ -576,12 +745,35 @@ public partial class MainWindow
         _layoutKept = true;
         _previewing = index;
         _dock.Apply(_cardLayouts[index]);
+        FinishRecordingUnlessShown();
+        choice.Then?.Invoke();
         _layoutHover.Close();
-        _viewModel.StatusText = $"Layout: {name}.";
+        _viewModel.StatusText = $"Layout: {choice.Name}.";
     }
 
     /// <summary>The pointer left the cards: the panes as they were.</summary>
     private void LayoutCards_MouseLeave(object sender, MouseEventArgs e) => RestoreLayoutBeforePreview();
+
+    /// <summary>
+    /// The keyboard left the cards (5.4D: Tab to the footer, a click elsewhere) with the selector still open: the panes as they were, as when
+    /// the pointer leaves them, so nothing done next (+ New Side Window, a side window closed) saves a layout only previewed. Not while the
+    /// cards are drawn again, nor while the pointer is on them (the card under it is the one shown).
+    /// </summary>
+    private void LayoutCards_IsKeyboardFocusWithinChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (e.NewValue is false && LayoutSelector.IsOpen && !_remakingCards && !LayoutCards.IsMouseOver)
+            RestoreLayoutBeforePreview();
+    }
+
+    /// <summary>The window no longer the active one (5.4D, Alt+Tab): a layout only previewed put back, and the Layout Selector closed (it is topmost).</summary>
+    private void CloseLayoutSelectorOnDeactivated()
+    {
+        if (!LayoutSelector.IsOpen)
+            return;
+
+        RestoreLayoutBeforePreview();
+        _layoutHover.Close();
+    }
 
     private void RestoreLayoutBeforePreview()
     {
@@ -609,6 +801,6 @@ public partial class MainWindow
     {
         RestoreLayoutBeforePreview();
         RestoreThemeBeforePreview();
-        (_layoutBeforePreview, _previewing, _themeBeforePreview) = (null, -1, null);
+        (_layoutBeforePreview, _previewing, _themeBeforePreview, _focusBeforeSelector) = (null, -1, null, null);
     }
 }

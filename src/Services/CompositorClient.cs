@@ -176,7 +176,10 @@ public sealed class CompositorClient : IDisposable
         _wake.Set();
     }
 
-    /// <summary>The frame cache's budget: 0 automatic, -1 off, else bytes (AppSettings.GpuFrameCacheMb). Read by the worker on its next turn.</summary>
+    /// <summary>
+    /// The most the frame cache may hold: 0 automatic (the hardware's ceiling, grown to on demand), -1 off, else bytes, which cap the
+    /// growth (AppSettings.GpuFrameCacheMb, 5.4D-TabPerf). Read by the worker on its next turn.
+    /// </summary>
     public long FrameCacheBudget
     {
         get => Volatile.Read(ref _shared.Control.CacheBudgetRequest);
@@ -217,8 +220,8 @@ public sealed class CompositorClient : IDisposable
     /// <summary>
     /// Waits up to <paramref name="milliseconds"/> for the frame of <paramref name="sequence"/> (published with
     /// <see cref="FrameSceneHeader.FlagReadback"/>) to be read back, then copies it into <paramref name="into"/>: its BGRA8 rows
-    /// (width x height x 4), or NV12's two planes with <see cref="FrameSceneHeader.FlagReadbackNv12"/>
-    /// (<see cref="CompositorProtocol.Nv12Bytes"/>). False on a timeout, or when <paramref name="into"/> is too small.
+    /// (width x height x 4), NV12's two planes with <see cref="FrameSceneHeader.FlagReadbackNv12"/>
+    /// (<see cref="CompositorProtocol.Nv12Bytes"/>), or P010's with <see cref="FrameSceneHeader.FlagReadbackP010"/> (<see cref="CompositorProtocol.P010Bytes"/>). False on a timeout, or when <paramref name="into"/> is too small.
     /// </summary>
     public bool TryReadback(long sequence, Span<byte> into, out int width, out int height, int milliseconds) =>
         TryReadback(sequence, into, out width, out height, milliseconds, abort: null);
@@ -239,7 +242,9 @@ public sealed class CompositorClient : IDisposable
             return false;
 
         (width, height) = (control.ReadbackWidth, control.ReadbackHeight);
-        var bytes = control.ReadbackRowBytes == width * 4 ? (long)width * height * 4 : CompositorProtocol.Nv12Bytes(width, height);
+        // BGRA8 rows, P010's (two bytes a sample, 5.4B), or NV12's: the row's bytes say which.
+        var bytes = control.ReadbackRowBytes == width * 4 ? (long)width * height * 4
+            : control.ReadbackRowBytes == width * 2 ? CompositorProtocol.P010Bytes(width, height) : CompositorProtocol.Nv12Bytes(width, height);
         if (bytes <= 0 || into.Length < bytes || _readbackView is not { } view || bytes > view.Capacity)
             return false;
         unsafe
@@ -286,8 +291,65 @@ public sealed class CompositorClient : IDisposable
         return true;
     }
 
-    /// <summary>Empties Instant Seek's frame cache (Settings' Clear): its video memory goes back at once.</summary>
-    public void ClearFrameCache() => Send(CompositorCommand.ClearCache);
+    /// <summary>
+    /// Empties Instant Seek's frame cache (Settings' Clear, a project closed): its video memory goes back at once and its budget is back at
+    /// the baseline. A tab put behind sends none (the TabPerf follow-up): its <see cref="TrimWorker"/> empties the cache where the card
+    /// wants it. A counted request (5.4D-TabPerf): a command left after it (a recovery's Redraw) cannot drop it.
+    /// Returns the request's number (<see cref="ControlBlock.ClearsDone"/> reaches it once served).
+    /// </summary>
+    public int ClearFrameCache()
+    {
+        var request = Interlocked.Increment(ref _shared.Control.ClearRequests);
+        _wake.Set();
+        return request;
+    }
+
+    /// <summary>
+    /// Has the worker give back what it holds (5.4D-TabPerf; a tab put behind, Settings' Clear): the cache's free list, its working
+    /// textures and the renderer's kept ones, the readback's staging, the driver's kept allocations, and its own heap; on unified memory or
+    /// a small card the cached frames too, which a big card keeps for the tab brought back (the TabPerf follow-up, the user's X1:
+    /// CompositorWorker.TrimEmptiesCache). Served between frames on the worker's next turn, but for handing the memory back to Windows
+    /// (the driver's Trim and the heap: CompositorWorker.GiveBack), which waits until nothing has been asked of the worker for a quarter of a
+    /// second and nothing plays, and is echoed then; a counted request, never lost to a later command. Returns the request's number for
+    /// <see cref="WaitForTrim"/>.
+    /// </summary>
+    public int TrimWorker()
+    {
+        var request = Interlocked.Increment(ref _shared.Control.TrimRequests);
+        _wake.Set();
+        return request;
+    }
+
+    /// <summary>Waits up to <paramref name="milliseconds"/> until trim <paramref name="request"/> (from <see cref="TrimWorker"/>) is served: tests and tools.</summary>
+    public bool WaitForTrim(int request, int milliseconds) => WaitForCount(ref _shared.Control.TrimsDone, request, milliseconds);
+
+    /// <summary>Waits up to <paramref name="milliseconds"/> until clear <paramref name="request"/> (from <see cref="ClearFrameCache"/>) is served: tests and tools.</summary>
+    public bool WaitForClear(int request, int milliseconds) => WaitForCount(ref _shared.Control.ClearsDone, request, milliseconds);
+
+    private bool WaitForCount(ref int done, int request, int milliseconds)
+    {
+        var clock = Stopwatch.StartNew();
+        while (Volatile.Read(ref done) - request < 0)
+        {
+            if (_disposed || clock.ElapsedMilliseconds > milliseconds)
+                return false;
+            Thread.Sleep(5);
+        }
+
+        return true;
+    }
+
+    /// <summary>The worker's private bytes as it last published them (every 2 s and after a trim; 0 before its first): Settings' readout, tools.</summary>
+    public long WorkerPrivateBytes => Volatile.Read(ref _shared.Control.WorkerPrivateBytes);
+
+    /// <summary>What the cache's free list holds (bytes): retired frames kept for reuse, which <see cref="FrameCacheStats.Bytes"/> leaves out.</summary>
+    public long CacheFreeBytes => Volatile.Read(ref _shared.Control.CacheFreeBytes);
+
+    /// <summary>The most the cache's budget may grow to now (bytes): the hardware's ceiling, or Settings' maximum when lower (5.4D-TabPerf).</summary>
+    public long CacheMaximumBytes => Volatile.Read(ref _shared.Control.CacheMaximumBytes);
+
+    /// <summary>The hardware's ceiling now (bytes): what Auto grows to at most.</summary>
+    public long CacheCeilingBytes => Volatile.Read(ref _shared.Control.CacheCeilingBytes);
 
     /// <summary>Decode threads (0 automatic); read when a worker starts.</summary>
     public int DecodeThreads

@@ -365,12 +365,8 @@ public partial class SettingsWindow : Window
         _settings.Theme = ThemeManager.Normalize(_settings.Theme);
         ThemeBox.SelectedItem = _settings.Theme;
 
-        // The graphics cards there are now; a card chosen earlier that has since gone is Automatic again.
+        // The graphics cards there are now: the four roles' lists (the Export GPU's among them, 5.4C: filled there alone).
         var adapters = GpuAdapters.All;
-        if (adapters.All(a => a.Index != _settings.HardwareDecodeAdapter))
-            _settings.HardwareDecodeAdapter = GpuAdapter.Automatic.Index;
-        DecodeAdapterBox.ItemsSource = adapters.Prepend(GpuAdapter.Automatic).ToList();
-        DecodeAdapterBox.SelectedValue = _settings.HardwareDecodeAdapter;
         InitializeGpuRoles(adapters);
         InitializeGpuEngine();
 
@@ -399,7 +395,7 @@ public partial class SettingsWindow : Window
 
         PresetBarBox.ItemsSource = AppSettings.PresetBarLocations;
         if (!AppSettings.PresetBarLocations.Contains(_settings.PresetBarLocation))
-            _settings.PresetBarLocation = AppSettings.PresetBarInSummary;
+            _settings.PresetBarLocation = AppSettings.PresetBarInExport;
         PresetBarBox.SelectedItem = _settings.PresetBarLocation;
 
         WhisperModelBox.ItemsSource = models;
@@ -426,8 +422,8 @@ public partial class SettingsWindow : Window
         // The rest of the default encoding settings: each list leads with HandPeg's own default.
         static List<Choice> With(string builtIn, IEnumerable<string> values) => [new Choice("", builtIn), .. values.Select(v => new Choice(v, v))];
         DefaultContainerBox.ItemsSource = With("Built-in default (mp4)", viewModel.Containers);
-        DefaultRateControlBox.ItemsSource = With("Built-in default", viewModel.RateControls);
-        DefaultFramerateBox.ItemsSource = With("Built-in default (same as source)", viewModel.Framerates);
+        DefaultRateControlBox.ItemsSource = With("Built-in default (VBR)", viewModel.RateControls);
+        DefaultFramerateBox.ItemsSource = With("Built-in default (match project settings)", viewModel.Framerates);
         DefaultMergeBox.ItemsSource = new List<Choice> { new("", "As the mode starts"), new("on", "Mix into one track"), new("off", "Keep them apart") };
         (DefaultSampleRateBox.ItemsSource, DefaultChannelsBox.ItemsSource) = (AudioChannelChoice.SampleRates, AudioChannelChoice.Choices);
         _settings.DefaultAudioSampleRate = AudioChannelChoice.NormalizeRate(_settings.DefaultAudioSampleRate);
@@ -482,7 +478,7 @@ public partial class SettingsWindow : Window
         var chosen = DefaultVideoBox.SelectedValue as string ?? "";
         var steps = _viewModel.EncoderPresetsFor(chosen);
         var current = _settings.DefaultEncoderPreset;
-        DefaultEncoderPresetBox.ItemsSource = new List<Choice> { new("", "Built-in default") }.Concat(steps.Select(p => new Choice(p, p))).ToList();
+        DefaultEncoderPresetBox.ItemsSource = new List<Choice> { new("", "Built-in default (slowest, best)") }.Concat(steps.Select(p => new Choice(p, p))).ToList();
         DefaultEncoderPresetBox.SelectedValue = steps.Contains(current) ? current : "";
         DefaultEncoderPresetBox.IsEnabled = steps.Count > 0;
     }
@@ -500,7 +496,7 @@ public partial class SettingsWindow : Window
             (current.VideoEncoder, current.EncoderPreset, current.RateControl, current.TargetBitrate);
         (_settings.DefaultQuality, _settings.DefaultFramerate, _settings.DefaultCustomFramerate, _settings.DefaultTenBit) =
             (current.Quality, current.Framerate, current.CustomFramerate, current.TenBit);
-        (_settings.DefaultHardwareDecoding, _settings.DefaultContainer, _settings.DefaultWebOptimized) = (current.HardwareDecoding, current.Container ?? "", _viewModel.WebOptimized);
+        (_settings.DefaultContainer, _settings.DefaultWebOptimized) = (current.Container ?? "", _viewModel.WebOptimized);
         (_settings.DefaultOutputWidth, _settings.DefaultOutputHeight, _settings.DefaultVerticalVideo) = (current.OutputWidth, current.OutputHeight, current.UseVerticalResolution == true);
         (_settings.DefaultAudioEncoder, _settings.DefaultAudioBitrate, _settings.DefaultMergeAudio, _settings.DefaultNormalizeAudio) =
             (current.AudioEncoder == MainViewModel.CopyOption ? "" : current.AudioEncoder, current.AudioBitrate, current.MergeAudioTracks ? "on" : "off", current.NormalizeAudio);
@@ -512,7 +508,7 @@ public partial class SettingsWindow : Window
     {
         (_settings.DefaultVideoEncoder, _settings.DefaultEncoderPreset, _settings.DefaultRateControl, _settings.DefaultTargetBitrate) = ("", "", "", "");
         (_settings.DefaultQuality, _settings.DefaultFramerate, _settings.DefaultCustomFramerate, _settings.DefaultTenBit) = (null, "", "", false);
-        (_settings.DefaultHardwareDecoding, _settings.DefaultContainer, _settings.DefaultWebOptimized) = (true, "", true);
+        (_settings.DefaultContainer, _settings.DefaultWebOptimized) = ("", true);
         (_settings.DefaultOutputWidth, _settings.DefaultOutputHeight, _settings.DefaultVerticalVideo) = ("", "", false);
         (_settings.DefaultAudioEncoder, _settings.DefaultAudioBitrate, _settings.DefaultMergeAudio, _settings.DefaultNormalizeAudio) = ("", "", "", false);
         (_settings.DefaultAudioSampleRate, _settings.DefaultAudioChannels) = (0, AudioChannelChoice.Stereo);

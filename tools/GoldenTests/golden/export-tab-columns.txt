@@ -1,0 +1,19 @@
+# The Export tab: three inspector cards, every export control once; the Video tab, the Easy cards, -hwaccel and the crop cross are gone.
+ok: the Export tab's middle is ExportColumns: three ExportCard cards, Preset & Format, Quality, Bitrate & Resolution, Audio & Output, in its three columns
+ok: card 1 holds Containers, Container, VideoEncoders, VideoEncoder, WebOptimized, TenBit, CopyBypassWarning, ProjectColorNote, HdrStatusText, HardwareEncoderStatusText
+ok: card 2 holds RateControlChoice, Crf, TargetBitrate, TargetFileSize, EncoderPreset, Framerate, CustomFramerate, ResolutionPreset, OutputWidth, OutputHeight, KeepAspectRatio, UseVerticalResolution, Colorspace, AutoBitrateText, TargetSizeHint, Tune, NvencTune, Profile, Level, NvencMultipass, AmfUsage, Lookahead, NvencSpatialAq, NvencTemporalAq, PixelAspectRatio, CustomPixelAspectRatio, ExtraVideoArguments, ChapterMarkers, ChaptersAtCuts, ChaptersAtMarkers, SponsorBlockMode
+ok: card 3 holds AudioEncoder, AudioBitrate, AudioSampleRate, AudioChannels, MergeAudioTracks, NormalizeAudio, LoudnessTarget, SubtitleTracks, IsExportQualityPreview, ExportQualityPreviewStatus, OutputInfoRows
+ok: each of them is bound by exactly one control in MainWindow.xaml
+ok: the rare options are in card 2's folded "Advanced Codec & Chapter Options" drawer (tune, profile, level, extra options, chapters, SponsorBlock)
+ok: card 3 has the Live Encoded Preview toggle (its glyph and words) and the DestinationBar's slot; nothing is called LivePreview
+ok: the Export Presets selector is in card 1 (or above the tabs), with + Save Current as Preset... and Import / Export Preset...
+ok: the selector lists the grouped view, a header for each group, never following the view's current item (made at idle, it would apply the first preset)
+ok: an ExportCard is the inspector card: its two brushes, a 1 px edge, 6 px corners, 12 px inside
+ok: the brushes are #1E1E22 and #2A2A30, frozen, in App.xaml, and every theme sets them (ThemeManager's look defaults)
+ok: the cards stand side by side while each has 300 px (924 px with the gaps), one over the other below
+ok: the Video tab is retired (its controls are these cards), and nothing is hidden to start with
+ok: MainWindow.xaml names no Easy Social Export, no Hardware Decoding (-hwaccel), no crop cross (Reset Crop, Interactive Crop), no Encoding Presets
+ok: the Audio tab no longer repeats the codec, bitrate, rate, channels, mix and normalize; its Duck Amount stays (inline and folded)
+ok: Interactive Crop and Reset Crop are on a clip's menu (Transform, Sizing & Position > Crop), on the clip
+ok: and their state is gone: no UseEasySocialExport, no DefaultHardwareDecoding, no HardwareDecoding on a preset or the view model, no -hwaccel arguments
+ok: Settings no longer offers Easy Social Export or a Hardware decoding default

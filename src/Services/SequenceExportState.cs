@@ -97,6 +97,12 @@ public sealed record SequenceExportState
     public bool Deinterlace { get; init; }
     public bool Denoise { get; init; }
     public bool TonemapToSdr { get; init; }
+
+    /// <summary>
+    /// 5.4B: an HDR project exported as HDR (10-bit HEVC or AV1 under Match Project Settings): the transfer tagged and kept,
+    /// "smpte2084" (PQ) or "arib-std-b67" (HLG); null for SDR (BT.709, tone-mapped when the project is HDR).
+    /// </summary>
+    public string? HdrTransfer { get; init; }
     public string LutPath { get; init; } = "";
 
     /// <summary>The colour sliders' grade of the whole picture.</summary>
@@ -156,6 +162,9 @@ public sealed record SequenceExportState
     public bool MergeAudioTracks { get; init; }
     public bool NormalizeAudio { get; init; }
 
+    /// <summary>The loudness Normalize aims at, in LUFS (5.4B): -16, the default (ExportSoundPlan.TargetLufs), or -14.</summary>
+    public double LoudnessTargetLufs { get; init; } = Audio.ExportSoundPlan.TargetLufs;
+
     /// <summary>How far a sound set to Auto-Duck is turned down while a voice speaks, in decibels.</summary>
     public double DuckAmountDb { get; init; } = -15;
 
@@ -194,8 +203,7 @@ public sealed record SequenceExportState
     /// <summary>How the command names FFmpeg: a bare "ffmpeg", or the quoted path of the one chosen in the settings.</summary>
     public string FfmpegExecutable { get; init; } = "ffmpeg";
 
-    /// <summary>The options that switch hardware decoding on, with a space after them; empty when it is off.</summary>
-    public string HardwareDecodeArguments { get; init; } = "";
+    // (HardwareDecodeArguments, the dead "-hwaccel auto" no command read, went with the Video tab's switch, 5.4B.)
 
     /// <summary>The video encoder is Copy: the picture is passed through, and no filter can touch it.</summary>
     public bool CopyVideoEncoder { get; init; }

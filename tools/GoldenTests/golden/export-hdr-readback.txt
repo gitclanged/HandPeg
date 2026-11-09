@@ -1,0 +1,4 @@
+# An HDR export's frames read back as P010 (5.4B): BT.2020 non-constant luminance, limited range, 10 bits in the top of 16; NV12 unchanged.
+ok: 7 solid colours read back as P010 within 1 code of BT.2020 non-constant luminance in limited range (Y 64-940, C 64-960), the low 6 bits clear, rows of twice the width
+ok: a gradient read back as P010: every luma code within 1 of the book and more than 180 distinct codes across 1024 pixels (ten bits kept, not eight)
+ok: after P010, an NV12 readback is BT.709 limited range as before (rows of its width) and a BGRA one is its colour (rows of four bytes a pixel)

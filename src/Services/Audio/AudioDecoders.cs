@@ -778,6 +778,23 @@ internal sealed class AudioDecoderPool : IDisposable
         drop?.Dispose();
     }
 
+    /// <summary>
+    /// Disposes every decoder not in use, the pool staying open (a project tab put behind, Pass 5.4A: its files are let go, and
+    /// the next project's are opened afresh as they are asked for). A decoder still with a voice comes back later as usual.
+    /// </summary>
+    public void ReleaseIdle()
+    {
+        List<AudioDecoder> idle;
+        lock (_idle)
+        {
+            idle = [.. _idle];
+            _idle.Clear();
+        }
+
+        foreach (var decoder in idle)
+            decoder.Dispose();
+    }
+
     public void Dispose()
     {
         List<AudioDecoder> all;

@@ -7,7 +7,7 @@ namespace HandPegApp;
 
 /// <summary>
 /// Holds still a time that changes many times a second (the position by the Sequence Overview Scrubber and in the playback
-/// bar, the caption editor's time, the voiceover's count; 5.3.1): its TextBlock's digits all one width (tabular figures),
+/// bar, the Subtitle Studio's time, the Voiceover Studio's count; 5.3.1): its TextBlock's digits all one width (tabular figures),
 /// and the readout never narrower than <see cref="ReserveText"/> in its face (plus <see cref="Spare"/>) nor than the widest
 /// text it has shown, whatever its length (5.3.2: a frame number going from two digits to three above 100 fps, or the format
 /// switched, moved the scrubber beside it), so neither the readout nor what sits beside it moves sideways during playback.

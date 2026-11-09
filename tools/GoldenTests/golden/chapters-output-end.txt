@@ -1,0 +1,4 @@
+# Chapters end with the export (its last picture), not with an audio tail past it.
+ok: a Sequence whose last picture ends at 8 s, its sound running on 1 s past it (an L-cut): 9 s long, 8 s exported
+ok: chapters Part 1 at 0, Part 2 at 4, Middle at 6: none at the last picture's end (8 s, the export's last moment), none for the marker at 8.5 s (past the output)
+ok: the last chapter ends with the export, at 8 s (END=8000), not at the sound's 9 s

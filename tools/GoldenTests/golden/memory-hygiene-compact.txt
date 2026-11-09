@@ -1,0 +1,17 @@
+# One compacting collection once the editor is quiet (5.4D-TabPerf): asks close together are one, never while it is busy, asked again until it is quiet or 2 minutes have gone, on the thread that set IsQuiet.
+ok: five asks close together: a collection follows
+ok: and only one
+ok: not before the wait after the last ask was over
+ok: its reasons, each once: tab closed, tab let go
+ok: while the editor is busy, no collection
+ok: it is asked again, every 200 ms at most
+ok: once it is quiet, the collection follows
+ok: the busy one's
+ok: an editor busy all through the wait: the ask is let go
+ok: and no collection, nor another question, after it (quiet or not)
+ok: with no window to say it is quiet, no collection ever
+ok: an ask from the pool, the window quiet: collected
+ok: the window was asked on its own thread
+ok: the collection ran there too, in the turn that said it was quiet
+ok: what was queued on that thread behind the answer (a Play pressed then) ran only after the collection
+ok: a full collection, the large-object heap compacted by it (its once-only mode used up)

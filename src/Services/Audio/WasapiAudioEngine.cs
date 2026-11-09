@@ -189,6 +189,9 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         Wake();
     }
 
+    /// <summary>The mixer's decoders not in use, disposed (any thread; a project tab put behind, Pass 5.4A: <see cref="AudioMixer.ReleaseIdleDecoders"/>).</summary>
+    public void ReleaseIdleDecoders() => Volatile.Read(ref _mixer)?.ReleaseIdleDecoders();
+
     public void Play()
     {
         Volatile.Write(ref _wantPlaying, 1);

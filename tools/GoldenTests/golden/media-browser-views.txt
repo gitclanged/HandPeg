@@ -1,0 +1,28 @@
+# The Media Browser's Grid, List and Filmstrip views on one list: the preview beside the List from 600 DIPs, columns dropped as it narrows, nothing extra before the first frame.
+ok: BrowserView: Grid, List or Filmstrip by name (any case); empty or unknown, the List where the tile size was a list's (below 8), else the Grid
+ok: the List view's preview: on from 600 DIPs, off below 576 (between, as it was): a splitter dragged across never makes it flicker
+ok: the Filmstrip list: the width kept (240 by default), at most half the pane, at least 180; beside the List's preview, the table keeps 55 % and at least 340
+ok: below 305 DIPs the list's least narrows (300: 175, 280: 155, 265: 140), never under 140; from 305 it is 180 again
+ok: the List view's columns by the row's width: 900 = Resolution Framerate Duration Codec Audio Size; 640 = Resolution Framerate Duration Codec Audio Size; 560 = Resolution Framerate Duration Codec Size; 480 = Resolution Framerate Duration Size; 420 = Resolution Framerate Duration; 350 = Resolution Duration; 300 = Duration; 240 = 
+ok: every column while the name keeps 120 DIPs; then the sound streams and the codec go first, then the size, the frame rate, the resolution, the length
+ok: Grid: the tiles' template and panel, the View box on Grid, no preview
+ok: List: the same list with the details' rows on a virtualizing stack, kept as BrowserView "List", the View box following
+ok: a List 500 DIPs wide has no preview
+ok: widened to 620: the preview on its left, the table 341 wide
+ok: narrowed to 590 it stays; to 570 it goes, the table filling the pane
+ok: 500 DIPs: the sound streams' and the codec's columns dropped (0 wide), the resolution's kept
+ok: Filmstrip: compact rows in a 240 DIP column on the right, a 5 DIP splitter, the preview on the left
+ok: at 400 DIPs the list is half the pane (200), never under 180
+ok: the preview's column keeps at least 120 in the Filmstrip view
+ok: at 265 DIPs: the list 140 (its least there), the preview and cutter 120 beside it, nothing cut (list 140 least 140, preview 120, grid 265)
+ok: a double-click on the splitter puts the list back to 240 DIPs (from 320), kept, and starts no drag (the press handled)
+ok: the preview's buttons at 100 DIPs wrap, Insert under them as "Insert", none cut; at 600 on one line, "Insert at Playhead" at the right
+ok: laid out without a window (no first frame), neither the header nor the preview has been made
+ok: a tile size below 8 is the List view (kept: BrowserTileSize 5)
+ok: and any other the Grid at that size
+ok: out of the Filmstrip view the preview's and the list's columns keep no least width (5.4D)
+ok: the header: eight columns on the rows' own widths (the codec's 0 at 500 DIPs, the resolution's 84)
+ok: made with BrowserView Filmstrip: no preview, cutter, header or stills source in the constructor (made at ContextIdle after the first frame)
+ok: the picker with Filmstrip saved: the Grid, Filmstrip not offered, the dock's title slot left alone
+ok: its List has no preview even at 800 DIPs, Filmstrip asked for is the Grid, and BrowserView is as it was
+ok: the picker never keeps Delete (it has no Project Media)

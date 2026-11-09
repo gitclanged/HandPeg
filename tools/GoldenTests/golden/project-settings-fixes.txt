@@ -1,0 +1,25 @@
+# Project Settings after review: Undo and Redo bring the frame back, only what was changed is sent, the first clip keeps chosen settings, the picker sorts, names never collide.
+ok: a 1920 x 1080 project with clips, wide, 1280 x 720 typed in Export's Resolution
+ok: Project Settings 1080 x 1920: turned tall, Export's Resolution back to Match Project Settings, one step of Undo
+ok: the step carries the frame as it was: wide, 1280 x 720 in the boxes
+ok: Undo: wide again, 1280 x 720 back in the boxes, the natural size and nothing chosen on purpose as before
+ok: Redo: the 9:16 frame again, the boxes blank, chosen on purpose
+ok: and Undo once more: wide, 1280 x 720 (the frame goes with the step both ways)
+ok: every other step carries no frame, and writes none (its packed bytes as before)
+ok: only the sample rate changed (0 x 0, no rate): 44.1 kHz, Export's 1280 x 720 kept, the frame and rate not marked as chosen
+ok: a frame and rate chosen, then only the sample rate: still chosen, still 1080 x 1920 at 60
+ok: the frame emptied and Auto chosen again on an empty Sequence: left to the first clip
+ok: but not once the Sequence has clips
+ok: 4:3 and 44.1 kHz chosen with the frame blank: the first clip gives its size and colour space and keeps them
+ok: Size, descending: the folder first, then 30, 20, 10 bytes
+ok: Name, descending: c, b, a
+ok: and the Browser settings are as they were
+ok: SortedBy: by name ascending, by size either way
+ok: an empty folder offers "New Project"
+ok: with New Project.hproj there: "New Project 2"
+ok: with a portable project's folder New Project 2 there too: "New Project 3"
+ok: a save by a name already in Projects asks once; declined, nothing is written
+ok: with no one to ask, it is refused
+ok: the first save into the studio's folder over a project there asks too, and declined writes nothing
+ok: said yes: it is replaced, and is the open project
+ok: saved again under its own name: nothing asked

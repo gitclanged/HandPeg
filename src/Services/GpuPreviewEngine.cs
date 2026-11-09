@@ -218,9 +218,18 @@ public sealed partial class GpuPreviewEngine : IDisposable
     /// <summary>
     /// Nothing open any more (UI thread; the project closed): the engine as it starts, an empty plan and sound program, no
     /// pointer and no file made ready, so the worker's hints name none of the closed project's files and its decoders are
-    /// let go when idle (DecoderPool.Tidy). Opening something gives it a state again (SetState).
+    /// let go when idle (DecoderPool.Tidy). Opening something gives it a state again (SetState). Instant Seek's frame cache is emptied
+    /// with it (5.4D-TabPerf): the closed project's frames are no other's, and the cache's budget is back at its baseline, to grow again as
+    /// the next project needs.
     /// </summary>
     public void Unload()
+    {
+        Empty();
+        _client.ClearFrameCache();
+    }
+
+    /// <summary>The engine as it starts (UI thread): <see cref="Unload"/> and <see cref="Suspend"/> but for what each does to the worker's frames.</summary>
+    private void Empty()
     {
         Pause();
         Volatile.Write(ref _plan, GpuScenePlan.Empty);
@@ -233,6 +242,49 @@ public sealed partial class GpuPreviewEngine : IDisposable
         Volatile.Write(ref _pointerMoved, Stopwatch.GetTimestamp());
         Invalidate();
     }
+
+    /// <summary>How long after a <see cref="Suspend"/> the sound's idle decoders are let go once more, ms: voices retired by the empty program give theirs back as the feeders finish with them.</summary>
+    private const int ReleaseAgainMs = 1500;
+
+    /// <summary>
+    /// A project tab put behind (UI thread; Pass 5.4A, MainWindow.ProjectTabs.cs): the engine emptied as <see cref="Unload"/> empties it,
+    /// then everything of the project the engine still holds let go at once instead of when idle: every source cleared in the worker's
+    /// table (its decoders disposed at its next turn: GpuResourceBroker.ReleaseAll), the worker trimmed (5.4D-TabPerf: its free frames,
+    /// working textures and readback staging let go of between frames on its next turn, after the sources; the driver's kept allocations
+    /// and its heap handed back to Windows once it is left alone a moment, so a run of quick switches pays for that once:
+    /// CompositorClient.TrimWorker), and the sound's idle decoders disposed, now and once more a moment later.
+    /// Instant Seek's frames are the worker's to keep or not (the TabPerf follow-up, the user's X1: CompositorWorker.TrimEmptiesCache): on
+    /// unified memory or a small card the trim empties the cache (its budget back at its baseline); on a big card the frames stay, the
+    /// least recently used going first as the next tab needs room, and the tab brought back finds its own (DecoderPool's parked sources).
+    /// No clear is sent from here: a full cache let go of texture by texture is the worker's time, never the switch's. The engine, its
+    /// worker and the audio device stay up for the tab that comes to the front, which gives it a state again (SetState). Nothing here
+    /// waits for the worker: the calls leave counted requests.
+    /// </summary>
+    public void Suspend()
+    {
+        Empty();
+        _broker.ReleaseAll();
+        _client.TrimWorker();
+        _audio.ReleaseIdleDecoders();
+        var audio = _audio;
+        _ = Task.Delay(ReleaseAgainMs).ContinueWith(_ =>
+        {
+            try
+            {
+                audio.ReleaseIdleDecoders();
+            }
+            catch (InvalidOperationException)
+            {
+                // The engine stopped meanwhile (an object disposed): its mixer and decoders went with it.
+            }
+        }, TaskScheduler.Default);
+    }
+
+    /// <summary>The newest scene the worker has presented (its sequence number, growing): a still shown over the player waits for one after the scene it was shown with.</summary>
+    public long PresentedScene => Volatile.Read(ref _client.Memory.Control.PresentedSequence);
+
+    /// <summary>Whether the newest scene presented showed every video's exact frame (not a stand-in from the cache).</summary>
+    public bool PresentedExact => Volatile.Read(ref _client.Memory.Control.PresentedExact) != 0;
 
     /// <summary>
     /// The captions the player shows (UI thread): line by line on the sequence clock, their style and text scale (as the
@@ -255,6 +307,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
     /// <summary>Draw again (the window was resized, the DPI changed, a resource arrived).</summary>
     public void Invalidate()
     {
+        Volatile.Write(ref _loopbackStale, 1);
         Volatile.Write(ref _sceneDirty, 1);
         _dirty.Set();
     }
@@ -263,7 +316,17 @@ public sealed partial class GpuPreviewEngine : IDisposable
     public void SetView(double zoomLog2, double panX, double panY)
     {
         (_viewScale, _viewPanX, _viewPanY) = ((float)Math.Pow(2, zoomLog2), (float)panX, (float)panY);
-        Invalidate();
+        InvalidateView();
+    }
+
+    /// <summary>
+    /// Draw again for a change of where the picture lies (zoom, pan, the player resized), not of the picture: the Export Quality
+    /// Preview's content stamp stays, so a paused frame is placed again without being encoded again.
+    /// </summary>
+    public void InvalidateView()
+    {
+        Volatile.Write(ref _sceneDirty, 1);
+        _dirty.Set();
     }
 
     /// <summary>How much the magnifier loupe enlarges, against the player's own scale (the user's bug 6: 400 %).</summary>
@@ -444,6 +507,9 @@ public sealed partial class GpuPreviewEngine : IDisposable
                 if (Interlocked.Exchange(ref _thumbnail, null) is { } thumbnail)
                     CaptureThumbnail(thumbnail);
 
+                // Side windows' Live Video Previews attached or let go (5.4C): made and dropped here, the one thread that presents.
+                TakeMirrorRequests();
+
                 if (_playing)
                 {
                     // Paced by the swap chain: one frame queued at most, so what is drawn now is on screen one refresh on. A
@@ -491,6 +557,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
                         // next turn wakes at the next refresh and a new frame is on screen at the first one after its time.
                         var kept = _viewport.PresentNewest(vsync: true, force: true);
                         (owedTurn, presentedLast) = (!kept, kept);
+                        PresentMirrors();
                         continue;
                     }
 
@@ -506,6 +573,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
                         _ = _client.WaitForFrame(sequence, Math.Max(12, (int)(_refresh * 1000)));
                     owedTurn = !(_viewport.PresentNewest(vsync: true) || _viewport.PresentNewest(vsync: true, force: true));
                     presentedLast = !owedTurn;
+                    PresentMirrors();
                     continue;
                 }
 
@@ -524,6 +592,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
                     if (sequence > 0)
                         _ = _client.WaitForFrame(sequence, Math.Max(12, (int)(_refresh * 1000)));
                     owedTurn = !(_viewport.PresentNewest(vsync: true) || _viewport.PresentNewest(vsync: true, force: true));
+                    PresentMirrors();
                     continue;
                 }
 
@@ -544,6 +613,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
 
                 if (_viewport.HasNewFrame)
                     _viewport.PresentNewest(vsync: false);
+                PresentMirrors();
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
@@ -594,9 +664,88 @@ public sealed partial class GpuPreviewEngine : IDisposable
             (header.LoupeClipKey, header.LoupeKind, header.LoupeZoom) = (loupe, Volatile.Read(ref _loupeKind), LoupeZoom);
         if (header.CanvasWidth <= 0 || header.CanvasHeight <= 0)
             (header.CanvasWidth, header.CanvasHeight) = (1920, 1080);
+        _shownCanvas = (header.CanvasWidth, header.CanvasHeight);
         if (!_sourceView)
+        {
             WriteCamera(ref header, layers);
+            WriteLoopback(ref header);
+        }
+
         return _client.Publish();
+    }
+
+    // ----- Side windows' Live Video Previews (5.4C): mirrors of the player's picture -----
+
+    // Mirrors asked for (true) or let go (false), by native window: taken on the pump's thread (TakeMirrorRequests).
+    private readonly System.Collections.Concurrent.ConcurrentQueue<(bool Attach, nint Window)> _mirrorRequests = new();
+
+    // The mirrors, on the pump's thread only; the canvas the player's picture was last drawn at, and the shape last told.
+    private readonly List<GpuViewportControl> _mirrors = [];
+    private (int Width, int Height) _shownCanvas = (1920, 1080);
+    private double _mirrorAspectTold;
+
+    /// <summary>
+    /// Mirrors the player's picture into a native window (5.4C: a side window's Live Video Preview): from the next turn of the pump on,
+    /// the canvas's part of every frame the player presents is copied there on the card and presented without waiting (a swap chain
+    /// on the player's own device). From any thread; a window already mirrored is left as it is.
+    /// </summary>
+    public void AttachMirror(nint window)
+    {
+        if (window == 0)
+            return;
+        _mirrorRequests.Enqueue((true, window));
+        _dirty.Set();
+    }
+
+    /// <summary>Stops mirroring into a native window (its side window closing, or a Pane Docker now); its swap chain goes on the pump's thread.</summary>
+    public void DetachMirror(nint window)
+    {
+        if (window == 0)
+            return;
+        _mirrorRequests.Enqueue((false, window));
+        _dirty.Set();
+    }
+
+    /// <summary>
+    /// Raised on the pump's thread when the shape the mirrors show changes (the canvas's width over its height, as the player lays
+    /// it): the side windows fit their surfaces to it, so the swap chains' stretch is the same both ways.
+    /// </summary>
+    public event Action<double>? MirrorAspectChanged;
+
+    private void TakeMirrorRequests()
+    {
+        while (_mirrorRequests.TryDequeue(out var request))
+        {
+            var at = _mirrors.FindIndex(m => m.Window == request.Window);
+            if (request.Attach && at < 0)
+            {
+                _mirrors.Add(new GpuViewportControl(_viewport, request.Window));
+                _mirrorAspectTold = 0;
+            }
+            else if (!request.Attach && at >= 0)
+            {
+                _mirrors[at].Dispose();
+                _mirrors.RemoveAt(at);
+            }
+        }
+    }
+
+    /// <summary>Each mirror's turn, after the player's (never waits: GpuViewportControl.PresentMirror), and the shape told when it changed.</summary>
+    private void PresentMirrors()
+    {
+        if (_mirrors.Count == 0)
+            return;
+
+        var (width, height) = _shownCanvas;
+        var aspect = width > 0 && height > 0 ? (double)width / height : 0;
+        if (aspect > 0 && Math.Abs(aspect - _mirrorAspectTold) > 1e-6)
+        {
+            _mirrorAspectTold = aspect;
+            MirrorAspectChanged?.Invoke(aspect);
+        }
+
+        foreach (var mirror in _mirrors)
+            mirror.PresentMirror(width, height);
     }
 
     // ----- The source as it is (a rectangle drawn on it: Interactive Crop, a Draw Target) -----
@@ -696,11 +845,18 @@ public sealed partial class GpuPreviewEngine : IDisposable
 
     // ----- A small picture of the frame for the project file (Pass 5.2D, ProjectThumbnail) -----
 
-    private TaskCompletionSource<(byte[] Bgra, int Width, int Height)?>? _thumbnail;
+    /// <summary>
+    /// A thumbnail asked for, with all it is drawn as (5.4D review: one record, exchanged as a whole, so a request the pump has taken is
+    /// never drawn as a newer one asks, a project's thumbnail never in 3D, a tab's 3D still never flat): what completes it, the plan it
+    /// draws when the player's has fades (the same state without them; null: the player's), the short side asked for, and whether it is
+    /// the picture as the player shows it (5.4D: in the 3D view, a project tab's still).
+    /// </summary>
+    private sealed record ThumbnailRequest(TaskCompletionSource<(byte[] Bgra, int Width, int Height)?> Done, GpuScenePlan? Plan, int ShortSide, bool AsShown);
 
-    // The plan a thumbnail draws when the player's has fades (the same state without them), and the short side asked for.
-    private GpuScenePlan? _thumbnailPlan;
-    private int _thumbnailShortSide = ProjectThumbnail.ShortSide;
+    private ThumbnailRequest? _thumbnail;
+
+    /// <summary>The longest side of a still drawn as it is shown, in pixels (a player many times wider than tall is drawn smaller).</summary>
+    private const int ShownStillLongest = 4096;
 
     /// <summary>How long the pump waits for a thumbnail to be read back, ms: one that takes longer gives none (the save keeps the last one).</summary>
     private const int ThumbnailReadbackMs = 3000;
@@ -712,8 +868,11 @@ public sealed partial class GpuPreviewEngine : IDisposable
     /// thumbnail (ProjectThumbnail). Null at once while playing (no played frame ever waits for one: Law 3) or with nothing loaded, and
     /// null when it could not be drawn in time. Called on the UI thread (a plan without the fades is made there when the player's has
     /// them); drawn on the pump's thread, and completed off both.
+    /// <para>5.4D: with <paramref name="asShown"/> (a project tab's still, MainWindow.ProjectTabs.cs) and the 3D view on, the picture as
+    /// the player shows it: the 3D view where its camera is going, in the player's shape (<see cref="ShownStillSize"/>). The project's own
+    /// thumbnail is never asked for so: it stays flat.</para>
     /// </summary>
-    public Task<(byte[] Bgra, int Width, int Height)?> CaptureThumbnailAsync(int shortSide = ProjectThumbnail.ShortSide)
+    public Task<(byte[] Bgra, int Width, int Height)?> CaptureThumbnailAsync(int shortSide = ProjectThumbnail.ShortSide, bool asShown = false)
     {
         if (_playing || _state is not { } state)
             return Task.FromResult<(byte[] Bgra, int Width, int Height)?>(null);
@@ -734,16 +893,34 @@ public sealed partial class GpuPreviewEngine : IDisposable
             }
         }
 
-        Volatile.Write(ref _thumbnailPlan, unfaded);
-        Volatile.Write(ref _thumbnailShortSide, Math.Max(shortSide, 16));
-        Interlocked.Exchange(ref _thumbnail, request)?.TrySetResult(null);
+        Interlocked.Exchange(ref _thumbnail, new ThumbnailRequest(request, unfaded, Math.Max(shortSide, 16), asShown))?.Done.TrySetResult(null);
         _dirty.Set();
         return request.Task;
     }
 
-    private void CaptureThumbnail(TaskCompletionSource<(byte[] Bgra, int Width, int Height)?> request)
+    /// <summary>Whether a thumbnail asked for is still waiting for the pump (5.4C review): a newer request would give that one none.</summary>
+    public bool IsThumbnailWaiting => Volatile.Read(ref _thumbnail) is not null;
+
+    /// <summary>
+    /// The size of a still drawn as it is shown (5.4D, pure: the goldens' project-tabs-exploded-pose): the player's shape (its pixels;
+    /// the canvas's while it is too small to draw on), the short side <paramref name="shortSide"/> at most (never more than the player's
+    /// own), both sides even, and the long side at most <see cref="ShownStillLongest"/>.
+    /// </summary>
+    internal static (int Width, int Height) ShownStillSize(int viewWidth, int viewHeight, int canvasWidth, int canvasHeight, int shortSide)
     {
-        var unfaded = Interlocked.Exchange(ref _thumbnailPlan, null);
+        var (width, height) = viewWidth < 8 || viewHeight < 8 ? (Math.Max(canvasWidth, 16), Math.Max(canvasHeight, 16)) : (viewWidth, viewHeight);
+        var size = ProjectThumbnail.ThumbnailSize(width, height, shortSide);
+        var longest = Math.Max(size.Width, size.Height);
+        if (longest <= ShownStillLongest)
+            return size;
+
+        var shorter = (int)((long)Math.Min(size.Width, size.Height) * ShownStillLongest / longest);
+        return ProjectThumbnail.ThumbnailSize(width, height, Math.Max(shorter, 2));
+    }
+
+    private void CaptureThumbnail(ThumbnailRequest asked)
+    {
+        var request = asked.Done;
 
         // Asked for while paused and playing by now: none, so that the played frame of this turn is not late for it.
         if (_playing)
@@ -754,7 +931,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
 
         try
         {
-            var plan = unfaded ?? Volatile.Read(ref _plan);
+            var plan = asked.Plan ?? Volatile.Read(ref _plan);
             var at = Math.Min(Position, Math.Max(plan.SequenceSeconds - 0.001, 0));
             _client.ClearScene();
             ref var header = ref _client.Scene;
@@ -762,8 +939,22 @@ public sealed partial class GpuPreviewEngine : IDisposable
             plan.Evaluate(at, ref header, layers);
             header.PlayheadSeconds = at;
 
-            // Smaller than the canvas, in its shape: without a letterbox the compositor stretches the canvas over the output.
-            (header.OutputWidth, header.OutputHeight) = ProjectThumbnail.ThumbnailSize(header.CanvasWidth, header.CanvasHeight, Volatile.Read(ref _thumbnailShortSide));
+            if (asked.AsShown && ShownPose() is { } pose)
+            {
+                // As the player shows it (5.4D): the 3D view in the player's shape, the canvas laid in it as the player lays it.
+                if (header.CanvasWidth <= 0 || header.CanvasHeight <= 0)
+                    (header.CanvasWidth, header.CanvasHeight) = (1920, 1080);
+                var (viewWidth, viewHeight) = _viewport.PixelSize;
+                (header.OutputWidth, header.OutputHeight) = ShownStillSize(viewWidth, viewHeight, header.CanvasWidth, header.CanvasHeight, asked.ShortSide);
+                header.Flags |= FrameSceneHeader.FlagLetterbox;
+                WriteCameraAt(ref header, layers, pose, plan);
+            }
+            else
+            {
+                // Smaller than the canvas, in its shape: without a letterbox the compositor stretches the canvas over the output.
+                (header.OutputWidth, header.OutputHeight) = ProjectThumbnail.ThumbnailSize(header.CanvasWidth, header.CanvasHeight, asked.ShortSide);
+            }
+
             header.Flags |= FrameSceneHeader.FlagExactFrames | FrameSceneHeader.FlagReadback;
             var bytes = (long)header.OutputWidth * header.OutputHeight * 4;
             _client.EnsureReadback(bytes);
@@ -963,7 +1154,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
 
         // A frame or a thumbnail asked for and not drawn (the engine stopped first): none, so that what waits on it goes on.
         Interlocked.Exchange(ref _capture, null)?.TrySetResult(null);
-        Interlocked.Exchange(ref _thumbnail, null)?.TrySetResult(null);
+        Interlocked.Exchange(ref _thumbnail, null)?.Done.TrySetResult(null);
         if (!pumpEnded)
         {
             // Still inside a call that has not returned (a driver hung in a present): nothing it reads is let go under it. The
@@ -977,6 +1168,9 @@ public sealed partial class GpuPreviewEngine : IDisposable
             return;
         }
 
+        foreach (var mirror in _mirrors)
+            mirror.Dispose();
+        _mirrors.Clear();
         _viewport.Dispose();
         _audio.Dispose();
         _broker.Dispose();

@@ -1,0 +1,30 @@
+# A real frame cache at a small scale (5.4D-TabPerf): growth only on thrash, two seconds apart, back to the baseline on Clear; nothing kept that nothing holds.
+a frame cache on this PC's card, a 4 MB baseline, a 12 MB ceiling, 4 MB steps, frames of 384 KB:
+  frames decoded 10 s before the ones that pushed them out, none near a moment of interest: let go of, the budget as it was
+  frames decoded within the last second pushed out: a step, 8 MB
+  thrash again within two seconds of the step: no step, frames let go of
+  thrash two seconds after the step: another, 12 MB (the ceiling)
+  thrash at the ceiling: no step past it, the cache within it
+  frames decoded 30 s ago but within 2 s of the moment shown, pushed out (after those farther went with no step): a step
+  a 6 MB maximum asked for after a step (8 MB): 6 MB
+  Clear: every frame gone, the budget back at 4 MB
+  a frame of a forgotten source inserted after Forget: not kept
+  DropFree: the free list emptied; a frame drawn when cleared kept until let go of, then dropped
+  a big card: the budget at the start 12 MB (the 12 MB ceiling, not the 4 MB baseline)
+  30 frames decoded a moment apart (11.25 MB): all kept, nothing let go of, no step of growth
+  10 more past it: the oldest let go of, the newest kept, within 12 MB, no step
+  a 6 MB maximum asked for: the budget 6 MB at once, the cache within it
+  the texture pool, three textures free: ReleaseUnusedSince(0) leaves 3, ReleaseFree leaves 0 (96 KB)
+  the device's Trim (IDXGIDevice3): called
+a source let go of (a tab put behind) and registered again (the tab brought back), on a real decoder pool:
+  a big card, the file let go of: its frames kept, its serial parked
+  the same file registered again (another id, the path in capitals): its serial taken back, its frames found
+  the same file given its id again: the same serial, its frames found
+  let go of at one id and registered at a lower one in the same change: its serial taken back, its frames found
+  the file written again while let go of: its old frames forgotten, a new serial
+  a file that cannot be read, let go of: forgotten
+  a file on a network share (\\server\share), registered and let go of: never stamped, never parked, forgotten
+  which paths are a network share's: \\server\share\a.mp4 network, //server/share/a.mp4 network, \\?\UNC\server\share\a.mp4 network, \\?\C:\a.mp4 local, \\.\D:\a.mp4 local, C:\a.mp4 local, (none) local
+  a local file's stamp: read on the pool, not the worker's thread; let go of: parked
+  a stamp slow to come back: the worker's turn returns at once, the source waits outside the table; past its grace a fresh serial, the parked frames forgotten
+  unified memory or a small card, the file let go of and registered again: its frames forgotten, a new serial

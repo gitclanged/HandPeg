@@ -682,11 +682,16 @@ public static unsafe class HardwareBenchmark
             : "Background: Auto (there is no second card that decodes).");
 
         static int Score(HardwareBenchmarkAdapter a) => (a.EncodeCodecs.Contains("AV1") ? 4 : 0) + (a.EncodeCodecs.Contains("HEVC") ? 2 : 0) + (a.EncodeCodecs.Contains("H.264") ? 1 : 0);
-        var encoder = working.Where(a => a.EncodeCodecs.Count > 0).OrderByDescending(Score).ThenBy(a => a == compositor ? 1 : 0).ThenBy(a => a.Index).FirstOrDefault();
-        roles.Export = encoder?.Index ?? -1;
-        roles.Reasons.Add(encoder is not null
-            ? $"Export: {encoder.Name} ({string.Join(", ", encoder.EncodeCodecs)} in hardware){(encoder != compositor ? ", leaving the compositor's card free" : "")}."
-            : "Export: Auto (no hardware encoder was listed).");
+        // Since 5.4C the Export GPU is where exports are composited (GpuExport.ExportAdapter), so the compositor's card keeps it on a tie
+        // (a 7900 XTX and an A310 both encode AV1, HEVC and H.264): another card takes it only when it encodes more in hardware, and the
+        // compositor's own card is written as Auto (5.4C review).
+        var encoder = working.Where(a => a.EncodeCodecs.Count > 0).OrderByDescending(Score).ThenBy(a => a == compositor ? 0 : 1).ThenBy(a => a.Index).FirstOrDefault();
+        roles.Export = encoder is not null && encoder != compositor ? encoder.Index : -1;
+        roles.Reasons.Add(encoder is null
+            ? "Export: Auto (no hardware encoder was listed)."
+            : encoder == compositor
+                ? $"Export: Auto, the compositor's card ({string.Join(", ", encoder.EncodeCodecs)} in hardware)."
+                : $"Export: {encoder.Name} ({string.Join(", ", encoder.EncodeCodecs)} in hardware, more than the compositor's card), leaving the compositor's card free.");
         return roles;
     }
 }

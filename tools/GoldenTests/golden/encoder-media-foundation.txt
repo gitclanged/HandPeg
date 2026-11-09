@@ -4,9 +4,10 @@ crf 18 is quality 65
 crf 23 is quality 55
 crf 28 is quality 45
 crf 51 is quality 1
-constant bitrate: -rate_control cbr -b:v 8000k -maxrate 8000k -bufsize 16000k -hw_encoding 1
-average bitrate: -rate_control u_vbr -b:v 8000k -hw_encoding 1
-constant quality: -rate_control quality -quality 55 -hw_encoding 1
+constant bitrate: -rate_control cbr -b:v 8000k -maxrate 8000k -bufsize 16000k -compression_level 100 -hw_encoding 1
+average bitrate: -rate_control u_vbr -b:v 8000k -compression_level 100 -hw_encoding 1
+constant quality: -rate_control quality -quality 55 -compression_level 100 -hw_encoding 1
+the slowest step: -compression_level 100
 8-bit frames are handed over as nv12
 10-bit frames are handed over as p010le
 h264_mf: "H.264 (Media Foundation)", MediaFoundation, hardware True, falls back to libx264
@@ -15,6 +16,10 @@ av1_mf: "AV1 (Media Foundation)", MediaFoundation, hardware True, falls back to 
 h264_mf with a Qualcomm Adreno: "H.264 (Qualcomm Adreno)"
 hevc_mf with a Qualcomm Adreno: "HEVC (Qualcomm Adreno)"
 av1_mf with a Qualcomm Adreno: "AV1 (Qualcomm Adreno)"
-hevc_mf -> libx265: ffmpeg -i in.mp4 -c:v libx265 -preset medium -crf 23 -pix_fmt yuv420p out.mp4
+hevc_mf -> libx265: ffmpeg -i in.mp4 -c:v libx265 -preset veryslow -crf 23 -pix_fmt yuv420p out.mp4
 av1_mf -> libsvtav1: ffmpeg -i in.mp4 -c:v libsvtav1 -crf 23 -pix_fmt yuv420p10le out.mp4
-h264_mf -> libx264: ffmpeg -i in.mp4 -c:v libx264 -preset medium -b:v 8000k -maxrate 8000k -bufsize 16000k out.mp4
+h264_mf -> libx264: ffmpeg -i in.mp4 -c:v libx264 -preset veryslow -b:v 8000k -maxrate 8000k -bufsize 16000k out.mp4
+h264_amf -> libx264: ffmpeg -i in.mp4 -c:v libx264 -preset veryslow -crf 20 -pix_fmt yuv420p out.mp4
+hevc_amf -> libx265: ffmpeg -i in.mp4 -c:v libx265 -preset veryslow -b:v 9000k out.mp4
+h264_nvenc -> libx264: ffmpeg -i in.mp4 -c:v libx264 -preset veryslow -crf 19 out.mp4
+hevc_qsv -> libx265: ffmpeg -i in.mp4 -c:v libx265 -preset veryslow -crf 21 out.mp4

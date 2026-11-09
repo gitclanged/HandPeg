@@ -280,13 +280,35 @@ public partial class MainWindow
     /// <summary>The first file opened with a Game Preset, and those dropped with it after it, in line, each with the Game Preset's template (5.1-DogfoodPolish).</summary>
     private async Task OpenWithStyleAsync(string first, string style, string[] rest)
     {
-        await _viewModel.LoadFileWithStyleAsync(first, style);
+        await OpenNamingTabAsync(first, () => _viewModel.LoadFileWithStyleAsync(first, style));
         await FollowOpenedFileAsync(rest);
     }
 
+    /// <summary>
+    /// A file opened into the tab in front (5.4D-TabPerf): with nothing open in it, the tab takes the file's name as the open begins
+    /// (<see cref="NameTabForOpen"/>), not once the file is probed and open, and holds the name the open leaves as it ends, whichever way
+    /// (its file's; New Project again when it failed).
+    /// </summary>
+    private async Task OpenNamingTabAsync(string file, Func<Task> open)
+    {
+        var named = NameTabForOpen(file);
+        try
+        {
+            await open();
+        }
+        finally
+        {
+            if (named)
+                EndTabOpening();
+        }
+    }
+
     /// <summary>The pictures a drag carries after its first file: what follows it in line when it is opened. Sounds and projects are no such thing.</summary>
-    private static string[] InLineAfterFirst(IDataObject data) =>
-        data.GetData(DataFormats.FileDrop) is string[] { Length: > 1 } files
+    private static string[] InLineAfterFirst(IDataObject data) => data.GetData(DataFormats.FileDrop) is string[] files ? InLineAfter(files) : [];
+
+    /// <summary>The same of a drop's files: those after the first that are neither a sound nor a project.</summary>
+    internal static string[] InLineAfter(IReadOnlyList<string> files) =>
+        files.Count > 1
             ? files.Skip(1).Where(f => !f.EndsWith(ProjectStore.Extension, StringComparison.OrdinalIgnoreCase) && MediaBrowserItem.KindOf(f) != MediaBrowserKind.Audio).ToArray()
             : [];
 
@@ -421,6 +443,14 @@ public partial class MainWindow
 
     private void Window_PreviewDrop(object sender, DragEventArgs e)
     {
+        // A project tab switching (5.4A): what was dropped would land in the outgoing tab after its last write, so it waits.
+        if (_switchingTab)
+        {
+            e.Handled = true;
+            _viewModel.StatusText = "Wait for the project tab to finish switching, then drop it again.";
+            return;
+        }
+
         // Let go on one of the overlay's targets: that target has it. (This handler takes every file dropped on
         // the window before any element sees it, which is why the targets' own Drop was never reached.)
         if (DropOverlay.Visibility == Visibility.Visible && (e.OriginalSource as FrameworkElement)?.DataContext is DropTargetItem item)
@@ -444,87 +474,216 @@ public partial class MainWindow
         ClearDropMark();
         WorkScheduler.HoldBackground(DropHold);
 
-        // A link: opened as the video, or, dropped on the timeline with a video open, downloaded and put there.
+        string[] files = link is not null ? [] : e.Data.GetData(DataFormats.FileDrop) as string[] ?? [dropped!];
+        var place = FindDropPlace(e);
+        var onAudioTab = place is null && _viewModel.HasSource && AudioPanel is { IsVisible: true } panel
+            && e.GetPosition(panel) is var over && over.X >= 0 && over.Y >= 0 && over.X <= panel.ActualWidth && over.Y <= panel.ActualHeight;
+        var hasClips = _viewModel.Document.Tracks.Exists(t => t.Clips.Count > 0);
+        var fromBrowser = e.Data.GetDataPresent(Views.MediaBrowserPane.DragFormat);
+        var onMediaBin = place is null && IsOverMediaBrowser(sender, e);
+        var route = RouteOf(hasClips, _viewModel.HasSource, _viewModel.IsBusy, place is not null, onAudioTab, fromBrowser, link is not null, files, onMediaBin,
+            holdsSomething: !_viewModel.HoldsNothingForTab);
+        var playhead = _viewModel.PositionMs / 1000;
+
+        // A sub-clip dragged out of the Media Browser's cutter (5.4C): only its part of the file goes on the timeline.
+        var range = files.Length == 1 && e.Data.GetDataPresent(Views.MediaBrowserPane.SubClipFormat)
+            ? Views.MediaBrowserPane.ParseSubClip(e.Data.GetData(Views.MediaBrowserPane.SubClipFormat))
+            : null;
+
+        // A link: downloaded (yt-dlp) and put where it was let go, or at the playhead; opened as the video only with nothing on
+        // the Sequence (5.4A: never over an open project).
         if (link is not null)
         {
-            DropLink(e, link);
+            DropLink(link, route, place, playhead);
             return;
         }
 
-        var files = e.Data.GetData(DataFormats.FileDrop) as string[] ?? [dropped!];
+        if (route == DropRoute.None)
+            return;
+
         var file = files[0];
-
-        // Dropped on the timeline, with a video open: the files become clips at the moment they were dropped on, by the
-        // row they were dropped on (see FindDropPlace); on a sound's row, their sound becomes sound clips. Several at once
-        // follow one another on one track, or, let go on a row's header or with Alt held, each go on a track of their
-        // own at the same moment (IsStackDrop).
-        if (FindDropPlace(e) is { } place)
+        switch (route)
         {
-            var stack = IsStackDrop(e, place.OnHeader, files.Length);
-            if (place.Row is { Kind: TimelineRowKind.Audio })
-                DropLater("a drop of sound", () => AddDroppedAudioAsync(files, place.Seconds));
-            else
-                DropLater("a drop of clips", () => AddDroppedLayersAsync(files, place.Seconds, DropTrackOf(place.Row), stack));
-            return;
-        }
-
-        // Dropped on the Audio tab (the sound's settings), with a video open: the files' sound goes onto the timeline, at
-        // the playhead, as sound clips of their own.
-        if (_viewModel.HasSource && AudioPanel is { IsVisible: true })
-        {
-            var at = e.GetPosition(AudioPanel);
-            if (at.X >= 0 && at.Y >= 0 && at.X <= AudioPanel.ActualWidth && at.Y <= AudioPanel.ActualHeight)
-            {
-                var seconds = _viewModel.PositionMs / 1000;
-                DropLater("a drop of sound", () => AddDroppedAudioAsync(files, seconds));
+            // Dropped on the timeline, with a video open: the files become clips at the moment they were dropped on, by the
+            // row they were dropped on (see FindDropPlace); on a sound's row, their sound becomes sound clips. Several at once
+            // follow one another on one track, or, let go on a row's header or with Alt held, each go on a track of their
+            // own at the same moment (IsStackDrop).
+            case DropRoute.TimelinePlace when place is { } on:
+                var stack = IsStackDrop(e, on.OnHeader, files.Length);
+                if (on.Row is { Kind: TimelineRowKind.Audio })
+                    DropLater("a drop of sound", () => AddDroppedAudioAsync(files, on.Seconds, range));
+                else
+                    DropLater("a drop of clips", () => AddDroppedLayersAsync(files, on.Seconds, DropTrackOf(on.Row), stack, range: range));
                 return;
-            }
-        }
 
-        // From the media browser, with a video or project open (4.1.1-B): the files go onto the timeline at
-        // the playhead, wherever they are let go (the player, the Sequence Overview Scrubber, a pane), never over what is open.
-        // A project file is still opened as one.
-        if (_viewModel.HasSource && e.Data.GetDataPresent(Views.MediaBrowserPane.DragFormat)
-            && files.Where(f => !f.EndsWith(ProjectStore.Extension, StringComparison.OrdinalIgnoreCase)).ToArray() is { Length: > 0 } media)
-        {
-            var at = _viewModel.PositionMs / 1000;
-            Dispatcher.BeginInvoke(() => AddFilesToTimeline(media, at));
-            return;
-        }
+            // Dropped on the Audio tab (the sound's settings), with a video open: the files' sound goes onto the timeline, at
+            // the playhead, as sound clips of their own.
+            case DropRoute.AudioTab:
+                DropLater("a drop of sound", () => AddDroppedAudioAsync(files, playhead, range));
+                return;
 
-        // Several files with nothing open: the first is opened and the others follow it, in line.
-        if (!_viewModel.HasSource && !_viewModel.IsBusy && InLineAfterFirst(e.Data) is { Length: > 0 } rest)
-        {
-            DropLater("a drop of several files", async () =>
-            {
-                await _viewModel.LoadFileAsync(file);
-                await FollowOpenedFileAsync(rest);
-            });
-            return;
-        }
+            // Media dropped anywhere else while the Sequence has clips (5.4A, the user's standing rule: the Player, the Canvas,
+            // empty space), or dragged from the media browser with a video or project open (4.1.1-B): the files go onto the timeline
+            // at the playhead (Track 1 or a track of their own, as Settings' New Clips say), never over what is open. Never inside
+            // the drop itself: Explorer waits, frozen, until the drop handler returns. A sub-clip from the cutter: its part.
+            case DropRoute.AddAtPlayhead:
+                var media = PlayheadFiles(files, fromBrowser && _viewModel.HasSource);
+                if (range is { } part && media.Length == 1)
+                    AddSubClip(media[0], playhead, part, sound: false);
+                else
+                    Dispatcher.BeginInvoke(() => AddFilesToTimeline(media, playhead));
+                return;
 
-        // The dialog must not open inside the drop itself: Explorer waits, frozen, until the drop handler returns.
-        Dispatcher.BeginInvoke(() => LoadDroppedFile(file));
+            // Media dropped onto the Media Browser pane (5.4C, the user's standing rule; 5.4D, Q4 b: with nothing open too): the files go
+            // into Project Media (the project's bin, one step of Undo), nothing onto the timeline; the pane shows Project Media with them in it.
+            case DropRoute.AddToProjectMedia:
+                var pooled = PlayheadFiles(files, fromBrowser: false);
+                Dispatcher.BeginInvoke(() =>
+                {
+                    _viewModel.AddToProjectMedia(pooled);
+                    MediaBrowser.ShowProjectMedia();
+                });
+                return;
+
+            // A project dropped while one is open (5.4A), or while the blank window holds something (5.4D review: pooled files, an
+            // undo step): it opens in a Project Tab of its own (or the open tab, while that is empty), never in place of what is open
+            // and never behind a prompt.
+            case DropRoute.OpenProject:
+                DropLater("a dropped project", () => OpenProjectInTabAsync(file));
+                return;
+
+            // Several files with nothing open: the first is opened and the others follow it, in line.
+            case DropRoute.OpenThenFollow:
+                var rest = InLineAfter(files);
+                DropLater("a drop of several files", async () =>
+                {
+                    await OpenNamingTabAsync(file, () => _viewModel.LoadFileAsync(file));
+                    await FollowOpenedFileAsync(rest);
+                });
+                return;
+
+            // The dialog must not open inside the drop itself: Explorer waits, frozen, until the drop handler returns.
+            default:
+                Dispatcher.BeginInvoke(() => LoadDroppedFile(file));
+                return;
+        }
+    }
+
+    /// <summary>Where a file or link dropped on the window goes (5.4A): decided by <see cref="RouteOf"/>, a pure function the golden tests read.</summary>
+    internal enum DropRoute
+    {
+        /// <summary>Nothing that can be opened.</summary>
+        None,
+
+        /// <summary>Onto the timeline where it was let go (FindDropPlace): a row and a moment.</summary>
+        TimelinePlace,
+
+        /// <summary>Onto the timeline at the playhead as sound clips (let go on the Audio tab).</summary>
+        AudioTab,
+
+        /// <summary>Onto the timeline at the playhead, as the Media pane's Add does (AddFilesToTimeline).</summary>
+        AddAtPlayhead,
+
+        /// <summary>Nothing open: the first file opened, the pictures after it following it in line.</summary>
+        OpenThenFollow,
+
+        /// <summary>Opened as the video (LoadDroppedFile): straight away with nothing open, or after the replace prompt.</summary>
+        OpenOrReplace,
+
+        /// <summary>A project opened in a Project Tab (OpenProjectInTabAsync): never in place of the open one.</summary>
+        OpenProject,
+
+        /// <summary>Onto the Media Browser pane (5.4C): into Project Media (TimelineDocument.MediaPool), nothing onto the timeline.</summary>
+        AddToProjectMedia,
     }
 
     /// <summary>
-    /// A link dropped on the window: on the timeline (or the Audio tab), with a video open, it is downloaded (yt-dlp) and
-    /// put there as a dropped file would be; anywhere else it is opened as the video, as if typed into the source box.
+    /// Where a drop goes (5.4A, the user's standing rule: once the Sequence has clips, media dropped anywhere in the window is added
+    /// to its timeline, never opened over it). In order: on the timeline, where it was let go; on the Audio tab, its sound at the
+    /// playhead; on the Media Browser pane (5.4C; 5.4D: with nothing open too), the media files among it into Project Media (a link, and a
+    /// drag from the browser itself, go as anywhere else); with clips on the Sequence, the media files among it at the playhead (a link the
+    /// same, once downloaded), or from the media browser with a video open, every file but a project; a project with something open (or
+    /// held: 5.4D review), in a tab of its own; with nothing open, several files opened one after another; anything else opened as the
+    /// video (the replace prompt when one is open).
     /// </summary>
-    private void DropLink(DragEventArgs e, string link)
+    /// <param name="hasClips">The Sequence has at least one clip.</param>
+    /// <param name="hasSource">A video or project is open (MainViewModel.HasSource).</param>
+    /// <param name="busy">An operation is running (MainViewModel.IsBusy).</param>
+    /// <param name="onTimeline">Let go over the timeline's rows (FindDropPlace found a place).</param>
+    /// <param name="onAudioTab">Let go over the Audio tab, with a video open.</param>
+    /// <param name="fromBrowser">Dragged from the Media pane's browser.</param>
+    /// <param name="isLink">A web address, not files.</param>
+    /// <param name="files">The files dropped (none for a link).</param>
+    /// <param name="onMediaBin">Let go over the Media Browser pane (5.4C), in the window it is in.</param>
+    /// <param name="holdsSomething">
+    /// The tab in front holds something worth keeping with no video open (5.4D review: !MainViewModel.HoldsNothingForTab, files pooled in a
+    /// blank window, say): a project dropped then opens in a tab of its own, as File &gt; Open does, never in place of the pool.
+    /// </param>
+    internal static DropRoute RouteOf(bool hasClips, bool hasSource, bool busy, bool onTimeline, bool onAudioTab, bool fromBrowser, bool isLink, IReadOnlyList<string> files,
+        bool onMediaBin = false, bool holdsSomething = false)
     {
-        var place = FindDropPlace(e);
-        var onAudioTab = place is null && _viewModel.HasSource && AudioPanel is { IsVisible: true } panel
-            && e.GetPosition(panel) is var at && at.X >= 0 && at.Y >= 0 && at.X <= panel.ActualWidth && at.Y <= panel.ActualHeight;
-        if (place is null && !onAudioTab)
+        if (isLink)
+            return onTimeline ? DropRoute.TimelinePlace : onAudioTab ? DropRoute.AudioTab : hasClips ? DropRoute.AddAtPlayhead : DropRoute.OpenOrReplace;
+        if (files.Count == 0)
+            return DropRoute.None;
+        if (onTimeline)
+            return DropRoute.TimelinePlace;
+        if (onAudioTab)
+            return DropRoute.AudioTab;
+        // 5.4D (Q4 b): even with nothing open, a drop on the Media Browser pools its media; a blank window keeps the pool for the project
+        // its first file starts.
+        if (onMediaBin && !fromBrowser && PlayheadFiles(files, fromBrowser: false).Length > 0)
+            return DropRoute.AddToProjectMedia;
+        if ((hasClips || (hasSource && fromBrowser)) && PlayheadFiles(files, fromBrowser && hasSource).Length > 0)
+            return DropRoute.AddAtPlayhead;
+        if ((hasSource || holdsSomething) && !busy && IsProjectFile(files[0]))
+            return DropRoute.OpenProject;
+        if (!hasSource && !busy && InLineAfter(files).Length > 0)
+            return DropRoute.OpenThenFollow;
+        return DropRoute.OpenOrReplace;
+    }
+
+    /// <summary>
+    /// The files of a drop added at the playhead (<see cref="DropRoute.AddAtPlayhead"/>): the media among them (a video, a sound or a
+    /// picture HandPeg reads, MediaBrowserItem.KindOf), and from the media browser (<paramref name="fromBrowser"/>) anything but a project.
+    /// </summary>
+    internal static string[] PlayheadFiles(IReadOnlyList<string> files, bool fromBrowser) =>
+        files.Where(f => MediaBrowserItem.KindOf(f) is not null || (fromBrowser && !IsProjectFile(f))).ToArray();
+
+    /// <summary>
+    /// Whether a drop was let go over the Media Browser pane (5.4C): the pane shown, in the same window as the drop (a side window passes
+    /// its drops to these handlers too, so a pane in another window never counts), the point inside it.
+    /// </summary>
+    private bool IsOverMediaBrowser(object sender, DragEventArgs e)
+    {
+        if (!MediaBrowser.IsVisible || sender is not Visual target
+            || !ReferenceEquals(PresentationSource.FromVisual(target), PresentationSource.FromVisual(MediaBrowser)))
+            return false;
+
+        var over = e.GetPosition(MediaBrowser);
+        return over.X >= 0 && over.Y >= 0 && over.X <= MediaBrowser.ActualWidth && over.Y <= MediaBrowser.ActualHeight;
+    }
+
+    /// <summary>A HandPeg project or bundle (.hproj, .hpb).</summary>
+    internal static bool IsProjectFile(string path) =>
+        path.EndsWith(ProjectStore.Extension, StringComparison.OrdinalIgnoreCase) || path.EndsWith(ProjectBundle.Extension, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// A link dropped on the window: on the timeline (or the Audio tab), with a video open, it is downloaded (yt-dlp) and put there
+    /// as a dropped file would be; elsewhere, with clips on the Sequence, downloaded and put at the playhead (5.4A); with nothing on
+    /// the Sequence, opened as the video, as if typed into the source box.
+    /// </summary>
+    private void DropLink(string link, DropRoute route, (TimelineRow? Row, double Seconds, bool OnHeader)? place, double playhead)
+    {
+        if (route is not (DropRoute.TimelinePlace or DropRoute.AudioTab or DropRoute.AddAtPlayhead))
         {
             Dispatcher.BeginInvoke(() => LoadDroppedFile(link));
             return;
         }
 
-        var audio = onAudioTab || place is { Row.Kind: TimelineRowKind.Audio };
-        var track = place is { } on ? DropTrackOf(on.Row) : null;
-        var seconds = place?.Seconds ?? _viewModel.PositionMs / 1000;
+        var audio = route == DropRoute.AudioTab || place is { Row.Kind: TimelineRowKind.Audio };
+        var track = route == DropRoute.TimelinePlace && place is { } on ? DropTrackOf(on.Row) : null;
+        var seconds = route == DropRoute.TimelinePlace && place is { } at ? at.Seconds : playhead;
         DropLater("a dropped link", async () =>
         {
             if (await _viewModel.DownloadLinkAsync(link) is not { } file)
@@ -554,16 +713,26 @@ public partial class MainWindow
     /// Adds the sound of dropped files to the timeline: audio files, or the audio of videos. Background work is held back
     /// until they are on it (4.3E), and whether the files are there is asked away from the interface.
     /// </summary>
-    private async Task AddDroppedAudioAsync(string[] files, double seconds)
+    /// <param name="range">Only this part of the file (5.4C, a sub-clip from the Media Browser's cutter), in seconds of the file.</param>
+    private async Task AddDroppedAudioAsync(string[] files, double seconds, (double In, double Out)? range = null)
     {
+        // An add under way from the start (5.4D-TabPerf review, P1: the tabs do not change until the last file is in), and none placed
+        // once the project tab it was dropped on has gone behind all the same.
+        using var adding = _viewModel.BeginAdd();
+        var generation = _viewModel.ProjectGeneration;
         using var hold = WorkScheduler.HoldBackground();
         Activate();
         var added = 0;
         foreach (var file in await Task.Run(() => files.Where(File.Exists).ToArray()))
         {
-            if (await _viewModel.AddAudioLayerAsync(file, seconds))
+            if (generation != _viewModel.ProjectGeneration)
+                return;
+            if (await _viewModel.AddAudioLayerAsync(file, seconds, sourceRange: range))
                 added++;
         }
+
+        if (generation != _viewModel.ProjectGeneration)
+            return;
 
         if (added > 1)
             _viewModel.StatusText = $"Added {added} audio clips. Each is mixed into the first audio track; drag a block to move it.";
@@ -584,13 +753,18 @@ public partial class MainWindow
     /// is asked away from the interface.
     /// </summary>
     /// <param name="inLine">The first goes onto the row's track too, whatever Settings say.</param>
-    private async Task AddDroppedLayersAsync(string[] files, double seconds, Layer? row, bool stack = false, bool inLine = false)
+    /// <param name="range">Only this part of a video (5.4C, a sub-clip from the Media Browser's cutter), in seconds of its MediaOffset clock.</param>
+    private async Task AddDroppedLayersAsync(string[] files, double seconds, Layer? row, bool stack = false, bool inLine = false, (double In, double Out)? range = null)
     {
+        // An add under way from the start (5.4D-TabPerf review, P1: the tabs do not change until the last file is in), and none placed
+        // once the project tab it was dropped on has gone behind all the same.
+        using var adding = _viewModel.BeginAdd();
+        var generation = _viewModel.ProjectGeneration;
         using var hold = WorkScheduler.HoldBackground();
         Activate();
         if (!_viewModel.IsVideoReencoded)
         {
-            _viewModel.StatusText = "Clips on other tracks need the video to be encoded: choose a video encoder other than Copy on the Video tab, then drop the file again.";
+            _viewModel.StatusText = "Clips on other tracks need the video to be encoded: choose a video codec other than Copy on the Export tab, then drop the file again.";
             return;
         }
 
@@ -600,6 +774,8 @@ public partial class MainWindow
         var droppedOn = row;
         foreach (var file in existing)
         {
+            if (generation != _viewModel.ProjectGeneration)
+                return;
             if (ImageExtensions.Contains(Path.GetExtension(file).ToLowerInvariant()))
             {
                 if (_viewModel.AddImageLayer(file, at, row))
@@ -607,7 +783,7 @@ public partial class MainWindow
                 continue;
             }
 
-            if (await _viewModel.AddVideoClipAsync(file, at, row, playOnce: videos > 1 || inLine, follows: follows) is not { } clip)
+            if (await _viewModel.AddVideoClipAsync(file, at, row, playOnce: videos > 1 || inLine, follows: follows, sourceRange: range) is not { } clip)
                 continue;
 
             added++;
@@ -621,6 +797,8 @@ public partial class MainWindow
                 (row, at, follows) = (clip, clip.StartTime + clip.Duration, true);
         }
 
+        if (generation != _viewModel.ProjectGeneration)
+            return;
         if (added > 1)
         {
             _viewModel.StatusText = stack
@@ -655,9 +833,13 @@ public partial class MainWindow
             {
                 return;
             }
+
+            _viewModel.LoadFile(file);
+            return;
         }
 
-        _viewModel.LoadFile(file);
+        // Nothing open: the tab takes the file's name at once (5.4D-TabPerf), and the open's faults are said as a drop's are.
+        DropLater("opening a file", () => OpenNamingTabAsync(file, () => _viewModel.LoadFileAsync(file)));
     }
 }
 

@@ -1,0 +1,8 @@
+# Where a tab behind the one in front is saved: its own file, a portable folder, the studio's folder, the Projects folder (as the view model's save).
+ok: a saved tab goes to its own project file
+ok: with fully portable saves on, to a portable folder of its name (its file is not in one yet), as Ctrl+S on the tab in front does
+ok: an autosave is never made portable
+ok: a tab never saved goes to the Projects folder, its name made fit for a file
+ok: or into the folder the New Project studio chose for it
+ok: or, with fully portable saves on, a portable folder of its name
+ok: a blank name is saved as "Project"

@@ -1,0 +1,35 @@
+# The 5.4D-TabPerf review, the window's side: a tab's cache file written by one writer at a time and kept listed until written, nothing written after a clean close, a still or sheet kept only when current, the pictures counted once.
+ok: eight writers claiming one tab's write at once: exactly one gets it; while it is written it is still wanted, and nobody else may write it
+ok: a failed write is over but still wanted: the tab has no recovery copy yet, and it stays listed
+ok: and it is claimed again for a retry (the valve's tick, the next tab put behind, the crash writer)
+ok: written: no longer wanted, never claimed again, and a writer's Fail on its way out changes nothing
+ok: Fail without a claim does nothing
+ok: a write claimed
+ok: a failed write whose tab closed or came back is not wanted and never written
+ok: a whole write's file beside its own has a name of its own each time (<file>.<32 hex digits>.tmp): two writers never open the same one
+ok: a copy is made beside under a name of its own, and nothing of it is left
+ok: a session is not let go until it closes
+ok: a clean close deletes the half-written file too, its lock and its folder
+ok: a write still running after the clean close is refused (an IOException): the folder, its lock and the tab's file are never made again
+ok: a still within a frame of the playhead fits (33 ms at 30 fps); one more than a frame away does not
+ok: a still from before playback (0:10, the tab left at 2:30) covers nothing
+ok: a flat still never covers a tab coming back in 3D, nor a 3D one a flat tab; a 3D still covers a 3D tab
+ok: a frame rate not known yet is taken as 30 fps; at 120 fps a frame is 8.3 ms
+ok: a whole sheet drawn at the undo mark the Sequence is at is kept (none: a Sequence with no history yet)
+ok: one drawn before the last edit (or undo), or whose mark is not known, is not: it is drawn again as the tab comes back
+ok: nor while an edit made with the scrubber hidden waits, or a request settles or a sheet is being drawn
+ok: the pictures a tab keeps count width x height x 4 bytes each, one file's filmstrip on many clips once; nulls and drawings count nothing
+ok: the pool's write is claimed first, makes its thumbnail on a copy (the frozen state is never written to), and stays listed unless written or cancelled, whatever it threw
+ok: falling over: a write under way is waited for (3 s at most in all) and only a write it can claim is written, never a second copy beside one
+ok: a failed write says the tab has no recovery copy yet, and is tried again on the valve's tick and as the next tab goes behind
+ok: a write let go as its tab comes back or closes is taken off the list (a failed one would hold the tab's frozen copy otherwise)
+ok: a clean close waits for a kept tab's write to its end (Saving tabs...), writes only what it can claim, and lets every other write go before the session's files
+ok: a save from memory waits for the tab's write (refused, said so, after 5 s) and writes a copy with its name and time: the frozen state is never changed
+ok: the tabs never change while clips are still being added
+ok: closing the tab in front drops a still being taken, as putting it behind does (a switch generation)
+ok: a tab kept live shows its still only when it fits, and keeps it only then
+ok: the valve counts a kept tab's views' filmstrips and waveforms, its tracks' and the timeline's waveforms, its still and sheet
+ok: playback forgets the still; entering or leaving the 3D view and moving its camera take it again
+ok: a sheet carries the undo mark its request was made at, and a tab keeps it only when current
+ok: both whole writes write beside under a name of their own
+ok: a write that was under way as the session was let go takes its project file out again

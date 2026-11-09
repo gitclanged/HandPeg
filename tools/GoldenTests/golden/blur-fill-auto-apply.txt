@@ -1,0 +1,7 @@
+# A file opened gets a blur fill only where it leaves the frame bare, and only as the Sequence's first picture.
+ok: a 16:9 file into an empty 16:9 Sequence fills it: no blur fill
+ok: a 9:16 file into an empty Sequence, which takes its shape: no blur fill
+ok: a 16:9 file into a 9:16 vertical Sequence leaves bars: blur fill on
+ok: the same with the Background Blur row switched off: none
+ok: a file opened onto a Sequence that has clips is a further layer: none, though it leaves bars
+ok: Settings' New Clips set to fill: it covers the frame, so none

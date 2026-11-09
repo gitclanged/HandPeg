@@ -18,7 +18,7 @@ namespace HandPegApp.Services.Gpu;
 // own size (sub2video, which hands on a frame at every change: a picture coming, going), each frame written as a PNG
 // down a pipe with its time on stderr (showinfo). Each picture is cut to what it covers and kept packed (Brotli) in
 // memory, within a budget. The track the preview draws pairs the cues with them (the cue's picture is the one the file
-// shows at the cue's own moment, so a cue retimed in the Subtitle Editor keeps its picture), and the scene plan hands a
+// shows at the cue's own moment, so a cue retimed in the Subtitle Studio keeps its picture), and the scene plan hands a
 // cue's picture to the worker as a still while the playhead is near it (GpuScenePlan.Pictures.cs). The export is as it
 // was: picture subtitles are not written into it.
 

@@ -776,10 +776,21 @@ internal sealed unsafe partial class SceneRenderer
     /// <summary>The 3D path's own textures (SceneRenderer.Dispose, and a while after the view went flat).</summary>
     private void DisposeExploded()
     {
+        ReleaseExplodedTextures();
+        _budgetStep = 0;
+    }
+
+    /// <summary>
+    /// The 3D view's picture and plane let go of (the worker's trim: SceneRenderer.ReleaseIdleTextures): both are made again at the next
+    /// 3D frame (RenderExploded, EnsurePlaneTarget), at the sizes it needs. The budget step stays: its way up and down holds back a fifth
+    /// (LayOutPlanes), so starting it again from 0 could draw the planes a step finer than the frame before.
+    /// </summary>
+    private void ReleaseExplodedTextures()
+    {
         _view3D?.Dispose();
         _view3D = null;
         _planeTarget?.Dispose();
         _planeTarget = null;
-        (_planeTargetOversized, _budgetStep) = (0, 0);
+        _planeTargetOversized = 0;
     }
 }

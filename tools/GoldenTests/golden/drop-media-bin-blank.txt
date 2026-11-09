@@ -1,0 +1,9 @@
+# A drop on the Media Browser with nothing open goes into Project Media (5.4D, Q4 b), and the blank window keeps it for its first file.
+ok: with nothing open, a video let go over the Media Browser goes into Project Media; anywhere else it is opened, as before
+ok: the blank window's bin takes them (one step of Undo), with no video open; the tab now holds something, so the strip shows it and a tab switch keeps it
+ok: a project or a bundle dropped on the blank window that holds pooled files (on the player or the bin): opened in a Project Tab of its own
+ok: a window holding nothing opens the project in place, as before; while busy the open path (which says to wait); a video still opens as the source
+ok: the window's drop asks the tab in front whether it holds something (MainViewModel.HoldsNothingForTab)
+ok: the first file opened later (a new source, then its clip placed) keeps the pool: the two pooled files, then the opened one's
+ok: opening a file (LoadMediaAsync) never puts a new document in place nor touches the pool
+ok: the menu's Add to Project Media (and Remove) is no longer greyed out with nothing open

@@ -1,0 +1,6 @@
+# Two whole writes of one file at once (5.4D-TabPerf review): each written beside it under a name of its own, so neither fails on the other's; the last moved in is the file, whole, and nothing is left beside it.
+ok: a write under way writes beside the file under a name of its own (tab.hptab.<32 hex digits>.tmp)
+ok: a second write of the same file meanwhile (streamed, then from text) never meets the first's file: both are whole
+ok: the first, let go, is whole too: the last moved in is the file
+ok: and nothing is left beside it
+ok: a write from text that fails passes the failure on and deletes its own file beside

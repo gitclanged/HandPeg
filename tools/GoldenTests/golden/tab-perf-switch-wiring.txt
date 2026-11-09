@@ -1,0 +1,14 @@
+# A switch between live tabs awaits nothing, reads no cache file and makes no fingerprint; the tab put behind is written after it.
+ok: SwitchToTabAsync: the tab in front put behind, the next in front, its layout, then a live tab attached at once: no await between putting one behind and bringing the other back
+ok: the tab put behind's cache file is queued after the switch (in its finally, once the next tab is in front), and a live switch makes no fingerprint
+ok: putting a tab behind and bringing a live one back read no cache file, open nothing, make no fingerprint, capture no still and wait for nothing
+ok: the tab put behind is kept live, its 3D view left, and the engine lets go of it (GpuPreviewEngine.Suspend, as before)
+ok: AttachHydrated: its still shown first, its project swapped in, its cache file let go after any write, its sheet, open stacks and player view back, its view restored inline (no Background wait)
+ok: the write runs on the tab's own chain on the thread pool, from its frozen copy, the exact dot worked out there and told back after
+ok: a tab only in its file is read after any of its writes still under way, and its files deleted on the same chain
+ok: closing HandPeg waits for every tab's disk work (5 s at most) before asking about or deleting any tab's files
+ok: falling over, the cache files still to be written are written from their frozen copies (a closed tab's never)
+ok: the still is kept fresh 350 ms after the picture last changed, only while paused, not dragging and not switching, never in place of a save's thumbnail, never re-armed while playing
+ok: it is hooked as the strip is first shown, never before the first frame (Law 1)
+ok: MainViewModel.AttachTab: no probe, open, deep clone, history read or MediaLoaded; the same steps an open takes on the tab's own Sequence; a fingerprint only for a tab saved while behind
+ok: the cold path takes the very same steps (ApplyProjectSettings, InstallProjectTimeline) around its file's own

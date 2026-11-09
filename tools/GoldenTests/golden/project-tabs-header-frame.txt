@@ -1,0 +1,9 @@
+# A tab's header keeps its frame and frame rate for its hover card: round-trips, stays small (under 4 KB with its layout), and reads an older header as unknown.
+ok: the frame as Project Settings draws it: 1920 x 1080, or 1080 x 1920 for a vertical project
+ok: the hover card's line: "1920 x 1080 · 60 fps", fractional rates to three places at most
+ok: what is not known is left out (nothing at all for an older header)
+ok: a header with its frame and frame rate reads back as it was (record equality)
+ok: with a 120-character name, a long path, a studio name and folder, still under 1 KB
+ok: with its 3D view and Standard Editing's layout too (5.4D), it reads back as it was and is under 4 KB
+ok: a header written by 5.4A (no frame) reads with its frame unknown
+ok: a 1920 x 1080 30 fps project's settings give the header 1920 x 1080 at 30 fps (what TakeHeaderForTab writes)

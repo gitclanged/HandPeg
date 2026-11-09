@@ -8,7 +8,7 @@ namespace HandPegGoldenTests;
 
 /// <summary>
 /// Captions (4.4) on their own: the word ends whisper's output gives (no word left up through a silence), anchored captions
-/// projected through clip windows as cuts, folds, speeds and J cuts place them, the Subtitle Editor's edits written back, and
+/// projected through clip windows as cuts, folds, speeds and J cuts place them, the Subtitle Studio's edits written back, and
 /// Remove Dead Air's gaps between captioned words. All pure functions; each case writes down what it did and checks itself.
 /// </summary>
 public static class CaptionTests

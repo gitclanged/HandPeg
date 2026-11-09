@@ -70,6 +70,12 @@ public sealed record VideoStreamInfo(
 
     /// <summary>FFmpeg's name for how its pixels are stored: yuv420p, yuv420p10le...</summary>
     public string PixelFormat { get; init; } = "";
+
+    /// <summary>
+    /// How long the video stream itself lasts, in seconds on its own clock (5.4A); 0 when the file does not say. A container is as long
+    /// as its longest stream, often its sound with a little padding: a clip of the file's picture ends where the picture does.
+    /// </summary>
+    public double DurationSeconds { get; init; }
 }
 
 /// <param name="Index">Position among the audio streams, as used in "0:a:N".</param>
@@ -435,7 +441,8 @@ public static class MediaProbe
         {
             foreach (var stream in streams.EnumerateArray())
             {
-                streamSeconds = Math.Max(streamSeconds, StreamSeconds(stream));
+                var seconds = StreamSeconds(stream);
+                streamSeconds = Math.Max(streamSeconds, seconds);
                 var codec = Text(stream, "codec_name");
                 switch (Text(stream, "codec_type"))
                 {
@@ -452,6 +459,7 @@ public static class MediaProbe
                             (long)Number(stream, "bit_rate"))
                         {
                             PixelFormat = Text(stream, "pix_fmt"),
+                            DurationSeconds = seconds,
                         };
                         videoStart = Number(stream, "start_time");
                         break;

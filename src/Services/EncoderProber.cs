@@ -115,8 +115,9 @@ public static class EncoderProber
             driverTooOld |= encoder.EndsWith("_nvenc", StringComparison.Ordinal)
                 && result.StandardError.Contains("required nvenc API version", StringComparison.OrdinalIgnoreCase);
 
-            // Said once per vendor, and only for the vendor's H.264 encoder: the others fail for the same reason.
-            if (encoder.StartsWith("h264_", StringComparison.Ordinal))
+            // Said once per vendor, and only for the vendor's H.264 encoder: the others fail for the same reason. Not said at all for a
+            // vendor whose card is not in this PC (5.4B: an FFmpeg built with NVENC fails to load nvcuda.dll on every AMD or Intel machine).
+            if (encoder.StartsWith("h264_", StringComparison.Ordinal) && VendorPresent(encoder, GpuAdapters.All))
                 problems.Add($"{encoder}: {reason}");
         }
 
@@ -125,6 +126,30 @@ public static class EncoderProber
         SaveResult();
         return (supported, problems);
     }
+
+    /// <summary>
+    /// Whether a probe problem ("h264_nvenc: Cannot load nvcuda.dll"), or an encoder, is about a vendor whose card is here (5.4B): NVENC an
+    /// NVIDIA card, AMF an AMD one, QuickSync an Intel one; Media Foundation and anything else always are. True when no card could be listed.
+    /// </summary>
+    public static bool VendorPresent(string encoderOrProblem, IReadOnlyList<GpuAdapter> adapters)
+    {
+        if (adapters.Count == 0)
+            return true;
+
+        var colon = encoderOrProblem.IndexOf(':');
+        var encoder = (colon >= 0 ? encoderOrProblem[..colon] : encoderOrProblem).Trim();
+        return encoder.EndsWith("_nvenc", StringComparison.Ordinal) ? adapters.Any(a => a.IsNvidia)
+            : encoder.EndsWith("_amf", StringComparison.Ordinal) ? adapters.Any(a => a.IsAmd)
+            : !encoder.EndsWith("_qsv", StringComparison.Ordinal) || adapters.Any(a => a.IsIntel);
+    }
+
+    /// <summary>
+    /// The problems worth a word on this PC: those of a vendor whose card is here (<see cref="VendorPresent"/>), once the cards are listed
+    /// (<see cref="GpuAdapters.IsListed"/>); all of them before (they are never listed for this: before the first frame that would load
+    /// every card's driver, Law 1).
+    /// </summary>
+    public static List<string> ProblemsForCardsHere(IEnumerable<string> problems) =>
+        GpuAdapters.IsListed ? problems.Where(p => VendorPresent(p, GpuAdapters.All)).ToList() : [.. problems];
 
     // ----- The result, kept between launches -----
     // Every test encode loads a graphics driver: a burst of memory and processor at every start, for an answer

@@ -9,7 +9,7 @@
         <TextBlock x:Name="ModeText" TextWrapping="Wrap" Foreground="{DynamicResource MutedTextBrush}" Margin="0,0,0,10" />
         <TextBlock Text="Name:" Margin="0,0,0,4" />
         <TextBox x:Name="NameBox" Padding="6,5" MaxLength="40" AutomationProperties.Name="Layout Name" TextChanged="NameBox_TextChanged"
-                 ToolTip="What the layout is called in the Layout button's flyout and in the Layout Selector." />
+                 ToolTip="What the layout is called on its card in the Layout Selector." />
         <TextBlock Text="Keep it in:" Margin="0,12,0,4" />
         <StackPanel x:Name="SlotChoices" />
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">

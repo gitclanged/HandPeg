@@ -1,0 +1,4 @@
+# A video stream's probed length, rounded a hair short of its last frame, still reaches that frame.
+ok: 29.97 fps, the video stream read as 10.010 s (300 frames are 10.01001 s), the container 10.05 s: 300 frames, the last one kept
+ok: 60 fps, 601 frames (10.01667 s) read as 10.016 s: 601 frames, not 600
+ok: a stream that really ends inside a frame (9.95 s at 30 fps): still the last whole frame, 298, never past the picture

@@ -480,6 +480,9 @@ public partial class MainViewModel
             VoiceoverStatus = $"The recording could not be finished: {ex.Message}";
         }
 
+        // The take being placed is an add under way (5.4D-TabPerf review, P1): the tabs stay as they are from the moment the recording
+        // ends until it is on the timeline (or taken as the voiceover), so it lands in the project it was recorded for.
+        using var placing = BeginAdd();
         (IsRecording, IsRecordingPaused) = (false, false);
         if (recorded && PlacesVoiceoverOnTimeline)
             await PlaceRecordingAsync();
@@ -526,9 +529,13 @@ public partial class MainViewModel
 
         var at = _recordingStartSeconds;
         var name = $"Voiceover {Layers.Count(l => l.IsAudio && l.IsVoice) + 1}";
+        var generation = _projectGeneration;
         if (!await AddAudioLayerAsync(kept, at, isVoice: true, name: name))
         {
-            VoiceoverStatus = "Nothing was recorded. Check that the microphone is not in use by another program.";
+            // Its project tab went behind all the same (P1): the take is placed in no other project, and kept in its file.
+            VoiceoverStatus = generation != _projectGeneration
+                ? $"The take was not placed: its project tab went behind first. It is kept as {kept}, to drag onto that project's timeline."
+                : "Nothing was recorded. Check that the microphone is not in use by another program.";
             return;
         }
 
@@ -662,7 +669,12 @@ public partial class MainViewModel
     /// <summary>Takes a wave file as the session's voiceover: measures it, draws it, and opens the trim to its whole length.</summary>
     private async Task LoadVoiceoverAsync(string path, string verb)
     {
+        // The voiceover is the project's (5.4D-TabPerf review, P1): an add under way while its file is looked at, and taken by no other tab.
+        using var adding = BeginAdd();
+        var generation = _projectGeneration;
         var info = File.Exists(path) ? await MediaProbe.ProbeAsync(path, _shutdown.Token) : null;
+        if (generation != _projectGeneration)
+            return;
         if (info is not { DurationSeconds: > 0, Audio.Count: > 0 })
         {
             VoiceoverStatus = File.Exists(path) ? "That file has no audio that can be read." : "Nothing was recorded. Check that the microphone is not in use by another program.";
@@ -674,8 +686,11 @@ public partial class MainViewModel
         VoiceoverPath = "";
         VoiceoverDuration = info.DurationSeconds;
         (VoiceoverTrimStart, VoiceoverTrimEnd) = (0, info.DurationSeconds);
-        VoiceoverWaveform = await Waveforms.RenderAsync(
+        var waveform = await Waveforms.RenderAsync(
             path, [0], Path.Combine(WaveformFolder, $"voiceover_{Guid.NewGuid():N}.png"), 1200, 120, "0xEF5350", _shutdown.Token);
+        if (generation != _projectGeneration)
+            return;
+        VoiceoverWaveform = waveform;
         VoiceoverPath = path;
         VoiceoverStatus = string.Create(CultureInfo.InvariantCulture,
             $"{verb} {info.DurationSeconds:0.0} s. Drag the handles to trim it; Starts At moves it along the finished video.");
@@ -689,17 +704,28 @@ public partial class MainViewModel
     [GeneratedRegex(@"\((\d+)x(\d+)\)")]
     private static partial Regex ResolutionRegex();
 
+    /// <summary>The sizes offered, "Match Project Settings" first (5.4A: blank boxes, the Sequence's own size), then Custom and the common ones.</summary>
     public IReadOnlyList<string> ResolutionPresets { get; } =
-        [CustomResolution, "4K (3840x2160)", "1440p (2560x1440)", "1080p (1920x1080)", "720p (1280x720)", "480p (854x480)"];
+        [MatchProject, CustomResolution, "4K (3840x2160)", "1440p (2560x1440)", "1080p (1920x1080)", "720p (1280x720)", "480p (854x480)"];
 
-    /// <summary>The common size the Width and Height boxes currently hold, either way up, or Custom.</summary>
-    [ObservableProperty] private string _resolutionPreset = CustomResolution;
+    /// <summary>The common size the Width and Height boxes currently hold, either way up; Match Project Settings while both are blank; or Custom.</summary>
+    [ObservableProperty] private string _resolutionPreset = MatchProject;
 
     private bool _syncingResolutionPreset;
 
     partial void OnResolutionPresetChanged(string value)
     {
-        if (_syncingResolutionPreset || value is null || ResolutionRegex().Match(value) is not { Success: true } match)
+        if (_syncingResolutionPreset || value is null)
+            return;
+
+        // Match Project Settings: both boxes blank, the Sequence's own size.
+        if (value == MatchProject)
+        {
+            SetOutputSize("", "");
+            return;
+        }
+
+        if (ResolutionRegex().Match(value) is not { Success: true } match)
             return;
 
         // The presets are named the wide way round; with Use Vertical Resolution they go in on their side.
@@ -717,6 +743,9 @@ public partial class MainViewModel
             && ((m.Groups[1].Value == OutputWidth && m.Groups[2].Value == OutputHeight)
                 || (m.Groups[1].Value == OutputHeight && m.Groups[2].Value == OutputWidth)));
 
+        if (match is null && string.IsNullOrWhiteSpace(OutputWidth) && string.IsNullOrWhiteSpace(OutputHeight))
+            match = MatchProject;
+
         _syncingResolutionPreset = true;
         ResolutionPreset = match ?? CustomResolution;
         _syncingResolutionPreset = false;
@@ -726,7 +755,8 @@ public partial class MainViewModel
 
     public bool ShowPresetBarAtTop => AppSettings.Current.PresetBarLocation == AppSettings.PresetBarAtTop;
 
-    public bool ShowPresetBarInSummary => !ShowPresetBarAtTop;
+    /// <summary>The Export Presets selector sits in the Export tab's first card (5.4B; 5.4A's preset bar, before that on the retired Summary tab).</summary>
+    public bool ShowPresetBarInExport => !ShowPresetBarAtTop;
 
     // ----- Notifications -----
 

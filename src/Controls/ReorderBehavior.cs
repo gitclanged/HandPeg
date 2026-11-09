@@ -9,8 +9,8 @@ namespace HandPegApp;
 /// <summary>
 /// Lets the children of a vertical panel be put in another order by dragging them by a grip (an element inside a child
 /// marked <see cref="IsGripProperty"/>): while dragging, a line shows where the child would go, and letting go moves it
-/// there. The panel then raises <see cref="Reordered"/>, for whoever keeps the order. Built once, for the Summary
-/// cards, and meant for any list of the same kind (an effect stack, the ordered lists of Settings).
+/// there. The panel then raises <see cref="Reordered"/>, for whoever keeps the order. Built for the Summary tab's cards
+/// (retired in 5.4A), and meant for any list of the same kind (an effect stack, the ordered lists of Settings).
 /// </summary>
 public static class ReorderBehavior
 {

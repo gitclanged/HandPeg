@@ -16,7 +16,7 @@ public enum EncoderFamily
     MediaFoundation,
 }
 
-/// <summary>A video encoder as offered in the Video tab.</summary>
+/// <summary>A video encoder as offered in the Export tab.</summary>
 public sealed record EncoderOption(string Name, string DisplayName, EncoderFamily Family)
 {
     /// <summary>Passes the source stream through untouched.</summary>

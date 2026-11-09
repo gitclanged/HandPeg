@@ -1,0 +1,22 @@
+# Each project tab keeps its own main-window layout (AppSettings.PerTabWindowLayouts): laid out again on a switch, the side windows the window's.
+ok: tab A put behind keeps the main window's layout (DockManager.Save): Standard Editing, without Media (the Pane Docker's)
+ok: tab B chose Assembly & Media: another shape, the side window as it was
+ok: A back to the front: its layout laid out again exactly (the same JSON), the Pane Docker still holding Media
+ok: B back to the front: Assembly & Media again, the side window untouched
+ok: the window's own layout again: no load at all
+ok: a layout that differs only in the tab in front (Tab:Audio, not Tab:Export): that tab is in front again
+ok: the setting off: a tab put behind keeps no layout, and none is laid out as one comes back
+ok: a tab with no layout (new, opened, or from before 5.4D) takes the window as it is
+ok: a tab put behind keeps the Media Browser's view by name (Filmstrip), none while the setting is off
+ok: and reads it back (any case); none, an empty name, or a view that does not exist leaves the Media Browser as it is
+ok: a header with its layout (each built-in, its splits dragged, a 120-character name and a long path) is over 1 KB and under 4 KB
+ok: a switch lays the tab's layout out right after it is in front, before its still shows (ResumeTabAsync)
+ok: a switch taken back lays the tab put behind's own layout out again, then brings it back from memory (its 3D view with it, 5.4D-TabPerf)
+ok: closing the tab in front lays the next tab's layout out (a layout the selector previews put back first)
+ok: a tab's layout laid out (the selector closed and its preview put back first, its Media Browser view set before the build: 5.4D review) is saved as the window's arrangement, as any change of it is
+ok: nothing else lays a layout out: not at start-up, nor as tabs left behind are taken in, nor for a new or opened tab (they take the window as it is)
+ok: choosing a layout in a tab needs no hook in the selector: it is captured as the tab goes behind
+ok: AppSettings.PerTabWindowLayouts is on as HandPeg comes (and for a settings file from before it); off stays off
+ok: Settings has one CheckBox for it, "Each project tab remembers its own layout", in the General tab (Appearance)
+ok: the Settings window's title-bar progress is the editor's: over everything (ZIndex 10, no hits), a 16 % wash and a 2 DIP rail along the bottom
+ok: and it is sized as the editor's: 0.16, or 0.08 while the work cannot say how far it is (its rail then at half strength)

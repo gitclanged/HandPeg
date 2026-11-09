@@ -6,10 +6,11 @@ using HandPegApp.Services;
 
 namespace HandPegApp;
 
-// ----- The panes: arranged freely, in this window and the side window -----
+// ----- The panes: arranged freely, in this window and the side windows -----
 // Every pane (the player, the playback controls, the timeline, the Sequence Overview Scrubber, the layout, the header, the side panes,
 // the preset bar and each settings tab) is made in PaneLibrary and put where the arrangement says by the dock
-// manager (Docking/DockManager.cs). The arrangement is kept in AppSettings.DockLayout.
+// manager (Docking/DockManager.cs). The arrangement is kept in AppSettings.DockLayout, the side windows (5.4C: any number, each a
+// Live Video Preview or a Pane Docker) in AppSettings.SideWindows.
 public partial class MainWindow
 {
     private DockManager _dock = null!;
@@ -37,6 +38,9 @@ public partial class MainWindow
         {
             Replaced = new Dictionary<string, string> { ["Source"] = "Media" },
             Upgrade = UpgradeLayout,
+
+            // A tab's menu's Reset Panes Layout is the Views menu's (5.4D): the user's Default layout, the scrubber's height put back.
+            ResetLayout = () => ResetPanesLayout_Click(this, new RoutedEventArgs()),
         };
         _dock.PaneReplaced += (_, replacement) =>
         {
@@ -49,39 +53,55 @@ public partial class MainWindow
         foreach (var content in contents.Where(c => !ReferenceEquals(c, SettingsTabs)))
             PaneLibrary.Children.Remove(content);
 
+        // Each pane's least width (5.4D, the splitter's range): 180 unless said otherwise below (DockPane.MinWidth's own), so a border always has
+        // room to move in a 1280 DIP window; the sums of these are what pin a column (DockManager.MinWidthOf).
         void Add(string id, string title, FrameworkElement content, PaneHandle handle = PaneHandle.TitleSlot, bool fits = false,
             Func<bool>? shown = null, Action? close = null, Func<double>? minWidth = null, double minHeight = 60, Panel? hoverHost = null, Action<double>? resize = null,
-            Action<PaneShape>? reshape = null, bool joinsBelow = false, bool floats = false) =>
+            Action<PaneShape>? reshape = null, bool joinsBelow = false, bool floats = false, Action? resetSize = null) =>
             _dock.Register(new DockPane
             {
                 Id = id, Title = title, Content = () => content, Handle = handle, FitsContent = fits, IsShown = shown ?? (() => true), Close = close,
-                MinWidth = minWidth ?? (() => 160), MinHeight = minHeight, HoverHost = hoverHost, ResizeBy = resize, Reshape = reshape, JoinsPaneBelow = joinsBelow,
-                Floats = floats,
+                MinWidth = minWidth ?? (() => 180), MinHeight = minHeight, HoverHost = hoverHost, ResizeBy = resize, ResetSize = resetSize, Reshape = reshape,
+                JoinsPaneBelow = joinsBelow, Floats = floats,
             });
 
-        // The player floats over its place (DockPane.Floats): the panes are laid out again around it, and its video never blinks.
+        // The player floats over its place (DockPane.Floats): the panes are laid out again around it, and its video never blinks. Its least width
+        // stays 320 (as PlayerPane's own MinWidth in the XAML): its transport overlay and a 16:9 picture need it.
         Add("Player", "Player", PlayerPane, PaneHandle.Hover, minWidth: () => 320, minHeight: 180, hoverHost: PlayerOverlay, floats: true);
+        // The playback controls and the Sequence Overview Scrubber keep 300: rows as tall as their content, they share a column with the player
+        // or the timeline, at least as wide, in every built-in layout.
         Add("Playback", "Playback Controls", TransportRow, PaneHandle.Hover, fits: true, shown: () => _viewModel.ShowAdvancedPlayback, minWidth: () => 300);
         // The Sequence Overview Scrubber: the whole sequence at a glance, its segments and markers, scrubbed by a click or a
         // drag (the Overview Bar until 5.2-AuditB, the master timeline until 4.4; its id stays "Timeline" and its setting
         // ShowMasterTimeline, so saved arrangements, layouts and settings keep it where and as they had it).
-        Add("Timeline", ScrubberTitle, TimelinePane, PaneHandle.Hover, fits: true, shown: () => AppSettings.Current.ShowMasterTimeline, minWidth: () => 300, resize: ResizeMasterTimeline);
-        // The timeline: every track on one drawn surface (4.4). Always shown; its tab is in its own title row.
+        // A double-click on the border under it puts its height back (5.4D), as one on its own grip does (OverviewGrip_ResetRequested).
+        Add("Timeline", ScrubberTitle, TimelinePane, PaneHandle.Hover, fits: true, shown: () => AppSettings.Current.ShowMasterTimeline, minWidth: () => 300, resize: ResizeMasterTimeline,
+            resetSize: OverviewGrip_ResetRequested);
+        // The timeline: every track on one drawn surface (4.4). Always shown; its tab is in its own title row. 300: its track headers and a
+        // stretch of the ruler.
         Add(TimelinePaneId, "Timeline", UnifiedTimelinePanel, minWidth: () => 300, minHeight: 140);
         // The Canvas: the output frame the layers are arranged on. Its id stays "Layout" (its name until 4.2), so saved
-        // arrangements and layouts keep it where they had it.
-        Add("Layout", "Canvas", LayoutPane, shown: () => _viewModel.IsArrangeActive, close: () => _viewModel.IsArrangeActive = false, minWidth: () => 200);
+        // arrangements and layouts keep it where they had it. 180 (5.4D; 200 before).
+        Add("Layout", "Canvas", LayoutPane, shown: () => _viewModel.IsArrangeActive, close: () => _viewModel.IsArrangeActive = false);
         Add("Header", "Header", EditorHeader, PaneHandle.Hover, fits: true, minWidth: HeaderWidth, reshape: ApplyHeaderShape, joinsBelow: true);
-        Add("Media", "Media", MediaBrowserPanel, shown: () => _viewModel.IsMediaBrowserVisible, close: () => _viewModel.ShowMediaBrowser = false, minWidth: () => 200, minHeight: 140);
-        Add("Keyframes", "Keyframes", KeyframesPane, shown: () => _viewModel.ShowKeyframesPane, close: () => _viewModel.ShowKeyframesPane = false, minWidth: () => 200, minHeight: 110);
-        Add("Effects", "Effects", EffectsPanePanel, shown: () => _viewModel.ShowEffectsPane, close: () => _viewModel.ShowEffectsPane = false, minWidth: () => 240, minHeight: 110);
+        // The Media Browser: 180, or 280 while it shows the Filmstrip view (its list and the preview beside it: MediaMinWidth), raised and
+        // lowered in place as the view changes (DockManager.RefreshMinSizes).
+        Add("Media", "Media", MediaBrowserPanel, shown: () => _viewModel.IsMediaBrowserVisible, close: () => _viewModel.ShowMediaBrowser = false, minWidth: MediaMinWidth, minHeight: 140);
+        MediaBrowser.ViewModeChanged += _ => _dock.RefreshMinSizes();
+        // The keyframes and the effects: 180 (5.4D; 200 and 240 before), their lists' names trimmed rather than the column pinned.
+        Add("Keyframes", "Keyframes", KeyframesPane, shown: () => _viewModel.ShowKeyframesPane, close: () => _viewModel.ShowKeyframesPane = false, minHeight: 110);
+        Add("Effects", "Effects", EffectsPanePanel, shown: () => _viewModel.ShowEffectsPane, close: () => _viewModel.ShowEffectsPane = false, minHeight: 110);
         // The Master Meter (5.2B): the Sequence's meter and master fader upright. Off to start with, a tab beside the effects and keyframes
-        // (StandardLayout; an arrangement saved without it takes it there), and Tabs and Panes shows it.
+        // (StandardLayout; an arrangement saved without it takes it there), and Tabs and Panes shows it. 104: a meter stands narrow.
         Add("Meter", "Master Meter", MasterMeterPanel, shown: () => _viewModel.ShowMasterMeter, close: () => _viewModel.ShowMasterMeter = false, minWidth: () => 104, minHeight: 180);
+        // The Preset Bar: the panes' 180 (5.4D; 160 before).
         Add("Presets", "Preset Bar", PresetBarPane, PaneHandle.Hover, fits: true, shown: () => _viewModel.ShowPresetBarAtTop);
+        // The studios (5.4C): made by their factories when first shown, never in PaneLibrary (MainWindow.Studios.cs).
+        RegisterStudioPanes();
 
         // The settings tabs: each a pane with a tab, made when first shown (RealizeTabContent), shown while its tab would be.
-        // Video and Audio are a box each, their contents moved between it and the Export tab (MainWindow.Export.cs).
+        // Audio is a box, its content moved between it and the Export tab (MainWindow.Export.cs). (5.4B retired the Video tab: a saved
+        // arrangement naming Tab:Video loads without it, DockManager's validation dropping the unknown pane.)
         foreach (var tab in SettingsTabs.Items.OfType<TabItem>())
         {
             var title = tab.Header as string ?? "Tab";
@@ -91,6 +111,7 @@ public partial class MainWindow
             _dock.Register(new DockPane
             {
                 Id = id, Title = title, Handle = PaneHandle.Tab, Content = content,
+                // 300: the Export tab's cards (ExportCardMinWidth) and the other tabs' rows of settings.
                 IsShown = () => tab.Visibility == Visibility.Visible, MinWidth = () => 300, MinHeight = 140,
             });
         }
@@ -104,16 +125,19 @@ public partial class MainWindow
             AddPaneSettingsMenu(menu, pane);
         };
 
-        _dock.Changed += () => _viewModel.SavePaneLayout(s => s.DockLayout = _dock.Save());
+        _dock.Changed += () => _viewModel.SavePaneLayout(SaveDockInto);
+        _dock.SideWindowOpened += HookSideWindow;
         _dock.SideChanged += () =>
         {
             UpdateSideWindowCheck();
-            if (_dock.SideWindow is { } side)
-                HookSideWindow(side);
+            SyncMirrors();
         };
         _dock.PaneShown += OnPaneShown;
-        // The layout chosen in the first-run window, the first time; then the arrangement as it was left.
-        _dock.Load(TakeFirstRunLayout() ?? AppSettings.Current.DockLayout);
+        // The layout chosen in the first-run window, the first time; then the user's Default layout (5.4D, StartupLayoutJson: the arrangement as
+        // it was left while it still has that layout's shape), always opening on the Timeline (5.4A: never on Export, Audio or Filters because
+        // HandPeg was closed on one of them). The side windows saved open (5.4C) come back after the first frame, each laid out on its own
+        // (DockManager.OpenSidesWhenShown); this is the window's one dock build.
+        _dock.Load(sideWindows: AppSettings.Current.SideWindows, saved: TakeFirstRunLayout() ?? StartupLayoutJson(), showFirst: TimelinePaneId);
         UpdateSideWindowCheck();
 
         // What shows or hides a pane.
@@ -156,10 +180,14 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Where the panes start (a pane switched off is hidden, not moved): the Standard Editing layout (see
-    /// MainWindow.Layouts.cs), which Reset Layout puts back.
+    /// Where the panes start (a pane switched off is hidden, not moved): the Standard Editing layout (see MainWindow.Layouts.cs), what an
+    /// arrangement that cannot be read loads as and where a pane missing from one goes. (5.4D: Reset Layout puts back the user's Default
+    /// layout, DefaultLayoutChoice, which is this one unless a ★ says otherwise.)
     /// </summary>
     private DockLayoutState DefaultDockLayout() => StandardLayout();
+
+    /// <summary>The Media pane's least width (5.4D): 280 while the Media Browser shows its Filmstrip view (the list with the preview and cutter beside it), else 180.</summary>
+    private double MediaMinWidth() => MediaBrowser.ViewMode == Views.MediaBrowserView.Filmstrip ? 280 : 180;
 
     /// <summary>How wide the header's buttons are together: its pane is never narrower, so none of them is cut off.</summary>
     private double HeaderWidth()
@@ -254,10 +282,10 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Makes what is in a settings tab: from its template (every tab is left as one until wanted; Summary and Export too since
-    /// 5.3-Stage2), or the content it was made with. The named parts this window uses are found in it as it is made (the Audio
-    /// tab's options row, which folds into a button when it is narrow; the Summary's cards, put in their saved order; the
-    /// Export tab's parts).
+    /// Makes what is in a settings tab: from its template (every tab is left as one until wanted; Export too since 5.3-Stage2), or
+    /// the content it was made with. The named parts this window uses are found in it as it is made (the Audio tab's options row,
+    /// which folds into a button when it is narrow; the Export tab's parts). (5.4A retired the Summary tab: its controls live in the
+    /// Export tab, the Timeline's Game Presets box and the Project Manager.)
     /// </summary>
     private FrameworkElement RealizeTabContent(TabItem tab)
     {
@@ -286,13 +314,6 @@ public partial class MainWindow
         if (content.FindName("AudioTabMeter") is AudioMeterControl tabMeter)
             WireMeter(tabMeter);
 
-        // The Summary's cards, in the order they were last dragged into (on Loaded until 5.3-Stage2, when the tab was built with the window).
-        if (content.FindName(nameof(SummaryCards)) is StackPanel cards)
-        {
-            SummaryCards = cards;
-            ApplySummaryCardOrder();
-        }
-
         // The Export tab's parts (MainWindow.Export.cs); ExportContent fills it once they are found. ExportPanel is the template's root.
         if ((content.Name == nameof(ExportPanel) ? content : content.FindName(nameof(ExportPanel))) is DockPanel export)
         {
@@ -300,11 +321,8 @@ public partial class MainWindow
             ExportPanel = export;
             ExportBarSlot = Part<Border>(nameof(ExportBarSlot));
             ExportSections = Part<StackPanel>(nameof(ExportSections));
-            (EasyExportButton, AdvancedExportButton) = (Part<RadioButton>(nameof(EasyExportButton)), Part<RadioButton>(nameof(AdvancedExportButton)));
-            EasyExportPanel = Part<ScrollViewer>(nameof(EasyExportPanel));
-            EasyExportCards = Part<WrapPanel>(nameof(EasyExportCards));
             ExportSectionHost = Part<Border>(nameof(ExportSectionHost));
-            ExportNoSections = Part<TextBlock>(nameof(ExportNoSections));
+            ExportColumns = Part<Grid>(nameof(ExportColumns));
         }
 
         return content;
@@ -528,35 +546,110 @@ public partial class MainWindow
     [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
     private static partial bool K32EmptyWorkingSet(IntPtr process);
 
-    // ----- The side window -----
+    // ----- The side windows (5.4C: any number, each a Live Video Preview or a Pane Docker) -----
 
-    /// <summary>The Layout flyout's Side Window row: opens the side window, or closes it (its panes come back).</summary>
+    /// <summary>
+    /// The Layout Selector's "+ New Side Window" (5.4D: in its footer): a new side window, a Live Video Preview to start with (its title bar
+    /// switches it to a Pane Docker). A layout only previewed is put back first, and then the selector closed, before the window opens
+    /// (5.4D: the popup's Closed comes later, after the new window's Changed has saved the arrangement).
+    /// </summary>
     private void SideWindowRow_Click(object sender, RoutedEventArgs e)
     {
-        CloseLayoutMenu();
-        _dock.SetSideOpen(!_dock.IsSideOpen);
-        UpdateSideWindowCheck();
-        _viewModel.StatusText = _dock.IsSideOpen
-            ? "The side window is open: drag a pane's tab into it (or out of this window), or right-click a tab and choose Move to Side Window."
-            : "The side window is closed; its panes are back in this window.";
+        RestoreLayoutBeforePreview();
+        _layoutHover.Close();
+        _dock.OpenSideWindow(SideWindowMode.LiveVideoPreview);
+        _viewModel.StatusText = "A new side window shows the player live: put it on another monitor (F11 or a double-click: full screen). Its title bar makes it a Pane Docker, or drag any pane's tab out of the window.";
     }
 
-    /// <summary>The Side Window row of the Layout flyout is ticked while the side window is open.</summary>
-    private void UpdateSideWindowCheck() => SideWindowCheck.Visibility = _dock.IsSideOpen ? Visibility.Visible : Visibility.Hidden;
+    /// <summary>Keeps the arrangement, and (5.4C) the side windows, in the settings: on every dock change and at close.</summary>
+    private void SaveDockInto(AppSettings settings)
+    {
+        settings.DockLayout = _dock.Save();
+        settings.SideWindows = _dock.SaveSideWindows();
+    }
 
-    // The side window answers keys and dropped files as this window does.
+    /// <summary>
+    /// The Layout Selector's rows for the side windows open (5.4C; 5.4D: in its footer): each one's name (a click brings it to the front) and a
+    /// close button. Made as the selector opens (OpeningLayoutSelector) and whenever a side window opens, closes or changes its mode.
+    /// </summary>
+    private void UpdateSideWindowCheck()
+    {
+        SideWindowRows.Children.Clear();
+        foreach (var (id, number, _, name) in _dock.SideWindowList)
+        {
+            var row = new Button { Content = name, ToolTip = $"{name}: brings it to the front.", HorizontalContentAlignment = HorizontalAlignment.Left };
+            System.Windows.Automation.AutomationProperties.SetName(row, name);
+            row.Click += (_, _) =>
+            {
+                RestoreLayoutBeforePreview();
+                _layoutHover.Close();
+                _dock.BringSideWindowForward(id);
+            };
+
+            var close = new Button
+            {
+                Content = "", FontFamily = new System.Windows.Media.FontFamily("Segoe MDL2 Assets"), FontSize = 10, Padding = new Thickness(8, 4, 8, 4),
+                ToolTip = $"Closes side window {number} (a Pane Docker's panes go back to this window).", Margin = new Thickness(2, 0, 0, 0),
+            };
+            System.Windows.Automation.AutomationProperties.SetName(close, $"Close Side Window {number}");
+
+            // A layout only previewed is put back first: closing a Pane Docker puts its panes into the arrangement, which is saved. Its row goes
+            // with the button that had the keyboard, so after a click with the pointer the selector lets the keyboard go (as a card's pill does).
+            close.Click += (_, _) =>
+            {
+                RestoreLayoutBeforePreview();
+                _dock.CloseSideWindow(id);
+                if (!FromKeyboard)
+                    LeaveSelectorToPointer();
+            };
+
+            // Under the footer's buttons, 8 DIPs down (the card's row spacing), then close together.
+            var line = new DockPanel { Margin = new Thickness(0, SideWindowRows.Children.Count == 0 ? 8 : 2, 0, 0) };
+            DockPanel.SetDock(close, Dock.Right);
+            line.Children.Add(close);
+            line.Children.Add(row);
+            SideWindowRows.Children.Add(line);
+        }
+    }
+
+    // The side windows answer keys and dropped files as this window does.
     private readonly HashSet<Window> _hookedSides = [];
+    private bool _mirrorNotesHooked;
 
-    private void HookSideWindow(Window side)
+    private void HookSideWindow(SideWindow side)
     {
         if (!_hookedSides.Add(side))
             return;
 
         side.PreviewKeyDown += MainWindow_PreviewKeyDown;
         HookTimelineMenuKey(side);
+
+        // The sideways wheel over a Timeline moved here (5.4C review): each window hears its own WM_MOUSEHWHEEL; the hook answers only
+        // while the pointer is over the Timeline.
+        void HookSidewaysWheel() =>
+            System.Windows.Interop.HwndSource.FromHwnd(new System.Windows.Interop.WindowInteropHelper(side).Handle)?.AddHook(TimelineSidewaysWheel);
+        if (new System.Windows.Interop.WindowInteropHelper(side).Handle != IntPtr.Zero)
+            HookSidewaysWheel();
+        else
+            side.SourceInitialized += (_, _) => HookSidewaysWheel();
         side.AllowDrop = true;
         side.PreviewDragOver += Window_PreviewDragOver;
         side.PreviewDrop += Window_PreviewDrop;
-        side.Closed += (_, _) => _hookedSides.Remove(side);
+
+        // A Live Video Preview's surface made or gone: its mirror attached or let go (MainWindow.GpuPreview.cs).
+        side.PreviewSurfaceChanged += _ => SyncMirrors();
+        side.Closed += (_, _) =>
+        {
+            _hookedSides.Remove(side);
+            SyncMirrors();
+        };
+
+        // The player hidden or shown again: the previews say whether they show its last picture.
+        if (!_mirrorNotesHooked)
+        {
+            _mirrorNotesHooked = true;
+            VideoView.IsVisibleChanged += (_, _) => UpdateMirrorNotes();
+            VideoView.SizeChanged += (_, _) => UpdateMirrorNotes();
+        }
     }
 }

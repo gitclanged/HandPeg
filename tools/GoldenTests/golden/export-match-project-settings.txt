@@ -1,0 +1,17 @@
+# Export's "Same as source" is "Match Project Settings": legacy values read as it, and the export follows the project.
+ok: a new project's Framerate, Colorspace and Pixel Aspect are Match Project Settings
+ok: no list offers Same as source; each starts with Match Project Settings
+ok: Sample Rate's first choice is Match Project Settings (48 kHz), still saved as 0
+ok: Resolution's first preset is Match Project Settings, and blank boxes show it
+ok: a size preset fills the boxes (on their side while the frame is vertical)
+ok: Match Project Settings empties them again (the Sequence's own size)
+ok: a preset's defaults are Match Project Settings
+ok: a preset holding Same as source applies as Match Project Settings
+ok: so does one read from an old presets.json
+ok: and the settings are saved as Match Project Settings
+ok: at the defaults: the Sequence's rate, square pixels, no tone-map (as Same as source was)
+ok: and sound mixed at 48 kHz
+ok: a project of 16:9 pixels exports them (-aspect 16/9)
+ok: a 44.1 kHz project's sound is mixed at 44.1 kHz
+ok: an HDR project under Match Project Settings is tone-mapped to BT.709 SDR, and says so
+ok: a value chosen in Export still wins over the project's (1:1, 48000 Hz)

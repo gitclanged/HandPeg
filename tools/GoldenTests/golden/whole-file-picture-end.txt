@@ -1,0 +1,9 @@
+# A file whose container outlasts its picture, opened untouched, is still the whole file (Copy remux, its subtitles, chapters and copied sound); a trim of a frame makes it a cut.
+ok: opened: its clip ends on the picture's last frame (298 frames at 30 fps) and keeps that as its picture's length, its file the container's 10.02 s
+ok: the untouched clip is the whole file (WholeFiles: its subtitles, chapters and copied sound go with it), though 87 ms shorter than its container
+ok: a Copy export of it needs no cuts list: the file remuxed as it is
+ok: the Copy command reads the file itself, its copied sound held to the picture's end by the muxer's -t
+ok: saved with the project (and copied, pasted or undone, which go through JSON) it keeps its picture's length
+ok: a copy of the Sequence keeps it too
+ok: a frame trimmed off its end: no longer the whole file, and a Copy export cuts it
+ok: a file whose picture is as long as its container: no picture length kept (nor written), the whole file as before, no -t

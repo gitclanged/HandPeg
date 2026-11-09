@@ -64,6 +64,9 @@
             drawn as lines by the one element that faces the control (ButtonChrome, the time bars).
         -->
         <SolidColorBrush x:Key="CardBrush" po:Freeze="True" Color="#2D2D2D" />
+        <!-- The inspector cards (5.4B, CLAUDE.md 10.3: the Export tab's three columns): a dark surface with a hairline edge. -->
+        <SolidColorBrush x:Key="InspectorCardBrush" po:Freeze="True" Color="#1E1E22" />
+        <SolidColorBrush x:Key="InspectorCardBorderBrush" po:Freeze="True" Color="#2A2A30" />
         <SolidColorBrush x:Key="ButtonFaceBrush" po:Freeze="True" Color="#0078D7" />
         <SolidColorBrush x:Key="ButtonTextBrush" po:Freeze="True" Color="#FFFFFF" />
         <SolidColorBrush x:Key="ButtonBorderBrush" po:Freeze="True" Color="#0078D7" />
@@ -607,7 +610,8 @@
             A splitter that stays out of sight until the pointer is on it. The splitter is its grip, a transparent area wide
             enough to grab; the visible line is what its Padding leaves of it (5.3-Stage2: the dock's borders give a 7 px grip
             laid out in 1 px and the Padding that puts the 1 px line on the seam, DockManager.SeamGrip, so beside the floating
-            player the grip lies wholly in the other part).
+            player the grip lies wholly in the other part). Since 5.4D the dock's borders are Thumbs of their own (DockManager.SeamThumb,
+            with the cascade), and their look follows this one.
         -->
         <Style x:Key="QuietSplitter" TargetType="GridSplitter">
             <Setter Property="Background" Value="Transparent" />

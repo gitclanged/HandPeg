@@ -1,0 +1,4 @@
+# Every MainViewModel instance field is classified as the project's (a tab keeps it) or the application's: a new one fails until it is.
+ok: every MainViewModel instance field is classified (unclassified: none)
+ok: none is both the project's and the application's (none)
+ok: and the lists name no field that is gone (none)

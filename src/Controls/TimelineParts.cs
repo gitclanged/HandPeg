@@ -374,6 +374,16 @@ public sealed class TimelineBlock
     /// <summary>What letting go of the block on another bar does, given that bar's data and the block's left edge in pixels.</summary>
     public Action<object, double>? MoveTo { get; init; }
 
+    /// <summary>
+    /// Whether the block may be let go at a seam onto a new track (5.4A, the unified timeline's "+ New Video Track" bar), given the data
+    /// of the top-level picture row the new track goes beside, whether it goes above that row (false: below), and the block's left edge in
+    /// pixels; null for a block that never goes onto a new track.
+    /// </summary>
+    public Func<object, bool, double, bool>? CanMoveToNewTrack { get; init; }
+
+    /// <summary>What letting go of the block at a seam does (see <see cref="CanMoveToNewTrack"/>): the row's data, above or below it, the left edge.</summary>
+    public Action<object, bool, double>? MoveToNewTrack { get; init; }
+
     /// <summary>The block's sound by time, for the unified timeline (4.4): drawn in place of <see cref="Peaks"/> when given.</summary>
     public WaveWindow? SoundWindow { get; init; }
 
@@ -508,7 +518,8 @@ public static class TimelineMetrics
 /// The time ruler over a tab's time bars: ticks and times for the stretch of the sequence the bars show, the end of
 /// the sequence (the room after it, where clips can be dropped and dragged, shaded), and the playhead. A press or
 /// a drag on it moves the playhead; the wheel zooms the bars about the pointer, and Shift + wheel or a drag with
-/// the middle button moves them along.
+/// the middle button moves them along, with momentum (5.4C): a flick of the middle button or a fast Shift + wheel
+/// coasts on and slows to a stop, through a <see cref="MomentumScroller"/>; any press, a zoom, or the ruler hidden stops it.
 /// </summary>
 public sealed class TimelineRuler : TimelineBar
 {
@@ -529,6 +540,23 @@ public sealed class TimelineRuler : TimelineBar
     private double _start, _span, _sequence;
     private double? _panFrom;
     private bool _seeking;
+
+    // Momentum (5.4C): made at its first use; how far the middle-button drag has panned since its press; whether a coast has the frame.
+    private MomentumScroller? _momentum;
+    private double _panTravel;
+    private bool _coastHooked;
+
+    private MomentumScroller Momentum => _momentum ??= new MomentumScroller();
+
+    public TimelineRuler()
+    {
+        Unloaded += (_, _) => StopMomentum();
+        IsVisibleChanged += (_, e) =>
+        {
+            if (!(bool)e.NewValue)
+                StopMomentum();
+        };
+    }
     private IReadOnlyList<double> _markers = [], _highlights = [];
 
     /// <summary>The colour markers are drawn in, here and on the Sequence Overview Scrubber.</summary>
@@ -584,6 +612,10 @@ public sealed class TimelineRuler : TimelineBar
         highlights ??= [];
         if (start == _start && span == _span && sequence == _sequence && markers.SequenceEqual(_markers) && highlights.SequenceEqual(_highlights))
             return;
+
+        // A zoom or a fit: a coast along the old view stops.
+        if (span != _span)
+            StopMomentum();
 
         (_start, _span, _sequence, _markers, _highlights) = (start, span, sequence, [.. markers], [.. highlights]);
         InvalidateVisual();
@@ -727,12 +759,19 @@ public sealed class TimelineRuler : TimelineBar
         e.Handled = true;
     }
 
+    // Any press on the ruler (before anything else of it): a coast stops where it is.
+    protected override void OnPreviewMouseDown(MouseButtonEventArgs e)
+    {
+        base.OnPreviewMouseDown(e);
+        StopMomentum();
+    }
+
     protected override void OnMouseDown(MouseButtonEventArgs e)
     {
         base.OnMouseDown(e);
         if (e.ChangedButton == MouseButton.Middle && CaptureMouse())
         {
-            _panFrom = e.GetPosition(this).X;
+            MiddlePanPress(e.GetPosition(this).X, MomentumScroller.Now());
             Cursor = Cursors.ScrollWE;
             e.Handled = true;
         }
@@ -743,22 +782,123 @@ public sealed class TimelineRuler : TimelineBar
         base.OnMouseUp(e);
         if (e.ChangedButton == MouseButton.Middle && _panFrom is not null)
         {
+            // Let go of the capture first (losing it mid-drag stops a coast), then the flick, if it was one, coasts on.
+            var now = MomentumScroller.Now();
             _panFrom = null;
             Cursor = null;
             ReleaseMouseCapture();
+            MiddlePanRelease(now);
             e.Handled = true;
         }
     }
+
+    /// <summary>The middle button pressed at <paramref name="x"/>: any coast stops and the pan begins (5.4C test seam).</summary>
+    internal void MiddlePanPress(double x, double nowMs)
+    {
+        _panFrom = x;
+        _panTravel = 0;
+        Momentum.Press(nowMs);
+        Momentum.Sample(0, nowMs);
+    }
+
+    /// <summary>The middle-button drag at <paramref name="x"/>: the bars move along with the pointer (test seam).</summary>
+    internal void MiddlePanMove(double x, double nowMs)
+    {
+        if (_panFrom is not { } from)
+            return;
+
+        _panFrom = x;
+        _panTravel += from - x;
+        Momentum.Sample(_panTravel, nowMs);
+        PanRequested?.Invoke(from - x);
+    }
+
+    /// <summary>The middle button let go: a flick (250 DIP/s or more, still moving within the last 40 ms) coasts on (test seam).</summary>
+    internal void MiddlePanRelease(double nowMs)
+    {
+        _panFrom = null;
+        if (Momentum.Release(nowMs) != 0)
+            HookCoast();
+    }
+
+    /// <summary>
+    /// Shift + the wheel by <paramref name="pixels"/> (positive: later) at <paramref name="nowMs"/>, with momentum: a fast stream coasts on,
+    /// a tick against the coast stops it (test seam; <see cref="OnMouseWheel"/> calls it).
+    /// </summary>
+    internal void PanWheelAt(double pixels, double nowMs)
+    {
+        var (before, step) = (_start, Momentum.Wheel(pixels, nowMs));
+        if (step != 0)
+            PanRequested?.Invoke(step);
+        if (step != 0 && _start == before)
+            Momentum.Stop();
+        if (Momentum.IsCoasting)
+            HookCoast();
+    }
+
+    /// <summary>One frame of the coast at <paramref name="nowMs"/>: the bars move along by what it covered (the host shows the new view at
+    /// once); a view that did not move (an end, the view fitted) stops it. Whether the view moved (test seam; the frame hook calls it).</summary>
+    internal bool StepCoast(double nowMs)
+    {
+        var moved = false;
+        if (_momentum is { IsCoasting: true } momentum)
+        {
+            var pixels = momentum.Tick(nowMs);
+            if (pixels != 0)
+            {
+                var before = _start;
+                PanRequested?.Invoke(pixels);
+                if (_start == before)
+                    momentum.Stop();
+                else
+                    moved = true;
+            }
+        }
+
+        if (_momentum?.IsCoasting != true)
+            UnhookCoast();
+        return moved;
+    }
+
+    /// <summary>Whether the bars are coasting along from this ruler (5.4C).</summary>
+    public bool IsCoasting => _momentum?.IsCoasting == true;
+
+    /// <summary>Stops any coast from this ruler where it is (a press elsewhere on the timeline, the playhead turning the page).</summary>
+    public void StopMomentum()
+    {
+        _momentum?.Stop();
+        UnhookCoast();
+    }
+
+    // The frame is hooked only while a coast runs and the ruler is shown; a test steps the coast itself.
+    private void HookCoast()
+    {
+        if (_coastHooked || !IsVisible)
+            return;
+
+        _coastHooked = true;
+        CompositionTarget.Rendering += OnCoastFrame;
+    }
+
+    private void UnhookCoast()
+    {
+        if (!_coastHooked)
+            return;
+
+        _coastHooked = false;
+        CompositionTarget.Rendering -= OnCoastFrame;
+    }
+
+    private void OnCoastFrame(object? sender, EventArgs e) => StepCoast(MomentumScroller.Now());
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
         var at = e.GetPosition(this).X;
         NotePointer(ActualWidth > 0 && _span > 0 ? Math.Max(TimeAt(Math.Clamp(at, 0, ActualWidth)), 0) : double.NaN);
-        if (_panFrom is { } from)
+        if (_panFrom is not null)
         {
-            PanRequested?.Invoke(from - at);
-            _panFrom = at;
+            MiddlePanMove(at, MomentumScroller.Now());
         }
         else if (_seeking)
         {
@@ -769,6 +909,10 @@ public sealed class TimelineRuler : TimelineBar
     protected override void OnLostMouseCapture(MouseEventArgs e)
     {
         base.OnLostMouseCapture(e);
+
+        // A middle-button drag taken away mid-way is no flick: nothing coasts from it.
+        if (_panFrom is not null)
+            StopMomentum();
         (_seeking, _panFrom) = (false, null);
 
         // A seek's drag let go outside the ruler: nothing of it is under the pointer.
@@ -786,9 +930,15 @@ public sealed class TimelineRuler : TimelineBar
     protected override void OnMouseWheel(MouseWheelEventArgs e)
     {
         if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
-            PanRequested?.Invoke(-e.Delta);
+        {
+            PanWheelAt(-e.Delta, MomentumScroller.Now());
+        }
         else
+        {
+            StopMomentum();
             ZoomRequested?.Invoke(Math.Pow(1.25, e.Delta / 120.0), e.GetPosition(this).X);
+        }
+
         e.Handled = true;
     }
 

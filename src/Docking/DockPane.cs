@@ -55,8 +55,17 @@ public sealed class DockPane
     /// </summary>
     public Action<double>? ResizeBy { get; init; }
 
-    /// <summary>The least width the pane can be given.</summary>
-    public Func<double> MinWidth { get; init; } = () => 120;
+    /// <summary>
+    /// What a double-click on the border that makes it taller or shorter does instead of evening the parts beside it (5.4D: the
+    /// Sequence Overview Scrubber's lower edge puts its height back, as a double-click on its own grip does); null for nothing.
+    /// </summary>
+    public Action? ResetSize { get; init; }
+
+    /// <summary>
+    /// The least width the pane can be given. 5.4D: 180 unless a pane says otherwise (it was 120; MainWindow's own default was 160),
+    /// low enough that every border has room to move in a 1280 DIP window and high enough that a pane's title row and its tools stay whole.
+    /// </summary>
+    public Func<double> MinWidth { get; init; } = () => 180;
 
     public double MinHeight { get; init; } = 60;
 
@@ -81,6 +90,15 @@ public sealed class DockPane
     /// panes, kept exactly over a stand-in that goes wherever the arrangement puts the pane.
     /// </summary>
     public bool Floats { get; init; }
+
+    /// <summary>
+    /// Shown exactly while the arrangement holds it (5.4C, the studios): never put back by a load or a layout that leaves it out,
+    /// placed by <see cref="DockManager.Open"/> and taken out by <see cref="DockManager.Close"/>.
+    /// </summary>
+    public bool Optional { get; init; }
+
+    /// <summary>Panes to go in with (as a tab of the first one's group found) when the mode's own arrangement has no place for it (5.4C).</summary>
+    public IReadOnlyList<string> HomeWith { get; init; } = [];
 }
 
 /// <summary>
@@ -113,4 +131,17 @@ public sealed class PaneTitleSlot : ContentControl
 
     /// <summary>The slot of a pane, when its content has one.</summary>
     public static PaneTitleSlot? Of(string pane) => Slots.TryGetValue(pane, out var slot) && slot.TryGetTarget(out var found) ? found : null;
+
+    /// <summary>
+    /// Gives a pane its slot back (5.4A): a second copy of a pane's content made outside the dock (the Media Browser as the New Project
+    /// studio's picker) takes the pane's slot as its XAML sets its id, and would have the dock put the pane's tab in the dialog. Null
+    /// forgets the pane's slot (it had none before).
+    /// </summary>
+    internal static void Restore(string pane, PaneTitleSlot? slot)
+    {
+        if (slot is null)
+            Slots.Remove(pane);
+        else
+            Slots[pane] = new WeakReference<PaneTitleSlot>(slot);
+    }
 }

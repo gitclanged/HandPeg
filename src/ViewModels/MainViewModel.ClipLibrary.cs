@@ -135,4 +135,30 @@ public partial class MainViewModel
                 edit.TrimClipEnd(now, now.Start + length);
         }, undoable: false);
     }
+
+    /// <summary>
+    /// A clip just placed from a sub-clip of its file (5.4C, the Media Browser's cutter): it plays from <paramref name="inSeconds"/> to
+    /// <paramref name="outSeconds"/> of the file (its MediaOffset clock), from where it starts. Cut to the length first, then slipped, so
+    /// the slip always has the file's room. No undo step of its own: the add's (Undo takes the clip off whole).
+    /// </summary>
+    internal void FitToSourceRange(Layer view, double inSeconds, double outSeconds)
+    {
+        if (ClipOf(view) is not { PlaysFile: true } clip || !double.IsFinite(inSeconds) || !double.IsFinite(outSeconds))
+            return;
+
+        var from = Math.Max(inSeconds, 0);
+        var length = (outSeconds - from) / Math.Max(clip.Speed, 0.01);
+        if (length < TimelineDocument.MinimumClipSeconds)
+            return;
+
+        Edit($"cut {view.Name} to its sub-clip", edit =>
+        {
+            if (Document.FindClip(clip.Id) is not { } now)
+                return;
+            if (Math.Abs(now.Duration - length) >= 0.0005)
+                edit.TrimClipEnd(now, now.Start + length);
+            if (Math.Abs(now.MediaOffset - from) >= 0.0005)
+                edit.SlipClip(now, from - now.MediaOffset);
+        }, undoable: false);
+    }
 }

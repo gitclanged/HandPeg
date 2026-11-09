@@ -1,0 +1,12 @@
+# The Live Encoded Preview on the player bar by default (5.4D): after the 3D view, its own glyph, its flyout made on first opening.
+   the playback bar's defaults: PrevIFrame,StepBack,StepForward,NextIFrame,AddMarker,EditOnVideo,Exploded3D,ExportQualityPreview,RenderPreview,Reload,Volume,Speed,@3
+ok: the Live Encoded Preview is one of the bar's defaults, listed right after the 3D Exploded View under Viewer
+ok: a bar saved before 5.4D shows it once (list version 3), and one from before 5.0 gains the 3D view and it together
+ok: a bar saved at version 3 without it keeps it hidden: the user's choice stands
+ok: MainWindow.xaml: ExportQualityPreviewBarSlot is the next control after ExplodedToggle in the transport
+ok: the toggle is the eye (Segoe MDL2 E890, View) and named Live Encoded Preview; Render Preview keeps E7B3, so no two share a glyph
+ok: BuildLoopbackToggle makes the popup empty and its flyout the first time it opens (Law 1: nothing of the flyout before Frame 1)
+ok: its name, tooltip and overflow menu entry say Live Encoded Preview; no text of the player bar's says Export Quality Preview any more
+ok: the pointer hook is attached in one place only, SyncLoopbackLoupe, while the preview and the Magnifier are both on (none at start-up)
+ok: the preview is off at every start and AppSettings holds nothing of it
+ok: the Magnifier is saved as it is ticked (AppSettings.ExportQualityPreviewLoupe) and a new window starts with it

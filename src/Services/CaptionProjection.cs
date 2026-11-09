@@ -207,7 +207,7 @@ public static class CaptionProjection
     }
 
     /// <summary>
-    /// Writes the cues as they now stand on the timeline back into anchors (4.4: the Subtitle Editor's edits). A cue that is
+    /// Writes the cues as they now stand on the timeline back into anchors (4.4: the Subtitle Studio's edits). A cue that is
     /// still what the projection made gives back its words exactly as heard; one edited since is taken back into the source
     /// through the window it is seen through (moved off that window, as a new cue); a new cue over a window is anchored
     /// through the one under its middle; a cue over none stays on the

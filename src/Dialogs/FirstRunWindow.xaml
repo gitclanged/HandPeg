@@ -110,7 +110,15 @@
                          AutomationProperties.Name="Vertical and Shorts Studio Workspace" Checked="Workspace_Checked">
                 <StackPanel>
                     <TextBlock Text="Vertical &amp; Shorts Studio" Style="{StaticResource LayoutTitle}" />
-                    <TextBlock Style="{StaticResource CardText}" Text="For 9:16 shorts: a tall player and Canvas side by side, and the timeline below with the Export and Audio tabs." />
+                    <TextBlock Style="{StaticResource CardText}" Text="For 9:16 shorts: the effects, keyframes, Canvas and Subtitle Studio as tabs at the left, a tall player, the media as a filmstrip, and the timeline below." />
+                </StackPanel>
+            </RadioButton>
+            <!-- 5.4D: the Vertical Creator Split, the fifth built-in layout. -->
+            <RadioButton x:Name="VerticalCreatorLayoutCard" Style="{StaticResource LayoutCard}" Tag="Vertical Creator Split"
+                         AutomationProperties.Name="Vertical Creator Split Workspace" Checked="Workspace_Checked">
+                <StackPanel>
+                    <TextBlock Text="Vertical Creator Split" Style="{StaticResource LayoutTitle}" />
+                    <TextBlock Style="{StaticResource CardText}" Text="For 9:16 creators: the player the whole height at the left, the effects, Subtitle Studio and timeline in the middle, the media as a filmstrip at the right." />
                 </StackPanel>
             </RadioButton>
         </UniformGrid>

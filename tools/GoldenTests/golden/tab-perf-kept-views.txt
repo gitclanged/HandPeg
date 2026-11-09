@@ -1,0 +1,13 @@
+# A tab kept live keeps its clips' views: none made anew as it comes back, never another tab's, the views list filled in one change.
+ok: A put behind: its views are in no list or map of the view model (the views list emptied with its Sequence)
+ok: B (the same clip ids) has views of its own, made afresh and put in the views list in one change
+ok: a view of A changed while A is behind is listened to by nothing: B's clip of the same id is untouched
+ok: an edit in B (a trim) leaves A's Sequence and A's views as they were
+ok: A brought back
+ok: A comes back with its very own views (none made anew), in the same order, showing what they showed
+ok: the views list filled in one change (one Reset), not one insert and one removal for each view
+ok: A's views are listened to again: a trim through one is an edit of A's clip, and its view shows it
+ok: B's Sequence and B's views are untouched by the edit in A (the same clip ids): no view points at another tab's clip
+ok: B brought back
+ok: B comes back with its own views, but the one still loading as it went behind is made anew
+ok: and every view of B shows B's own clip (its trim to 3 s), not A's of the same id

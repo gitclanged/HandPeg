@@ -1,0 +1,17 @@
+# The Live Video Preview's mirror: the canvas's part of the player's output, fitted at its shape, presented without ever waiting, attached wherever the engine is.
+ok: MirrorRegion 1920x1080 output, 1920x1080 canvas = (0,0)-(1920,1080): a 16:9 canvas in a 16:9 player: all of it
+ok: MirrorRegion 1920x1080 output, 1080x1920 canvas = (656,0)-(1264,1080): a 9:16 canvas in a 16:9 player: the middle 608 columns, without the bars
+ok: MirrorRegion 1000x1000 output, 1920x1080 canvas = (0,219)-(1000,781): a 16:9 canvas in a square player: the middle 562 rows
+ok: MirrorRegion 7x3 output, 1x1 canvas = (2,0)-(5,3): a square canvas in 7x3: whole pixels, centred
+ok: MirrorRegion 0x1080 output, 1920x1080 canvas = (0,0)-(0,0): a player of no size (hidden): nothing
+ok: MirrorRegion 1920x1080 output, 0x1080 canvas = (0,0)-(0,0): a canvas of no size: nothing
+ok: AspectPanel.Fit: 16:9 in 800x600: the full width, centred down
+ok: AspectPanel.Fit: 9:16 in 300x600: the full width
+ok: AspectPanel.Fit: square in 1000x400: the full height, centred across
+ok: AspectPanel.Fit: no room: nothing
+ok: the mirror's present never waits: the frame copied with a 0 ms keyed-mutex wait, then presented only if its swap chain is ready now (a 0 ms wait), at sync interval 0
+ok: a mirror shares the player's reader (and so its device), and never disposes it
+ok: the pump takes the attach and detach requests, and gives the mirrors their turn after each of the player's presents (four places)
+ok: AttachMirror and DetachMirror are queued to the pump's thread; the engine disposes its mirrors as it goes
+ok: a new engine has every preview attached afresh; an engine stopped or closed forgets them (its mirrors went with it)
+ok: the player's overlay goes under the lowest side window; a mirror's surface lets the pointer through (double-click: full screen)

@@ -23,7 +23,7 @@ namespace HandPegApp.ViewModels;
 public partial class MainViewModel
 {
     /// <summary>The timeline: every track and clip, its markers, the Sequence Output's effects. See the section above.</summary>
-    public TimelineDocument Document { get; private set; } = new();
+    public TimelineDocument Document { get; private set; } = new() { PoolsPlacedFiles = true };
 
     // Each clip's view, by the clip's id; the look a view last took from its clip (taken again only when the clip has
     // another one: an edit moved its keys, or an undo step put an older one back); each track's number as its views carry
@@ -70,6 +70,7 @@ public partial class MainViewModel
         Height = Math.Max(FrameHeight, 2),
         UseVerticalResolution = UseVerticalResolution,
         FrameRate = Models.Timeline.FrameRate.OfSource(SourceFrameRate),
+        PoolsPlacedFiles = true,
     };
 
     /// <summary>
@@ -78,16 +79,36 @@ public partial class MainViewModel
     /// panes that edit them. No undo step of its own. A restore (4.4-BugHunt): nothing it sets going takes a step or makes an
     /// edit, and the captions are projected once, as the outermost restore ends (<see cref="EndRestore"/>).
     /// </summary>
-    private void InstallDocument(TimelineDocument document)
+    private void InstallDocument(TimelineDocument document) => PutDocumentInPlace(document, kept: null);
+
+    /// <summary>
+    /// <see cref="InstallDocument"/>, with the views a project tab kept as it went behind (Pass 5.4D-TabPerf, <see cref="KeptViews"/>):
+    /// taken up again for its own Sequence, and brought into line with it (only what changed is written into them), instead of every view
+    /// made anew. Null, or views kept for another Sequence, makes them anew as any document put in place.
+    /// </summary>
+    private void PutDocumentInPlace(TimelineDocument document, KeptViews? kept)
     {
         using var restoring = BeginRestore();
+        _turnBeforePreset = null;
         Document.Committed -= OnDocumentCommitted;
+
+        // Project Media takes in the file of every clip placed on the timeline (5.4C), whichever document it is.
+        document.PoolsPlacedFiles = true;
         Document = document;
         Document.Committed += OnDocumentCommitted;
 
         using (DeferCommand())
         {
-            SyncViews(afresh: true);
+            if (kept is not null && ReferenceEquals(kept.Document, document))
+            {
+                TakeUpViews(kept);
+                SyncViews(wholeList: true);
+            }
+            else
+            {
+                SyncViews(afresh: true);
+            }
+
             FollowSelection();
             SetMarkers(document.Markers);
             SetSequenceEffects(document.SequenceEffects, document.SequenceEffectsBypassed);
@@ -331,19 +352,17 @@ public partial class MainViewModel
     /// track by track from the bottom, then the sounds), each track's clips in time, a stand-in for a track with no clips;
     /// views of clips that are gone let go of. A view keeps being the same object for as long as its clip is there, so what
     /// holds it (a selection, a pane) keeps it; <paramref name="afresh"/> makes every view anew (a document put in place).
+    /// Pass 5.4D-TabPerf: with every view new to the list (<paramref name="afresh"/>, or <paramref name="wholeList"/>: a tab's kept views
+    /// taken up again), the list is filled anew in one change (<see cref="ViewList.ReplaceAll"/>), not one insert and one removal for each
+    /// view: everything that follows the list (the rows, the Canvas, the player's boxes) is told once.
     /// </summary>
-    private void SyncViews(bool afresh = false)
+    private void SyncViews(bool afresh = false, bool wholeList = false)
     {
         if (afresh)
         {
             foreach (var view in _views.Values.Concat(_emptyTrackViews.Values).ToArray())
                 Unhook(view);
-            _views.Clear();
-            _emptyTrackViews.Clear();
-            _taken.Clear();
-            _staleLooks.Clear();
-            _placedFor.Clear();
-            _cropShown = null;
+            ForgetViews();
             DrawTargetLayer = null;
         }
 
@@ -397,7 +416,10 @@ public partial class MainViewModel
             _emptyTrackViews.Remove(id);
         }
 
-        // Into the list in that order, moving as little as can be (each move is a redraw of the rows).
+        // Into the list in that order, moving as little as can be (each move is a redraw of the rows); all of it at once when every view
+        // is new to it (Pass 5.4D-TabPerf).
+        if (afresh || wholeList)
+            Layers.ReplaceAll(wanted);
         for (var i = 0; i < wanted.Count; i++)
         {
             var at = i < Layers.Count && ReferenceEquals(Layers[i], wanted[i]) ? i : Layers.IndexOf(wanted[i]);
@@ -458,7 +480,13 @@ public partial class MainViewModel
             if (view is { IsVideoFile: true } && (view.ImageWidth <= 0 || clip.SourceDuration <= 0) && !_isBackgroundWorker)
             {
                 view.IsLoading = true;
-                _ = CompleteVideoLayerAsync(view, playOnce: true, keepLength: true);
+
+                // One just dropped as its tab went behind (5.4D-TabPerf review, P2): finished as the drop would have finished it, to its
+                // file's length and fitted to the frame, not kept at its stand-in length and box.
+                if (_addsToResume is { } resumed && resumed.TryGetValue(clip.Id, out var add))
+                    _ = FinishVideoAddAsync(view, add);
+                else
+                    _ = CompleteVideoLayerAsync(view, playOnce: true, keepLength: true);
             }
             else if (!_isBackgroundWorker)
             {
@@ -537,6 +565,102 @@ public partial class MainViewModel
         view.SpeedEditor = null;
         if (ReferenceEquals(DrawTargetLayer, view))
             DrawTargetLayer = null;
+    }
+
+    // ----- A project tab's views kept with it (Pass 5.4D-TabPerf) -----
+    // A tab kept live in memory (MainViewModel.Tabs.cs) keeps the views of its clips too: they are its own, of its own Sequence, and a
+    // Sequence that did not change while it was behind needs none made anew as it comes back (a view made is its look read, its pictures
+    // asked for, its handlers hooked; all of it again for every clip). While the tab is behind its views are in no map or list of the view
+    // model and listened to by nothing, so nothing done in another tab reaches them, nor through them a clip of any tab (a duplicate's clips
+    // have the same ids). Coming back, they are brought into line with the Sequence as after an edit: by their clips' ids, a look taken
+    // again only where the clip has another.
+
+    /// <summary>
+    /// The views of a project tab put behind (Pass 5.4D-TabPerf): of which Sequence, each clip's view and the look it last took, each empty
+    /// track's stand-in, and how each picture was last kept about its middle (<see cref="KeepPlacesOnReshape"/>).
+    /// </summary>
+    internal sealed record KeptViews(TimelineDocument Document, Dictionary<Guid, Layer> Views, Dictionary<Guid, LayerState> Taken,
+        Dictionary<Guid, Layer> EmptyTrackViews, Dictionary<Layer, PicturePlacement> PlacedFor);
+
+    /// <summary>
+    /// The views of the project held now taken out of the view model as its tab goes behind (Pass 5.4D-TabPerf, DetachForTab, once the
+    /// looks are written into the clips: CaptureState): kept with the tab, no longer listened to, and in no map of the view model, so
+    /// nothing done before the next tab is in place (its settings reshaping the frame: KeepPlacesOnReshape) moves them. The views list
+    /// is emptied after (DetachForTab), with the Sequence.
+    /// </summary>
+    internal KeptViews LetGoOfViews()
+    {
+        var kept = new KeptViews(Document, new(_views), new(_taken), new(_emptyTrackViews), new(_placedFor, ReferenceEqualityComparer.Instance));
+        foreach (var view in _views.Values.Concat(_emptyTrackViews.Values))
+            Unhook(view);
+        ForgetViews();
+        return kept;
+    }
+
+    /// <summary>
+    /// A tab's kept views taken up again for its own Sequence as it comes back (<see cref="PutDocumentInPlace"/>), in place of whatever
+    /// views the view model held (let go of as a document made afresh lets go of them). A view whose clip was still being looked at as the
+    /// tab went behind is not: what looked at it was the old tab's and fills in nothing now, so its view is made anew and its file looked at
+    /// again, as an open makes it. Its pictures are not asked for again: what was asked for is drawn for the view itself (its waveform and
+    /// strip land on it, in front or behind), as for any view an edit keeps.
+    /// </summary>
+    private void TakeUpViews(KeptViews kept)
+    {
+        foreach (var view in _views.Values.Concat(_emptyTrackViews.Values).ToArray())
+            Unhook(view);
+        ForgetViews();
+        DrawTargetLayer = null;
+        foreach (var (id, view) in kept.Views)
+        {
+            if (view.IsLoading)
+                continue;
+
+            Hook(view);
+            _views[id] = view;
+            if (kept.Taken.TryGetValue(id, out var look))
+                _taken[id] = look;
+            if (kept.PlacedFor.TryGetValue(view, out var placed))
+                _placedFor[view] = placed;
+        }
+
+        foreach (var (id, view) in kept.EmptyTrackViews)
+        {
+            Hook(view);
+            _emptyTrackViews[id] = view;
+        }
+    }
+
+    /// <summary>Every map of the views emptied (the views themselves let go of by the caller).</summary>
+    private void ForgetViews()
+    {
+        _views.Clear();
+        _emptyTrackViews.Clear();
+        _taken.Clear();
+        _staleLooks.Clear();
+        _placedFor.Clear();
+        _cropShown = null;
+    }
+
+    /// <summary>
+    /// The views list (<see cref="Layers"/>), which can also be filled anew in one change (Pass 5.4D-TabPerf: a document put in place, whose
+    /// views are all new to it, is told once, not once for each view put in and once for each taken out).
+    /// </summary>
+    public sealed class ViewList : System.Collections.ObjectModel.ObservableCollection<Layer>
+    {
+        /// <summary>The list made <paramref name="views"/>, in that order, told as one Reset (nothing told when it is that already).</summary>
+        internal void ReplaceAll(IReadOnlyList<Layer> views)
+        {
+            if (Items.Count == views.Count && Items.SequenceEqual(views, ReferenceEqualityComparer.Instance))
+                return;
+
+            CheckReentrancy();
+            Items.Clear();
+            foreach (var view in views)
+                Items.Add(view);
+            OnPropertyChanged(new System.ComponentModel.PropertyChangedEventArgs(nameof(Count)));
+            OnPropertyChanged(new System.ComponentModel.PropertyChangedEventArgs("Item[]"));
+            OnCollectionChanged(new System.Collections.Specialized.NotifyCollectionChangedEventArgs(System.Collections.Specialized.NotifyCollectionChangedAction.Reset));
+        }
     }
 
     /// <summary>
@@ -881,11 +1005,14 @@ public partial class MainViewModel
 
         // The Sequence ticks at the first file's own rate (as 4.2.0's canvas did), and takes its shape (as the Crop boxes cut
         // it, a preset's chosen before any video): outside any transaction, as a project's document-level values are.
+        // 5.4A: what the New Project studio chose on purpose (ExplicitFrame, ExplicitFrameRate) stays; the colour space follows.
         if (empty)
         {
-            Document.FrameRate = Models.Timeline.FrameRate.OfSource(SourceFrameRate);
-            if (picture)
+            if (!Document.ExplicitFrameRate)
+                Document.FrameRate = Models.Timeline.FrameRate.OfSource(SourceFrameRate);
+            if (picture && !Document.ExplicitFrame)
                 (Document.NaturalWidth, Document.NaturalHeight) = CroppedSize(BoxCrop(), SourceWidth, SourceHeight);
+            TakeProjectSettingsFrom(info);
             NoteDocumentShape();
         }
 
@@ -926,8 +1053,12 @@ public partial class MainViewModel
             {
                 if (empty)
                     (view.CropLeft, view.CropTop, view.CropRight, view.CropBottom) = BoxCrop();
-                view.BlurFill = _backgroundRow.IsHidden ? null : true;
                 FitToFrame(view, AppSettings.Current.NewClipsFill);
+
+                // Its blur fill only where it leaves part of the frame bare (5.4A, the user's standing rule: a 16:9 clip in a 9:16
+                // Sequence, never one that fills the frame), and only as the Sequence's first picture: a file opened onto clips is
+                // a further layer. A Game Preset chosen before it still turns its own blur on (PutTemplateOn, below).
+                view.BlurFill = !_backgroundRow.IsHidden && empty && LeavesFrameUncovered(view) ? true : null;
             }
         }
 
@@ -953,7 +1084,9 @@ public partial class MainViewModel
             if (track is not null && (!Document.Tracks.Contains(track) || track.IsLocked))
                 track = null;
 
-            var clipOfFile = NewClipFor(view, 0, length);
+            var pictureEnd = VideoSeconds(info, length);
+            var clipOfFile = NewClipFor(view, 0, pictureEnd);
+            clipOfFile.PictureDuration = PictureDurationOf(pictureEnd, clipOfFile.SourceDuration);
             Adopt(view, clipOfFile);
             TimelineClip placed;
             try
@@ -1005,6 +1138,46 @@ public partial class MainViewModel
     }
 
     /// <summary>
+    /// Whether a picture laid out as it is leaves part of the frame uncovered (5.4A: a 16:9 clip fitted into a 9:16 frame): only then
+    /// is a blur fill worth turning on by itself. A pixel of slack for the frame's even rounding.
+    /// </summary>
+    private bool LeavesFrameUncovered(Layer view)
+    {
+        var (frameWidth, frameHeight) = (FrameWidth, FrameHeight);
+        if (frameWidth <= 0 || frameHeight <= 0 || view.ImageWidth <= 0 || view.ImageHeight <= 0)
+            return false;
+        var (x, y, width, height) = view.GetOutputRect(frameWidth, frameHeight, view.ImageWidth, view.ImageHeight);
+        return x > 1 || y > 1 || x + width < frameWidth - 1 || y + height < frameHeight - 1;
+    }
+
+    /// <summary>
+    /// How long a clip of a whole file lasts as it is placed (5.4A, no trailing black frame): a file with a picture ends where its video
+    /// stream does when the probe says (a container is often longer, its sound padded past the last frame), never past the container;
+    /// otherwise the container's length. The clip's file stays as long as the container, so a trim can still reach what is past it.
+    /// Bounded, it ends on the Sequence's last frame within the picture (a placement rounds to the nearest frame, which could be past it).
+    /// </summary>
+    private double VideoSeconds(MediaInfo info, double container)
+    {
+        if (info.Video is not { Width: > 0, Height: > 0, DurationSeconds: > 0.05 } video || video.DurationSeconds >= container)
+            return container;
+
+        // A probed length is rounded (to the microsecond, or a Matroska file's millisecond), often a hair short of its last frame's
+        // end: within about 2 ms of a frame boundary counts as reaching it (overshooting by a hair is harmless, the export samples
+        // no later than half a frame before the end, GpuExportTiming.SampleLimitSeconds).
+        var rate = Document.FrameRate;
+        var fps = rate.IsValid ? (double)rate.Numerator / rate.Denominator : 0;
+        var frames = fps > 0 ? Math.Floor(video.DurationSeconds * fps + Math.Max(0.002 * fps, 1e-6)) : 0;
+        return frames > 0 ? Math.Min(rate.SecondsFromFrame((long)frames), container) : video.DurationSeconds;
+    }
+
+    /// <summary>
+    /// What a whole-file clip keeps as its <see cref="TimelineClip.PictureDuration"/> (5.4A): its picture's length as it was placed
+    /// (<see cref="VideoSeconds"/>) where that is shorter than its file's, so the whole-file tests know the untouched clip; else 0.
+    /// </summary>
+    private static double PictureDurationOf(double pictureEnd, double sourceDuration) =>
+        pictureEnd > 0.05 && sourceDuration > 0 && pictureEnd < sourceDuration - 0.0005 ? pictureEnd : 0;
+
+    /// <summary>
     /// A clip that hung from a clip of the file opened before, as the file opened now takes that clip's place: that file's own
     /// sound goes (the new file's streams are its own Sub-Lanes); a Cutout cut from its picture is cut from the new picture, on
     /// the new clip's clock, held to the new clip's span (to its end when it ran to the old clip's end; none when nothing of it
@@ -1038,7 +1211,7 @@ public partial class MainViewModel
         // Made anew (a new id, so its view is made anew with its new file).
         var piece = CopyOfClip(child);
         (piece.Id, piece.ParentClipId, piece.SourcePath, piece.Start, piece.End) = (Guid.NewGuid(), null, made.SourcePath, start, end);
-        (piece.MediaOffset, piece.Speed, piece.SourceDuration) = (made.MediaOffset + (start - made.Start) * made.Speed, made.Speed, made.SourceDuration);
+        (piece.MediaOffset, piece.Speed, piece.SourceDuration, piece.PictureDuration) = (made.MediaOffset + (start - made.Start) * made.Speed, made.Speed, made.SourceDuration, made.PictureDuration);
         piece.State = OnClockOf(TimelineTransaction.CopyOf(child.State), view, made, start);
         (piece.State.StartTime, piece.State.Duration) = (start, end - start);
         edit.DeleteClip(child, withChildren: false);
@@ -1131,7 +1304,7 @@ public partial class MainViewModel
     private bool _placingViews;
 
     // How each picture was last kept: for what frame, its middle there (fractions of the frame), and the corner and width it had.
-    private readonly record struct PicturePlacement((int Width, int Height) Frame, double MiddleX, double MiddleY,
+    internal readonly record struct PicturePlacement((int Width, int Height) Frame, double MiddleX, double MiddleY,
         (double SizeWidth, double PositionX, double PositionY) Wrote);
 
     private readonly Dictionary<Layer, PicturePlacement> _placedFor = new(ReferenceEqualityComparer.Instance);

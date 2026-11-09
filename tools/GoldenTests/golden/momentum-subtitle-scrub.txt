@@ -1,0 +1,9 @@
+# The Subtitle Studio's strip: a flick scrubs on and slows to a stop; a cue's drag never coasts; the strip's start and a position set from outside stop it.
+ok: a flick of the strip 300 DIPs left scrubs to 303.333 s and coasts on
+ok: each coasting frame scrubs on later and says so: 5.035 s further in 100 ms
+ok: the same moment set again (an echo) keeps the coast; another moment set from outside stops it there
+ok: a cue flicked by its middle moves (to 304.333 s) and is let go, and nothing coasts
+ok: a flick toward the start coasts into 0 s and stops there
+ok: a slow drag of the strip stops dead when let go
+ok: a click on the empty strip is no flick
+ok: any press on the strip (a right-click too) stops a coast

@@ -1,0 +1,5 @@
+# The title bar's progress over the project tabs (a 2 DIP rail, 16 % wash) and Game Presets in the Settings flyout (5.4D, Q12).
+ok: TitleProgress lies over the project tabs (Panel.ZIndex 10, in the same title-bar grid) and takes no pointer (IsHitTestVisible False)
+ok: TitleProgressRail is a 2 DIP accent line on the bar's bottom edge; the wash fills the bar's height at 0.16
+ok: the wash is 0.16 (0.08 while the work's length is unknown), and the rail follows the fill's width
+ok: the Settings flyout has the Game Presets button ("Save, Import or Export Game Presets..."); it closes the flyout and runs ManageStyles_Click

@@ -1,0 +1,15 @@
+# The Vertical & Shorts Studio: Effects | Keyframes | Canvas | Subtitle Studio as tabs, the player, the playback controls under both, the media at the right, the Timeline-first tabs below.
+ok: its shape: V(H(V(H([Effects,Keyframes,Layout,SubtitleStudio];[Player]);[Playback]);V([Header];[Media]));[Timeline];[Presets];[Tab:Audio,Tab:Command Preview,Tab:Export,Tab:Filters,UnifiedTimeline])
+ok: the left group: Effects | Keyframes | Canvas | Subtitle Studio as tabs (in that order), the effects shown
+ok: the player beside the left group (40 to 60: a 9:16 frame needs little width)
+ok: the playback controls are the row under the left column and the player together (V(H(left, Player), Playback))
+ok: the right column: the header joined over the media, 30 of the width
+ok: under it the Sequence Overview Scrubber across the window, the Preset Bar, then the timeline first and shown among every settings tab
+ok: the Master Meter and the other studios are left out (the meter goes in with the effects when shown)
+ok: tidying leaves it as it is (the playback row under the inner split survives)
+ok: it is still named Vertical & Shorts Studio among the five built-in layouts (5.4D: the Vertical Creator Split the fifth)
+ok: Standard Editing holds no studio and the arrangement version is still 4
+ok: its choice describes the Subtitle Studio and sets the Media Browser to Filmstrip (ShowShortsMedia)
+ok: Then runs when a layout is kept from the Layout Selector, put back as the Default by Reset Layout, chosen in the first-run window, and opened in at start-up
+ok: never while a card is only previewed, nor when the preview is undone
+ok: the first-run card keeps its name (its Tag) and tells of the Subtitle Studio as a tab

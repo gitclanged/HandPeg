@@ -9,7 +9,10 @@ namespace HandPegApp.ViewModels;
 // once that has been chosen (Settings > Preview & Cache > Downloads, "Downloaded videos in saved projects", 4.4).
 public partial class MainViewModel
 {
-    /// <summary>Every media file the open project uses: the main video, the layers' files, the voiceover, the captions' own sound.</summary>
+    /// <summary>
+    /// Every media file the open project uses: the main video, the layers' files, the voiceover, the captions' own sound, and the files
+    /// Project Media holds (5.4C: a download kept only in the bin is pinned and copied as one a clip plays is).
+    /// </summary>
     public List<string> MediaFilesInUse()
     {
         var files = new List<string>();
@@ -26,6 +29,8 @@ public partial class MainViewModel
             Add(layer.ImagePath);
         Add(VoiceoverPath);
         Add(CaptionAudioPath);
+        foreach (var pooled in Document.MediaPool)
+            Add(pooled);
         return files;
     }
 
@@ -114,6 +119,9 @@ public partial class MainViewModel
                     clip.SourcePath = Moved(path);
                 clip.State.ImagePath = Moved(clip.State.ImagePath);
             }
+
+            // And Project Media's (5.4C): a bin entry left pointing at the cache would lose its file with the next trim.
+            state.Timeline.MediaPool = [.. state.Timeline.MediaPool.Select(Moved)];
 
             ProjectStore.SaveTo(state, CurrentProjectPath);
             Log($"Copied {copies.Count} downloaded video{(copies.Count == 1 ? "" : "s")} into {folder}; the project now uses the copies");

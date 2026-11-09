@@ -60,8 +60,6 @@ public partial class MainViewModel
 
     [ObservableProperty] private bool _mergeAudioTracks;
     [ObservableProperty] private bool _normalizeAudio;
-    // On by default: letting the GPU decode speeds up most encodes and previews.
-    [ObservableProperty] private bool _hardwareDecoding = true;
     [ObservableProperty] private string _extraVideoArguments = "";
     [ObservableProperty] private bool _downloadSubtitles;
 
@@ -131,14 +129,18 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Puts the default encoding settings (Settings, Export &amp; Hardware) in place: at launch, and after a style preset
-    /// when they are set to override styles. Each blank one is left as it is. An encoding preset is never overridden:
+    /// Puts the default encoding settings (Settings, Export &amp; Hardware) in place: at launch, on + New Project, and after a style
+    /// preset when they are set to override styles. Each blank one is left as it is. An encoding preset is never overridden:
     /// with one selected, its settings stay.
     /// </summary>
     private void ApplyEncodingDefaults()
     {
         var settings = AppSettings.Current;
         using var whole = DeferCommand();
+
+        // The defaults are the slowest step (CLAUDE.md 8): a speed-first preset's state ends here (5.4D review), even where no setting
+        // below changes the encoder or its step (a blank default, or Media Foundation, whose fastest step is only in the command).
+        _speedFirst = false;
 
         // The encoder first: which preset steps and rate-control names exist depends on it.
         if (settings.DefaultVideoEncoder.Length > 0 && VideoEncoders.FirstOrDefault(e => e.Name == settings.DefaultVideoEncoder) is { } encoder)
@@ -153,7 +155,7 @@ public partial class MainViewModel
             TargetBitrate = bitrate;
         if (Framerates.Contains(settings.DefaultFramerate))
             (Framerate, CustomFramerate) = (settings.DefaultFramerate, settings.DefaultCustomFramerate);
-        (TenBit, HardwareDecoding) = (settings.DefaultTenBit && CanTenBit, settings.DefaultHardwareDecoding);
+        TenBit = settings.DefaultTenBit && CanTenBit;
         if (Containers.Contains(settings.DefaultContainer))
             Container = settings.DefaultContainer;
         WebOptimized = settings.DefaultWebOptimized;
@@ -305,6 +307,12 @@ public partial class MainViewModel
     /// <summary>Refreshes the "Projected Output" card from the current settings.</summary>
     private void UpdateProjectedOutput()
     {
+        if (IsAudioOnlyExport)
+        {
+            UpdateProjectedAudioOnly();
+            return;
+        }
+
         var animated = IsAnimatedOutput;
         var copyVideo = !animated && VideoEncoder.Family == EncoderFamily.Copy;
         var size = GetOutputSize();
@@ -313,22 +321,27 @@ public partial class MainViewModel
         var tracks = animated ? [] : GetOutputAudioTracks();
         var mixAudio = MergeAudioTracks && tracks.Count > 1;
 
-        // The length or the audio may just have changed: bring Target File Size and Target Bitrate back in step.
+        // The length or the audio may just have changed: bring Target File Size and Target Bitrate back in step (and the automatic
+        // bitrate, which follows the size and rate, 5.4B).
         SyncSizeAndBitrate();
+        OnPropertyChanged(nameof(EffectiveBitrateKbps));
+        OnPropertyChanged(nameof(AutoBitrateText));
 
         string audio;
         if (tracks.Count == 0)
             audio = "None";
         else if (mixAudio)
-            audio = $"{tracks.Count} tracks mixed into one, {MixedAudioCodec}{(MixedAudioCodec.StartsWith("pcm_", StringComparison.Ordinal) ? "" : $" {AudioBitrate}")}";
+            audio = $"{tracks.Count} tracks mixed into one, {MixedAudioCodec}{(AudioTrack.IsLossless(MixedAudioCodec) ? "" : $" {AudioBitrate}")}";
         else
-            audio = string.Join("; ", tracks.Select(t => t.IsPassthrough ? $"#{t.Index} copy" : $"#{t.Index} {t.Codec}{(t.Codec.StartsWith("pcm_", StringComparison.Ordinal) ? "" : $" {t.Bitrate}")}"));
+            audio = string.Join("; ", tracks.Select(t => t.IsPassthrough ? $"#{t.Index} copy" : $"#{t.Index} {t.Codec}{(AudioTrack.IsLossless(t.Codec) ? "" : $" {t.Bitrate}")}"));
         if (NormalizeAudio && tracks.Any(t => !t.IsPassthrough || mixAudio))
-            audio += "  (normalized)";
+            audio += $"  (normalized to {NormalizeLoudness(LoudnessTarget)} LUFS)";
 
         OutputInfoRows.Clear();
-        OutputInfoRows.Add(new("Resolution", size is { } s ? $"{s.Width} x {s.Height}" : "Same as source"));
-        OutputInfoRows.Add(new("Frame rate", frameRate > 0 ? $"{FormatNumber(frameRate)} fps" : "Same as source"));
+        OutputInfoRows.Add(new("Resolution", size is { } s ? $"{s.Width} x {s.Height}" : $"{FrameWidth} x {FrameHeight} (project)"));
+        OutputInfoRows.Add(new("Frame rate", frameRate > 0 ? $"{FormatNumber(frameRate)} fps" : MatchProject));
+        if (ProjectColorNote is { Length: > 0 } colour)
+            OutputInfoRows.Add(new("Colour", colour));
         OutputInfoRows.Add(new("Video codec",
             animated ? (OutputExtension == "gif" ? "Animated GIF" : "Animated WebP")
             : copyVideo && _mediaInfo?.Video is { } video ? $"{video.Codec} (copied)"
@@ -336,6 +349,36 @@ public partial class MainViewModel
         OutputInfoRows.Add(new("Audio", audio));
         OutputInfoRows.Add(new("Duration", duration > 0 ? TimeDisplay.Format(duration) : "Unknown"));
         OutputInfoRows.Add(new("Estimated file size", EstimateOutputSize(size, frameRate, duration, tracks, mixAudio)));
+    }
+
+    /// <summary>
+    /// The Projected Output card for an Audio Only file (5.4C): no picture, one track (every sound mixed, ExportSoundPlan.For), its
+    /// codec the file's, normalized as asked, and a size from its bitrate (MP3) or 16-bit PCM's (WAV; FLAC about 60 % of it).
+    /// </summary>
+    private void UpdateProjectedAudioOnly()
+    {
+        SyncSizeAndBitrate();
+        OnPropertyChanged(nameof(EffectiveBitrateKbps));
+        OnPropertyChanged(nameof(AutoBitrateText));
+        var extension = OutputExtension;
+        var codec = EncoderCommand.AudioOnlyCodec(extension);
+        var channels = AudioChannels == AudioChannelChoice.Mono ? 1 : 2;
+        var duration = GetOutputDuration();
+        var rate = AudioSampleRate > 0 ? AudioSampleRate : Document.SampleRate;
+        var kbps = AudioTrack.IsLossless(codec)
+            ? rate * 16.0 * channels / 1000 * (codec == "flac" ? 0.6 : 1)
+            : double.TryParse(AudioBitrate.TrimEnd('k', 'K'), NumberStyles.Float, CultureInfo.InvariantCulture, out var typed) ? typed : 128;
+        var audio = $"Every sound mixed into one, {codec}{(AudioTrack.IsLossless(codec) ? "" : $" {AudioBitrate}")}, {(channels == 1 ? "mono" : "stereo")}"
+                    + (NormalizeAudio ? $"  (normalized to {NormalizeLoudness(LoudnessTarget)} LUFS)" : "");
+
+        OutputInfoRows.Clear();
+        OutputInfoRows.Add(new("Output", $"Audio only ({extension.ToUpperInvariant()}): no picture is drawn"));
+        OutputInfoRows.Add(new("Audio", audio));
+        OutputInfoRows.Add(new("Sample rate", string.Create(CultureInfo.InvariantCulture, $"{rate:N0} Hz")));
+        OutputInfoRows.Add(new("Duration", duration > 0 ? TimeDisplay.Format(duration) : "Unknown"));
+        OutputInfoRows.Add(new("Estimated file size", duration > 0
+            ? $"~{FormatSize(kbps * duration / (8 * 1024))} ({(AudioTrack.IsLossless(codec) ? codec == "flac" ? "FLAC: about 60 % of PCM" : "16-bit PCM" : "from the bitrate")})"
+            : "Load a source for an estimate"));
     }
 
     /// <summary>
@@ -365,8 +408,9 @@ public partial class MainViewModel
             videoKbps = bits / 1000.0;
             basis = "Estimate based on source bitrate";
         }
-        else if (HasRateControl && IsBitrateMode && int.TryParse(TargetBitrate, out var target) && target > 0)
+        else if (HasRateControl && IsBitrateMode && EffectiveBitrateKbps is > 0 and var target)
         {
+            // The bitrate typed, else the automatic one: what the encoder is given, and the Target File Size box shows.
             // Size (MB) = (video + audio bitrates in kbps) x seconds / (8 x 1024)
             return FormatSize((target + audioKbps) * duration / (8 * 1024));
         }
@@ -429,11 +473,20 @@ public partial class MainViewModel
     /// <summary>GIF and WebP: always encoded, never with sound.</summary>
     private bool IsAnimatedOutput => OutputExtension is "gif" or "webp";
 
+    /// <summary>
+    /// FLAC, WAV and MP3 (5.4C): an Audio Only export, the Sequence's sound alone. The Export tab folds its video parts away and the
+    /// Export Quality Preview is off; raised as the container or the destination changes.
+    /// </summary>
+    public bool IsAudioOnlyExport => EncoderCommand.IsAudioOnlyExtension(OutputExtension);
+
+    /// <summary>Not <see cref="IsAudioOnlyExport"/>: what the Export tab's video parts are shown by.</summary>
+    public bool IsVideoExport => !IsAudioOnlyExport;
+
     private static double GetEncodedAudioKbps(string codec, string bitrate, AudioStreamInfo stream)
     {
-        // Uncompressed 16-bit PCM: sample rate x 16 bits x channels.
-        if (codec.StartsWith("pcm_", StringComparison.Ordinal))
-            return (stream.SampleRate > 0 ? stream.SampleRate : 48000) * 16.0 * Math.Max(stream.Channels, 1) / 1000;
+        // Uncompressed 16-bit PCM: sample rate x 16 bits x channels. FLAC (5.4B), lossless: about 60 % of that for most sound.
+        if (AudioTrack.IsLossless(codec))
+            return (stream.SampleRate > 0 ? stream.SampleRate : 48000) * 16.0 * Math.Max(stream.Channels, 1) / 1000 * (codec == "flac" ? 0.6 : 1);
 
         return double.TryParse(bitrate.TrimEnd('k', 'K'), NumberStyles.Float, CultureInfo.InvariantCulture, out var kbps) ? kbps : 160;
     }
@@ -463,17 +516,19 @@ public partial class MainViewModel
             return fps;
         }
 
-        return _mediaInfo?.Video?.FrameRate ?? 0;
+        // "Match Project Settings" (5.4A): the Sequence's own rate; a Copy export keeps its file's.
+        return VideoEncoder.Family == EncoderFamily.Copy ? _mediaInfo?.Video?.FrameRate ?? 0 : Document.FrameRate.Fps;
     }
 
     /// <summary>
-    /// Length of the output in seconds: the timeline's (4.3C: nothing is cut out of it on the way), or, for a Copy export of a
-    /// file's clips (joined end to end from its file: EncoderCommand.BuildCutsList, SequenceSpans.CopyCutOf), those clips end to end.
+    /// Length of the output in seconds: the timeline's to its last picture (4.3C: nothing is cut out of it on the way; 5.4A: an audio
+    /// tail past the last picture is not exported, a standalone sound placed past it is: SequenceSpans.ProgramSeconds), or, for a Copy
+    /// export of a file's clips (joined end to end from its file: EncoderCommand.BuildCutsList, SequenceSpans.CopyCutOf), those clips end to end.
     /// </summary>
     private double GetOutputDuration() =>
-        VideoEncoder.Family == EncoderFamily.Copy && !IsAnimatedOutput && SequenceSpans.CopyCutOf(Document) is { IsCut: true, Pieces.Count: > 0 } copy
+        VideoEncoder.Family == EncoderFamily.Copy && !IsAnimatedOutput && !IsAudioOnlyExport && SequenceSpans.CopyCutOf(Document) is { IsCut: true, Pieces.Count: > 0 } copy
             ? copy.Pieces.Sum(p => p.End - p.Start)
-            : SequenceSeconds;
+            : SequenceSpans.ProgramSeconds(Document);
 
     /// <summary>Size of the loaded file, in the same MB/GB form as the estimate it sits beside.</summary>
     private string GetSourceFileSize()

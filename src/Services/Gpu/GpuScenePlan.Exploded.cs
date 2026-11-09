@@ -2,8 +2,8 @@ namespace HandPegApp.Services.Gpu;
 
 // ----- The 3D exploded view's places (Pass 5.0-Release) -----
 // In the 3D view each layer is a plane at its place in the stack. A place is its track's (a blur fill's twin has one of its
-// own, behind its video's whole family, where the flat picture draws it: 5.2.0's re-cut, the user's P0; until then it shared
-// its video's plane), or, for what lies over every track, its own (the whole picture's look and fade, the
+// own, behind every track's pictures, where the flat picture draws it: 5.4A, the twins at the bottom of the stack; 5.2.0 put it
+// behind its video's family, and until then it shared its video's plane), or, for what lies over every track, its own (the whole picture's look and fade, the
 // subtitle pictures, the captions), numbered in the order the compositor draws them, the same for the whole plan: a layer
 // that comes or goes (a caption between its cues, a karaoke line's sung half, a layer waiting for its texture) never moves
 // the planes above it, and the stack's depth (the camera orbits its middle) never changes while the plan is drawn. The
@@ -46,7 +46,7 @@ public sealed partial class GpuScenePlan
     private Places MakePlaces()
     {
         // Entries of one track share its place, and the blur fills of one track's clips theirs (numbered where they are drawn: under
-        // the track's family); the rest have one each of their kind (the whole picture's look and the Sequence Output's effects,
+        // every track, 5.4A); the rest have one each of their kind (the whole picture's look and the Sequence Output's effects,
         // both over the whole picture, share one).
         var groups = new Dictionary<(int Kind, int Track), int>();
         var (byKey, twinByKey) = (new Dictionary<long, int>(), new Dictionary<long, int>());

@@ -1,7 +1,7 @@
 # A Copy export that cannot cut is refused before it starts, with the reason (EncoderCommand.WhyCopyCannotCut).
-a picture alone: Copy cannot export this Sequence: no clip on the timeline shows a file's picture, so there is nothing to copy. Choose a video encoder on the Video tab to export it.
+a picture alone: Copy cannot export this Sequence: no clip on the timeline shows a file's picture, so there is nothing to copy. Choose a video codec on the Export tab to export it.
 ok: a Sequence with no clip of a file's picture (a picture alone) is refused: there is nothing to copy
-the file at other speeds: Copy cannot export this Sequence: the clips of match.mkv play at another speed, which a stream copy cannot cut without encoding. Choose a video encoder on the Video tab to export it.
+the file at other speeds: Copy cannot export this Sequence: the clips of match.mkv play at another speed, which a stream copy cannot cut without encoding. Choose a video codec on the Export tab to export it.
 ok: a Sequence whose file's clips all play at another speed is refused: a stream copy cannot cut them
 ok: an empty Sequence is refused as having nothing to copy
 ok: a file cut into clips at speed 1 is not refused: it is copied through its cuts list

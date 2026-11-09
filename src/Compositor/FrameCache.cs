@@ -36,6 +36,9 @@ internal sealed class CachedFrame
     public long Bytes;
     public long LastUsed;
 
+    /// <summary>When it went into the cache (Stopwatch ticks): a frame let go of soon after says the cache is too small (5.4D-TabPerf).</summary>
+    public long Inserted;
+
     /// <summary>Renders using it right now (the renderer pins what it draws until its frame is submitted).</summary>
     public int Pins;
 
@@ -91,6 +94,16 @@ internal sealed class CachedFrame
 /// Windows lets this process have beside everything else it holds (IDXGIAdapter3::QueryVideoMemoryInfo, asked twice a second): when a
 /// game starts, the cache shrinks at once. A card that shares the computer's memory (a unified-memory SoC: 5.2-Arm64AndNpu) takes a
 /// share of the computer's memory instead, 1.5 to 2.5 GB from 12 GB up (<see cref="MemoryTier"/>, which holds the whole Auto rule).
+/// <para>Adaptive since 5.4D-TabPerf (the user's U3): the budget starts at MemoryTier.Baseline (about 2 GB) and grows a gigabyte at a
+/// time, at most one step every two seconds, when the frames it must let go of are ones it still needs (decoded a moment ago, or by a
+/// moment being shown or sought: <see cref="MemoryTier.IsThrash"/>), up to the hardware's ceiling (the rule above, on a card of more
+/// than 4 GB of its own; on a card of 4 GB or less the rule above holds both the baseline and the ceiling, 4 GB at most) or the user's maximum, and only while Windows' caps let the budget rise. <see cref="Clear"/> (a tab put behind,
+/// a project closed) brings it back to the baseline. The free list keeps at most an eighth of the budget, at most 256 MB, and
+/// <see cref="DropFree"/> empties it when the worker gives memory back (CompositorWorker's trim).</para>
+/// <para>A big card (<see cref="BigCard"/>, MemoryTier.IsBigCard: discrete, more than 4 GB of its own; the TabPerf follow-up, the user's
+/// X1) holds no baseline: its budget is the maximum from the start, filled as frames are decoded, with no growth to wait for; and a tab
+/// put behind leaves its frames here (DecoderPool parks its sources' serials, so the tab brought back finds them), the least recently
+/// used going first as the next tab needs room.</para>
 /// Beyond the budget, the frames farthest from every moment of interest (the frames shown, the hints, the pre-roll) go first, key
 /// frames last, and the held stretches (the first frames of the cuts ahead of the playhead, 5.0-Release) after everything else.
 /// Textures are reused by size and format. The budget is a ceiling, never a reservation: the cache holds only frames decoded, so an
@@ -123,6 +136,10 @@ internal sealed unsafe class FrameCache : IDisposable
     // The card shares the computer's memory (GpuDevice.UnifiedMemory), and how much the computer has: the Auto rule's own.
     private readonly bool _unified;
     private readonly long _physical;
+
+    // A big card (MemoryTier.IsBigCard), and the goldens' word for it (BigCardForTests): -1 none, 0 not, 1 a big card.
+    private readonly bool _bigCard;
+    private int _bigCardForTests = -1;
     private nint _adapter3;
     private long _requested;
     private long _budget;
@@ -137,6 +154,24 @@ internal sealed unsafe class FrameCache : IDisposable
     private long _use;
     private long _nextBudgetCheck;
     private bool _disabled;
+
+    // The adaptive budget (5.4D-TabPerf): the steps grown above the baseline, when the last one was (Stopwatch ticks; 0 none yet), and
+    // the baseline, maximum and ceiling the budget was last worked out from (published for Settings' readout).
+    private int _steps;
+    private long _lastGrown;
+    private long _baseline;
+    private long _maximum;
+    private long _ceiling;
+
+    // The goldens' small scale (ScaleForTests): a baseline, a ceiling and a step of bytes instead of gigabytes, and their own clock.
+    private (long Baseline, long Ceiling, long Step)? _scale;
+    private Func<long> _clock = System.Diagnostics.Stopwatch.GetTimestamp;
+
+    // Sources forgotten (their serials are never used again): a decode lane still busy with one when it went may insert a frame
+    // after Forget, which would sit in the cache, held by nothing, until the budget came to it. The newest ForgottenKept are known.
+    private const int ForgottenKept = 1024;
+    private readonly HashSet<int> _forgotten = [];
+    private readonly Queue<int> _forgottenOrder = new();
 
     public FrameCache(GpuDevice gpu)
     {
@@ -156,6 +191,7 @@ internal sealed unsafe class FrameCache : IDisposable
         }
 
         (_unified, _physical) = (gpu.UnifiedMemory, SystemCommit.PhysicalMemory());
+        _bigCard = MemoryTier.IsBigCard(gpu.IsWarp, _unified, _dedicated);
         SetBudget(0);
     }
 
@@ -163,6 +199,25 @@ internal sealed unsafe class FrameCache : IDisposable
     public long BudgetBytes => Volatile.Read(ref _budget);
 
     public long Bytes => Volatile.Read(ref _bytes);
+
+    /// <summary>What the free list holds (bytes): retired frames kept for reuse, which <see cref="Bytes"/> leaves out.</summary>
+    public long FreeBytes => Volatile.Read(ref _freeBytes);
+
+    /// <summary>The most the budget may grow to now (bytes): the hardware's ceiling, or the user's maximum when lower (MemoryTier.Maximum).</summary>
+    public long MaximumBytes => Volatile.Read(ref _maximum);
+
+    /// <summary>The hardware's ceiling now (bytes, MemoryTier.Ceiling): what Auto grows to at most.</summary>
+    public long CeilingBytes => Volatile.Read(ref _ceiling);
+
+    /// <summary>The steps of growth above the baseline (0 after a <see cref="Clear"/>; always 0 on a big card, which needs none).</summary>
+    public int GrowSteps => Volatile.Read(ref _steps);
+
+    /// <summary>
+    /// Whether the card is a big one (MemoryTier.IsBigCard: discrete, more than 4 GB of its own): the budget is the maximum at once, and
+    /// a tab put behind keeps its frames (CompositorWorker.TrimEmptiesCache, DecoderPool's parked sources). Fixed for the cache's life
+    /// but in the goldens (<see cref="BigCardForTests"/>).
+    /// </summary>
+    public bool BigCard => Volatile.Read(ref _bigCardForTests) is var forced && forced >= 0 ? forced == 1 : _bigCard;
 
     public int Count
     {
@@ -245,14 +300,73 @@ internal sealed unsafe class FrameCache : IDisposable
 
     private void SetBudgetLocked()
     {
-        // Off is the least there can be: the frames shown and a few round them (with less, two layers of one file at two
-        // moments would take each other's frames away for ever).
-        var requested = _requested;
-        var wanted = _disabled ? MinBudget
-            : requested > 0 ? requested
-            : MemoryTier.AutoBudget(_gpu.IsWarp, _unified, _dedicated, _physical, _cardBusy, _freeOnCard);
-        _budget = Math.Max(Math.Min(Math.Min(wanted, _windowsRoom), _commitRoom), MinBudget);
-        TrimLocked();
+        _budget = BudgetLocked(_steps);
+        TrimLocked(mayGrow: false);
+    }
+
+    /// <summary>
+    /// The budget after <paramref name="steps"/> of growth (5.4D-TabPerf): the baseline grown, under the maximum (the hardware's
+    /// ceiling, or the client's request when lower), held under what Windows gives this process and its commit. Off is the least
+    /// there can be: the frames shown and a few round them (with less, two layers of one file at two moments would take each other's
+    /// frames away for ever).
+    /// </summary>
+    private long BudgetLocked(int steps)
+    {
+        var warp = _gpu.IsWarp;
+        var baseline = _scale?.Baseline ?? MemoryTier.Baseline(warp, _unified, _dedicated, _physical, _cardBusy, _freeOnCard);
+        var ceiling = _scale?.Ceiling ?? MemoryTier.Ceiling(warp, _unified, _dedicated, _physical, _cardBusy, _freeOnCard);
+        var maximum = MemoryTier.Maximum(_requested, ceiling);
+        (_baseline, _ceiling) = (baseline, ceiling);
+        Volatile.Write(ref _maximum, _disabled ? MinBudget : maximum);
+        var wanted = _disabled ? MinBudget : MemoryTier.Budget(BigCard, baseline, steps, maximum, _scale?.Step ?? MemoryTier.GrowStep);
+        var least = _scale is { } scale ? Math.Min(scale.Baseline, MinBudget) : MinBudget;
+        return Math.Max(Math.Min(Math.Min(wanted, _windowsRoom), _commitRoom), least);
+    }
+
+    /// <summary>
+    /// One step of growth, when the rule allows one (MemoryTier.MayGrow: below the maximum, two seconds since the last) and Windows' caps
+    /// let the budget actually rise; false otherwise (nothing changed).
+    /// </summary>
+    private bool TryGrowLocked(long now)
+    {
+        if (_disabled || BigCard)
+            return false;
+        var since = _lastGrown == 0 ? double.PositiveInfinity : (now - _lastGrown) / (double)System.Diagnostics.Stopwatch.Frequency;
+        if (!MemoryTier.MayGrow(_baseline, _steps, _maximum, since, _scale?.Step ?? MemoryTier.GrowStep))
+            return false;
+        var grown = BudgetLocked(_steps + 1);
+        if (grown <= _budget)
+            return false;
+        (_budget, _lastGrown) = (grown, now);
+        Volatile.Write(ref _steps, _steps + 1);
+        return true;
+    }
+
+    /// <summary>
+    /// The goldens' small scale (5.4D-TabPerf): the adaptive rule with a baseline, a ceiling and a step of a few megabytes and a clock of
+    /// the test's own, so growth is seen without gigabytes of frames or seconds of waiting. Never called by HandPeg.
+    /// </summary>
+    internal void ScaleForTests(long baseline, long ceiling, long step, Func<long> clock)
+    {
+        lock (_gate)
+        {
+            (_scale, _clock) = ((baseline, ceiling, step), clock);
+            (_windowsRoom, _commitRoom) = (long.MaxValue, long.MaxValue);
+            SetBudgetLocked();
+        }
+    }
+
+    /// <summary>
+    /// The goldens' word for the card (the TabPerf follow-up): true takes the big card's rule (the maximum at once, frames kept across a tab
+    /// put behind) on any PC, false the baseline's, null this card's own. Never called by HandPeg.
+    /// </summary>
+    internal void BigCardForTests(bool? big)
+    {
+        lock (_gate)
+        {
+            Volatile.Write(ref _bigCardForTests, big is { } forced ? forced ? 1 : 0 : -1);
+            SetBudgetLocked();
+        }
     }
 
     // ----- Frames in and out -----
@@ -303,12 +417,23 @@ internal sealed unsafe class FrameCache : IDisposable
             FreeLocked(frame);
     }
 
-    /// <summary>Keeps a decoded frame (a frame of the same moment already there is replaced); trims to the budget.</summary>
+    /// <summary>
+    /// Keeps a decoded frame (a frame of the same moment already there is replaced); trims to the budget, growing it first when what
+    /// would go is still needed (5.4D-TabPerf). A frame of a source forgotten meanwhile (a lane that was decoding it when it went)
+    /// goes straight back to the free list.
+    /// </summary>
     public void Insert(CachedFrame frame)
     {
         lock (_gate)
         {
+            if (_forgotten.Contains(frame.Source))
+            {
+                FreeLocked(frame);
+                return;
+            }
+
             frame.LastUsed = ++_use;
+            frame.Inserted = _clock();
             if (!_bySource.TryGetValue(frame.Source, out var list))
                 _bySource[frame.Source] = list = [];
 
@@ -331,7 +456,7 @@ internal sealed unsafe class FrameCache : IDisposable
 
             _bytes += frame.Bytes;
             if (_bytes > _budget)
-                TrimLocked();
+                TrimLocked(mayGrow: !BigCard);
         }
     }
 
@@ -508,11 +633,21 @@ internal sealed unsafe class FrameCache : IDisposable
         }
     }
 
-    /// <summary>A source left the table (or changed): its frames go, but for those being drawn, which go when let go of.</summary>
+    /// <summary>
+    /// A source left the table (or changed): its frames go, but for those being drawn, which go when let go of. Its serial is never
+    /// used again, so a frame of it inserted later (a lane that was decoding it) is not kept either.
+    /// </summary>
     public void Forget(int source)
     {
         lock (_gate)
         {
+            if (_forgotten.Add(source))
+            {
+                _forgottenOrder.Enqueue(source);
+                if (_forgottenOrder.Count > ForgottenKept)
+                    _forgotten.Remove(_forgottenOrder.Dequeue());
+            }
+
             if (!_bySource.Remove(source, out var list))
                 return;
             foreach (var frame in list)
@@ -520,7 +655,11 @@ internal sealed unsafe class FrameCache : IDisposable
         }
     }
 
-    /// <summary>Every frame goes (Settings' Clear), but for those being drawn, which go when let go of; the free list is emptied.</summary>
+    /// <summary>
+    /// Every frame goes (Settings' Clear, a project closed; a tab put behind but on a big card), but for those being drawn, which go when
+    /// let go of; the free list is emptied, and the budget is back at its baseline (5.4D-TabPerf: the next project shows what it needs; on
+    /// a big card the budget is the maximum all along).
+    /// </summary>
     public void Clear()
     {
         lock (_gate)
@@ -536,6 +675,36 @@ internal sealed unsafe class FrameCache : IDisposable
                 free.Dispose();
             _free.Clear();
             _freeBytes = 0;
+            Volatile.Write(ref _steps, 0);
+            _lastGrown = 0;
+            SetBudgetLocked();
+        }
+    }
+
+    /// <summary>
+    /// Lets go of what nothing holds (5.4D-TabPerf, the worker's trim): the free list, and the frames retired while drawn that nothing
+    /// draws any more. The frames in the cache stay. Returns the bytes let go of.
+    /// </summary>
+    public long DropFree()
+    {
+        lock (_gate)
+        {
+            var dropped = _freeBytes;
+            foreach (var free in _free)
+                free.Dispose();
+            _free.Clear();
+            _freeBytes = 0;
+            for (var i = _orphans.Count - 1; i >= 0; i--)
+            {
+                if (_orphans[i].Pins == 0)
+                {
+                    dropped += _orphans[i].Bytes;
+                    _orphans[i].Dispose();
+                    _orphans.RemoveAt(i);
+                }
+            }
+
+            return dropped;
         }
     }
 
@@ -616,13 +785,18 @@ internal sealed unsafe class FrameCache : IDisposable
 
     // ----- Eviction -----
 
-    private void TrimLocked()
+    /// <summary>
+    /// Keeps the cache within its budget and the free list within its cap. <paramref name="mayGrow"/> (a frame was just inserted): when
+    /// the frames that would go are still needed (MemoryTier.IsThrash), the budget grows a step first, if the rule and Windows allow it.
+    /// </summary>
+    private void TrimLocked(bool mayGrow)
     {
-        if (_bytes <= _budget && _freeBytes <= _budget / 8)
+        var freeCap = MemoryTier.FreeListCap(_budget);
+        if (_bytes <= _budget && _freeBytes <= freeCap)
             return;
 
         // The free list first (nothing needs it), then the frames least worth keeping until 90 % of the budget is used.
-        while (_free.Count > 0 && (_freeBytes > _budget / 8 || _bytes + _freeBytes > _budget))
+        while (_free.Count > 0 && (_freeBytes > freeCap || _bytes + _freeBytes > _budget))
         {
             var free = _free[^1];
             _free.RemoveAt(_free.Count - 1);
@@ -633,19 +807,21 @@ internal sealed unsafe class FrameCache : IDisposable
         if (_bytes <= _budget)
             return;
 
-        var target = _budget * 9 / 10;
-        var scored = new List<(double Score, CachedFrame Frame, List<CachedFrame> List)>();
+        var scored = new List<(double Score, CachedFrame Frame, List<CachedFrame> List, double Near)>();
         foreach (var (source, list) in _bySource)
         {
             foreach (var frame in list)
             {
                 if (frame.Pins > 0)
                     continue;
-                var distance = double.PositiveInfinity;
+                var (distance, near) = (double.PositiveInfinity, double.PositiveInfinity);
                 foreach (var (interestSource, seconds, weight) in _interests)
                 {
                     if (interestSource == source)
-                        distance = Math.Min(distance, Math.Abs(frame.Time - seconds) / Math.Max(weight, 0.05));
+                    {
+                        var away = Math.Abs(frame.Time - seconds);
+                        (distance, near) = (Math.Min(distance, away / Math.Max(weight, 0.05)), Math.Min(near, away));
+                    }
                 }
 
                 // Unwanted sources go first, the least recently used of them; key frames stay four times longer; a held
@@ -655,12 +831,19 @@ internal sealed unsafe class FrameCache : IDisposable
                     score /= 4;
                 if (_held.Count > 0 && IsHeldStretch(source, frame))
                     score = -1 - 1 / (1 + score);
-                scored.Add((score, frame, list));
+                scored.Add((score, frame, list, near));
             }
         }
 
         scored.Sort(static (a, b) => b.Score.CompareTo(a.Score));
-        foreach (var (_, frame, list) in scored)
+
+        // Thrash (5.4D-TabPerf): what would go was decoded a moment ago or lies by a moment being shown or sought. The project needs
+        // more than the budget: a step of growth instead, when allowed; then only what still exceeds the grown budget goes.
+        if (mayGrow && WouldThrash(scored, _budget * 9 / 10) && TryGrowLocked(_clock()) && _bytes <= _budget)
+            return;
+
+        var target = _budget * 9 / 10;
+        foreach (var (_, frame, list, _) in scored)
         {
             if (_bytes <= target)
                 break;
@@ -672,6 +855,23 @@ internal sealed unsafe class FrameCache : IDisposable
 
         foreach (var source in _bySource.Where(p => p.Value.Count == 0).Select(p => p.Key).ToList())
             _bySource.Remove(source);
+    }
+
+    /// <summary>Whether any frame that would go to bring the cache down to <paramref name="target"/> is one still needed (MemoryTier.IsThrash).</summary>
+    private bool WouldThrash(List<(double Score, CachedFrame Frame, List<CachedFrame> List, double Near)> scored, long target)
+    {
+        var now = _clock();
+        var left = _bytes;
+        foreach (var (_, frame, _, near) in scored)
+        {
+            if (left <= target)
+                break;
+            left -= frame.Bytes;
+            if (MemoryTier.IsThrash((now - frame.Inserted) / (double)System.Diagnostics.Stopwatch.Frequency, near))
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>A frame leaves the cache: its bytes are no longer counted, and it is freed (or reused) once nothing draws it.</summary>
@@ -708,7 +908,7 @@ internal sealed unsafe class FrameCache : IDisposable
 
     private void FreeLocked(CachedFrame frame)
     {
-        if (_freeBytes + frame.Bytes > _budget / 8 || _free.Count >= 64)
+        if (_freeBytes + frame.Bytes > MemoryTier.FreeListCap(_budget) || _free.Count >= 64)
         {
             frame.Dispose();
             return;

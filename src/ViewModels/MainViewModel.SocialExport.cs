@@ -1,108 +1,199 @@
+using System.ComponentModel;
 using System.Globalization;
+using System.Windows.Data;
+using CommunityToolkit.Mvvm.ComponentModel;
 using HandPegApp.Models;
 using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-/// <summary>
-/// One card of Easy Social Export: a platform and how it is exported (Pass 4.2B-2). <see cref="SizesMb"/> are the
-/// file-size ceilings it is offered at (each a button of its own); none for a card of one click.
-/// </summary>
-public sealed record SocialExportTarget(string Id, string Title, string Detail, string Glyph, IReadOnlyList<int> SizesMb);
-
-// ----- Easy Social Export (Pass 4.2B-2) -----
-// The Export tab's 1-click cards. A card sets the export's own settings (the same ones the Video and Audio sections
-// show, saved with the project and in presets) and nothing else: no layer, look or caption is touched. Advanced Export
-// shows those settings, as the card left them, to change by hand.
+// ----- Export Presets (Pass 5.4B: the Encoding Presets and the Easy Social Export cards of 4.2B-2, one system) -----
+// One list (Presets: ExportPresetCatalog's built-ins, then the user's own), one selector grouped "Platform & Social", "Studio & Archive",
+// "My Presets" (PresetsView), and one way of applying a pick: its export settings only (ApplyExportPreset). Game Presets own the
+// layout, the looks and the captions; a project's settings and a Smart Rule's preset are still applied whole (ApplyPreset).
+// Also here: the automatic bitrate VBR starts with (EffectiveBitrateKbps) and the loudness Normalize aims at.
 public partial class MainViewModel
 {
-    public const string SocialShortForm = "short-form", SocialYouTube = "youtube-master", SocialChat = "chat-share",
-        SocialFeed = "feed-hd", SocialArchive = "archive";
-
-    /// <summary>The cards, in the order the Export tab shows them.</summary>
-    public IReadOnlyList<SocialExportTarget> SocialExportTargets { get; } =
-    [
-        new(SocialShortForm, "Short-Form Vertical", "9:16, 1080 x 1920, 60 fps. H.264, AAC 192k.", "", []),
-        new(SocialYouTube, "YouTube Master", "The source's size and rate (4K60, 1440p60...). H.265 when the card has it, quality 18, AAC 320k.", "", []),
-        new(SocialChat, "Chat & Discord Share", "Under the size a chat allows: the bitrate is worked out from the length. 720p under 10 MB, 1080p above.", "", [10, 25, 50]),
-        new(SocialFeed, "Social Feed HD", "1080p, 60 fps, a fast encoder step. H.264, AAC 192k.", "", []),
-        new(SocialArchive, "Lossless / Mezzanine Archive", "ProRes in .mov with PCM sound, at the source's size and rate: to edit or keep.", "", []),
-    ];
-
-    /// <summary>The card (and size) chosen last in this session, for the Export tab to mark; null when none was.</summary>
-    public (string Id, int SizeMb)? SocialExportChoice { get; private set; }
-
-    /// <summary>The ceiling a chat card aims under: a little below the limit, for the container's own bytes.</summary>
-    private static string ChatTargetMegabytes(int limitMb) => (limitMb * 0.94).ToString("0.#", CultureInfo.InvariantCulture);
+    private ListCollectionView? _presetsView;
 
     /// <summary>
-    /// Sets the export as a card says. Every value it sets is an ordinary export setting (Video and Audio sections,
-    /// Advanced Export); the encoder is the best one this PC has for the card (a hardware H.264 / H.265 encoder when the
-    /// probe found one, else the software one).
+    /// The Export Presets selector's list: <see cref="Presets"/> grouped by <see cref="EncodingPreset.Group"/> (the built-ins' two groups
+    /// first, as they come first, then "My Presets"). Made when first asked for (the Export tab is made at idle, Law 1).
     /// </summary>
-    public void ApplySocialExport(SocialExportTarget target, int sizeMb = 0)
+    public ICollectionView PresetsView
     {
-        if (target.SizesMb.Count > 0 && !target.SizesMb.Contains(sizeMb))
-            sizeMb = target.SizesMb[0];
-
-        using var whole = DeferCommand();
-        var source = GetSequenceSize();
-        switch (target.Id)
+        get
         {
-            case SocialShortForm:
-                SetSocialPicture(vertical: true, "1080", "1920", "60");
-                SetSocialEncoding(Hardware("h264") ?? Software("libx264"), "mp4", crf: 20, targetMb: null, "192k", ["fast", "p5", "balanced"]);
-                break;
-
-            case SocialYouTube:
-                SetSocialPicture(vertical: false, "", "", SameAsSource);
-                SetSocialEncoding(Hardware("hevc") ?? Hardware("h264") ?? Software("libx264"), "mp4", crf: 18, targetMb: null, "320k", ["slow", "p6", "quality"]);
-                break;
-
-            case SocialChat:
+            if (_presetsView is null)
             {
-                // The short side capped (720 under 10 MB, 1080 above), never above the Sequence's own.
-                var cap = sizeMb <= 10 ? 720 : 1080;
-                if (source is { } size)
-                    cap = Math.Min(cap, Even(Math.Min(size.Width, size.Height)));
-                var side = cap.ToString(CultureInfo.InvariantCulture);
-                if (UseVerticalResolution)
-                    SetSocialPicture(vertical: true, side, "", sizeMb >= 50 ? SameAsSource : "30");
-                else
-                    SetSocialPicture(vertical: false, "", side, sizeMb >= 50 ? SameAsSource : "30");
-                SetSocialEncoding(Hardware("h264") ?? Software("libx264"), "mp4", crf: 23, ChatTargetMegabytes(sizeMb), sizeMb <= 10 ? "96k" : "128k", ["medium", "p5", "balanced"]);
-                break;
+                _presetsView = new ListCollectionView(Presets);
+                _presetsView.GroupDescriptions.Add(new PropertyGroupDescription(nameof(EncodingPreset.Group)));
             }
 
-            case SocialFeed:
-                SetSocialPicture(vertical: false, "", "1080", "60");
-                SetSocialEncoding(Hardware("h264") ?? Software("libx264"), "mp4", crf: 21, targetMb: null, "192k", ["faster", "p3", "speed"]);
-                break;
-
-            case SocialArchive:
-                SetSocialPicture(vertical: UseVerticalResolution, OutputWidth, OutputHeight, SameAsSource);
-                SetSocialEncoding(Software("prores_ks"), "mov", crf: Crf, targetMb: null, AudioBitrate, [], audioCodec: "pcm_s16le");
-                break;
-
-            default:
-                return;
+            return _presetsView;
         }
-
-        SocialExportChoice = (target.Id, sizeMb);
-        OnPropertyChanged(nameof(SocialExportChoice));
-        var title = target.SizesMb.Count > 0 ? $"{target.Title} (under {sizeMb} MB)" : target.Title;
-        StatusText = $"Easy Social Export: {title}, with {VideoEncoder.DisplayName}. Advanced Export shows every setting it chose.{TooLongForSize(sizeMb)}";
-        Log($"Easy Social Export: {title}");
-
-        EncoderOption? Hardware(string codec) => VideoEncoders.FirstOrDefault(e => e.IsHardware && e.Name.StartsWith(codec + "_", StringComparison.Ordinal));
-        EncoderOption Software(string name) => VideoEncoders.FirstOrDefault(e => e.Name == name) ?? DefaultVideoEncoder;
     }
 
     /// <summary>
-    /// A size this long a timeline cannot meet (the video held at its lowest bitrate is still too much), said with the card:
-    /// Easy Social Export shows no Target File Size box to carry that hint (TargetSizeHint). Empty when the size is met.
+    /// Sets the export as an Export Preset says, and nothing else (D-Q2): the picture's size (a "p" size on the short side of the
+    /// Sequence's frame, a user's own preset as it was saved, a chat's short side capped, never above the Sequence's), the frame rate,
+    /// the encoder (a codec it prefers on this PC's hardware first), its step, the quality or bitrate, the sound, the container and Web Optimized. No clip, look, crop or caption is touched.
     /// </summary>
-    private string TooLongForSize(int sizeMb)
+    public void ApplyExportPreset(EncodingPreset preset)
+    {
+        using var whole = DeferCommand();
+        ApplyPresetPicture(preset);
+        PixelAspectRatio = Pick(PixelAspectRatios, preset.PixelAspectRatio, MatchProject);
+        CustomPixelAspectRatio = preset.CustomPixelAspectRatio;
+        var found = ApplyEncodingPart(preset);
+
+        // A target size is the preset's alone: one that names none leaves the bitrate to be typed, or the automatic one.
+        if (string.IsNullOrWhiteSpace(preset.TargetFileSize) && preset.IsBuiltIn)
+            TargetFileSize = "";
+        var sizeMb = double.TryParse(preset.TargetFileSize, NumberStyles.Float, CultureInfo.InvariantCulture, out var mb) ? mb : 0;
+        StatusText = $"Export Preset \"{preset.Name}\": {VideoEncoder.DisplayName}, {FrameWidth} x {FrameHeight}."
+                     + (found ? "" : $" {preset.VideoEncoder} is not available here.") + TooLongForSize(sizeMb);
+        Log($"Applied Export Preset \"{preset.Name}\"");
+    }
+
+    /// <summary>
+    /// The encoder a preset asks for on this PC: a hardware encoder of the first codec it prefers that this PC has
+    /// (<see cref="EncodingPreset.PreferredCodec"/>, "hevc,h264"), else the encoder it names, else the one selected (Found false then).
+    /// </summary>
+    private (EncoderOption Encoder, bool Found) ResolveEncoder(EncodingPreset preset)
+    {
+        foreach (var codec in (preset.PreferredCodec ?? "").Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (VideoEncoders.FirstOrDefault(e => e.IsHardware && e.Name.StartsWith(codec + "_", StringComparison.Ordinal)) is { } hardware)
+                return (hardware, true);
+        }
+
+        return VideoEncoders.FirstOrDefault(e => e.Name == preset.VideoEncoder) is { } named ? (named, true) : (VideoEncoder, false);
+    }
+
+    /// <summary>
+    /// An Export Preset's picture: both sides named, exactly that size (turned so its shape is the frame's: a 9:16 preset on a 16:9
+    /// Sequence is Use Vertical Resolution, on a 9:16 one it is not); one side named, a "p" size on the short side of the Sequence's
+    /// frame (turned only by the preset's own Use Vertical Resolution); none, the Sequence's own size. Then a chat's short-side cap. A user's own preset is applied as it was saved (5.4A's rule):
+    /// its Keep Aspect Ratio and Use Vertical Resolution, its sides as stored, a blank one completed from the shape.
+    /// </summary>
+    private void ApplyPresetPicture(EncodingPreset preset)
+    {
+        if (!preset.IsBuiltIn)
+        {
+            _syncingDimensions = true;
+            try
+            {
+                KeepAspectRatio = preset.KeepAspectRatio;
+                TurnForPreset(preset.UseVerticalResolution ?? false);
+                SetOutputSize(preset.OutputWidth, preset.OutputHeight);
+            }
+            finally
+            {
+                _syncingDimensions = false;
+            }
+
+            if (string.IsNullOrWhiteSpace(preset.OutputWidth) || string.IsNullOrWhiteSpace(preset.OutputHeight))
+                RelinkDimensions();
+            CapShortSide(preset.ShortSideCap);
+            OnPropertyChanged(nameof(FrameWidth));
+            OnPropertyChanged(nameof(FrameHeight));
+            return;
+        }
+
+        KeepAspectRatio = true;
+        var (width, height) = (preset.OutputWidth.Trim(), preset.OutputHeight.Trim());
+        if (width.Length > 0 && height.Length > 0 && int.TryParse(width, out var w) && int.TryParse(height, out var h))
+        {
+            var natural = GetSequenceSize() ?? (DefaultSourceWidth, DefaultSourceHeight);
+            var turned = h > w != natural.Height > natural.Width;
+            _syncingDimensions = true;
+            try
+            {
+                TurnForPreset(turned);
+            }
+            finally
+            {
+                _syncingDimensions = false;
+            }
+
+            SetOutputSize(width, height);
+        }
+        else
+        {
+            // The preset's own shape first, and the boxes cleared, so the frame read below is the Sequence's as this preset stands it,
+            // never one an earlier pick left turned or sized.
+            _syncingDimensions = true;
+            try
+            {
+                // 5.4D: a preset that names no shape (Match Project — Master Quality, the "p" sizes) keeps the Sequence's: the turn an
+                // earlier preset made is undone, the project's own (a vertical project) never (it used to fall to false and lay a
+                // vertical project on its side).
+                if (preset.UseVerticalResolution is { } shape)
+                    TurnForPreset(shape);
+                else if (_turnBeforePreset is { } own)
+                    TurnForPreset(own);
+            }
+            finally
+            {
+                _syncingDimensions = false;
+            }
+
+            SetOutputSize("", "");
+            if (width.Length > 0 || height.Length > 0)
+            {
+                // "1080p" is the short side, whichever way the frame stands.
+                var side = width.Length > 0 ? width : height;
+                if (FrameHeight > FrameWidth)
+                    SetOutputSize(side, "");
+                else
+                    SetOutputSize("", side);
+                RelinkDimensions();
+            }
+        }
+
+        CapShortSide(preset.ShortSideCap);
+        OnPropertyChanged(nameof(FrameWidth));
+        OnPropertyChanged(nameof(FrameHeight));
+    }
+
+    // The Sequence's turn as it was before an Export Preset turned it (5.4D): what a preset that names no shape goes back to. Forgotten
+    // when the user turns it by hand, and whenever a Sequence is put in place (another tab, an open, a New Project).
+    private bool? _turnBeforePreset;
+
+    /// <summary>Turns the frame as a preset asks, remembering the Sequence's own turn the first time a preset changes it.</summary>
+    private void TurnForPreset(bool vertical)
+    {
+        if (vertical != UseVerticalResolution)
+            _turnBeforePreset ??= UseVerticalResolution;
+        UseVerticalResolution = vertical;
+        if (_turnBeforePreset == vertical)
+            _turnBeforePreset = null;
+    }
+
+    /// <summary>The short side of the frame held at <paramref name="cap"/> pixels (never above the Sequence's own short side); 0 for no cap.</summary>
+    private void CapShortSide(int cap)
+    {
+        if (cap <= 0)
+            return;
+        if (GetSequenceSize() is { } natural)
+            cap = Math.Min(cap, Even(Math.Min(natural.Width, natural.Height)));
+        if (Math.Min(FrameWidth, FrameHeight) <= cap)
+            return;
+
+        var side = cap.ToString(CultureInfo.InvariantCulture);
+        if (FrameHeight > FrameWidth)
+            SetOutputSize(side, "");
+        else
+            SetOutputSize("", side);
+        RelinkDimensions();
+    }
+
+    /// <summary>
+    /// A size this long a timeline cannot meet (the video held at its lowest bitrate is still too much), said with the preset that asked
+    /// for it. Empty when the size is met, or none was asked for.
+    /// </summary>
+    private string TooLongForSize(double sizeMb)
     {
         var seconds = GetOutputDuration();
         if (sizeMb <= 0 || seconds <= 0 || TargetSizeHint.Length == 0 || !int.TryParse(TargetBitrate, out var videoKbps))
@@ -111,50 +202,66 @@ public partial class MainViewModel
         var tracks = GetOutputAudioTracks();
         var megabytes = (videoKbps + GetOutputAudioKbps(tracks, MergeAudioTracks && tracks.Count > 1)) * seconds / 8192;
         return string.Create(CultureInfo.InvariantCulture,
-            $" This timeline is too long for under {sizeMb} MB: the file will be about {megabytes:0} MB. Cut it shorter, or pick a larger size.");
+            $" This timeline is too long for under {sizeMb:0.#} MB: the file will be about {megabytes:0} MB. Cut it shorter, or pick a larger size.");
     }
 
-    /// <summary>The frame: tall or wide, its size (a blank side follows the source's shape), and the frame rate.</summary>
-    private void SetSocialPicture(bool vertical, string width, string height, string framerate)
-    {
-        if (UseVerticalResolution != vertical)
-            UseVerticalResolution = vertical;
-        KeepAspectRatio = true;
-        SetOutputSize(width, height);
-        if (string.IsNullOrWhiteSpace(width) != string.IsNullOrWhiteSpace(height))
-            RelinkDimensions();
-        Framerate = Framerates.Contains(framerate) ? framerate : SameAsSource;
-    }
+    // ----- The automatic bitrate (5.4B, D-Q1) -----
 
     /// <summary>
-    /// The encoding: encoder and container, then the sound (its bitrate is part of a size's sum), then quality or a
-    /// size. A size is aimed at with an average bitrate worked out from the output's length (Target File Size).
+    /// The video bitrate in force, in kbps: the one typed (or worked out from a typed target size), else the automatic one from the output's
+    /// size and frame rate (<see cref="AutoBitrateKbps"/>). What the encoder is given in VBR and CBR, and what the Export Quality Preview reads.
     /// </summary>
-    private void SetSocialEncoding(EncoderOption encoder, string container, int crf, string? targetMb, string audioBitrate,
-        string[] speedSteps, string audioCodec = "aac")
+    public int EffectiveBitrateKbps =>
+        int.TryParse(TargetBitrate, NumberStyles.Integer, CultureInfo.InvariantCulture, out var typed) && typed > 0 ? typed : AutoBitrate();
+
+    /// <summary>Under the Target Bitrate box while it is empty and a bitrate mode is chosen: the automatic bitrate and what it is worked out from.</summary>
+    public string AutoBitrateText =>
+        IsBitrateMode && TargetBitrate.Trim().Length == 0
+            ? string.Create(CultureInfo.InvariantCulture, $"Automatic: {AutoBitrate():N0} kbps for {FrameWidth} x {FrameHeight} at {FormatNumber(AutoBitrateRate())} fps. Type a bitrate or a size to set your own.")
+            : "";
+
+    private int AutoBitrate() => AutoBitrateKbps(FrameWidth, FrameHeight, AutoBitrateRate(), IsHdrPassthrough);
+
+    private double AutoBitrateRate() => GetOutputFrameRate() is > 0 and var fps ? fps : Document.FrameRate.IsValid ? Document.FrameRate.Fps : 30;
+
+    /// <summary>
+    /// A VBR target that keeps a picture of this size and rate clean (the platforms' upload advice): 5 Mbps at 720p30, 8 at 1080p30, 16 at
+    /// 1440p30, 35 at 2160p30, in between by the number of pixels; half as much again above 30 fps (12 Mbps at 1080p60, 53 at 2160p60),
+    /// twice as much above 60; a quarter more for HDR. Rounded to 500 kbps.
+    /// </summary>
+    internal static int AutoBitrateKbps(int width, int height, double fps, bool hdr)
     {
-        VideoEncoder = encoder;
-        if (Containers.Contains(container))
-            Container = container;
-        if (speedSteps.FirstOrDefault(EncoderPresets.Contains) is { } step)
-            EncoderPreset = step;
-        if (encoder.Family != EncoderFamily.Intermediate)
-            TenBit = false;
-
-        // Tracks that follow the default take these; a track given a codec of its own on the Audio tab keeps it.
-        AudioEncoder = AudioEncoders.Contains(audioCodec) ? audioCodec : "aac";
-        AudioBitrate = AudioBitrates.Contains(audioBitrate) ? audioBitrate : "160k";
-
-        TargetFileSize = "";
-        if (targetMb is null)
+        (double Pixels, double Kbps)[] anchors = [(0, 0), (1280 * 720, 5000), (1920 * 1080, 8000), (2560 * 1440, 16000), (3840 * 2160, 35000)];
+        var pixels = (double)Math.Max(width, 2) * Math.Max(height, 2);
+        double kbps;
+        if (pixels >= anchors[^1].Pixels)
         {
-            RateControl = ConstantQuality;
-            Crf = Math.Clamp(crf, 0, 51);
+            kbps = anchors[^1].Kbps * pixels / anchors[^1].Pixels;
         }
         else
         {
-            RateControl = AverageBitrate;
-            TargetFileSize = targetMb;
+            var i = 1;
+            while (pixels > anchors[i].Pixels)
+                i++;
+            var (a, b) = (anchors[i - 1], anchors[i]);
+            kbps = a.Kbps + (b.Kbps - a.Kbps) * (pixels - a.Pixels) / (b.Pixels - a.Pixels);
         }
+
+        kbps *= fps > 61 ? 2 : fps > 31 ? 1.5 : 1;
+        if (hdr)
+            kbps *= 1.25;
+        return (int)Math.Clamp(Math.Round(kbps / 500) * 500, 500, 400_000);
     }
+
+    // ----- Normalize's target (5.4B, D9) -----
+
+    /// <summary>The loudness Normalize aims at, in LUFS: -16 (the default, EBU R128 for the web) or -14 (the streaming platforms').</summary>
+    [ObservableProperty] private int _loudnessTarget = (int)Services.Audio.ExportSoundPlan.TargetLufs;
+
+    /// <summary>The two targets offered: their LUFS value and their words.</summary>
+    public IReadOnlyList<LabeledChoice<int>> LoudnessTargets { get; } =
+        [new(-16, "-16 LUFS (default)"), new(-14, "-14 LUFS (streaming platforms)")];
+
+    /// <summary>A target as a preset or project stores it (0 for the default) made one of the two offered.</summary>
+    private static int NormalizeLoudness(int value) => value == -14 ? -14 : -16;
 }

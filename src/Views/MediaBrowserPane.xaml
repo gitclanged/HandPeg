@@ -57,8 +57,78 @@
             </StackPanel>
         </DataTemplate>
 
-        <!-- A row of the list view: a small picture (which follows the pointer too), the name, and the length or size -->
-        <DataTemplate x:Key="RowTemplate">
+        <!--
+            The List view's columns (5.4C), as wide as the code sets them (a column dropped in a narrow pane is 0): the header and every
+            row share them, so they line up under virtualization with no shared size groups.
+        -->
+        <GridLength x:Key="ColThumb">72</GridLength>
+        <GridLength x:Key="ColResolution">84</GridLength>
+        <GridLength x:Key="ColFramerate">66</GridLength>
+        <GridLength x:Key="ColDuration">62</GridLength>
+        <GridLength x:Key="ColCodec">58</GridLength>
+        <GridLength x:Key="ColAudio">48</GridLength>
+        <GridLength x:Key="ColSize">70</GridLength>
+
+        <!-- A cell of the List view's details: muted, small, cut short with an ellipsis rather than spilling into the next column. -->
+        <Style x:Key="DetailCell" TargetType="TextBlock">
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+            <Setter Property="Margin" Value="0,0,6,0" />
+        </Style>
+
+        <!--
+            A row of the List view (5.4C): a small picture (which follows the pointer too), the name, then the details read once the row
+            is in sight: resolution, frame rate, length, codec, sound streams, size.
+        -->
+        <DataTemplate x:Key="DetailRowTemplate">
+            <Grid Background="Transparent" Height="38">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="{DynamicResource ColThumb}" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="{DynamicResource ColResolution}" />
+                    <ColumnDefinition Width="{DynamicResource ColFramerate}" />
+                    <ColumnDefinition Width="{DynamicResource ColDuration}" />
+                    <ColumnDefinition Width="{DynamicResource ColCodec}" />
+                    <ColumnDefinition Width="{DynamicResource ColAudio}" />
+                    <ColumnDefinition Width="{DynamicResource ColSize}" />
+                </Grid.ColumnDefinitions>
+                <Grid Width="64" Height="36" HorizontalAlignment="Left" Background="{DynamicResource InsetBrush}" ClipToBounds="True"
+                      MouseMove="Picture_MouseMove" MouseLeave="Picture_MouseLeave">
+                    <TextBlock Text="{Binding Glyph}" FontFamily="Segoe MDL2 Assets" FontSize="15" HorizontalAlignment="Center" VerticalAlignment="Center"
+                               Foreground="{DynamicResource MutedTextBrush}" />
+                    <Image Source="{Binding Shown}" Stretch="Uniform" />
+                    <Rectangle Height="2" VerticalAlignment="Bottom" HorizontalAlignment="Stretch" Fill="{DynamicResource AccentBrush}" RenderTransformOrigin="0,0.5"
+                               Visibility="{Binding IsScrubbing, Converter={StaticResource BoolToVisibility}}">
+                        <Rectangle.RenderTransform>
+                            <ScaleTransform ScaleX="{Binding HoverFraction}" />
+                        </Rectangle.RenderTransform>
+                    </Rectangle>
+                </Grid>
+                <TextBlock Grid.Column="1" Text="{Binding Name}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" ToolTip="{Binding Path}" Margin="0,0,8,0" />
+                <TextBlock Grid.Column="2" Text="{Binding ResolutionText}" Style="{StaticResource DetailCell}" />
+                <TextBlock Grid.Column="3" Text="{Binding FrameRateText}" Style="{StaticResource DetailCell}" />
+                <TextBlock Grid.Column="4">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock" BasedOn="{StaticResource DetailCell}">
+                            <Setter Property="Text" Value="{Binding DurationText}" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsScrubbing}" Value="True">
+                                    <Setter Property="Text" Value="{Binding HoverText}" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+                <TextBlock Grid.Column="5" Text="{Binding CodecText}" Style="{StaticResource DetailCell}" />
+                <TextBlock Grid.Column="6" Text="{Binding AudioText}" Style="{StaticResource DetailCell}" />
+                <TextBlock Grid.Column="7" Text="{Binding SizeText}" Style="{StaticResource DetailCell}" />
+            </Grid>
+        </DataTemplate>
+
+        <!-- A row of the Filmstrip view's list (5.4C): a small picture, the name, and its resolution, frame rate and length under it. -->
+        <DataTemplate x:Key="CompactRowTemplate">
             <DockPanel Margin="1" Background="Transparent">
                 <Grid DockPanel.Dock="Left" Width="64" Height="36" Background="{DynamicResource InsetBrush}" ClipToBounds="True"
                       MouseMove="Picture_MouseMove" MouseLeave="Picture_MouseLeave">
@@ -77,7 +147,7 @@
                     <TextBlock FontSize="11" Foreground="{DynamicResource MutedTextBrush}" TextTrimming="CharacterEllipsis">
                         <TextBlock.Style>
                             <Style TargetType="TextBlock">
-                                <Setter Property="Text" Value="{Binding Info}" />
+                                <Setter Property="Text" Value="{Binding MetaLine}" />
                                 <Style.Triggers>
                                     <DataTrigger Binding="{Binding IsScrubbing}" Value="True">
                                         <Setter Property="Text" Value="{Binding HoverText}" />
@@ -149,7 +219,7 @@
                     BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" docking:PaneTitleRow.CanCompact="True">
                 <StackPanel Orientation="Horizontal">
                     <RadioButton x:Name="ProjectSide" Style="{StaticResource SwitchSide}" Content="Project Media" Tag="Project" Checked="Source_Checked"
-                                 AutomationProperties.Name="Project Media" ToolTip="Project Media: every file the open project uses: the clips' videos and pictures, the sounds." />
+                                 AutomationProperties.Name="Project Media" ToolTip="Project Media: the project's own bin, saved with it: the files picked for it or dropped here, and every file a clip plays (kept after its clips are deleted, until you remove it)." />
                     <RadioButton x:Name="FolderSide" Style="{StaticResource SwitchSide}" Content="Folder Browser" Tag="Folder" Checked="Source_Checked"
                                  AutomationProperties.Name="Folder Browser" ToolTip="Folder Browser: the media files of a folder on disk, with its path above them." />
                     <RadioButton x:Name="LibrarySide" Style="{StaticResource SwitchSide}" Content="Clip Library" Tag="Library" Checked="Source_Checked"
@@ -179,18 +249,18 @@
                 </ToggleButton.Style>
             </ToggleButton>
             <!--
-                How large the files are shown, as the timeline's height is set: the smallest few steps are a list, then tiles that grow.
-                The sort box, its direction and the size (glyph and slider together) are optional (4.2B-2): in a narrow column
-                (a 150 % laptop) they leave before the Project | Folder switch could be cut. The size is also in the tab's
-                right-click menu.
+                How the files are laid out (5.4C, in place of the size slider): Grid (tiles, their size in the tab's right-click menu), List
+                (a table of each file's details, with a preview and cutter beside it once the pane is wide) or Filmstrip (a preview and
+                sub-clip cutter beside a list). The sort box, its direction and the view are optional (4.2B-2): in a narrow column (a 150 %
+                laptop) they leave before the Project | Folder switch could be cut. The view is also in the tab's right-click menu.
             -->
-            <StackPanel docking:PaneTitleRow.Optional="True" Orientation="Horizontal" VerticalAlignment="Center">
-                <TextBlock Text="&#xE8B9;" FontFamily="Segoe MDL2 Assets" FontSize="13" VerticalAlignment="Center" Margin="10,0,0,0"
-                           Foreground="{DynamicResource MutedTextBrush}" ToolTip="Size" />
-                <Slider x:Name="SizeSlider" Width="70" Margin="6,0,0,0" VerticalAlignment="Center" Minimum="0" Maximum="100" SmallChange="2" LargeChange="10"
-                        IsMoveToPointEnabled="True" ValueChanged="SizeSlider_ValueChanged" AutomationProperties.Name="Media Browser Size"
-                        ToolTip="How large the files are shown: all the way left is a list, then tiles from small to large. Move the pointer across a video's picture to see through it." />
-            </StackPanel>
+            <ComboBox x:Name="ViewBox" docking:PaneTitleRow.Optional="True" MinWidth="82" Margin="8,0,0,0" SelectionChanged="ViewBox_SelectionChanged"
+                      AutomationProperties.Name="Media Browser View"
+                      ToolTip="How the files are shown: Grid (tiles), List (a table of their details), or Filmstrip (a preview and sub-clip cutter beside the list).">
+                <ComboBoxItem Content="Grid" />
+                <ComboBoxItem Content="List" />
+                <ComboBoxItem x:Name="FilmstripChoice" Content="Filmstrip" />
+            </ComboBox>
             <Button Content="&#xE72C;" FontFamily="Segoe MDL2 Assets" FontSize="12" Padding="8,4" Margin="8,0,0,0" Click="Refresh_Click"
                     AutomationProperties.Name="Refresh Media Browser" ToolTip="Reads the folder (or the project's files) again." />
         </docking:PaneTitleRow>
@@ -219,27 +289,47 @@
                    Text="Drag files onto the timeline or the player; double-click a folder to open it." />
 
         <!--
-            The files. Dragged out, they drop like files from Explorer: onto a track of the timeline, or on
-            the player. Double-click: a folder opens; a file is added at the playhead (or loaded,
-            when nothing is). Right-click for more.
+            The views share one list (5.4C): Grid and List fill the pane with it; List puts a preview beside it once the pane is 600 DIPs
+            wide; Filmstrip puts the preview and cutter on the left and the list in a column on the right, a splitter between them. The
+            preview, the cutter and the List view's header are made from code the first time they are needed, after the first frame.
         -->
-        <ListBox x:Name="Items" SelectionMode="Extended" ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto"
-                 ItemTemplate="{StaticResource TileTemplate}" ItemsPanel="{StaticResource TilePanel}"
-                 VirtualizingPanel.ScrollUnit="Pixel" AutomationProperties.Name="Media Files"
-                 PreviewMouseLeftButtonDown="Items_PreviewMouseLeftButtonDown" PreviewMouseMove="Items_PreviewMouseMove" PreviewMouseLeftButtonUp="Items_PreviewMouseLeftButtonUp"
-                 PreviewMouseDown="Items_PreviewMouseDown" PreviewMouseUp="Items_PreviewMouseUp" PreviewKeyDown="Items_PreviewKeyDown"
-                 LostMouseCapture="Items_LostMouseCapture"
-                 KeyDown="Items_KeyDown" ContextMenuOpening="Items_ContextMenuOpening">
-            <ListBox.ContextMenu>
-                <ContextMenu />
-            </ListBox.ContextMenu>
-            <ListBox.ItemContainerStyle>
-                <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
-                    <Setter Property="Padding" Value="1" />
-                    <Setter Property="AutomationProperties.Name" Value="{Binding Name}" />
-                    <EventSetter Event="MouseDoubleClick" Handler="Item_MouseDoubleClick" />
-                </Style>
-            </ListBox.ItemContainerStyle>
-        </ListBox>
+        <Grid x:Name="ContentGrid" SizeChanged="ContentGrid_SizeChanged">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition x:Name="PreviewColumn" Width="0" />
+                <ColumnDefinition x:Name="SplitColumn" Width="0" />
+                <ColumnDefinition x:Name="ListColumn" Width="*" />
+            </Grid.ColumnDefinitions>
+            <ContentControl x:Name="PreviewHost" Focusable="False" IsTabStop="False" Visibility="Collapsed" Background="{DynamicResource InsetBrush}" />
+            <GridSplitter x:Name="PreviewSplitter" Grid.Column="1" Width="5" HorizontalAlignment="Stretch" ResizeDirection="Columns" ResizeBehavior="PreviousAndNext"
+                          Background="Transparent" Focusable="False" Visibility="Collapsed" DragCompleted="PreviewSplitter_DragCompleted"
+                          PreviewMouseLeftButtonDown="PreviewSplitter_PreviewMouseLeftButtonDown"
+                          AutomationProperties.Name="Media Browser List Width" ToolTip="Drag to make the list wider or narrower; double-click to put it back to 240 DIPs." />
+            <DockPanel Grid.Column="2">
+                <ContentControl x:Name="ListHeaderHost" DockPanel.Dock="Top" Focusable="False" IsTabStop="False" Visibility="Collapsed" />
+                <!--
+                    The files. Dragged out, they drop like files from Explorer: onto a track of the timeline, or on
+                    the player. Double-click: a folder opens; a file is added at the playhead (or loaded,
+                    when nothing is). Right-click for more.
+                -->
+                <ListBox x:Name="Items" SelectionMode="Extended" ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto"
+                         ItemTemplate="{StaticResource TileTemplate}" ItemsPanel="{StaticResource TilePanel}"
+                         VirtualizingPanel.ScrollUnit="Pixel" AutomationProperties.Name="Media Files"
+                         PreviewMouseLeftButtonDown="Items_PreviewMouseLeftButtonDown" PreviewMouseMove="Items_PreviewMouseMove" PreviewMouseLeftButtonUp="Items_PreviewMouseLeftButtonUp"
+                         PreviewMouseDown="Items_PreviewMouseDown" PreviewMouseUp="Items_PreviewMouseUp" PreviewKeyDown="Items_PreviewKeyDown"
+                         LostMouseCapture="Items_LostMouseCapture"
+                         KeyDown="Items_KeyDown" ContextMenuOpening="Items_ContextMenuOpening">
+                    <ListBox.ContextMenu>
+                        <ContextMenu />
+                    </ListBox.ContextMenu>
+                    <ListBox.ItemContainerStyle>
+                        <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                            <Setter Property="Padding" Value="1" />
+                            <Setter Property="AutomationProperties.Name" Value="{Binding Name}" />
+                            <EventSetter Event="MouseDoubleClick" Handler="Item_MouseDoubleClick" />
+                        </Style>
+                    </ListBox.ItemContainerStyle>
+                </ListBox>
+            </DockPanel>
+        </Grid>
     </DockPanel>
 </UserControl>

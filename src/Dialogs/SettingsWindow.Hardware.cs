@@ -17,13 +17,18 @@ public partial class SettingsWindow
     // The result the stage shows when nothing is running: the last saved, or this screen's own run.
     private HardwareBenchmarkResult? _benchmarkShown;
 
+    // The Export GPU's Auto, under its own words (GpuAdapter.Automatic says "Automatic", which meant FFmpeg's choice before 5.4C).
+    private static readonly GpuAdapter ExportGpuAuto = new(-1, "Auto (the Compositor GPU)");
+
     private void InitializeGpuRoles(IReadOnlyList<GpuAdapter> adapters)
     {
-        // A card chosen earlier that has since gone is Auto again, as for the other two roles.
+        // A card chosen earlier that has since gone is Auto again, for the Export GPU as for the other roles.
         if (adapters.All(a => a.Index != _settings.CompositorGpuAdapter))
             _settings.CompositorGpuAdapter = -1;
         if (adapters.All(a => a.Index != _settings.DecodeGpuAdapter))
             _settings.DecodeGpuAdapter = -1;
+        if (adapters.All(a => a.Index != _settings.HardwareDecodeAdapter))
+            _settings.HardwareDecodeAdapter = -1;
 
         // A card Windows lists twice (a headset's display on it, say) is offered once, as its first listing; a role saved
         // on the second listing shows (and keeps) the same card by the first one's number. The background's list is
@@ -33,7 +38,9 @@ public partial class SettingsWindow
         _settings.BackgroundGpu = TwinOf(adapters, _settings.BackgroundGpu);
         _settings.HardwareDecodeAdapter = TwinOf(adapters, _settings.HardwareDecodeAdapter);
         var distinct = DistinctCards(adapters);
-        DecodeAdapterBox.ItemsSource = distinct.Prepend(GpuAdapter.Automatic).ToList();
+
+        // The Export GPU (5.4C): the card exports and Render Previews composite on (GpuExport.ExportAdapter); Auto is the Compositor GPU.
+        DecodeAdapterBox.ItemsSource = distinct.Prepend(ExportGpuAuto).ToList();
         DecodeAdapterBox.SelectedValue = _settings.HardwareDecodeAdapter;
 
         var cards = distinct.Select(a => new NumberChoice(a.Display, a.Index)).ToList();
@@ -208,7 +215,7 @@ public partial class SettingsWindow
         if (result.FfmpegFallbackCodecs.Count > 0)
             reasons.Add($"Decoded by FFmpeg on the processor (Media Foundation has no decoder for it here): {string.Join(", ", result.FfmpegFallbackCodecs)}.");
         foreach (var card in result.Adapters.Where(a => a.UnifiedMemory && a.SameCardAs < 0))
-            reasons.Add($"{card.Name} shares the computer's memory: the frame cache's Auto takes an eighth of it, at most 2.5 GB.");
+            reasons.Add($"{card.Name} shares the computer's memory: the frame cache starts at up to 2 GB of it, grows to at most 4 GB (an eighth of the computer's memory below 32 GB), and is emptied when a project tab is put behind.");
         foreach (var npu in result.Npus)
             reasons.Add($"NPU: {npu.Name}. {npu.UsedFor}");
         BenchmarkReasonsText.Text = string.Join(Environment.NewLine, reasons);

@@ -1,0 +1,14 @@
+# A cache folder per HandPeg running: a live session's tabs are never taken or deleted, a dead one's are taken in; a clean close keeps only the tabs it is told to.
+ok: a session that writes a tab holds session.lock in a folder of its own
+ok: the new session takes the dead session's two tabs, in its tabs.json's order
+ok: their project files, headers and saved fingerprint are moved into its own folder
+ok: the dead session's folder goes once all its tabs came across
+ok: the live session's tab is neither offered nor touched: its lock is held
+ok: a folder with no lock file is left alone
+ok: three tabs adopted rank below the tab in front, whatever their last session counted (55, 56, 57)
+ok: so the tab in front keeps its paused still after three tabs were adopted
+ok: scanning again takes nothing: the live session's tabs stay its own
+ok: closing with the prompt off keeps the dirty tab's files (and the lock file, let go) and deletes the clean one's
+ok: the next start offers that dirty tab again (taken in as one of its tabs), and the folder it came from goes
+ok: a clean close deletes only its own session's folder
+ok: and the last session's too

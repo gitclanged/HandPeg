@@ -1,0 +1,4 @@
+# New work in front of a tab that could not be brought back gets a tab of its own; the old tab keeps its file as it was.
+ok: the new work is a new tab, in front; the tab not brought back stays on the strip
+ok: that tab is still what its file holds: its name and its unsaved changes
+ok: the old tab's .hptab and saved fingerprint are as they were (switching to it tries again)

@@ -5,7 +5,10 @@ using CliWrap;
 
 namespace HandPegApp.Services;
 
-/// <summary>A size to squeeze a video under, for somewhere that will not take more: "Discord (Non-Nitro)", 20 MB.</summary>
+/// <summary>
+/// A size to squeeze a video under, for somewhere that will not take more: "Discord (10 MB)", 10 MB (5.4C: the chat's own limit for
+/// an account without its subscription; "Discord (Non-Nitro)" of 20 MB before, renamed in a settings file that kept it untouched).
+/// </summary>
 public sealed class SquishPreset
 {
     public string Name { get; set; } = "Preset";
@@ -63,7 +66,7 @@ public sealed class SquishPreset
     /// </summary>
     public static List<SquishPreset> Defaults() =>
     [
-        new() { Name = "Discord (Non-Nitro)", TargetSizeMb = 20, AudioKbps = 96, Icon = "gamepad" },
+        new() { Name = "Discord (10 MB)", TargetSizeMb = 10, AudioKbps = 96, Icon = "gamepad" },
         new() { Name = "Discord (Nitro Basic)", TargetSizeMb = 50, AudioKbps = 128, Icon = "gamepad" },
         new() { Name = "Discord (Nitro)", TargetSizeMb = 500, AudioKbps = 160, Icon = "gamepad" },
         new() { Name = "WhatsApp", TargetSizeMb = 16, AudioKbps = 96, Icon = "bubble" },
@@ -117,14 +120,17 @@ public static class SocialSquisher
     /// <summary>The encoder's own options: its most careful preset, or the one named in the settings.</summary>
     private static string EncoderOptions(string encoder, string? presetOverride)
     {
+        // "veryslow" (the override's default since 5.4C) means each encoder's slowest: NVENC and AMF have no step of that name.
         var preset = string.IsNullOrWhiteSpace(presetOverride) ? null : presetOverride.Trim();
+        if (string.Equals(preset, "veryslow", StringComparison.OrdinalIgnoreCase) && encoder is "h264_nvenc" or "h264_amf")
+            preset = null;
         return encoder switch
         {
             "h264_nvenc" => $"-preset {preset ?? "p7"} -tune hq -rc vbr -multipass fullres",
             "h264_qsv" => $"-preset {preset ?? "veryslow"}",
-            "h264_amf" => $"-quality {preset ?? "quality"} -rc vbr_peak",
-            // No presets: peak-constrained VBR held to the -maxrate that follows, on the hardware only.
-            "h264_mf" => $"-rate_control pc_vbr {MediaFoundationEncoder.HardwareOnlyArgument}",
+            "h264_amf" => $"-quality {preset ?? "high_quality"} -rc vbr_peak",
+            // No preset step: peak-constrained VBR held to the -maxrate that follows, at its slowest (5.4C), on the hardware only.
+            "h264_mf" => $"-rate_control pc_vbr {MediaFoundationEncoder.SlowestStepArgument} {MediaFoundationEncoder.HardwareOnlyArgument}",
             _ => $"-preset {preset ?? "veryslow"}",
         };
     }

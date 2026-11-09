@@ -27,7 +27,11 @@ public sealed partial class AudioTrack : ObservableObject
     public const string Drop = "Ignore / Drop";
 
     public static IReadOnlyList<string> AllActions { get; } = [Passthrough, Reencode, Drop];
-    public static IReadOnlyList<string> AllCodecs { get; } = ["aac", "libopus", "libmp3lame", "ac3", "pcm_s16le"];
+    /// <summary>The audio encoders offered (5.4B: FLAC, lossless, beside PCM).</summary>
+    public static IReadOnlyList<string> AllCodecs { get; } = ["aac", "libopus", "libmp3lame", "ac3", "flac", "pcm_s16le"];
+
+    /// <summary>A codec that is lossless and takes no bitrate (PCM, FLAC): none is given to it, nor shown beside it.</summary>
+    public static bool IsLossless(string codec) => codec == "flac" || codec.StartsWith("pcm_", StringComparison.Ordinal);
     public static IReadOnlyList<string> AllBitrates { get; } = ["96k", "128k", "160k", "192k", "256k", "320k"];
 
     public AudioTrack(AudioStreamInfo stream)

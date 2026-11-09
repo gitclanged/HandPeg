@@ -17,8 +17,7 @@ public partial class MainViewModel
     /// <summary>Frame rate of the file last opened (the rate an empty Sequence takes from it). 30 when it is not known.</summary>
     public double SourceFrameRate => _mediaInfo?.Video?.FrameRate is > 0 and var rate ? rate : 30;
 
-    /// <summary>The Dimensions, Filters, Video and Audio tabs as a preset.</summary>
-    /// <summary>The encode settings as they are now, as a preset (for Settings: "Use the Current Video and Audio Settings").</summary>
+        /// <summary>The encode settings as they are now, as a preset (for Settings: "Use the Current Video and Audio Settings").</summary>
     public EncodingPreset CurrentEncodingSettings() => CaptureSettings("");
 
     private EncodingPreset CaptureSettings(string name) => new()
@@ -36,6 +35,7 @@ public partial class MainViewModel
         Denoise = Denoise,
         VideoEncoder = VideoEncoder.Name,
         EncoderPreset = EncoderPreset,
+        SpeedFirst = _speedFirst,
         Tune = Tune,
         Profile = Profile,
         Level = Level,
@@ -45,7 +45,6 @@ public partial class MainViewModel
         Framerate = Framerate,
         CustomFramerate = CustomFramerate,
         Colorspace = Colorspace,
-        HardwareDecoding = HardwareDecoding,
         ExtraVideoArguments = ExtraVideoArguments,
         NvencTune = NvencTune,
         NvencMultipass = NvencMultipass,
@@ -61,6 +60,7 @@ public partial class MainViewModel
         AudioChannels = AudioChannels == AudioChannelChoice.Stereo ? null : AudioChannels,
         MergeAudioTracks = MergeAudioTracks,
         NormalizeAudio = NormalizeAudio,
+        LoudnessTarget = NormalizeLoudness(LoudnessTarget) == -16 ? 0 : NormalizeLoudness(LoudnessTarget),
         DuckAmountDb = DuckAmountDb,
         CenterZoom = TemplatePlace().Zoom,
         // The layout, for a preset (a project's are its timeline, and ProjectStore leaves these out): the first video clip's
@@ -101,8 +101,13 @@ public partial class MainViewModel
         FadeIn = FadeIn,
         FadeOut = FadeOut,
 
-        // Only when the user asked for presets to carry it; see the Automation settings.
-        TargetFileSize = AppSettings.Current.SaveTargetSizeInPresets ? TargetFileSize : "",
+        // Only when the user asked for presets to carry it (see the Automation settings), and only a size typed (5.4B: the size an
+        // automatic or typed bitrate gives is only a guide, which the box shows).
+        TargetFileSize = AppSettings.Current.SaveTargetSizeInPresets && _sizeDrivesBitrate ? TargetFileSize : "",
+
+        // The output's format (5.4B: a preset carries the container and Web Optimized, as the built-ins do).
+        Container = Container,
+        WebOptimized = WebOptimized,
     };
 
     /// <summary>
@@ -165,7 +170,13 @@ public partial class MainViewModel
     /// A snapshot of the source, the timeline and every setting. The timeline is a copy of its own (its looks too), so
     /// what holds the state (a queued job, an autosave being written away from the interface) is never reached by later edits.
     /// </summary>
-    public ProjectState CaptureState(string name = "")
+    public ProjectState CaptureState(string name = "") => CaptureState(name, liveTimeline: false);
+
+    /// <summary>
+    /// <see cref="CaptureState(string)"/>; with <paramref name="liveTimeline"/> (Pass 5.4D-TabPerf: a project tab kept in memory as it goes
+    /// behind, DetachForTab), its Timeline is the live Sequence itself, not a copy: the tab's own, never touched again until it is back.
+    /// </summary>
+    private ProjectState CaptureState(string name, bool liveTimeline)
     {
         FlushLooks();
         return new ProjectState
@@ -177,7 +188,7 @@ public partial class MainViewModel
             DestinationPath = DestinationPath,
             DownloadResolution = DownloadResolution,
             DownloadSubtitles = DownloadSubtitles,
-            Timeline = Document.Clone(deep: true),
+            Timeline = liveTimeline ? Document : Document.Clone(deep: true),
             SnapToIFrames = SnapToIFrames,
             Container = Container,
             WebOptimized = WebOptimized,
@@ -185,7 +196,8 @@ public partial class MainViewModel
             ChaptersAtCuts = ChaptersAtCuts,
             ChaptersAtMarkers = ChaptersAtMarkers,
             Subtitles = CaptureSubtitles(),
-            TargetFileSize = TargetFileSize,
+            // A size typed only (5.4B): the one an automatic or typed bitrate gives is worked out again as the project opens.
+            TargetFileSize = _sizeDrivesBitrate ? TargetFileSize : "",
             Settings = CaptureSettings(name),
             AudioTracks = CaptureAudioTracks(),
             SubtitleTracks = SubtitleTracks.Select(t => new SubtitleTrackState(t.Index, t.Action)).ToList(),
@@ -237,6 +249,28 @@ public partial class MainViewModel
                     (look.CropLeft, look.CropTop, look.CropRight, look.CropBottom) = crop;
                     clip.State = look;
                 }
+            }
+        }
+
+        // The bin follows the opened file to its path this session the same way (a link's download may lie elsewhere now), once.
+        if (!string.IsNullOrEmpty(state.LocalMediaPath) && !string.IsNullOrEmpty(LocalMediaPath)
+            && !string.Equals(state.LocalMediaPath, LocalMediaPath, StringComparison.OrdinalIgnoreCase)
+            && timeline.MediaPool.FindIndex(f => string.Equals(TimelineDocument.PoolPath(f), state.LocalMediaPath, StringComparison.OrdinalIgnoreCase)) is >= 0 and var stale)
+        {
+            if (timeline.PoolHolds(LocalMediaPath))
+                timeline.MediaPool.RemoveAt(stale);
+            else
+                timeline.MediaPool[stale] = LocalMediaPath;
+        }
+
+        // A project from before Project Media (5.4C) has an empty bin: it starts with its clips' files, in the order the tracks hold them.
+        // On this copy, not as an edit: opening a project changes nothing in it.
+        if (timeline.MediaPool.Count == 0)
+        {
+            foreach (var clip in timeline.Tracks.SelectMany(t => t.Clips))
+            {
+                if (TimelineDocument.PoolFileOf(clip) is { } file && !timeline.PoolHolds(file))
+                    timeline.MediaPool.Add(file);
             }
         }
 
@@ -336,6 +370,32 @@ public partial class MainViewModel
             SetMediaInfo(null);
         }
 
+        ApplyProjectSettings(state, legacyMixing: oldShape is not null);
+        var timeline = TimelineToOpen(state);
+        var converted = ConvertLegacy(timeline, state) || oldShape is not null;
+        if (converted)
+        {
+            ConvertedFrom = oldShape ?? "clips of the main video";
+            AppLog.Write($"Opened a project of the shape before 5.2 ({ConvertedFrom}): converted as it was opened");
+        }
+
+        InstallProjectTimeline(state, timeline);
+
+        // The undo history the project carries (4.4-BugHunt; none for a queued job): Ctrl+Z goes on where its save left it.
+        TakeUpHistory(state, converted);
+        MarkSaved();
+        return GetLayoutAspectWarning() is { } warning ? $"{doneMessage}. {warning}" : doneMessage;
+    });
+
+    /// <summary>
+    /// A project's settings put in place as it is opened (RestoreStateAsync), or as a project tab kept in memory comes back to the
+    /// front (Pass 5.4D-TabPerf, AttachTab): its output's format and chapters, its subtitles, its export settings without a layout of
+    /// their own (its timeline is its own, put in place after them: <see cref="InstallProjectTimeline"/>) and its output tracks. Both
+    /// ways take the same steps, so a tab swapped in memory is set up exactly as one opened from its file.
+    /// </summary>
+    /// <param name="legacyMixing">A project of 5.1's shape: what it mixed its main video's streams with, the conversion's input.</param>
+    private void ApplyProjectSettings(ProjectState state, bool legacyMixing)
+    {
         SnapToIFrames = state.SnapToIFrames;
         if (Containers.Contains(state.Container))
             Container = state.Container;
@@ -356,20 +416,21 @@ public partial class MainViewModel
 
         // Its output tracks (queue jobs and projects saved before presets carried the tracks keep them here), with what a project
         // of 5.1 mixed its main video's streams with: the conversion takes that onto Sub-Lanes, before the timeline is put in place.
-        ApplyAudioTrackStates(state.AudioTracks, legacyMixing: oldShape is not null);
-        var timeline = TimelineToOpen(state);
-        var converted = ConvertLegacy(timeline, state) || oldShape is not null;
-        if (converted)
-        {
-            ConvertedFrom = oldShape ?? "clips of the main video";
-            AppLog.Write($"Opened a project of the shape before 5.2 ({ConvertedFrom}): converted as it was opened");
-        }
+        ApplyAudioTrackStates(state.AudioTracks, legacyMixing);
+    }
 
+    /// <summary>
+    /// A project's timeline put in place with what goes with it, as one restore (RestoreStateAsync, and Pass 5.4D-TabPerf's AttachTab with
+    /// the tab's own live Sequence): its bin, target size, caption audio and subtitle streams' actions, then its destination and command.
+    /// </summary>
+    /// <param name="kept">The views a tab kept live took with it (AttachTab: none are made anew for its unchanged Sequence); null to make them.</param>
+    private void InstallProjectTimeline(ProjectState state, TimelineDocument timeline, KeptViews? kept = null)
+    {
         // The timeline and what goes with it are put in place as one restore (4.4-BugHunt): nothing it sets going takes an
         // undo step or makes an edit, and the captions are projected once, at its end, through the project's own timeline.
         using (BeginRestore())
         {
-            InstallDocument(timeline);
+            PutDocumentInPlace(timeline, kept);
             SetBin(state.Deleted);
             TargetFileSize = state.TargetFileSize;
             CaptionAudioPath = state.CaptionAudioPath ?? "";
@@ -390,12 +451,7 @@ public partial class MainViewModel
         GenerateCommand();
         if (state.ManualCommand is { } manualCommand)
             CommandPreview = manualCommand;
-
-        // The undo history the project carries (4.4-BugHunt; none for a queued job): Ctrl+Z goes on where its save left it.
-        TakeUpHistory(state, converted);
-        MarkSaved();
-        return GetLayoutAspectWarning() is { } warning ? $"{doneMessage}. {warning}" : doneMessage;
-    });
+    }
 
     // ----- Encoding presets as files -----
 
@@ -430,7 +486,12 @@ public partial class MainViewModel
             if (string.IsNullOrWhiteSpace(preset.Name))
                 preset.Name = Path.GetFileNameWithoutExtension(path);
 
-            var existing = Presets.ToList().FindIndex(p => p.Name.Equals(preset.Name, StringComparison.OrdinalIgnoreCase));
+            // A file's preset is the user's own (5.4B: never a built-in, whatever it says), and never takes a built-in's name.
+            preset.Category = null;
+            if (ExportPresetCatalog.IsBuiltInName(preset.Name))
+                preset.Name = PresetStore.UniqueName(preset.Name, Presets.Where(p => !p.IsBuiltIn));
+
+            var existing = Presets.ToList().FindIndex(p => !p.IsBuiltIn && p.Name.Equals(preset.Name, StringComparison.OrdinalIgnoreCase));
             if (existing >= 0)
                 Presets[existing] = preset;
             else
@@ -518,8 +579,21 @@ public partial class MainViewModel
     /// <summary>The Sequence Overview Scrubber is stretched and scrolled with the timeline's time bars when they are zoomed; off, it always shows the whole sequence.</summary>
     [ObservableProperty] private bool _syncMasterTimeline;
 
-    /// <summary>The file the open project was last saved to or opened from; empty for work that has never been saved.</summary>
-    public string CurrentProjectPath { get; private set; } = "";
+    /// <summary>
+    /// The file the open project was last saved to or opened from; empty for work that has never been saved. Told when it changes (Pass
+    /// 5.4D-TabPerf: the project tab in front takes its name from it at once).
+    /// </summary>
+    public string CurrentProjectPath
+    {
+        get;
+        private set
+        {
+            if (field == value)
+                return;
+            field = value;
+            OnPropertyChanged();
+        }
+    } = "";
 
     /// <summary>Raised when the session has been emptied for a new project: the window lets the player's file go and shows the drop hint.</summary>
     public event Action? SessionCleared;
@@ -544,6 +618,7 @@ public partial class MainViewModel
             ResetForNewSource();
             InstallDocument(NewDocument());
             (SourcePath, LocalMediaPath, DestinationPath, CurrentProjectPath, EditingJob) = ("", "", "", "", null);
+            (NewProjectName, NewProjectFolder) = ("", null);
             SetMediaInfo(null);
             ApplySubtitles(null);
             KeyLayer = null;
@@ -581,7 +656,7 @@ public partial class MainViewModel
             _syncingDimensions = false;
         }
 
-        (PixelAspectRatio, CustomPixelAspectRatio) = (SameAsSource, "");
+        (PixelAspectRatio, CustomPixelAspectRatio) = (MatchProject, "");
         (IsInteractiveCropActive, DrawTargetLayer, IsArrangeActive) = (false, null, false);
         ResetCrop();
         ResetBlurSettings();
@@ -814,12 +889,27 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>Saves the current state as a project and returns a line for the status bar.</summary>
+    /// <summary>
+    /// Saves the current state as a project and returns a line for the status bar. A save by name never writes over another project
+    /// without asking (5.4A: every studio project starts as "New Project"): a file already there that is not the open project's own is
+    /// replaced only once the user says so, and otherwise nothing is written.
+    /// </summary>
     public string SaveProject(string name)
     {
+        var target = SavedProjectPathFor(name);
+        if (File.Exists(target) && !SamePath(target, CurrentProjectPath)
+            && Confirm?.Invoke("Replace Project", $"A project named \"{Path.GetFileNameWithoutExtension(target)}\" is already saved there:\n{target}\n\nSaving replaces it with this one.", "Replace") != true)
+        {
+            return StatusText = $"Not saved: a project named \"{Path.GetFileNameWithoutExtension(target)}\" is already saved there. Choose another name.";
+        }
+
         // Fully portable saves (5.2A): a folder of its own, its media with it.
         if (AppSettings.Current.FullyPortableProjectSave)
             return SavePortable(name, "");
+
+        // The first save of a New Project whose studio chose a folder of its own (5.4A) goes there.
+        if (NewProjectPathFor(name) is { } chosen)
+            return SaveProjectTo(chosen);
 
         try
         {

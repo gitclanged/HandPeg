@@ -57,8 +57,39 @@ public static class SequenceSpans
     public static IReadOnlyList<ClipSpan> SpansOf(TimelineDocument document, string path) => Collect(document, Clean(path));
 
     /// <summary>
+    /// The Sequence's length as it is played and exported (5.4A, no trailing black frame): to the end of its last picture (a video
+    /// file, a Cutout, an image or a title on a Video or Switch track, hidden or not), or further only where a standalone sound (an
+    /// Audio clip on an Audio track with no <see cref="TimelineClip.ParentClipId"/>: music, a voice-over) was placed past it. An
+    /// L-cut tail, a slipped sound or an adjustment past the last picture adds no frame of black. With no picture at all, it is
+    /// <see cref="TimelineDocument.TotalDuration"/>.
+    /// </summary>
+    public static double ProgramSeconds(TimelineDocument document)
+    {
+        double picture = 0, loose = 0;
+        var any = false;
+        foreach (var track in document.Tracks)
+        {
+            foreach (var clip in track.Clips)
+            {
+                if (track.Kind is TimelineTrackKind.Video or TimelineTrackKind.Switch && clip.ContentKind is LayerKind.VideoFile or LayerKind.Image or LayerKind.Text)
+                {
+                    any = true;
+                    picture = Math.Max(picture, clip.End);
+                }
+                else if (track.Kind == TimelineTrackKind.Audio && clip is { ContentKind: LayerKind.Audio, ParentClipId: null })
+                {
+                    loose = Math.Max(loose, clip.End + Math.Max(clip.AudioLinked ? clip.AudioTailOutSeconds : clip.AudioSlipSeconds, 0));
+                }
+            }
+        }
+
+        return any ? Math.Max(picture, loose) : document.TotalDuration;
+    }
+
+    /// <summary>
     /// The files the whole Sequence is exactly one clip of: one of <see cref="PictureSpans"/> that starts the Sequence with
-    /// its file's first moment, at speed 1, plays the whole file (its length its file's, to a frame or so) and ends where
+    /// its file's first moment, at speed 1, plays the whole file (its length its file's, to a frame or so: to its picture's end
+    /// where the container runs on past it, <see cref="TimelineClip.WholeDuration"/>, 5.4A) and ends where
     /// the Sequence does (<see cref="TimelineDocument.TotalDuration"/>). Whatever lies over it, such a file can be read as it
     /// is: its soft subtitles, its chapters and a stream of its sound copied are still in time. Cleaned paths, compared
     /// without regard to case.
@@ -70,7 +101,7 @@ public static class SequenceSpans
         foreach (var (_, clip, path) in Shown(document))
         {
             if (clip.Start < Moment && clip.MediaOffset < Moment && Math.Abs(clip.Speed - 1) < SameSpeed && clip.SourceDuration > 0
-                && Math.Abs(clip.Duration - clip.SourceDuration) < SameLength && Math.Abs(length - clip.End) < SameLength)
+                && Math.Abs(clip.Duration - clip.WholeDuration) < SameLength && Math.Abs(length - clip.End) < SameLength)
             {
                 whole.Add(path);
             }
@@ -135,11 +166,11 @@ public static class SequenceSpans
                 leftOut.Add(name);
         }
 
-        // A single piece is the file as it is only when it plays the whole of it from its first moment.
+        // A single piece is the file as it is only when it plays the whole of it from its first moment (to its picture's end, 5.4A).
         var whole = false;
         if (pieces is [var only])
         {
-            var length = document.FindClip(only.ClipId)?.SourceDuration ?? 0;
+            var length = document.FindClip(only.ClipId)?.WholeDuration ?? 0;
             whole = only.MediaOffset < Moment && length > 0 && Math.Abs(only.Duration - length) < SameLength;
         }
 

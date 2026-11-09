@@ -1,0 +1,11 @@
+# The Summary tab is retired: each of its controls has one new home, and an arrangement saved on it opens on the Timeline.
+ok: MainWindow.xaml's tabs are Filters, Audio, Export and Command Preview: no Summary (and, 5.4B, no Video)
+ok: no built-in layout holds Tab:Summary
+ok: and MainWindow.Layouts.cs names it nowhere
+ok: Color & Effects' media group is the Media Browser alone
+ok: the Export tab holds Format, Web Optimized, the Projected Output (5.4B: in its third card) and a Source Details expander (Source Information)
+ok: and the Export Presets selector while it is not above the tabs (ShowPresetBarInExport)
+ok: each former Summary control has exactly one home: the Export Presets selector (and its Import / Export...), Format, Web Optimized, the copy warning, the details, Vertical in the Export tab's second card
+ok: Swap Project and the cards are gone; the Timeline's row of tools has no Game Presets box (5.4C: a clip's or a track's right-click menu applies, saves, imports and exports them)
+ok: the preset bar's places are the Export tab (the default) and the top of the window
+ok: a saved arrangement on Tab:Summary loads without it, its group on the Timeline (no dock version bump: Validate drops the unknown pane)

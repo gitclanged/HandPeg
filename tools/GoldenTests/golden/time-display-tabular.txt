@@ -20,7 +20,7 @@ ok: a thirteen-character time widens it once, and it stays that wide
 ok: the position by the Sequence Overview Scrubber (PositionTextBlock) is held in a TimeReadout
 ok: so is the duration at the scrubber's right end
 ok: so is the playback bar's position and duration
-ok: so is the caption editor's time (TimeText)
+ok: so is the Subtitle Studio's time (TimeText)
 ok: the voiceover's count (RecordTimeText, a sentence) has tabular figures
 ok: the gutter between the position and the scrubber is 6 DIPs (it was 12)
 ok: both of the scrubber's readouts keep 8 DIPs spare (5.3.2)

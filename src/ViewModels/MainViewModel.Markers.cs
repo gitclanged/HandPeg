@@ -158,8 +158,9 @@ public partial class MainViewModel
 
         if (ChaptersAtCuts)
         {
-            // Through the cuts list only the copied file's clips are there; otherwise every video track's edges, in order.
-            var length = SequenceSeconds;
+            // Through the cuts list only the copied file's clips are there; otherwise every video track's edges, in order. Up to
+            // the output's end (5.4A: the last picture's, SequenceSpans.ProgramSeconds; an audio tail past it is not exported).
+            var length = SequenceSpans.ProgramSeconds(Document);
             var edges = throughCuts
                 ? clips.Select(c => c.Start)
                 : Document.Tracks.Where(t => t.Kind is Models.Timeline.TimelineTrackKind.Video or Models.Timeline.TimelineTrackKind.Switch)
@@ -179,9 +180,11 @@ public partial class MainViewModel
 
         if (ChaptersAtMarkers)
         {
+            // A marker past the output's end (5.4A: on an audio tail that is not exported) starts no chapter.
+            var length = SequenceSpans.ProgramSeconds(Document);
             foreach (var marker in Markers)
             {
-                if (marker.Seconds < 0 || marker.Seconds > SequenceSeconds || OutputTime(marker.Seconds) is not { } start)
+                if (marker.Seconds < 0 || marker.Seconds > length || OutputTime(marker.Seconds) is not { } start)
                     continue;
 
                 var same = chapters.FindIndex(c => Math.Abs(c.Start - start) < 0.5);

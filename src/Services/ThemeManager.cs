@@ -159,6 +159,10 @@ public static partial class ThemeManager
             // own colour (the bands above and below it), so the bar reads apart from what is round it; a light palette's a touch darker.
             ["ScrubberBrush"] = Mix(Of("WindowBackgroundBrush"), Colors.Black, dark ? 0.25 : 0.04),
             ["CardBrush"] = Of("ControlBrush"), ["InactiveTabBrush"] = Colors.Transparent, ["TitleBarBrush"] = Of("WindowBackgroundBrush"),
+            // The inspector cards (5.4B, CLAUDE.md 10.3: the Export tab's columns): #1E1E22 edged #2A2A30 on a dark palette; on a light one
+            // a step darker than the panels, edged as the controls are.
+            ["InspectorCardBrush"] = dark ? Color.FromRgb(0x1E, 0x1E, 0x22) : Mix(Of("PanelBrush"), Colors.Black, 0.06),
+            ["InspectorCardBorderBrush"] = dark ? Color.FromRgb(0x2A, 0x2A, 0x30) : Of("ControlBorderBrush"),
             ["TabEdgeBrush"] = Colors.Transparent, ["ActiveTabEdgeBrush"] = Colors.Transparent,
             ["WellBrush"] = Of("ControlBrush"), ["WellBorderBrush"] = Of("ControlBorderBrush"), ["RaisedBorderBrush"] = Of("ControlBorderBrush"),
             ["ButtonFaceBrush"] = accent, ["ButtonTextBrush"] = onAccent, ["ButtonBorderBrush"] = accent, ["ButtonBevelBrush"] = Colors.Transparent,

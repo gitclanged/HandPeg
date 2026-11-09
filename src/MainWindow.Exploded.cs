@@ -93,16 +93,19 @@ public partial class MainWindow
 
     // ----- On and off -----
 
-    /// <summary>
-    /// Into the 3D view (the camera swings out of the flat picture) or out of it (back into the flat picture, the overlays of
-    /// the flat player coming back once it is there). Only on the GPU engine, with a video open.
-    /// </summary>
     // When the 3D view was left, and how long its layer may wait for a flat picture (the way back is 240 ms of camera, each step at
     // most a 60 Hz refresh: 15 frames, slow ones included).
     private long _explodedLeftAt;
     private const long ExplodedWayBackMs = 1500;
 
-    private void SetExplodedView(bool on)
+    /// <summary>
+    /// Into the 3D view (the camera swings out of the flat picture) or out of it (back into the flat picture, the overlays of
+    /// the flat player coming back once it is there). Only on the GPU engine, with a video open.
+    /// <para>5.4D, a project tab put behind or brought back (MainWindow.ProjectTabs.cs): <paramref name="instant"/> leaves or enters
+    /// it at once, with no way out or in; into it at <paramref name="pose"/> (the tab's camera, its spacing the panel's again) and with
+    /// no status line. Turned on by hand the camera still starts where it always does.</para>
+    /// </summary>
+    private void SetExplodedView(bool on, bool instant = false, GpuPreviewEngine.CameraPose? pose = null)
     {
         if (on == _explodedUi)
         {
@@ -134,12 +137,24 @@ public partial class MainWindow
                 view.Matrix = Matrix.Identity;
             engine.SetView(0, 0, 0);
 
-            // The camera starts where it always does (the user's Q4: its angle is not remembered); the spacing is the panel's,
-            // kept for the session.
             _explodedUi = true;
+            NoteStillStale();
+            engine.SelectedClipKey = SelectedExplodedKey();
+            if (instant)
+            {
+                // A project tab come back to the front (5.4D): its camera where it was left, at once (the panel's spacing with it).
+                var at = GpuPreviewEngine.HeldToLimits(pose ?? new(GpuPreviewEngine.DefaultYaw, GpuPreviewEngine.DefaultPitch, GpuPreviewEngine.DefaultZoom, ExplodedSpacing.Value));
+                ExplodedSpacing.Value = Math.Max(ExplodedSpacing.Minimum, Math.Min(at.Spacing, ExplodedSpacing.Maximum));
+                engine.SetExplodedInstant(true, at with { Spacing = ExplodedSpacing.Value });
+                ShowExplodedLayer();
+                SyncExplodedToggle();
+                return;
+            }
+
+            // The camera starts where it always does (the user's Q4: its angle is not remembered, but for a project tab come back,
+            // 5.4D); the spacing is the panel's, kept for the session.
             engine.ResetCamera();
             engine.ZSpacing = ExplodedSpacing.Value;
-            engine.SelectedClipKey = SelectedExplodedKey();
             engine.SetExploded(true);
             ShowExplodedLayer();
             _viewModel.StatusText = "3D Exploded View: right-drag or two-finger scroll to orbit, the wheel or a pinch to zoom, Alt + the wheel or [ ] to pick the layer in front or behind; drag a layer to move it in its plane (its corner handle resizes it), Shift + drag to move it through the stack. Esc goes back.";
@@ -149,6 +164,16 @@ public partial class MainWindow
             EndExplodedDrag(cancelled: true);
             _explodedUi = false;
             _explodedLeftAt = Environment.TickCount64;
+            NoteStillStale();
+            if (instant)
+            {
+                // A project tab put behind or closed (5.4D): the flat picture at once, and the layer, panel and badges gone with it.
+                _gpu?.SetExplodedInstant(false);
+                HideExplodedLayer();
+                SyncExplodedToggle();
+                return;
+            }
+
             _gpu?.SetExploded(false);
 
             // The panel and the badges go now; the layer keeps taking presses until the picture is flat again (OnExplodedFrame),
@@ -162,6 +187,24 @@ public partial class MainWindow
         SyncExplodedToggle();
     }
 
+    /// <summary>
+    /// The flat picture at once (5.4D: a project tab put behind or closed): the 3D view left with no way out, and one already on its way
+    /// out ended where it is, so the next tab's first scenes are never drawn in 3D and its overlays never wait hidden for the way back.
+    /// </summary>
+    private void LeaveExplodedAtOnce()
+    {
+        if (_explodedUi)
+        {
+            SetExplodedView(false, instant: true);
+            return;
+        }
+
+        if (_gpu is { IsDrawingExploded: true } engine)
+            engine.SetExplodedInstant(false);
+        if (_explodedTicking)
+            HideExplodedLayer();
+    }
+
     private void ShowExplodedLayer()
     {
         // The flat player's boxes, crop and margins are drawn where the flat picture has things: out of sight in 3D.
@@ -169,7 +212,8 @@ public partial class MainWindow
         {
             foreach (UIElement child in PlayerOverlay.Children)
             {
-                if (ReferenceEquals(child, ExplodedLayer))
+                // A project tab's still (5.4D) is the picture of the view, flat or 3D, until the engine has drawn the tab: never hidden.
+                if (ReferenceEquals(child, ExplodedLayer) || ReferenceEquals(child, _tabStill))
                     continue;
                 _explodedHidden.Add((child, child.Opacity));
                 child.Opacity = 0;
@@ -237,9 +281,14 @@ public partial class MainWindow
     {
         if (_gpu is { } engine)
             engine.ZSpacing = e.NewValue;
+        NoteStillStale();
     }
 
-    private void ExplodedReset_Click(object sender, RoutedEventArgs e) => _gpu?.ResetCamera();
+    private void ExplodedReset_Click(object sender, RoutedEventArgs e)
+    {
+        _gpu?.ResetCamera();
+        NoteStillStale();
+    }
 
     private void ExplodedClose_Click(object sender, RoutedEventArgs e) => SetExplodedView(false);
 
@@ -901,6 +950,7 @@ public partial class MainWindow
                 break;
         }
 
+        NoteStillStale();
         return true;
     }
 
@@ -1007,6 +1057,7 @@ public partial class MainWindow
     private void ExplodedLayer_ManipulationCompleted(object? sender, ManipulationCompletedEventArgs e)
     {
         _gpu?.SetOrbiting(false);
+        NoteStillStale();
         e.Handled = true;
     }
 
@@ -1056,6 +1107,7 @@ public partial class MainWindow
         if (ExplodedLayer.IsMouseCaptured)
             ExplodedLayer.ReleaseMouseCapture();
         _gpu?.SetOrbiting(false);
+        NoteStillStale();
         try
         {
             if (kind == ExplodedDragKind.Depth && !cancelled)
@@ -1081,6 +1133,8 @@ public partial class MainWindow
             engine.Zoom(Math.Pow(NavZoomRate, -zoom * seconds));
         if (pan != 0)
             engine.Orbit(pan * ExplodedNavOrbitRate * seconds, 0);
+        if (zoom != 0 || pan != 0)
+            NoteStillStale();
         return true;
     }
 

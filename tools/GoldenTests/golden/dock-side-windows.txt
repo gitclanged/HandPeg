@@ -1,0 +1,31 @@
+# Any number of side windows, the model alone: the old side window migrated, each pane in one place across every window, moves, modes, closes, layouts and the JSON.
+ok: the side window of before 5.4C is Pane Docker "side-1": its panes (Media,Effects), its place in DIPs and maximized kept
+ok: the main arrangement saved again carries none of the legacy members (they are read once, never written)
+ok: Media and Effects are in the docker only; the closed arrangement's Keyframes stays in the main window; every pane in one place
+ok: with the main window never shown, the docker is listed but no window is made (it would open after the first frame)
+ok: a side window that was closed adds no docker, and its members are cleared all the same
+ok: four side windows taken up in their order (the migrated side-1 takes the saved one's state); the repeated id is "side-4" now, its unknown mode a Pane Docker
+ok: side-1 holds Media,Keyframes (Bogus gone, its split tidied), side-2 Meter (Keyframes was side-1's), the preview nothing, side-4 nothing
+ok: the main window loses what the side windows hold, Effects (the preview's) stays in it: every pane in exactly one place
+ok: the Layout menu's rows: Pane Docker 1: Media, Keyframes | Pane Docker 2: Meter | Live Video Preview 3 | Pane Docker 4
+ok: Contains finds a pane in a docker; the optional studio is in no window
+ok: Open puts it in the main window with its HomeWith mates (the Effects group)
+ok: Close takes it out again
+ok: a pane of the main window: Move to New Side Window | Move to Side Window 1 | Move to Side Window 2 | Move to Side Window 4 (no preview listed)
+ok: a pane of docker 1: Move to New Side Window | Move to Side Window 2 | Move to Side Window 4 | Move to Main Window
+ok: Move to Side Window 4: Effects is docker 4's
+ok: a Live Video Preview takes no pane: Effects stays where it was
+ok: Move to Main Window: back where Standard Editing has it
+ok: Move to New Side Window: a fifth window, "side-5", a Pane Docker holding the Canvas; every pane still in one place
+ok: docker 1 made a Live Video Preview: Media and Keyframes back where Standard Editing has them (Keyframes with the effects)
+ok: the preview made a Pane Docker holds nothing yet
+ok: Assembly & Media taken up: Meter stays in docker 2 and the Canvas in docker 5, out of the main window
+ok: docker 2 closed: the Master Meter is back in the main window
+ok: the side windows' JSON round-trips through AppSettingsJsonContext (List<SideWindowState>) and as reflection writes it
+ok: AppSettings.SideWindows: null until first saved, kept as written through the settings file and Clone
+ok: a new id is the lowest number free (side-2 between side-1 and side-3); unreadable JSON is no side window
+ok: ShowInItsGroup shows the Timeline in a docker's group
+ok: a load with showFirst: the docker holding the Timeline opens on it, and the main window gives it up to the docker
+ok: Reset Panes Layout closes every Pane Docker and keeps the Live Video Preview; the main window is Standard Editing again
+ok: InitializeDocking loads AppSettings.SideWindows with the arrangement; SaveDockInto saves both
+ok: the side windows open after the main window's first frame, at Background priority (OpenSidesWhenShown)

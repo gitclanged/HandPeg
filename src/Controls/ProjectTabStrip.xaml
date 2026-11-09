@@ -1,0 +1,213 @@
+<UserControl x:Class="HandPegApp.ProjectTabStrip"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:HandPegApp"
+             xmlns:po="http://schemas.microsoft.com/winfx/2006/xaml/presentation/options"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="po"
+             Focusable="False" VerticalAlignment="Center">
+    <!--
+        The title bar's project tabs (Pass 5.4A): [ • Name × ] for each open project, then [ + ]. Each tab, its ×, and + take their own
+        clicks in the title bar (WindowChrome.IsHitTestVisibleInChrome, read by MainWindow.FrameHitTest in real pixels); the gaps between
+        them and everything right of + stay the window's caption (no background here), so the window is still dragged and maximized
+        from there. Never taller than the caption (CaptionBarHeight, 26). Only dynamic theme brushes: the control is made before the
+        theme and in tests that have none. With too little room the tabs narrow to their dot and initial (Compact), and past that the
+        strip shows a run of them round the one in front and a count of the rest (+N), which lists them (ProjectTabStrip.LayoutFor):
+        the strip is never wider than the room the title bar gives it, so + and the caption right of it always stay. Pass 5.4B: tabs are
+        dragged along the strip (the strip holds the mouse; still no background, so the gaps stay caption), have a right-click menu made in
+        code as it opens, and a tab behind shows a hover card. The main window's instance starts collapsed (MainWindow.xaml), never this root.
+    -->
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="Visible" />
+
+        <!-- A tab: the project's name, a dot while it has unsaved changes, its × at the right; the one in front lit. -->
+        <Style x:Key="TabButton" TargetType="Button">
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="WindowChrome.IsHitTestVisibleInChrome" Value="True" />
+            <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
+            <Setter Property="Height" Value="22" />
+            <Setter Property="Margin" Value="0,0,2,0" />
+            <Setter Property="Padding" Value="8,0,2,0" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Face" Background="Transparent" CornerRadius="4" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <DataTrigger Binding="{Binding IsActive}" Value="True">
+                                <Setter TargetName="Face" Property="Background" Value="{DynamicResource ControlBrush}" />
+                                <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+                            </DataTrigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Face" Property="Background" Value="{DynamicResource ControlHoverBrush}" />
+                                <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- A small glyph button of the strip: a tab's × and the + after the tabs. -->
+        <Style x:Key="GlyphButton" TargetType="Button">
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="WindowChrome.IsHitTestVisibleInChrome" Value="True" />
+            <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
+            <Setter Property="FontSize" Value="8" />
+            <Setter Property="Width" Value="18" />
+            <Setter Property="Height" Value="18" />
+            <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Face" Background="Transparent" CornerRadius="3">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Face" Property="Background" Value="{DynamicResource ControlBorderBrush}" />
+                                <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </UserControl.Resources>
+
+    <StackPanel Orientation="Horizontal">
+        <ItemsControl x:Name="Items" Focusable="False" VerticalAlignment="Center">
+            <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <StackPanel Orientation="Horizontal" />
+                </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                    <Button x:Name="Tab" Style="{StaticResource TabButton}" Click="Tab_Click" MouseUp="Tab_MouseUp" ToolTip="{Binding FrontToolTip}"
+                            PreviewMouseLeftButtonDown="Tab_PreviewMouseLeftButtonDown" MouseRightButtonUp="Tab_MouseRightButtonUp"
+                            MouseEnter="Tab_MouseEnter" MouseLeave="Tab_MouseLeave"
+                            AutomationProperties.Name="{Binding AutomationName}"
+                            Visibility="{Binding IsShown, Converter={StaticResource Visible}}"
+                            MaxWidth="{Binding TabMaxWidth, RelativeSource={RelativeSource AncestorType=local:ProjectTabStrip}}">
+                        <DockPanel>
+                            <Button x:Name="CloseTab" DockPanel.Dock="Right" Style="{StaticResource GlyphButton}" Content="&#xE8BB;" Margin="4,0,0,0" Click="Close_Click"
+                                    ToolTip="Close Project Tab" AutomationProperties.Name="Close Project Tab" />
+                            <TextBlock x:Name="DirtyDot" DockPanel.Dock="Left" Text="&#x2022;" Margin="0,0,5,0" VerticalAlignment="Center"
+                                       Visibility="{Binding IsDirty, Converter={StaticResource Visible}}" />
+                            <TextBlock x:Name="TitleLabel" Text="{Binding Title}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                            <TextBlock x:Name="InitialLabel" Text="{Binding Initial}" VerticalAlignment="Center" Visibility="Collapsed" />
+                        </DockPanel>
+                    </Button>
+                    <!-- Narrowed (Compact): the dot and the initial alone; the name is in the tooltip, and a middle click or Ctrl+W still closes it. -->
+                    <DataTemplate.Triggers>
+                        <!-- Dragged along the strip (Pass 5.4B): drawn faded under the pointer; the gaps round it stay the caption. -->
+                        <DataTrigger Binding="{Binding IsDragged}" Value="True">
+                            <Setter TargetName="Tab" Property="Opacity" Value="0.6" />
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding Compact, RelativeSource={RelativeSource AncestorType=local:ProjectTabStrip}}" Value="True">
+                            <Setter TargetName="Tab" Property="Padding" Value="6,0,4,0" />
+                            <Setter TargetName="CloseTab" Property="Visibility" Value="Collapsed" />
+                            <Setter TargetName="DirtyDot" Property="Margin" Value="0,0,2,0" />
+                            <Setter TargetName="TitleLabel" Property="Visibility" Value="Collapsed" />
+                            <Setter TargetName="InitialLabel" Property="Visibility" Value="Visible" />
+                        </DataTrigger>
+                    </DataTemplate.Triggers>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
+        <!-- The tabs there is no room for: their count, which lists them (shown only then). -->
+        <Button x:Name="OverflowButton" Style="{StaticResource GlyphButton}" FontFamily="Segoe UI" FontSize="11" Width="28" Height="22" VerticalAlignment="Center"
+                Visibility="Collapsed" Click="Overflow_Click" AutomationProperties.Name="More Project Tabs" />
+        <Popup x:Name="OverflowPopup" StaysOpen="False" AllowsTransparency="True">
+            <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="4">
+                <ItemsControl x:Name="OverflowItems" Focusable="False">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Button Style="{StaticResource TabButton}" Click="OverflowTab_Click" ToolTip="{Binding ToolTipText}" Margin="0,1"
+                                    AutomationProperties.Name="{Binding AutomationName}" MaxWidth="280" HorizontalContentAlignment="Left">
+                                <DockPanel>
+                                    <TextBlock DockPanel.Dock="Left" Text="&#x2022;" Margin="0,0,5,0" VerticalAlignment="Center"
+                                               Visibility="{Binding IsDirty, Converter={StaticResource Visible}}" />
+                                    <TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                </DockPanel>
+                            </Button>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </Border>
+        </Popup>
+        <!--
+            A tab behind's hover card (Pass 5.4B): its paused still or saved thumbnail, its frame and frame rate, and whether it is saved.
+            Placed under the tab by UiScale.PlaceAgainst; it takes no clicks. An inspector card's surface (the outer border's panel brush
+            shows only while a theme has no card brushes). 5.4C (the user's): the picture fills the whole card in its own shape (a vertical
+            project's card is tall), cut to its corners, and the text lies over its foot on a dark band that fades up into the picture; with no picture the card is the text alone, in the
+            theme's colours.
+        -->
+        <Popup x:Name="HoverCard" StaysOpen="True" AllowsTransparency="True" IsHitTestVisible="False" Focusable="False">
+            <Border Background="{DynamicResource PanelBrush}" CornerRadius="6">
+                <Border Background="{DynamicResource InspectorCardBrush}" BorderBrush="{DynamicResource InspectorCardBorderBrush}" BorderThickness="1"
+                        CornerRadius="6">
+                    <Grid Width="{Binding CardWidth}">
+                        <!-- The picture in its own shape (5.4C: a tall project's card is tall), its corners cut to the card's by the border. -->
+                        <Border x:Name="HoverPicture" Height="{Binding PictureHeight}" CornerRadius="5">
+                            <Border.Background>
+                                <ImageBrush ImageSource="{Binding Preview}" Stretch="UniformToFill" RenderOptions.BitmapScalingMode="HighQuality" />
+                            </Border.Background>
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Preview}" Value="{x:Null}">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
+                        </Border>
+                        <Border x:Name="HoverShade" VerticalAlignment="Bottom" CornerRadius="0,0,5,5" Padding="12,36,12,10" TextElement.Foreground="White">
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <Setter Property="Background">
+                                        <Setter.Value>
+                                            <LinearGradientBrush StartPoint="0,0" EndPoint="0,1" po:Freeze="True">
+                                                <GradientStop Color="#00000000" Offset="0" />
+                                                <GradientStop Color="#A6000000" Offset="0.4" />
+                                                <GradientStop Color="#E0000000" Offset="1" />
+                                            </LinearGradientBrush>
+                                        </Setter.Value>
+                                    </Setter>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Preview}" Value="{x:Null}">
+                                            <Setter Property="Background" Value="Transparent" />
+                                            <Setter Property="Padding" Value="12" />
+                                            <Setter Property="TextElement.Foreground" Value="{DynamicResource TextBrush}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
+                            <StackPanel>
+                                <TextBlock Text="{Binding Title}" FontSize="13" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                <TextBlock x:Name="HoverDetails" Text="{Binding Details}" FontSize="11" Opacity="0.8" Margin="0,4,0,0">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Details}" Value="">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                                <TextBlock Text="{Binding SavedText}" FontSize="11" Opacity="0.8" Margin="0,4,0,0" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                </Border>
+            </Border>
+        </Popup>
+        <Button x:Name="NewTabButton" Style="{StaticResource GlyphButton}" Content="&#xE710;" FontSize="10" Width="24" Height="22" VerticalAlignment="Center"
+                Click="NewTab_Click" ToolTip="New Project Tab" AutomationProperties.Name="New Project Tab" />
+    </StackPanel>
+</UserControl>

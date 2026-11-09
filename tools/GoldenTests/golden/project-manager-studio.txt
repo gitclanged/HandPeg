@@ -1,0 +1,14 @@
+# The Project Manager's studio: New Project | Open / Manage Projects | Project Settings, frames from the aspect cards, the Media Browser as a picker.
+ok: the mode bar: New Project | Open / Manage Projects | Project Settings, in that order
+ok: Open / Manage keeps today's parts and names
+ok: New Project has the name, location, aspect cards, resolution, rate, colour space, Game Preset cards and Create Project; Project Settings its boxes and Apply
+ok: resolutions 720p to 4K and Custom, rates 60 / 30 / 120 / 24 / Auto from First Clip, BT.709 SDR or HDR tone-mapped
+ok: FrameFor at 1080: 1920 x 1080, 1080 x 1920, 1080 x 1080
+ok: 720p 1280 x 720, 1440p 2560 x 1440, 4K vertical 2160 x 3840
+ok: a custom size is taken as it is, made even; an unknown aspect is 16:9; a custom size under 16 pixels is no custom size
+ok: a request carries the files in order, Auto rate as null, no Game Preset as null
+ok: a picker made after the dock's Media pane leaves PaneTitleSlot.Of("Media") the dock's
+ok: the picker hides Project Media and chooses files by a click each, none chosen yet
+ok: sorting, the tile size and Folder Browser / Clip Library in the picker write none of the Media pane's Browser settings
+ok: nor does its view (5.4C: Grid or List; Filmstrip is not offered, and asked for it is the Grid)
+ok: Release lets go of what it holds as the dialog closes

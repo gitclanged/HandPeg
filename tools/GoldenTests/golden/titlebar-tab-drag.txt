@@ -1,0 +1,14 @@
+# A tab dragged along the real strip in the main window's chrome: moved once per place, told to the window, and the gaps round the tabs still the caption.
+ok: a drag begun on the first tab: the strip is reordering, the tab drawn faded, no second drag at once
+ok: short of the second tab's middle: nothing moves
+ok: past it: the first tab takes the second place, told to the window once (a to 1)
+ok: the pointer resting over the dragged tab's new place moves nothing (no back and forth)
+ok: past the third's middle: the last place
+ok: nothing is written down while the tab is held
+ok: let go: the drag over, the tab drawn as the others, the order written down once, and no tab chosen by it
+ok: a move asked for with no drag under way does nothing
+ok: the strip, its panels and its tabs' ItemsControl have no background (the gaps between the tabs stay the window's caption)
+ok: every tab keeps its 0,0,2,0 margin (the gap the layout counts)
+ok: after the drag: the tabs' faces are still the window's (HTCLIENT)
+ok: and the gaps between them are still the caption (HTCAPTION), to drag the window by
+ok: so is the bar far right of +

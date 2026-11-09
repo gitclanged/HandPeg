@@ -1,0 +1,6 @@
+# Alt+Up / Alt+Down are left to the focused control only for a combo box and the three buttons that open a flyout on Alt+Down.
+ok: Alt+Down on Quick FX, Add Track or the Effects pane's Add is theirs: it opens the flyout
+ok: Alt+Up on them moves the clip (they open nothing on Up)
+ok: any other button that kept the keyboard (Play, Snap, a toggle) gives both up: the clip moves
+ok: a combo box keeps both (Alt+Down opens it, Alt+Up closes it)
+ok: a list gives them up, and so does nothing focused

@@ -1,0 +1,14 @@
+# The timeline control's seams: above, below and between the picture rows a drag shows the + New Video Track bar and lets go onto a new track.
+ok: dragged up to the seam between the two picture rows: a new track there (said as above the lower row)
+ok: in the middle of the upper row: no seam, the row itself is the target as before
+ok: at the seam the insertion bar is drawn across the time area (far from the clip)
+ok: over the Captions row above every picture row: a new track above the top one
+ok: above the control altogether: the same
+ok: over the Background row under them: a new track below the bottom one
+ok: let go at the seam: onto a new track there, once, and neither a move along its row nor onto another
+ok: along its own row in its top band, moved 2 DIPs down: no seam (the guard)
+ok: let go, a plain move along its row
+ok: moved up inside its own row's bottom band: not the seam under it
+ok: moved on up into its top band: the seam over it
+ok: a group dragged to the seam: no new track
+ok: and none made when it is let go

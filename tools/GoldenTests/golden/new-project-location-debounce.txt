@@ -1,0 +1,4 @@
+# New Project's location box offers its free name once typing rests, and only for a folder that is there.
+ok: a keystroke in the location box: the folder not looked through yet, the pause timer running
+ok: typing rested on a folder that is not there: no name offered (nothing probed), the timer stopped
+ok: rested on a folder that is there (two keystrokes, one look): the first free name offered

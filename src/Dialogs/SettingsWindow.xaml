@@ -139,8 +139,10 @@
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-            <Canvas x:Name="TitleProgress" Grid.ColumnSpan="3" IsHitTestVisible="False" ClipToBounds="True" Visibility="Collapsed">
-                <Rectangle x:Name="TitleProgressFill" Height="{StaticResource CaptionBarHeight}" Width="0" Fill="{DynamicResource AccentBrush}" Opacity="0.14" />
+            <!-- 5.4D: as the editor's own bar draws it, over everything on the bar: a 16 % wash and a 2 DIP accent rail along the bottom (UpdateTitleProgress). -->
+            <Canvas x:Name="TitleProgress" Grid.ColumnSpan="3" Panel.ZIndex="10" IsHitTestVisible="False" ClipToBounds="True" Visibility="Collapsed">
+                <Rectangle x:Name="TitleProgressFill" Height="{StaticResource CaptionBarHeight}" Width="0" Fill="{DynamicResource AccentBrush}" Opacity="0.16" />
+                <Rectangle x:Name="TitleProgressRail" Canvas.Left="0" Canvas.Bottom="0" Height="2" Width="0" Fill="{DynamicResource AccentBrush}" />
             </Canvas>
             <StackPanel x:Name="TitleLeft" Orientation="Horizontal">
                 <Button x:Name="BackButton" Padding="10,1" Margin="8,0,0,0" FontSize="11.5" VerticalAlignment="Center" IsDefault="True" Click="Save_Click"
@@ -314,6 +316,9 @@
                     <CheckBox Content="Extra animations" IsChecked="{Binding EnableExtraAnimations}" Margin="0,2"
                               AutomationProperties.Name="Extra Animations"
                               ToolTip="On (as HandPeg comes): the Timeline's stacks and folds slide into place and the Cutout Studio's zoom eases in. Off: everything snaps to where it is going at once. Applied when you press Save." />
+                    <CheckBox x:Name="PerTabWindowLayoutsBox" Content="Each project tab remembers its own layout" IsChecked="{Binding PerTabWindowLayouts}" Margin="0,2"
+                              AutomationProperties.Name="Each Project Tab Remembers Its Own Layout"
+                              ToolTip="On (as HandPeg comes): each project tab keeps the main window's layout it was left in (the panes, their places and sizes) and lays it out again when you switch back to it; a layout chosen in a tab is that tab's. New and opened tabs start with the layout in use. Side windows stay as they are for every tab. Off: every tab shows the same layout. The same as the box in the Layout Selector (the Layout button). Applied when you press Save." />
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Double-Click Resets To:" Style="{StaticResource FieldLabel}" />
                         <ComboBox x:Name="ResetBox" MinWidth="190" Margin="0" SelectedItem="{Binding DoubleClickResetsTo}" AutomationProperties.Name="Double-Click Resets To"
@@ -343,7 +348,7 @@
                                   ToolTip="Opens the Canvas beside the player as soon as there is a layout to edit." />
                     </WrapPanel>
                     <CheckBox Content="Default to Vertical Video" IsChecked="{Binding DefaultVerticalVideo}"
-                              ToolTip="Every video that is opened starts as a vertical one: a tall frame with the picture across its middle over a blurred copy of itself. The same as ticking Vertical Video on the Summary tab." />
+                              ToolTip="Every video that is opened starts as a vertical one: a tall frame with the picture across its middle over a blurred copy of itself. The same as ticking Use Vertical Resolution on the Export tab, or choosing 9:16 Vertical for a New Project." />
 
                     <TextBlock Text="Projects and saving" Style="{StaticResource SectionTitle}" />
                     <CheckBox Content="Prompt to save before closing" IsChecked="{Binding PromptToSaveOnExit}"
@@ -461,6 +466,8 @@
                               ToolTip="On by default. With snapping on, edges also catch on the beats found in clips' sound." />
                     <CheckBox Content="Follow the playhead during playback" IsChecked="{Binding TimelineFollowsPlayhead}" AutomationProperties.Name="Follow Playhead During Playback"
                               ToolTip="On by default. While playing, the Timeline turns the page as the playhead reaches its edge, so what is playing stays in sight. Off: the view stays where you put it." />
+                    <CheckBox Content="Enable momentum scrolling on Timeline &amp; filmstrips" IsChecked="{Binding EnableMomentumScrolling}" AutomationProperties.Name="Enable Momentum Scrolling"
+                              ToolTip="On by default. A quick flick or a fast turn of the wheel coasts on and slows to a stop (the Timeline, the Subtitle Studio's strip, the Media Browser's lists and filmstrip). A slow drag, or a pause of 40 ms before letting go, never coasts, and any press stops it. Also in the Timeline Settings menu." />
                     <CheckBox Content="Show Undo / Redo buttons on the Timeline" IsChecked="{Binding ShowTimelineUndoRedo}" AutomationProperties.Name="Show Undo Redo Buttons"
                               ToolTip="Off by default. On: the Timeline's row of tools shows Undo and Redo buttons. Off: Ctrl+Z and Ctrl+Y (and the menus) undo and redo as ever." />
                     <StackPanel Style="{StaticResource Row}">
@@ -546,7 +553,7 @@
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Preset Bar Location:" Style="{StaticResource FieldLabel}" />
                         <ComboBox x:Name="PresetBarBox" MinWidth="220" Margin="0" SelectedItem="{Binding PresetBarLocation}" AutomationProperties.Name="Preset Bar Location"
-                                  ToolTip="Where the bar for choosing and saving presets is: at the top of the Summary tab, or above the tabs where it shows on every tab." />
+                                  ToolTip="Where the bar for choosing and saving presets is: at the top of the Export tab, or above the tabs where it shows on every tab." />
                     </StackPanel>
                 </StackPanel>
             </TabItem>
@@ -717,13 +724,9 @@
             <!-- ===== Export & Hardware: what an encode starts with, and which hardware does the work ===== -->
             <TabItem Header="Export &amp; Hardware">
                 <StackPanel>
-                    <TextBlock Text="Export tab" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
-                    <CheckBox Content="Start the Export tab in Easy Social Export" IsChecked="{Binding UseEasySocialExport}" AutomationProperties.Name="Use Easy Social Export"
-                              ToolTip="The Export tab shows the 1-click platform cards (Short-Form Vertical, YouTube Master, Chat &amp; Discord Share, Social Feed HD, Lossless Archive) instead of the Video and Audio sections. The switch at the top of the tab changes it too. Default: off (Advanced Export)." />
-
-                    <TextBlock Text="Default encoding settings" Style="{StaticResource SectionTitle}" Margin="0,10,0,2" />
+                    <TextBlock Text="Default encoding settings" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="What the Video and Audio tabs start with when HandPeg is launched (the encoder and audio codec were first chosen in the first-run window). Built-in default leaves HandPeg's own. An encoding preset always sets its own over these; a Game Preset does too, unless the box under them is ticked. A project brings back what it was saved with. Applies the next time HandPeg starts." />
+                               Text="What the Export tab starts with when HandPeg is launched (the encoder and audio codec were first chosen in the first-run window). Built-in default leaves HandPeg's own: VBR at an automatic bitrate, the encoder's best step (veryslow for x264 and x265), Web Optimized. An Export Preset always sets its own over these; a Game Preset does too, unless the box under them is ticked. A project brings back what it was saved with. Applies the next time HandPeg starts." />
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Format:" Style="{StaticResource FieldLabel}" Width="120" />
                         <ComboBox x:Name="DefaultContainerBox" MinWidth="120" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Name"
@@ -752,7 +755,7 @@
                                  ToolTip="The constant-quality value: lower is better and larger. Blank for the built-in default (22)." />
                         <TextBlock Text="Bitrate (kbps):" Style="{StaticResource FieldLabel}" Margin="20,0,8,0" />
                         <TextBox Width="70" Text="{Binding DefaultTargetBitrate, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Default Target Bitrate"
-                                 ToolTip="The bitrate of the two bitrate modes. Blank for the built-in default (5000)." />
+                                 ToolTip="The bitrate of the two bitrate modes, in kbps. Blank for the built-in default: an automatic bitrate from the output's size and frame rate (8 Mbps at 1080p30, 12 at 1080p60, 35 at 2160p30)." />
                     </StackPanel>
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Frame Rate:" Style="{StaticResource FieldLabel}" Width="120" />
@@ -761,9 +764,7 @@
                         <TextBox Width="60" Margin="8,0,0,0" Text="{Binding DefaultCustomFramerate, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Default Custom Frame Rate"
                                  ToolTip="The frame rate when Custom is chosen, such as 90 or 59.94." />
                         <CheckBox Content="10-bit" IsChecked="{Binding DefaultTenBit}" Margin="20,0,0,0" VerticalAlignment="Center"
-                                  ToolTip="Encodes in 10-bit colour where the encoder can (HEVC, AV1): smoother gradients, and less banding." />
-                        <CheckBox Content="Hardware decoding" IsChecked="{Binding DefaultHardwareDecoding}" Margin="20,0,0,0" VerticalAlignment="Center"
-                                  ToolTip="The graphics card decodes the source during an encode, which frees the processor for the filters." />
+                                  ToolTip="Encodes in 10-bit colour where the encoder can (HEVC, AV1): smoother gradients, and less banding. With HEVC or AV1, an HDR project then stays HDR." />
                     </StackPanel>
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Output Size:" Style="{StaticResource FieldLabel}" Width="120" />
@@ -788,7 +789,7 @@
                         <TextBlock Text="Sample Rate:" Style="{StaticResource FieldLabel}" Width="120" />
                         <ComboBox x:Name="DefaultSampleRateBox" MinWidth="200" Margin="0" DisplayMemberPath="Value" SelectedValuePath="Key"
                                   SelectedValue="{Binding DefaultAudioSampleRate}" AutomationProperties.Name="Default Audio Sample Rate"
-                                  ToolTip="The sample rate every encoded audio track is written at in a new session (-ar). Auto keeps each track's own, and makes mixed sound and silence at 48 kHz. Copied tracks are left as they are. Each project and preset keeps its own (the Export tab's Audio Export)." />
+                                  ToolTip="The sample rate every encoded audio track is written at in a new session (-ar). Match Project Settings writes the project's sample rate (48 kHz unless its Project Settings say otherwise). Copied tracks are left as they are. Each project and preset keeps its own (the Export tab's Audio Export)." />
                         <TextBlock Text="Channels:" Style="{StaticResource FieldLabel}" Margin="20,0,8,0" />
                         <ComboBox x:Name="DefaultChannelsBox" MinWidth="130" Margin="0" DisplayMemberPath="Value" SelectedValuePath="Key"
                                   SelectedValue="{Binding DefaultAudioChannels}" AutomationProperties.Name="Default Audio Channels"
@@ -855,8 +856,8 @@
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Export GPU:" Style="{StaticResource FieldLabel}" />
                         <ComboBox x:Name="DecodeAdapterBox" MinWidth="260" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Index"
-                                  SelectedValue="{Binding HardwareDecodeAdapter}" AutomationProperties.Name="Hardware Decode Adapter"
-                                  ToolTip="Hardware Encode Export GPU: which graphics card decodes the video for an encode, when Enable Hardware Decoding is ticked on the Video tab. Automatic leaves it to FFmpeg (-hwaccel auto). Choosing a card names it to FFmpeg (-hwaccel d3d11va -hwaccel_device and its number), so that a second card can take the decoding while the first one encodes or runs a game." />
+                                  SelectedValue="{Binding HardwareDecodeAdapter}" AutomationProperties.Name="Export GPU"
+                                  ToolTip="The card exports and Render Previews are composited on (and their clips decoded on): a second card can take an export while the first plays. Auto: the Compositor GPU. Frames reach the encoder through system memory, so this card need not be the one whose hardware encoder is chosen (NVENC, QuickSync and AMF each run on their own vendor's card). The hardware test picks one for you." />
                     </StackPanel>
                     <StackPanel Style="{StaticResource Row}"
                                 ToolTip="The NPUs (neural processing units) Windows lists, such as a Snapdragon X's Hexagon NPU, and what HandPeg uses each for. None is used yet: the speech builds HandPeg installs run on the processor or the graphics card, and Auto-Captions on the NPU need a speech model built for it, planned with the AI worker in 6.0.">
@@ -879,16 +880,16 @@
                     <TextBlock Style="{StaticResource Hint}"
                                Text="The player: the GPU compositor draws every layer, effect and transition on the graphics card, plays the sound through its own mixer, and seeks with Instant Seek: every frame it decodes is kept in video memory, so steps back, scrubs and seeks over anything decoded once cost nothing. Should the card fail, the player says so and starts again by itself, on the processor (WARP) if the card fails twice; Reload Player tries the card again." />
                     <StackPanel Style="{StaticResource Row}">
-                        <TextBlock Text="Frame Cache (MB):" Style="{StaticResource FieldLabel}" />
-                        <TextBox Width="70" Text="{Binding GpuFrameCacheMb, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="GPU Frame Cache"
-                                 local:NumericInput.Default="0" local:NumericInput.DragStep="2" local:NumericInput.Minimum="-1" local:NumericInput.Maximum="65536" local:NumericInput.Decimals="0"
-                                 ToolTip="How much video memory Instant Seek may keep decoded frames in, in megabytes. 0 is Auto: with the card free, half of what is free on it, at most 12 GB, always leaving a good margin (a third of the card, at most 8 GB); with a game using the card, an eighth of it, at most 3 GB. Graphics that share the computer's memory (a Snapdragon X's Adreno, a laptop chip's own graphics) take an eighth of the computer's memory instead, 1.5 to 2.5 GB with 12 GB or more, less below; the cache fills only as frames are decoded. -1 turns it off: every frame is decoded when it is shown (only the few on screen are kept). Windows' own budget for HandPeg always caps it, so the cache shrinks at once when a game needs the memory. Applies as soon as you press Save." />
+                        <TextBlock Text="Maximum Frame Cache (GB):" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="GpuFrameCacheBox" Width="210" Margin="0" IsEditable="True" DisplayMemberPath="Display" SelectedValuePath="Value"
+                                  SelectedValue="{Binding GpuFrameCacheMb}" AutomationProperties.Name="Maximum GPU Frame Cache"
+                                  ToolTip="The most memory Instant Seek may keep decoded frames in, in gigabytes (pick one, or type a number such as 6 or 2.5). The cache starts at about 2 GB and grows a gigabyte at a time only when a project needs more (frames it has just decoded, or that are about to be shown, would otherwise be let go), up to this. Auto is the most this computer can take: with a graphics card of more than 4 GB of its own, half of what is free on it, at most 12 GB, always leaving a good margin (an eighth of the card, at most 3 GB, while a game uses it); graphics that share the computer's memory (a Snapdragon X's Adreno, a laptop chip's own) or a card of 4 GB or less, at most 4 GB, and an eighth of the computer's memory below 32 GB. Off decodes every frame when it is shown (only the few on screen are kept). Windows' own budget for HandPeg always caps it, so the cache shrinks at once when a game needs the memory; a project tab put behind empties it. Applies as soon as you press Save." />
                         <TextBlock x:Name="GpuCacheUsage" Style="{StaticResource FieldLabel}" Margin="16,0,12,0" Foreground="{DynamicResource MutedTextBrush}" />
                         <Button x:Name="ClearGpuCacheButton" Content="Clear" Padding="12,3" Click="ClearGpuFrameCache_Click" AutomationProperties.Name="Clear GPU Frame Cache"
-                                ToolTip="Lets go of every frame the cache holds now: its video memory goes back at once. Frames are decoded again as they are shown." />
+                                ToolTip="Lets go of every frame the cache holds now, and of what the compositor kept beside them (its working pictures, the driver's spare memory): the memory goes back at once, and the cache starts again from about 2 GB. Frames are decoded again as they are shown." />
                     </StackPanel>
                     <StackPanel Style="{StaticResource Row}"
-                                ToolTip="What the frame cache is doing in the running player, twice a second while this page is shown: the frames it keeps, how often a frame asked for was already there (hits) or had to be decoded (misses), and how long the last exact frame took to arrive after it was asked for.">
+                                ToolTip="What the frame cache is doing in the running player, twice a second while this page is shown: the frames it keeps, the memory the compositor holds in all, how often a frame asked for was already there (hits) or had to be decoded (misses), and how long the last exact frame took to arrive after it was asked for.">
                         <TextBlock Text="Instant Seek Now:" Style="{StaticResource FieldLabel}" />
                         <TextBlock x:Name="GpuCacheReadout" Style="{StaticResource FieldLabel}" Foreground="{DynamicResource MutedTextBrush}" TextTrimming="CharacterEllipsis"
                                    AutomationProperties.AutomationId="GpuCacheReadout" />
@@ -1203,7 +1204,7 @@
 
                     <TextBlock Text="Social Sharing Squisher" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="A video dropped on one of these is squeezed under its size as an H.264 / AAC .mp4, which can then be dragged straight out of the squisher's window (into Discord, a browser, a folder). The encoder is chosen for you: NVENC, then QuickSync, then AMF, then libx264." />
+                               Text="A video dropped on one of these is squeezed under its size as an H.264 / AAC .mp4, which can then be dragged straight out of the squisher's window (into Discord, a browser, a folder). The encoder is chosen for you: NVENC, then QuickSync, then AMF, then Media Foundation's (the ARM64 path), then libx264, each at its slowest, best step." />
                     <CheckBox Content="Show the Squisher presets in the overlay" IsChecked="{Binding ShowSquisher}" AutomationProperties.Name="Show Squisher" />
                     <StackPanel Style="{StaticResource Row}"
                                 ToolTip="How many of the presets below the overlay shows: the first so many, from the top. Use the arrows on a preset to move it up or down the list.">
@@ -1245,7 +1246,7 @@
                     </StackPanel>
                     <StackPanel Style="{StaticResource Row}">
                         <CheckBox Content="Manual Encoder Preset Override:" IsChecked="{Binding SquisherManualPreset}" VerticalAlignment="Center" AutomationProperties.Name="Manual Encoder Preset Override"
-                                  ToolTip="Off, the Squisher uses each encoder's most careful preset (p7 for NVENC, veryslow for QuickSync and libx264, quality for AMF), which keeps the most detail at a tight bitrate and takes the longest. On, the preset named here is used instead: the name has to be one the encoder in use knows." />
+                                  ToolTip="Off, the Squisher uses each encoder's most careful preset (p7 for NVENC, veryslow for QuickSync and libx264, high_quality for AMF, the slowest for Media Foundation), which keeps the most detail at a tight bitrate and takes the longest. On, the preset named here is used instead (veryslow to start with): the name has to be one the encoder in use knows." />
                         <TextBox Width="110" Margin="8,0,0,0" Padding="4,2" Text="{Binding SquisherEncoderPreset}" IsEnabled="{Binding SquisherManualPreset}" AutomationProperties.Name="Squisher Encoder Preset" />
                     </StackPanel>
                 </StackPanel>
@@ -1376,7 +1377,7 @@
                         <Button Content="Import Projects" Margin="6,0,0,0" Click="ImportProjects_Click" />
                     </StackPanel>
                     <TextBlock x:Name="ExportStatusText" Style="{StaticResource Hint}" Margin="0,8,0,0" />
-                    <TextBlock Style="{StaticResource Hint}" Text="Layout files (Export Layout, Import Layout) are on the Summary tab of the main window. The keys of the main window are on the Keybinds &amp; Lightning Dial page." />
+                    <TextBlock Style="{StaticResource Hint}" Text="Game Preset files (Export Game Preset, Import Game Preset) are under Save, Import or Export Game Presets in a clip's right-click menu (Game Presets &amp; Cutout Studio) and a track header's. The keys of the main window are on the Keybinds &amp; Lightning Dial page." />
                 </StackPanel>
             </TabItem>
         </TabControl>

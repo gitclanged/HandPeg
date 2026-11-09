@@ -4,7 +4,7 @@ namespace HandPegApp.Models;
 
 /// <summary>
 /// One subtitle: what is shown, from when to when (seconds of the timeline, before the track's offset). Read
-/// from an .srt or .vtt file, made from the auto-captions, or typed in the Subtitle Editor. For a track of
+/// from an .srt or .vtt file, made from the auto-captions, or typed in the Subtitle Studio. For a track of
 /// pictures (PGS, VobSub) there is no text to read: the cue is its timing only.
 /// </summary>
 public sealed partial class SubtitleCue : ObservableObject
@@ -127,7 +127,7 @@ public sealed record SubtitleCueState(
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public bool Projected { get; init; }
 
-    /// <summary>The piece of an anchored caption a cue on the timeline shows, kept with it by undo in the Subtitle Editor. Never written.</summary>
+    /// <summary>The piece of an anchored caption a cue on the timeline shows, kept with it by undo in the Subtitle Studio. Never written.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public CaptionPiece? Piece { get; init; }
 }

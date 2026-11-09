@@ -386,7 +386,7 @@ public partial class MainViewModel
             if (HasTextCues)
             {
                 return VideoEncoder.Family == EncoderFamily.Copy && !IsAnimatedOutput
-                    ? "Captions are drawn into the picture, so they need a video encoder other than Copy (Video tab)."
+                    ? "Captions are drawn into the picture, so they need a video codec other than Copy (Export tab)."
                     : $"The captions are drawn from the subtitle track ({SubtitleCues.Count} cue{(SubtitleCues.Count == 1 ? "" : "s")}), in the caption style. Nothing is transcribed while it is there.";
             }
 
@@ -397,7 +397,7 @@ public partial class MainViewModel
             if (!File.Exists(DependencyUpdater.WhisperModelPath))
                 return $"The speech model {AppSettings.Current.WhisperModel} is not downloaded yet: see Settings (Tools).";
             if (VideoEncoder.Family == EncoderFamily.Copy && !IsAnimatedOutput)
-                return "Captions are drawn into the picture, so they need a video encoder other than Copy (Video tab).";
+                return "Captions are drawn into the picture, so they need a video codec other than Copy (Export tab).";
             const string when = "The words are transcribed when the video is exported, or now with Generate Captions, to see and edit them first.";
             if (!File.Exists(DependencyUpdater.VadModelPath))
                 return $"{when} Silence detection (VAD) is not installed, so quiet stretches may get words that were never said: see Settings (Tools).";
@@ -407,8 +407,9 @@ public partial class MainViewModel
 
     // Whether the export draws captions (5.2-Audit: the compositor draws them from the caption file's words, wherever the command
     // was edited; no command names the file any more): Auto-Captions on, and a picture drawn (not a Copy export).
+    // An Audio Only export (5.4C) has no picture to draw them on: none.
     private bool CommandUsesCaptions(string command) =>
-        AutoCaptions && command.Length > 0 && !(VideoEncoder.Family == EncoderFamily.Copy && !IsAnimatedOutput);
+        AutoCaptions && command.Length > 0 && !IsAudioOnlyExport && !(VideoEncoder.Family == EncoderFamily.Copy && !IsAnimatedOutput);
 
     // Transcribing is the slow part, and the words do not change when only the style does. So the words are
     // kept, by what was listened to and with which model.
@@ -420,6 +421,8 @@ public partial class MainViewModel
     /// </summary>
     private async Task<string?> PrepareCaptionsForEncodeAsync(string command, CancellationToken cancellationToken)
     {
+        if (IsAudioOnlyExport)
+            return null;
         if (!CommandUsesCaptions(command))
         {
             return AutoCaptions && !IsCommandManuallyEdited
@@ -755,11 +758,11 @@ public partial class MainViewModel
     /// <summary>
     /// The captions as the GPU preview engine draws them (5.0): line by line on the sequence clock, with the style and the
     /// text scale the export's .ass uses (<see cref="WriteCaptionFile"/>); no lines while they are not previewed (Preview
-    /// Subtitles off, the subtitle editor open).
+    /// Subtitles off).
     /// </summary>
     public (IReadOnlyList<IReadOnlyList<CaptionWord>>? Lines, CaptionStyle Style, double TextScale) GpuCaptions()
     {
-        if (IsSubtitleEditorOpen || !PreviewSubtitles)
+        if (!PreviewSubtitles)
             return (null, CaptionStyle, 1);
         var lines = HasTextCues ? GetCueCaptions() : _generatedCaptions;
         return (lines.Count > 0 ? lines : null, CaptionStyle, CaptionTextScale());

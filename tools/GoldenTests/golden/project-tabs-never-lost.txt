@@ -1,0 +1,10 @@
+# A project file left without a header is taken in under a made-up one, one that cannot come across is kept, and a clean close never deletes a tab it does not know.
+ok: its leftovers: the whole tab, and the two project files without a header that reads (the header alone is none)
+ok: those two under a made-up header: "Recovered Project", with unsaved changes (closing it asks first), not empty
+ok: the new session takes all three in, each with its project file and a header in its own folder
+ok: the project file without a header is the project it was, its made-up header written beside it
+ok: the dead folder goes once every project file came across (its old headers, the lone header and the half-written file with it)
+ok: a project file that could not come across is never deleted: its folder stays, with its lock file, for the next start
+ok: a clean close deletes only its own tabs' files, tabs.json and half-written files: a project file of no tab of its own stays, with its header and the lock file, let go
+ok: the next start offers it again, and the folder it was left in goes
+ok: a clean close that knows every tab deletes its folder, and nothing of another's

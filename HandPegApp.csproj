@@ -13,9 +13,9 @@
     <RootNamespace>HandPegApp</RootNamespace>
     <Product>HandPeg</Product>
     <AssemblyTitle>HandPeg</AssemblyTitle>
-    <Version>5.3.2</Version>
-    <AssemblyVersion>5.3.2.0</AssemblyVersion>
-    <FileVersion>5.3.2.0</FileVersion>
+    <Version>5.4.0</Version>
+    <AssemblyVersion>5.4.0.0</AssemblyVersion>
+    <FileVersion>5.4.0.0</FileVersion>
 
     <!-- Main is written by hand in Program.cs, so that the updater's bootstrap runs before WPF starts. -->
     <StartupObject>HandPegApp.Program</StartupObject>
@@ -38,8 +38,16 @@
   <!--
       Start-up and memory. A published build is compiled to machine code ahead of time (one composite image,
       so the framework's code and HandPeg's are optimized together), and the JIT that remains uses what it
-      learns while running. The heap is the workstation one, which does not grow with the number of cores,
-      and it is allowed to shrink again when the work is done (DATAS).
+      learns while running. The heap is the workstation one, which does not grow with the number of cores.
+
+      5.4D-TabPerf: GarbageCollectionAdaptationMode (DATAS, "the heap shrinks again when the work is done") was set here and did
+      nothing: DATAS adapts the Server heap's count of heaps, and a workstation heap has one. It is gone. Its full collections run in
+      the background, and a background collection never compacts, so the large-object heap's free space stays committed until a
+      blocking compacting one: HandPeg asks for one at chosen quiet moments (MemoryHygiene: after a tab is closed or let go, and
+      once after the start, GiveBackStartupMemory). System.GC.ConserveMemory=5 (compact the large-object heap when it is
+      fragmented) was measured and left out: on the XPS 13, ten tabs opened, cycled and closed (2 runs each, alternating), the
+      heap's commit came 16 MB lower (138/119 against 120/105 MB) and the main process's private bytes 60 MB lower (1323/1283
+      against 1237/1244 MB), within the 100 MB the same build varies from run to run, and all processes together did not move.
   -->
   <PropertyGroup>
     <PublishReadyToRun>true</PublishReadyToRun>
@@ -47,7 +55,6 @@
     <TieredPGO>true</TieredPGO>
     <ServerGarbageCollection>false</ServerGarbageCollection>
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
-    <GarbageCollectionAdaptationMode>1</GarbageCollectionAdaptationMode>
 
     <!-- No CET shadow stacks (Pass 5.3-Stage2, the user's answer, a security trade-off): .NET 9 and later mark an x64 HandPeg.exe
          CET-compatible, and Windows then keeps a shadow stack of every call, which cost about 16 ms of start-up on the Desktop's Zen 4.

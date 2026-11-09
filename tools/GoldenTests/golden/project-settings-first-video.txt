@@ -1,0 +1,14 @@
+# The first video sets the Project Settings, unless the New Project studio chose them; a later change is one step of Undo.
+ok: the first video gives the Sequence its rate (60000/1001) and natural size (3840 x 2160)
+ok: and its colour space from its transfer (smpte2084: HDR10 PQ), square pixels, 48 kHz
+ok: CurrentProjectSettings says so, vertical as the view model holds it
+ok: and Export says an HDR project is written as BT.709 SDR, tone-mapped
+ok: a second file opened while the Sequence has clips changes none of them
+ok: ApplyProjectSettings(1080 x 1920): a 1920 x 1080 natural size turned on its side, Export's size back to Match Project Settings, chosen on purpose
+ok: on an empty Sequence, no step of Undo
+ok: the first video (4K HDR at 59.94) keeps the frame, rate and colour space chosen: 1080 x 1920 at 60, BT.709 SDR
+ok: and it is laid on the Sequence all the same
+ok: with nothing chosen (0 x 0, Auto), the first clip gives its own size and rate
+ok: a frame-rate change on a Sequence with clips is refused, with a status line, and changes nothing
+ok: 1920 x 1080, HLG, 4:3, 44.1 kHz on a Sequence with clips: applied as one step of Undo
+ok: Undo puts the size, colour space, pixel aspect and sample rate back together

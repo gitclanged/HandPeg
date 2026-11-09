@@ -1,0 +1,12 @@
+# The Vertical Creator Split: the player the whole height at the left, the tools over the playback controls and the Timeline-first tabs in the middle, the header over the media (Filmstrip) at the right.
+ok: its shape: H([Player];V([Effects,Keyframes,Layout,SubtitleStudio];[Playback];[Timeline];[Presets];[Tab:Audio,Tab:Command Preview,Tab:Export,Tab:Filters,UnifiedTimeline]);V([Header];[Media]))
+ok: tidying leaves it as it is (no split inside a split of the same way)
+ok: side by side: the player 28 of the width, the whole height (a 9:16 frame stands tall), the middle 46, the right 26
+ok: the middle: Effects | Keyframes | Canvas | Subtitle Studio as tabs (the effects shown) 48 of its height, the tabs below 52
+ok: under the tools the playback controls, the Sequence Overview Scrubber and the Preset Bar (rows as tall as their content)
+ok: then the timeline, first and shown among every settings tab
+ok: the right column: the header joined over the media
+ok: the Master Meter and the other studios are left out (the meter goes in with the effects when shown)
+ok: the fifth of five built-in layouts, named Vertical Creator Split, each of a shape of its own: Standard Editing, Color & Effects, Assembly & Media, Vertical & Shorts Studio, Vertical Creator Split
+ok: its choice in BuiltInLayouts tells of the Subtitle Studio and sets the Media Browser to Filmstrip when taken up (ShowShortsMedia, its Then)
+ok: the first-run window offers it as a fifth card (its Tag the layout's name), and ChosenWorkspace knows it

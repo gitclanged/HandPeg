@@ -1,0 +1,7 @@
+# Work started for a tab and still under way as it goes behind is cancelled: a late continuation never lands in the next tab.
+ok: the streams' unpacking of tab 1 is under way
+ok: DetachForTab cancels tab 1's I-frame scan, waveforms (each track's and the timeline's) and hover sheet: each drops its result after its wait
+ok: and moves the project generation on
+ok: the context marks what was cut short, to start again as the tab comes back
+ok: the unpacking's probe came back after the switch: it saw another project's generation and did nothing in tab 2
+ok: tab 2's timeline waveform is not tab 1's late one

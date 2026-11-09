@@ -8,8 +8,9 @@ namespace HandPegGoldenTests;
 /// <summary>
 /// The Media Foundation hardware encoders (5.0, the user's directive 3c: the ARM64 path): the options an export gives them
 /// (MediaFoundationEncoder), how they are offered (EncoderOption.FromHardwareName), and the software encoder that stands in
-/// when one fails (HardwareFallback), its quality carried back to a CRF. Each answer is compared with what it should be as
-/// well as with the golden file.
+/// when one fails (HardwareFallback), its quality carried back to a CRF. Pass 5.4C: the slowest step (-compression_level 100, never a
+/// second -quality) in every export's options, and the software retry at veryslow with every vendor's step taken out (AMF's
+/// high_quality too). Each answer is compared with what it should be as well as with the golden file.
 /// </summary>
 public static class MediaFoundationTests
 {
@@ -115,15 +116,22 @@ public static class MediaFoundationTests
 
         (string What, string Actual, string Expected)[] exports =
         [
-            ("constant bitrate", MediaFoundationEncoder.ExportArguments(true, true, 8000, 23), "-rate_control cbr -b:v 8000k -maxrate 8000k -bufsize 16000k -hw_encoding 1"),
-            ("average bitrate", MediaFoundationEncoder.ExportArguments(true, false, 8000, 23), "-rate_control u_vbr -b:v 8000k -hw_encoding 1"),
-            ("constant quality", MediaFoundationEncoder.ExportArguments(false, false, 0, 23), "-rate_control quality -quality 55 -hw_encoding 1"),
+            ("constant bitrate", MediaFoundationEncoder.ExportArguments(true, true, 8000, 23), "-rate_control cbr -b:v 8000k -maxrate 8000k -bufsize 16000k -compression_level 100 -hw_encoding 1"),
+            ("average bitrate", MediaFoundationEncoder.ExportArguments(true, false, 8000, 23), "-rate_control u_vbr -b:v 8000k -compression_level 100 -hw_encoding 1"),
+            ("constant quality", MediaFoundationEncoder.ExportArguments(false, false, 0, 23), "-rate_control quality -quality 55 -compression_level 100 -hw_encoding 1"),
         ];
         foreach (var (what, actual, expected) in exports)
         {
             Line(text, $"{what}: {actual}");
             Expect(problems, what, actual, expected);
+            var qualities = actual.Split(' ').Count(a => a == "-quality");
+            if (qualities > (what == "constant quality" ? 1 : 0))
+                problems.Add($"{what}: {qualities} -quality options (the CQ level only, never one for the speed)");
         }
+
+        // The slowest step (5.4C): QualityVsSpeed 100 by FFmpeg's generic -compression_level; "-quality" is the constant-quality level.
+        Line(text, $"the slowest step: {MediaFoundationEncoder.SlowestStepArgument}");
+        Expect(problems, "the slowest step", MediaFoundationEncoder.SlowestStepArgument, "-compression_level 100");
 
         // What they are handed (5.2): NV12, or P010 in 10 bits; the Snapdragon X Elite's encoders refuse planar yuv420p.
         foreach (var tenBit in new[] { false, true })
@@ -152,14 +160,23 @@ public static class MediaFoundationTests
         foreach (var (name, expected) in new[] { ("h264_nvenc", "H.264 (NVIDIA NVENC)"), ("hevc_amf", "HEVC (AMD AMF)"), ("av1_qsv", "AV1 (Intel QuickSync)") })
             Expect(problems, $"{name}'s name", EncoderOption.FromHardwareName(name, qualcommAdreno: false).DisplayName, expected);
 
+        // The software retry (5.4C): x264 and x265 at veryslow (SVT-AV1 at its own default), every vendor's own step and tuning taken out.
         (string Command, string Expected)[] fallbacks =
         [
-            ("ffmpeg -i in.mp4 -c:v hevc_mf -rate_control quality -quality 55 -hw_encoding 1 -pix_fmt nv12 out.mp4",
-                "ffmpeg -i in.mp4 -c:v libx265 -preset medium -crf 23 -pix_fmt yuv420p out.mp4"),
-            ("ffmpeg -i in.mp4 -c:v av1_mf -rate_control quality -quality 55 -hw_encoding 1 -pix_fmt p010le out.mp4",
+            ("ffmpeg -i in.mp4 -c:v hevc_mf -rate_control quality -quality 55 -compression_level 100 -hw_encoding 1 -pix_fmt nv12 out.mp4",
+                "ffmpeg -i in.mp4 -c:v libx265 -preset veryslow -crf 23 -pix_fmt yuv420p out.mp4"),
+            ("ffmpeg -i in.mp4 -c:v av1_mf -rate_control quality -quality 55 -compression_level 100 -hw_encoding 1 -pix_fmt p010le out.mp4",
                 "ffmpeg -i in.mp4 -c:v libsvtav1 -crf 23 -pix_fmt yuv420p10le out.mp4"),
-            ("ffmpeg -i in.mp4 -c:v h264_mf -rate_control cbr -b:v 8000k -maxrate 8000k -bufsize 16000k -hw_encoding 1 out.mp4",
-                "ffmpeg -i in.mp4 -c:v libx264 -preset medium -b:v 8000k -maxrate 8000k -bufsize 16000k out.mp4"),
+            ("ffmpeg -i in.mp4 -c:v h264_mf -rate_control cbr -b:v 8000k -maxrate 8000k -bufsize 16000k -compression_level 100 -hw_encoding 1 out.mp4",
+                "ffmpeg -i in.mp4 -c:v libx264 -preset veryslow -b:v 8000k -maxrate 8000k -bufsize 16000k out.mp4"),
+            ("ffmpeg -i in.mp4 -c:v h264_amf -quality high_quality -rc cqp -qp_i 20 -qp_p 20 -usage transcoding -pix_fmt nv12 out.mp4",
+                "ffmpeg -i in.mp4 -c:v libx264 -preset veryslow -crf 20 -pix_fmt yuv420p out.mp4"),
+            ("ffmpeg -i in.mp4 -c:v hevc_amf -quality quality -rc vbr_peak -b:v 9000k -usage transcoding out.mp4",
+                "ffmpeg -i in.mp4 -c:v libx265 -preset veryslow -b:v 9000k out.mp4"),
+            ("ffmpeg -i in.mp4 -c:v h264_nvenc -preset p7 -rc vbr -cq 19 -b:v 0 -tune hq -multipass fullres out.mp4",
+                "ffmpeg -i in.mp4 -c:v libx264 -preset veryslow -crf 19 out.mp4"),
+            ("ffmpeg -i in.mp4 -c:v hevc_qsv -preset veryslow -q:v 21 -look_ahead_depth 40 out.mp4",
+                "ffmpeg -i in.mp4 -c:v libx265 -preset veryslow -crf 21 out.mp4"),
         ];
         foreach (var (command, expected) in fallbacks)
         {

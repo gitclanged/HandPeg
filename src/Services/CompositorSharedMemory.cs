@@ -34,6 +34,9 @@ public static class CompositorProtocol
     /// <summary>The bytes of a frame in NV12: its Y plane, then its interleaved UV plane, half the size each way (rounded up), rows packed.</summary>
     public static long Nv12Bytes(int width, int height) => (long)width * height + 2L * ((width + 1) / 2) * ((height + 1) / 2);
 
+    /// <summary>One P010 frame: NV12's layout with two bytes a sample (5.4B).</summary>
+    public static long P010Bytes(int width, int height) => 2 * Nv12Bytes(width, height);
+
     public const int MaxLayers = 64;
     public const int MaxEffectsPerLayer = 16;
     public const int SceneBytes = 64 * 1024;
@@ -111,7 +114,10 @@ public enum CompositorCommand
     /// <summary>Render the latest scene again even though nothing changed (after a respawn, or a resource arrived).</summary>
     Redraw = 4,
 
-    /// <summary>Let go of every frame Instant Seek's cache holds (Settings' Clear): the video memory goes back at once.</summary>
+    /// <summary>
+    /// Let go of every frame Instant Seek's cache holds: the video memory goes back at once. Kept for tools and old callers; the client
+    /// asks through <see cref="ControlBlock.ClearRequests"/> since 5.4D-TabPerf (a count, which a later command cannot overwrite).
+    /// </summary>
     ClearCache = 5,
 }
 
@@ -220,6 +226,29 @@ public struct ControlBlock
     /// <summary>Set by the client: 1 decodes on the processor even where the card could (Settings' hardware video decoding off: a driver that shows broken frames).</summary>
     [FieldOffset(132)] public int SoftwareDecodeRequest;
 
+    // ----- 136..287: the Export Quality Preview (5.4B, ExportLoopbackPreview): written by the worker while a scene asks for it -----
+
+    /// <summary>What the encode loopback is doing (<see cref="ExportLoopbackState"/>); Off while no scene asks for it.</summary>
+    [FieldOffset(136)] public int LoopbackState;
+
+    /// <summary>The HRESULT behind <see cref="ExportLoopbackState.Failed"/> (or a missing transform's step), 0 if none.</summary>
+    [FieldOffset(140)] public int LoopbackHResult;
+
+    /// <summary>The last frame's round trip, ms: from its picture handed to the encoder to its decoded picture back.</summary>
+    [FieldOffset(144)] public float LoopbackRoundTripMs;
+
+    /// <summary>Frames encoded and decoded since the loopback started, and how many came back too late for their own turn.</summary>
+    [FieldOffset(148)] public int LoopbackFramesEncoded;
+    [FieldOffset(152)] public int LoopbackLateFrames;
+
+    /// <summary>The codec asked for when it was found with both an encoder and a decoder: bit 1 H.264, 2 HEVC, 4 AV1.</summary>
+    [FieldOffset(156)] public int LoopbackCodecsAvailable;
+
+    /// <summary>The encoder transform's friendly name (UTF-16, NUL-terminated): what the preview is an approximation by.</summary>
+    [FieldOffset(160)] public LoopbackNameChars LoopbackEncoderName;
+
+    // 288..511: free.
+
     // 512..1023: the GPU time of the last frame's passes per shader slot (ms), when the scene asks for timing.
     [FieldOffset(512)] public SlotTimings SlotGpuMs;
 
@@ -236,8 +265,9 @@ public struct ControlBlock
     [FieldOffset(3076)] public int HintCount;
 
     /// <summary>
-    /// The frame cache's budget the client asks for, in bytes: 0 automatic (an eighth of the card's own memory, at most
-    /// 3 GB), -1 no cache (every frame decoded when it is shown). The worker also keeps under the budget Windows gives it.
+    /// The most the frame cache may hold that the client asks for, in bytes: 0 automatic (the hardware's ceiling: the cache starts at
+    /// its baseline and grows on demand up to it, 5.4D-TabPerf, Compositor.MemoryTier), N bytes the lower of N and that ceiling, -1 no
+    /// cache (every frame decoded when it is shown). The worker also keeps under the budget Windows gives it.
     /// </summary>
     [FieldOffset(3080)] public long CacheBudgetRequest;
 
@@ -264,7 +294,50 @@ public struct ControlBlock
     /// <summary>Textures the worker's device has made since it started (GpuDevice.TexturesMade; diagnostics, the goldens: 5.3-Stage3).</summary>
     [FieldOffset(3116)] public int TexturesMade;
 
-    // 3120..3479: free (protocol 2's hints).
+    // ----- 3120..3175: the worker giving memory back, and the adaptive cache (5.4D-TabPerf) -----
+    // Requests are counts the client raises (Interlocked) and the worker echoes once served: unlike the one Command slot, which a later
+    // command (a supervisor's Redraw) overwrites, a count is never lost. A worker that starts (a respawn, a standby taking over) echoes
+    // what is asked already: it holds nothing yet.
+
+    /// <summary>
+    /// Raised by the client to have the worker give back what it holds (CompositorClient.TrimWorker, a tab put behind): the cache's free
+    /// list, the pool's free textures, the renderer's idle textures, the readback's staging, the driver's kept allocations
+    /// (IDXGIDevice3::Trim) and its own heap. On unified memory or a card of 4 GB or less the frames themselves go too
+    /// (CompositorWorker.TrimEmptiesCache); a big card keeps them for the tab switched back to.
+    /// </summary>
+    [FieldOffset(3120)] public int TrimRequests;
+
+    /// <summary>
+    /// The <see cref="TrimRequests"/> count the worker has served: written once its give-back is done (the driver's Trim and the
+    /// collection wait for 250 ms of quiet with nothing playing, so quick tab switches pay for it once), and as it starts.
+    /// </summary>
+    [FieldOffset(3124)] public int TrimsDone;
+
+    /// <summary>The worker's private bytes (PrivateUsage: its commit, video memory included), written every 2 s and after a trim.</summary>
+    [FieldOffset(3128)] public long WorkerPrivateBytes;
+
+    /// <summary>What the cache's free list holds (bytes): retired frames kept for reuse, which <see cref="CacheBytes"/> leaves out.</summary>
+    [FieldOffset(3136)] public long CacheFreeBytes;
+
+    /// <summary>Raised by the client to empty the frame cache (CompositorClient.ClearFrameCache): every frame, and the budget back at its baseline.</summary>
+    [FieldOffset(3144)] public int ClearRequests;
+
+    /// <summary>The <see cref="ClearRequests"/> count the worker has served.</summary>
+    [FieldOffset(3148)] public int ClearsDone;
+
+    /// <summary>The most the cache's budget may grow to now (bytes): the hardware's ceiling, or the client's maximum when lower.</summary>
+    [FieldOffset(3152)] public long CacheMaximumBytes;
+
+    /// <summary>The hardware's ceiling now (bytes): what Auto grows to at most.</summary>
+    [FieldOffset(3160)] public long CacheCeilingBytes;
+
+    /// <summary>The steps (a gigabyte each) the budget has grown above its baseline since the cache was last emptied.</summary>
+    [FieldOffset(3168)] public int CacheGrowSteps;
+
+    /// <summary>How many times the worker trimmed itself after standing idle (paused, 30 s with nothing asked of it).</summary>
+    [FieldOffset(3172)] public int IdleTrims;
+
+    // 3176..3479: free.
 
     // 3480..: the cache's counters (diagnostics, tools\SeekBench): exact frames found, frames not there yet, presents
     // made with a stand-in, frames and bytes held, the budget in force, how long the last exact frame took after it was
@@ -372,6 +445,40 @@ public struct MessageChars
     private char _first;
 }
 
+/// <summary>The encoder's name in the control block (64 UTF-16 characters, 128 bytes).</summary>
+[InlineArray(64)]
+public struct LoopbackNameChars
+{
+    private char _first;
+}
+
+/// <summary>What the Export Quality Preview's encode loopback is doing (<see cref="ControlBlock.LoopbackState"/>, 5.4B).</summary>
+public enum ExportLoopbackState
+{
+    Off = 0,
+
+    /// <summary>Its encoder and decoder are being made (the first frame after it was turned on, or after a setting changed).</summary>
+    Starting = 1,
+
+    /// <summary>Frames go through the encoder and the decoder and the player shows them.</summary>
+    Running = 2,
+
+    /// <summary>No hardware encoder of the codec on this PC: the plain picture is shown.</summary>
+    NoEncoder = 3,
+
+    /// <summary>An encoder but no decoder of the codec (HEVC and AV1 need their Store extensions): the plain picture is shown.</summary>
+    NoDecoder = 4,
+
+    /// <summary>The export's codec has no Media Foundation loopback (VP9, ProRes, DNxHR, GIF, a stream copy).</summary>
+    Unsupported = 5,
+
+    /// <summary>The encoder or the decoder failed (<see cref="ControlBlock.LoopbackHResult"/>): the plain picture is shown.</summary>
+    Failed = 6,
+
+    /// <summary>Not in this view (the 3D exploded view, a clip's source shown alone).</summary>
+    Unavailable = 7,
+}
+
 /// <summary>
 /// The scene for one frame (the header of a 64 KB scene slot): the canvas, the clock and the camera. The layers follow it,
 /// bottom first, at <see cref="FrameScene.LayersOffset"/>.
@@ -447,6 +554,46 @@ public struct FrameSceneHeader
     [FieldOffset(124)] public float AudioHigh;
 
     /// <summary>
+    /// The Export Quality Preview (5.4B, <see cref="FlagLoopback"/>): the export's codec (1 H.264, 2 HEVC, 3 AV1), its rate control
+    /// (eAVEncCommonRateControlMode: 0 CBR, 2 unconstrained VBR, 3 quality), bitrate in kbps, quality 1..100 (the quality mode's), and
+    /// quality against speed 0..100 (its preset's nearest). In bytes the header left free: the layout and the protocol's version are as
+    /// they were, and a scene without the flag never reads them.
+    /// </summary>
+    [FieldOffset(128)] public int LoopbackCodec;
+    [FieldOffset(132)] public int LoopbackRateControl;
+    [FieldOffset(136)] public int LoopbackBitrateKbps;
+    [FieldOffset(140)] public int LoopbackQuality;
+    [FieldOffset(144)] public int LoopbackQualityVsSpeed;
+
+    /// <summary>What the player shows: 0 the encoded picture, 1 a split wipe (source left of <see cref="LoopbackWipeX"/>, encoded right), 2 the difference x <see cref="LoopbackHeatGain"/>.</summary>
+    [FieldOffset(148)] public int LoopbackMode;
+
+    /// <summary>Where the wipe stands, 0..1 of the picture's width.</summary>
+    [FieldOffset(152)] public float LoopbackWipeX;
+
+    /// <summary>The export's frame rate: the rate control's budget per frame, and the samples' clock.</summary>
+    [FieldOffset(156)] public float LoopbackFrameRate;
+
+    /// <summary>Raised by the client when the picture may have changed; a wipe or mode move alone keeps it, and the paused frame is not encoded again.</summary>
+    [FieldOffset(160)] public long LoopbackContentStamp;
+
+    /// <summary>How much the difference is magnified (10 by default).</summary>
+    [FieldOffset(168)] public float LoopbackHeatGain;
+
+    /// <summary>Bit 0: the codec bypassed (the decoded picture is the source's NV12): the golden test of the compare pass on any machine.</summary>
+    [FieldOffset(172)] public int LoopbackTestFlags;
+
+    /// <summary>
+    /// The Export Quality Preview's Magnifier (5.4D, <see cref="FlagLoopbackLoupe"/>): the point under the pointer, as fractions of the
+    /// output's width and height (so DIPs and pixels never mix: the worker multiplies by its own output's size). A loupe at
+    /// <see cref="LoupeZoom"/> magnifies the compare round it; an edge being tuned (<see cref="LoupeClipKey"/>) comes first.
+    /// </summary>
+    [FieldOffset(176)] public float LoopbackLoupeX;
+    [FieldOffset(180)] public float LoopbackLoupeY;
+
+    // 184..255: free.
+
+    /// <summary>
     /// Bit 3 (<see cref="FlagExactFrames"/>): draw only once every media layer has its exact frame (exports, filmstrips,
     /// tests); without it a layer whose frame is not decoded yet shows the nearest one there is and the frame is drawn
     /// again when the exact one arrives (Instant Seek).
@@ -464,12 +611,23 @@ public struct FrameSceneHeader
     /// to read back and to pipe); <see cref="ControlBlock.ReadbackRowBytes"/> is then its width, which says so.
     /// </summary>
     /// <summary>
+    /// Bit 8 (<see cref="FlagLoopback"/>, 5.4B): the player's Export Quality Preview. The worker renders the frame once at the canvas's size,
+    /// passes it through a hardware encoder and a decoder of the export's codec (<see cref="LoopbackCodec"/>...) and letterboxes the compare
+    /// of the two into the output (ExportLoopbackPreview); <see cref="ControlBlock.LoopbackState"/> says how it went. Only with
+    /// <see cref="FlagLetterbox"/> and the flat view; never with a readback.
+    /// Bit 9 (<see cref="FlagReadbackP010"/>, 5.4B, with bit 5): the frame is read back as 10-bit P010 (an HDR project exported as HDR):
+    /// drawn into a 16-bit float target, converted with BT.2020's non-constant-luminance matrix in limited range, each sample's 10 bits in
+    /// the top of its 16; <see cref="ControlBlock.ReadbackRowBytes"/> is then twice its width.
+    /// Bit 10 (<see cref="FlagLoopbackLoupe"/>, 5.4D, with bit 8): the preview's Magnifier follows the pointer, at
+    /// <see cref="LoopbackLoupeX"/> / <see cref="LoopbackLoupeY"/> of the output.
+    /// </summary>
+    /// <summary>
     /// Bit 7 (<see cref="FlagDepthRails"/>, 5.2): the 3D exploded view draws its depth rails, four hairlines back through the stack
     /// from the canvas's corners (the editor's view always; a test's scene without it is the planes alone). Until 5.2 this bit was
     /// the Studio Stage's mirror floor and gathered light, removed as UI bloat.
     /// </summary>
     public const int FlagTimePasses = 1, FlagWaitForTimings = 2, FlagRawOutput = 4, FlagExactFrames = 8, FlagLetterbox = 16, FlagReadback = 32, FlagReadbackNv12 = 64,
-        FlagDepthRails = 128;
+        FlagDepthRails = 128, FlagLoopback = 256, FlagReadbackP010 = 512, FlagLoopbackLoupe = 1024;
 }
 
 /// <summary>

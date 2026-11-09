@@ -1,0 +1,14 @@
+# A tab dragged along the strip: the order changes, the tab in front and the stills stay; Ctrl+Tab, closing and tabs.json follow the new order.
+ok: tab 1 dragged to the third place: 2, 3, 1, 4
+ok: the tab in front, the stills and the count are as they were (a move is the order alone)
+ok: Ctrl+Tab follows the new order: after 3 comes 1, after 1 comes 4; Ctrl+Shift+Tab from 2 goes round to 4
+ok: closing 3 brings 1 (now after it) forward; closing 4, at the end, the one before it (1)
+ok: a place before the first is the first
+ok: a place past the last is the last
+ok: a tab not on the strip, or one moved to where it is, changes nothing
+ok: tabs.json written on the drop holds the new order and the tab in front
+ok: a session that ended there offers its tabs back in the order they were dragged to
+ok: the first tab dragged right: stays short of the second's middle, takes its place past it, the last place past the third's
+ok: the last tab dragged left: the same, the other way
+ok: with tabs in the overflow list, a drag stays within the run shown (3 to 5), never past it
+ok: a single tab has nowhere to go

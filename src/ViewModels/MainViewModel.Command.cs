@@ -96,6 +96,7 @@ public partial class MainViewModel
         }
 
         var timeline = TimelineForBuilder(frameWidth, frameHeight);
+        var hdr = IsHdrPassthrough;
         return new SequenceExportState
         {
             // The sequence: its tracks of clips, its frame, its clock (the Sequence's own rate).
@@ -124,7 +125,10 @@ public partial class MainViewModel
             // Filters on the whole picture.
             Deinterlace = Deinterlace,
             Denoise = Denoise,
-            TonemapToSdr = Colorspace == TonemapToSdr,
+            // 5.4A: "Match Project Settings" on an HDR project tone-maps too, unless (5.4B) the export keeps the HDR: 10-bit HEVC or AV1,
+            // every picture HDR of the project's transfer (IsHdrPassthrough). Then the frames are read back as P010 and tagged BT.2020.
+            TonemapToSdr = Colorspace == TonemapToSdr || (Colorspace == MatchProject && Document.ColorSpace != Models.Timeline.ProjectColorSpace.Sdr709 && !hdr),
+            HdrTransfer = hdr ? HdrTransferOf(Document.ColorSpace) : null,
             LutPath = LutPath,
             Grade = GetSequenceGrade(),
             FadeIn = FadeIn,
@@ -143,6 +147,7 @@ public partial class MainViewModel
             AudioOutputs = AudioTracks.Select((t, ordinal) => new AudioOutputChoice(ordinal, t.Title, t.Codec, t.Bitrate, t.IsPassthrough, t.IsDropped)).ToList(),
             MergeAudioTracks = MergeAudioTracks,
             NormalizeAudio = NormalizeAudio,
+            LoudnessTargetLufs = NormalizeLoudness(LoudnessTarget),
             DuckAmountDb = DuckAmountDb,
             MixedAudioCodec = MixedAudioCodec,
             AudioBitrate = AudioBitrate,
@@ -158,7 +163,6 @@ public partial class MainViewModel
 
             // The command around the graph. A bare "ffmpeg" means the local copy; one chosen in the settings is spelled out.
             FfmpegExecutable = DependencyUpdater.IsFfmpegOverridden ? Quote(DependencyUpdater.FfmpegPath) : "ffmpeg",
-            HardwareDecodeArguments = HardwareDecoding ? GpuAdapters.DecodeArguments : "",
             CopyVideoEncoder = VideoEncoder.Family == EncoderFamily.Copy,
             IsAnimatedOutput = IsAnimatedOutput,
             VideoCodecArguments = BuildVideoCodecArguments(),
@@ -278,8 +282,11 @@ public partial class MainViewModel
         return command.CommandLine;
     }
 
-    /// <summary>A Copy export: the file's own picture copied, which no frame is drawn for (GIF and WebP are always drawn).</summary>
-    private static bool IsCopyExport(SequenceExportState state) => state.CopyVideoEncoder && !EncoderCommand.IsPictureOnly(state);
+    /// <summary>
+    /// A Copy export: the file's own picture copied, which no frame is drawn for (GIF and WebP are always drawn; an Audio Only file,
+    /// 5.4C, has no picture, so the Copy encoder left selected never makes it a stream copy).
+    /// </summary>
+    private static bool IsCopyExport(SequenceExportState state) => state.CopyVideoEncoder && !EncoderCommand.IsPictureOnly(state) && !EncoderCommand.IsAudioOnly(state);
 
     /// <summary>
     /// Why the export as it is set now is refused before it starts: a Copy export that cannot cut (5.2-Arm64AndNpu, the user's call:
@@ -310,6 +317,28 @@ public partial class MainViewModel
     private async Task RunExportAsync(string command, SequenceExportState? state, IProgress<FfmpegProgress> progress, CancellationToken cancellationToken)
     {
         _exportLeftOut = "";
+
+        // An Audio Only file (5.4C: FLAC, WAV, MP3): the engine renders the sound, FFmpeg encodes it, no compositor. Never handed to
+        // FfmpegRunner as it stands (its {sound:1} token is a render still to be made); a command edited by hand keeps its arguments.
+        if (state is not null && EncoderCommand.IsAudioOnly(state))
+        {
+            if (GpuExport.CommandFor(state, out var nothing) is not { } sound)
+                throw new GpuExportException($"This export cannot be made: {nothing}.");
+            IReadOnlyList<string>? edited = null;
+            if (!string.Equals(sound.CommandLine, command, StringComparison.Ordinal))
+            {
+                var parts = FfmpegRunner.SplitArguments(command);
+                if (parts.Count < 2)
+                    throw new FfmpegCommandException("The command is empty.");
+                edited = parts.Skip(1).ToList();
+                AppLog.Write("Export: the command was edited by hand; its own arguments encode the sound.");
+            }
+
+            await GpuExport.RunAudioOnlyAsync(state, edited, progress, cancellationToken);
+            CrashReporter.Note("export", "audio only, rendered by the sound engine");
+            return;
+        }
+
         if (state is null || IsCopyExport(state) || !command.Contains("pipe:0", StringComparison.Ordinal) && GpuExport.CommandFor(state, out _) is not { Encoder: ExportEncoder.Gif })
         {
             await FfmpegRunner.RunAsync(command, progress, cancellationToken);
@@ -368,7 +397,14 @@ public partial class MainViewModel
     /// always shows it (5.3-Stage2, the user's call: the Live Preview switch is gone), save while Interactive Crop or a Draw
     /// Target shows a clip's own file.
     /// </summary>
-    public SequenceExportState LivePreviewState() => (_previewState ??= CompileExportState()) with { IsPreview = true };
+    public SequenceExportState LivePreviewState() => SdrPreviewOf(_previewState ??= CompileExportState()) with { IsPreview = true };
+
+    /// <summary>
+    /// A state as a screen shows it: an export that keeps the project's HDR (5.4B) is tone-mapped for the player, Render Preview and anything
+    /// else drawn in 8-bit BT.709 (the export itself reads the frames back as P010 and keeps them HDR).
+    /// </summary>
+    internal static SequenceExportState SdrPreviewOf(SequenceExportState state) =>
+        state.HdrTransfer is null ? state : state with { TonemapToSdr = true, HdrTransfer = null };
 
     // The state the GPU engine was last given. It is the same for every scene and every seek until something changes: it
     // is gathered again only then (every change raises PreviewStateInvalidated, which drops it).
@@ -376,7 +412,7 @@ public partial class MainViewModel
 
     /// <summary>
     /// Raised whenever something the player's picture or sound, or the Timeline's rows, are made from changed: after every
-    /// edit and setting change (GenerateCommand), I-frames learnt, the proxies in use, the Subtitle Editor opened or closed.
+    /// edit and setting change (GenerateCommand), I-frames learnt, the proxies in use, the Subtitle Studio opened or closed.
     /// </summary>
     public event Action? PreviewStateInvalidated;
 
@@ -456,12 +492,20 @@ public partial class MainViewModel
 
         var isNvenc = VideoEncoder.Family == EncoderFamily.Nvenc;
 
-        if (!HasRateControl || (isNvenc && NvencTune == NvencLossless))
+        if (VideoEncoder.Family == EncoderFamily.MediaFoundation)
+        {
+            // Media Foundation's whole option string from the one place that builds it (5.4C): its rate control, its slowest step
+            // (-compression_level 100; 5.4D: its fastest, 0, while a speed-first preset holds) and hardware only; one -quality at most, the CQ level.
+            parts.Add(HasRateControl
+                ? MediaFoundationEncoder.ExportArguments(IsBitrateMode, RateControl == ConstantBitrate, EffectiveBitrateKbps, Crf, _speedFirst)
+                : MediaFoundationEncoder.StepArgument(_speedFirst) + " " + MediaFoundationEncoder.HardwareOnlyArgument);
+        }
+        else if (!HasRateControl || (isNvenc && NvencTune == NvencLossless))
         {
             // ProRes and DNxHR take their quality from the profile given in the extra options, and a lossless
             // encode has no quality or bitrate to aim for.
         }
-        else if (IsBitrateMode && int.TryParse(TargetBitrate, out var bitrate) && bitrate > 0)
+        else if (IsBitrateMode && EffectiveBitrateKbps is > 0 and var bitrate)
         {
             // Hardware encoders only honour a bitrate when their own rate-control mode is named with it.
             var constant = RateControl == ConstantBitrate;
@@ -470,7 +514,6 @@ public partial class MainViewModel
                 EncoderFamily.Qsv => constant ? $"-b:v {bitrate}k -maxrate {bitrate}k" : $"-b:v {bitrate}k",
                 EncoderFamily.Amf => constant ? $"-rc cbr -b:v {bitrate}k" : $"-rc vbr_peak -b:v {bitrate}k",
                 EncoderFamily.Nvenc => constant ? $"-rc cbr -b:v {bitrate}k" : $"-rc vbr -b:v {bitrate}k",
-                EncoderFamily.MediaFoundation => MediaFoundationEncoder.BitrateArguments(bitrate, constant),
                 _ => constant ? $"-b:v {bitrate}k -maxrate {bitrate}k -bufsize {bitrate * 2}k" : $"-b:v {bitrate}k",
             });
         }
@@ -485,7 +528,6 @@ public partial class MainViewModel
                 // ICQ is asked for by "-global_quality" with no bitrate beside it, and starts at 1.
                 EncoderFamily.Qsv => QsvIcq ? $"-global_quality {Math.Max(Crf, 1)}" : $"-q:v {Crf}",
                 EncoderFamily.Amf => $"-rc cqp -qp_i {Crf} -qp_p {Crf}",
-                EncoderFamily.MediaFoundation => MediaFoundationEncoder.QualityArguments(Crf),
                 _ when encoder == "libvpx-vp9" => $"-crf {Crf} -b:v 0",
                 _ => $"-crf {Crf}",
             });
@@ -497,8 +539,6 @@ public partial class MainViewModel
             parts.Add($"-usage {VendorToken(AmfUsage)}");
         else if (VideoEncoder.Family == EncoderFamily.Qsv)
             parts.AddRange(BuildQsvArguments());
-        else if (VideoEncoder.Family == EncoderFamily.MediaFoundation)
-            parts.Add(MediaFoundationEncoder.HardwareOnlyArgument);
 
         // Hardware encoders are particular about the pixel format they are handed; 4:2:0 is the one they all take,
         // in 8 bits or, where 10-bit is ticked and the card can, in 10. A software encoder takes what the
@@ -523,7 +563,7 @@ public partial class MainViewModel
         return string.Join(" ", parts);
     }
 
-    /// <summary>NVENC's tuning as set in the Video tab. What the card cannot do (see <see cref="EncoderProber"/>) is left out.</summary>
+    /// <summary>NVENC's tuning as set in the Export tab. What the card cannot do (see <see cref="EncoderProber"/>) is left out.</summary>
     private IEnumerable<string> BuildNvencArguments()
     {
         yield return $"-tune {VendorToken(NvencTune)}";
@@ -538,7 +578,7 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// QuickSync's lookahead as set in the Video tab. Only its H.264 encoder has the "-look_ahead" switch; HEVC
+    /// QuickSync's lookahead as set in the Export tab. Only its H.264 encoder has the "-look_ahead" switch; HEVC
     /// and AV1 take the depth alone.
     /// </summary>
     private IEnumerable<string> BuildQsvArguments()

@@ -190,6 +190,10 @@ internal sealed class DecoderPool : IDisposable
         _resolvedNow.Clear();
         SyncSources();
 
+        // An exact-frame scene (an export, a capture) never leaves a layer out for a stamp still being read: settled now (P13).
+        if (exactOnly)
+            SettleStamps(wait: true, force: true);
+
         // Settling: paused, or just jumped while playing. A picture of several videos then waits for them all (HoldsForOthers).
         var jumped = !double.IsNaN(_lastPlayhead) && Math.Abs(playhead - _lastPlayhead) > SeekJump;
         _settling = !exactOnly && (!playing || jumped || (_settling && !LastFrameExact));
@@ -307,8 +311,9 @@ internal sealed class DecoderPool : IDisposable
             if (!_sources.TryGetValue(id, out source) || source.Failed)
             {
                 // An exact-frame scene with a media layer it cannot draw is not exact: an export fails on it (and FFmpeg
-                // makes it) rather than leaving the layer out quietly.
-                if (_exactOnly && source is { Failed: true })
+                // makes it) rather than leaving the layer out quietly. A source whose file's stamp is still being read (P13) is
+                // left out for a moment: the frame is not exact, so it is drawn again when the stamp is back (FramesArrived).
+                if (_exactOnly && source is { Failed: true } || source is null && _deciding.ContainsKey(id))
                     LastFrameExact = false;
                 return null;
             }
@@ -404,6 +409,14 @@ internal sealed class DecoderPool : IDisposable
             _sourcesVersion = version;
             Resync();
             DisposeBuried();
+
+            // A tab brought back while paused: its files' stamps are read on the pool, and waited for a moment (StampWaitMs), so its
+            // first frame finds what the cache kept of them. While playing, nothing waits: they are settled as they come back.
+            SettleStamps(wait: !_lastWasPlaying, force: false);
+        }
+        else if (Volatile.Read(ref _decidingCount) > 0)
+        {
+            SettleStamps(wait: false, force: false);
         }
     }
 
@@ -450,6 +463,7 @@ internal sealed class DecoderPool : IDisposable
         if (id is < 0 or >= CompositorProtocol.MaxSources)
             return true;
         SyncSources();
+        SettleStamps(wait: true, force: true);
         SourceState? source;
         lock (_gate)
         {
@@ -583,7 +597,7 @@ internal sealed class DecoderPool : IDisposable
         lock (_gate)
         {
             if (!_sources.TryGetValue(id, out source))
-                return true;
+                return !_deciding.ContainsKey(id);
             if (source.Failed)
                 return true;
         }
@@ -1809,41 +1823,75 @@ internal sealed class DecoderPool : IDisposable
 
     // ----- The source table -----
 
-    /// <summary>Reads the source table again: changed entries lose their decoders and their cached frames.</summary>
+    /// <summary>
+    /// Reads the source table again: changed entries lose their decoders and their cached frames (on a big card their frames stay, their
+    /// serials parked for the same file registered again). Every entry let go of is retired before any new one is read, so a file that
+    /// moved to another id in the same change (a tab put behind and another brought to the front that shows it too) takes its serial back.
+    /// No file is read here (the 5.4D-TabPerf review's P13): a new entry's stamp is read on the pool (ReadStamp), and one that may take a
+    /// parked serial back waits for it outside the table (<see cref="SettleStamps"/>).
+    /// </summary>
     private void Resync()
     {
         lock (_gate)
         {
+            Span<int> generations = stackalloc int[CompositorProtocol.MaxSources];
             for (var id = 0; id < CompositorProtocol.MaxSources; id++)
             {
-                ref var entry = ref _shared.Source(id);
-                var generation = Volatile.Read(ref entry.Generation);
-                _sources.TryGetValue(id, out var known);
-                if (generation == 0)
+                generations[id] = Volatile.Read(ref _shared.Source(id).Generation);
+                if (_sources.TryGetValue(id, out var known) && known.Generation != generations[id])
                 {
-                    if (known is not null)
-                    {
-                        Retire(known);
-                        _sources.Remove(id);
-                    }
-
-                    continue;
+                    Retire(known);
+                    _sources.Remove(id);
                 }
 
-                if (known is not null && known.Generation == generation)
+                // A registration still waiting for its stamp, let go of already: its parked serial goes back where it was.
+                if (_deciding.TryGetValue(id, out var waiting) && waiting.Generation != generations[id])
+                {
+                    waiting.Retired = true;
+                    if (waiting.Candidate is { } candidate)
+                        Repark(candidate);
+                    waiting.Candidate = null;
+                    _deciding.Remove(id);
+                    Volatile.Write(ref _decidingCount, _deciding.Count);
+                }
+            }
+
+            for (var id = 0; id < CompositorProtocol.MaxSources; id++)
+            {
+                var generation = generations[id];
+                if (generation == 0 || _sources.ContainsKey(id) || _deciding.ContainsKey(id))
                     continue;
 
-                if (known is not null)
-                    Retire(known);
-                _sources[id] = new SourceState
+                ref var entry = ref _shared.Source(id);
+                var path = CompositorSharedMemory.ReadString(entry.Path);
+                var source = new SourceState
                 {
-                    Serial = ++_serials,
                     Generation = generation,
-                    Path = CompositorSharedMemory.ReadString(entry.Path),
+                    Path = path,
                     StreamIndex = entry.StreamIndex,
                     PathHash = entry.PathHash,
                     IFrames = entry.IFrameCount > 0 ? ReadIFrames(id, generation, entry.IFrameCount) : null,
+                    Registered = Stopwatch.GetTimestamp(),
                 };
+
+                // On a big card a file let go of a moment ago (a tab put behind and brought back) takes its serial back, and with it the
+                // frames the cache still holds of it (the TabPerf follow-up, the user's X1), once its stamp, read on the pool, shows it
+                // unchanged: until then it waits outside the table. A file on a network share is never stamped, so never parked.
+                var stamped = _cache.BigCard && !IsNetworkPath(path);
+                if (stamped && TakeParked(path, entry.StreamIndex) is { } candidate)
+                {
+                    source.Candidate = candidate;
+                    _deciding[id] = source;
+                    Volatile.Write(ref _decidingCount, _deciding.Count);
+                }
+                else
+                {
+                    source.Serial = ++_serials;
+                    _sources[id] = source;
+                }
+
+                if (stamped)
+                    ReadStamp(source);
             }
         }
     }
@@ -1859,7 +1907,295 @@ internal sealed class DecoderPool : IDisposable
 
         _demands.RemoveAll(d => d.Source == source && d.Lane < 0);
         BuryIdle(source);
-        _cache.Forget(source.Serial);
+
+        // Its stamp still being read (let go of a moment after it was registered): not parked, forgotten as before.
+        if (_cache.BigCard && source.Stamp != default && !source.Failed)
+            Park(source);
+        else
+            _cache.Forget(source.Serial);
+    }
+
+    // ----- Parked sources (the TabPerf follow-up, the user's X1) -----
+    //
+    // A tab put behind lets go of every source (GpuResourceBroker.ReleaseAll -> CompositorClient.ClearSource), and a retired source's
+    // frames used to be forgotten with it (FrameCache.Forget): the tab brought back registered its files again under new serials and
+    // decoded everything anew. On a big card the cache keeps its frames across a tab put behind, so a retired source's serial is parked
+    // instead: by its file (the path, case aside, and the video stream: the identity GpuResourceBroker.SourceFor keys by) and the file's
+    // size and time written when it was registered. The same file registered again, unchanged, takes the serial back, and with it every
+    // frame the cache still holds of it; until then those frames are the least recently used and go first as other files need room. A
+    // file changed on disk meanwhile, or a parked serial pushed out by newer ones (ParkedKept), is forgotten as before. Its decoders are
+    // disposed as before: only the frames, video memory, stay. Under the gate.
+    //
+    // The stamps are read on the pool, never under the gate nor on the worker's thread (the 5.4D-TabPerf review's P13: a file on a
+    // sleeping network share held the gate for seconds, the worker drew nothing, its beat stopped, and the client killed it and its
+    // replacements in turn). A new source's stamp is read as it is registered (ReadStamp), for its parking later; one let go of before
+    // its stamp is back is forgotten. A file with a serial parked waits outside the table (_deciding: left out of the frames drawn
+    // meanwhile) until its stamp is back, StampWaitMs at most on the worker's thread while paused, then takes the serial back when the
+    // stamp matches; a stamp not back within StampGraceMs, or an exact-frame scene that cannot wait, takes a fresh serial. A file on a
+    // network share (a UNC path, or a drive mapped to one) is never stamped, so never parked: forgotten when let go of, as before X1.
+
+    /// <summary>The most serials parked; the oldest is forgotten beyond it.</summary>
+    private const int ParkedKept = 256;
+
+    /// <summary>The longest the worker's thread waits for the stamps of a tab brought back while paused (ms).</summary>
+    private const int StampWaitMs = 20;
+
+    /// <summary>The longest a registration waits for its stamp before it takes a fresh serial (ms).</summary>
+    private const int StampGraceMs = 100;
+
+    private readonly List<(string Path, int Stream, (long Length, long Written) Stamp, int Serial)> _parked = [];
+
+    // Registrations waiting for their stamps to take a parked serial back (by id), and their count (read without the gate).
+    private readonly Dictionary<int, SourceState> _deciding = [];
+    private int _decidingCount;
+
+    // A stamp back from the pool; how many stamps were read, and on which thread the last one was (the goldens); the goldens' slow file.
+    private readonly AutoResetEvent _stampBack = new(false);
+    private int _stampsRead;
+    private int _stampReadOn;
+    private int _stampDelayForTests;
+
+    /// <summary>
+    /// Whether a path is on a network share: a UNC path (\\server\share, \\?\UNC\...), not a local drive's device path (\\?\C:\,
+    /// \\.\C:\). A drive letter mapped to a share is found on the pool (StampOf). Its files are never stamped, so never parked.
+    /// </summary>
+    internal static bool IsNetworkPath(string path)
+    {
+        static bool Separator(char c) => c is '\\' or '/';
+        if (path.Length < 2 || !Separator(path[0]) || !Separator(path[1]))
+            return false;
+        return !(path.Length >= 6 && path[2] is '?' or '.' && Separator(path[3]) && char.IsAsciiLetter(path[4]) && path[5] == ':');
+    }
+
+    /// <summary>A file's size and time written, on the pool; default when it cannot be read, or is on a mapped network drive (never parked then).</summary>
+    private static (long Length, long Written) StampOf(string path)
+    {
+        try
+        {
+            if (IsNetworkPath(path) || Path.GetPathRoot(path) is not { Length: > 0 } root || new DriveInfo(root).DriveType == DriveType.Network)
+                return default;
+            var file = new FileInfo(path);
+            return file.Exists ? (file.Length, file.LastWriteTimeUtc.Ticks) : default;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or System.Security.SecurityException)
+        {
+            return default;
+        }
+    }
+
+    /// <summary>Reads a new source's stamp on the pool (under the gate: only the work is queued), and settles it when it is back.</summary>
+    private void ReadStamp(SourceState source)
+    {
+        source.Stamping = true;
+        var path = source.Path;
+
+        // A registration left out of the frames while it waits: the worker draws them again once its grace is over (a fresh serial
+        // then), even when the stamp never comes back and nothing else is drawn.
+        if (source.Candidate is not null)
+            _ = Task.Delay(StampGraceMs + 5).ContinueWith(_ => WakeIfDeciding(source), TaskScheduler.Default);
+
+        ThreadPool.UnsafeQueueUserWorkItem(_ =>
+        {
+            var delay = Volatile.Read(ref _stampDelayForTests);
+            if (delay > 0)
+                Thread.Sleep(delay);
+            var stamp = StampOf(path);
+            Interlocked.Increment(ref _stampsRead);
+            Volatile.Write(ref _stampReadOn, Environment.CurrentManagedThreadId);
+            lock (_gate)
+                (source.Stamp, source.Stamping) = (stamp, false);
+
+            try
+            {
+                _stampBack.Set();
+            }
+            catch (ObjectDisposedException)
+            {
+                // The pool was disposed meanwhile: nothing waits for it.
+            }
+
+            // A registration left out of the frames meanwhile: the worker draws them again, with it (it settles it first).
+            WakeIfDeciding(source);
+        }, null);
+    }
+
+    /// <summary>Wakes the worker to draw again (FramesArrived) while <paramref name="source"/> still waits to be settled.</summary>
+    private void WakeIfDeciding(SourceState source)
+    {
+        lock (_gate)
+        {
+            if (source.Candidate is null || source.Retired)
+                return;
+        }
+
+        try
+        {
+            _arrived.Set();
+        }
+        catch (ObjectDisposedException)
+        {
+            // The pool was disposed meanwhile.
+        }
+    }
+
+    /// <summary>
+    /// Settles the registrations waiting for their stamps (on the worker's thread): first waiting up to <see cref="StampWaitMs"/> for them
+    /// when <paramref name="wait"/>, outside the gate; then each whose stamp is back takes its parked serial back when the file is unchanged
+    /// (a fresh one, its parked frames forgotten, otherwise), and each still waiting past <see cref="StampGraceMs"/>, or every one when
+    /// <paramref name="force"/> (an exact-frame scene), takes a fresh serial. The hints are read again for those settled.
+    /// </summary>
+    private void SettleStamps(bool wait, bool force)
+    {
+        if (Volatile.Read(ref _decidingCount) == 0)
+            return;
+        if (wait)
+        {
+            var clock = Stopwatch.StartNew();
+            while (true)
+            {
+                lock (_gate)
+                {
+                    if (!_deciding.Values.Any(source => source.Stamping))
+                        break;
+                }
+
+                var left = StampWaitMs - (int)clock.ElapsedMilliseconds;
+                if (left <= 0)
+                    break;
+                _stampBack.WaitOne(left);
+            }
+        }
+
+        lock (_gate)
+        {
+            var now = Stopwatch.GetTimestamp();
+            var settled = false;
+            foreach (var (id, source) in _deciding.ToList())
+            {
+                if (source.Stamping && !force && Stopwatch.GetElapsedTime(source.Registered, now).TotalMilliseconds < StampGraceMs)
+                    continue;
+                var candidate = source.Candidate!.Value;
+                if (!source.Stamping && source.Stamp != default && source.Stamp == candidate.Stamp)
+                {
+                    source.Serial = candidate.Serial;
+                }
+                else
+                {
+                    // Written again since (its frames are not this file's), or its stamp not back in time: a fresh serial.
+                    _cache.Forget(candidate.Serial);
+                    source.Serial = ++_serials;
+                }
+
+                source.Candidate = null;
+                _sources[id] = source;
+                _deciding.Remove(id);
+                settled = true;
+            }
+
+            Volatile.Write(ref _decidingCount, _deciding.Count);
+
+            // The hints read meanwhile left those sources out (their cuts' first frames, a scrub's heading): read again.
+            if (settled)
+                _hintsVersion = -1;
+        }
+    }
+
+    private void Park(SourceState source)
+    {
+        for (var i = _parked.Count - 1; i >= 0; i--)
+        {
+            if (_parked[i].Stream == source.StreamIndex && string.Equals(_parked[i].Path, source.Path, StringComparison.OrdinalIgnoreCase))
+            {
+                _cache.Forget(_parked[i].Serial);
+                _parked.RemoveAt(i);
+            }
+        }
+
+        _parked.Add((source.Path, source.StreamIndex, source.Stamp, source.Serial));
+        if (_parked.Count > ParkedKept)
+        {
+            _cache.Forget(_parked[0].Serial);
+            _parked.RemoveAt(0);
+        }
+    }
+
+    /// <summary>The serial parked for this file and stream, taken out of the parked (its stamp compared once the file's is read); null for none.</summary>
+    private (string Path, int Stream, (long Length, long Written) Stamp, int Serial)? TakeParked(string path, int stream)
+    {
+        for (var i = _parked.Count - 1; i >= 0; i--)
+        {
+            if (_parked[i].Stream != stream || !string.Equals(_parked[i].Path, path, StringComparison.OrdinalIgnoreCase))
+                continue;
+            var parked = _parked[i];
+            _parked.RemoveAt(i);
+            return parked;
+        }
+
+        return null;
+    }
+
+    /// <summary>A serial taken out of the parked for a registration let go of before it was settled: parked again, unless the same file was parked meanwhile.</summary>
+    private void Repark((string Path, int Stream, (long Length, long Written) Stamp, int Serial) candidate)
+    {
+        if (_parked.Any(p => p.Stream == candidate.Stream && string.Equals(p.Path, candidate.Path, StringComparison.OrdinalIgnoreCase)))
+        {
+            _cache.Forget(candidate.Serial);
+            return;
+        }
+
+        _parked.Add(candidate);
+        if (_parked.Count > ParkedKept)
+        {
+            _cache.Forget(_parked[0].Serial);
+            _parked.RemoveAt(0);
+        }
+    }
+
+    /// <summary>The serial of the source at <paramref name="id"/> of the table as last read (0 for none): the goldens.</summary>
+    internal int SerialOf(int id)
+    {
+        lock (_gate)
+            return _sources.TryGetValue(id, out var source) ? source.Serial : 0;
+    }
+
+    /// <summary>How many serials are parked: the goldens.</summary>
+    internal int ParkedCount
+    {
+        get
+        {
+            lock (_gate)
+                return _parked.Count;
+        }
+    }
+
+    /// <summary>How many file stamps were read, and the managed thread the last one was read on: the goldens.</summary>
+    internal (int Count, int Thread) StampsRead => (Volatile.Read(ref _stampsRead), Volatile.Read(ref _stampReadOn));
+
+    /// <summary>The goldens' slow file: each stamp read waits this long first (0 none).</summary>
+    internal void StampDelayForTests(int milliseconds) => Volatile.Write(ref _stampDelayForTests, milliseconds);
+
+    /// <summary>
+    /// The goldens: waits until no stamp is being read (at most <paramref name="milliseconds"/>), then settles the registrations waiting for
+    /// theirs as the worker's next turn would. False when one was still being read.
+    /// </summary>
+    internal bool StampsBackForTests(int milliseconds)
+    {
+        var clock = Stopwatch.StartNew();
+        while (true)
+        {
+            lock (_gate)
+            {
+                if (!_sources.Values.Concat(_deciding.Values).Any(source => source.Stamping))
+                    break;
+            }
+
+            if (clock.ElapsedMilliseconds > milliseconds)
+                return false;
+            Thread.Sleep(2);
+        }
+
+        SettleStamps(wait: false, force: false);
+        return true;
     }
 
     private double[]? ReadIFrames(int id, int generation, int count)
@@ -1909,6 +2245,7 @@ internal sealed class DecoderPool : IDisposable
         _cache.Dispose();
         _work.Dispose();
         _arrived.Dispose();
+        _stampBack.Dispose();
         _stopping.Dispose();
     }
 
@@ -1981,6 +2318,21 @@ internal sealed class DecoderPool : IDisposable
         public int StreamIndex;
         public long PathHash;
         public double[]? IFrames;
+
+        /// <summary>
+        /// The file's size and time written when it was registered, on a big card (default otherwise, and until it is read on the pool):
+        /// what parking it keys by.
+        /// </summary>
+        public (long Length, long Written) Stamp;
+
+        /// <summary>Whether its stamp is being read on the pool (under the gate).</summary>
+        public bool Stamping;
+
+        /// <summary>The parked serial it takes back when its stamp shows the file unchanged (while it waits in DecoderPool._deciding).</summary>
+        public (string Path, int Stream, (long Length, long Written) Stamp, int Serial)? Candidate;
+
+        /// <summary>When it was registered (Stopwatch ticks): how long it has waited for its stamp.</summary>
+        public long Registered;
         public double Duration;
         public volatile bool Failed;
         public volatile bool Retired;

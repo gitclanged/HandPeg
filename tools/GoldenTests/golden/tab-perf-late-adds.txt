@@ -1,0 +1,16 @@
+# Clips still being added as their tab goes behind land in no other tab; a video cut short is finished as its drop asked as its tab comes back.
+ok: two adds under way while their files are looked at (HasPendingAdds: the window refuses a switch meanwhile)
+ok: the video is on A's timeline at once, loading, at its stand-in length (2 s to 7 s)
+ok: A's context keeps the video still loading, with its drop's arguments (plays once, fitted inside the frame)
+ok: both probes came back after the switch: the adds placed nothing (false, null)
+ok: tab B has no clip, no step and no edit of A's (the sound is not placed in B, the video not filled in there)
+ok: and no add is under way any more
+ok: A's Sequence has its video as it was put behind (still the stand-in, one step: the add) and no sound
+ok: A comes back: its video's view made anew, loading, its add under way again
+ok: the video is filled in: from 2 s for its file's length (3 s), as a drop of it plays once, not its 5 s stand-in
+ok: and fitted inside the frame at its own portrait shape, not the stand-in's full width
+ok: with no step of its own (the drop's step is the one)
+ok: a drop's files: an add under way from the start, the loop stopped once the tab it was dropped on has gone behind
+ok: a voiceover take: an add under way from the moment its recording ends (IsRecording false) until it is placed, and placed in no other tab
+ok: the beats of a clip: an add under way while they are found, and kept on no clip of another tab
+ok: a video filled in and a sound placed only in the project they were added to

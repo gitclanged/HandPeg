@@ -1,0 +1,45 @@
+# The export starts at VBR with an automatic bitrate, the encoder's best step (veryslow for x264 and x265), Web Optimized on.
+ok: the automatic bitrate at 1280 x 720, 30 fps: 5000 kbps (wanted 5000)
+ok: the automatic bitrate at 1920 x 1080, 30 fps: 8000 kbps (wanted 8000)
+ok: the automatic bitrate at 1920 x 1080, 60 fps: 12000 kbps (wanted 12000)
+ok: the automatic bitrate at 1080 x 1920, 60 fps: 12000 kbps (wanted 12000)
+ok: the automatic bitrate at 2560 x 1440, 30 fps: 16000 kbps (wanted 16000)
+ok: the automatic bitrate at 2560 x 1440, 60 fps: 24000 kbps (wanted 24000)
+ok: the automatic bitrate at 3840 x 2160, 30 fps: 35000 kbps (wanted 35000)
+ok: the automatic bitrate at 3840 x 2160, 60 fps: 52500 kbps (wanted 52500)
+ok: the automatic bitrate at 1920 x 1080, 60 fps, HDR: 15000 kbps (wanted 15000)
+ok: the automatic bitrate at 1920 x 1080, 120 fps: 16000 kbps (wanted 16000)
+ok: a new export is VBR (stored Average Bitrate (ABR)) with no bitrate typed
+ok: so the bitrate in force is the automatic one (12000 kbps for 1920 x 1080), and the box's hint says so
+   x264 at the defaults: -c:v libx264 -preset veryslow -b:v 12000k
+ok: x264 starts at veryslow, VBR at the automatic bitrate
+ok: a bitrate typed takes over
+ok: and emptied, the automatic one is back
+ok: the Projected Output size at VBR with no bitrate typed is worked out from the automatic bitrate, not the CQ rule of thumb (88 MB)
+ok: a step chosen by hand on x264 stands on x265
+ok: x265 coming from NVENC starts at veryslow
+ok: libx264 starts at veryslow
+ok: libx265 starts at veryslow
+ok: hevc_nvenc starts at p7
+ok: h264_amf starts at high_quality
+ok: hevc_qsv starts at veryslow
+ok: h264_mf starts at no step (it has none here)
+ok: libsvtav1 starts at no step (it has none here)
+ok: libvpx-vp9 starts at no step (it has none here)
+ok: prores_ks starts at no step (it has none here)
+ok: copy starts at no step (it has none here)
+   Media Foundation at the defaults: -c:v h264_mf -rate_control u_vbr -b:v 12000k -compression_level 100 -hw_encoding 1 -pix_fmt nv12
+ok: Media Foundation is given no -preset (it has none)
+ok: and its slowest step (5.4C): the command carries MediaFoundationEncoder.ExportArguments as it stands, -compression_level 100 in it, no -quality in a bitrate mode
+ok: in constant quality: one -quality, the CQ level from the slider, then -compression_level 100 and hardware only
+ok: Web Optimized is on to start with
+ok: a preset that names nothing is VBR at the automatic bitrate and the encoder's best step
+ok: FLAC is offered, lossless as PCM is
+ok: Normalize aims at -16 LUFS to start with (the default kept)
+ok: and at -14 when chosen, the export's sound plan with it
+ok: a FLAC track is encoded with no bitrate; an AAC one keeps its
+ok: the Export GPU: card 1 when chosen; a card no longer here, or Auto, is the Compositor GPU (-1, its own Auto, to start with)
+ok: StartCompositor (exports and Render Preview, off the window's thread) starts on ExportAdapter's card, then the Compositor GPU when that will not start, then WARP; Settings names the box Export GPU and fills it in one place (the GPU roles)
+ok: the Squisher's override starts at veryslow (it was medium) and its first preset is Discord (10 MB), 10 MB
+ok: a settings file of before with the untouched Discord (Non-Nitro) of 20 MB reads as Discord (10 MB), 10 MB; one the user set to 18 MB stays theirs; the others keep their names
+ok: an Export GPU saved before 5.4C (it meant something else) goes back to Auto (the Compositor GPU) once; one chosen since stays

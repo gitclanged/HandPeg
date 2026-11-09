@@ -10,7 +10,7 @@ namespace HandPegGoldenTests;
 
 /// <summary>
 /// startup-json-source-generation (Pass 5.2D): the files read before the first frame (the settings, the export
-/// presets, the encoders found before, the panes' arrangement) go through generated metadata (AppSettingsJsonContext) instead of
+/// presets, the encoders found before, the panes' arrangement, and since 5.4C the side windows) go through generated metadata (AppSettingsJsonContext) instead of
 /// reflection. Each is written by both, byte for byte the same, and read back by the generated one to the same bytes again.
 /// </summary>
 public static class StartupJsonTests
@@ -41,10 +41,11 @@ public static class StartupJsonTests
         Same(text, problems, "settings as a first start makes them", new AppSettings(), AppSettingsJsonContext.Default.AppSettings);
         Same(text, problems, "settings in long use", Used(), AppSettingsJsonContext.Default.AppSettings);
 
-        // The export presets HandPeg comes with (List<T> read, IEnumerable<T> written), and one with every kind of part a preset holds.
-        var presets = PresetStore.Load();
+        // The export presets HandPeg comes with (5.4B: ExportPresetCatalog, in code; List<T> read, IEnumerable<T> written; a user's file holds
+        // presets of the same shape), and one with every kind of part a preset holds.
+        var presets = ExportPresetCatalog.BuiltIns.ToList();
         Same(text, problems, $"the built-in export presets ({presets.Count})", presets, AppSettingsJsonContext.Default.ListEncodingPreset);
-        SameWritten(text, problems, "the presets as PresetStore.Save writes them", (IEnumerable<EncodingPreset>)presets);
+        SameWritten(text, problems, "the presets as a user's presets.json holds them", (IEnumerable<EncodingPreset>)presets);
         Same(text, problems, "a preset with layers, keys, effects, captions and sound tracks", [Full()], AppSettingsJsonContext.Default.ListEncodingPreset);
 
         // The encoders found before, and the panes' arrangement (compact, as they are written).
@@ -58,6 +59,12 @@ public static class StartupJsonTests
         SameCompact(text, problems, "the panes' arrangement", layout, AppSettingsJsonContext.Default.DockLayoutState);
         if (DockLayoutState.Read(JsonSerializer.Serialize(layout, ReflectionCompact)) is not { } read || JsonSerializer.Serialize(read, ReflectionCompact) != JsonSerializer.Serialize(layout, ReflectionCompact))
             problems.Add("DockLayoutState.Read did not give the arrangement back");
+
+        // The side windows (5.4C: AppSettings.SideWindows), a Pane Docker with panes and a place, and a Live Video Preview full screen.
+        var sides = SideWindows();
+        SameCompact(text, problems, "the side windows", sides, AppSettingsJsonContext.Default.ListSideWindowState);
+        if (JsonSerializer.Serialize(SideWindowStates.Read(JsonSerializer.Serialize(sides, ReflectionCompact)), ReflectionCompact) != JsonSerializer.Serialize(sides, ReflectionCompact))
+            problems.Add("SideWindowStates.Read did not give the side windows back");
     }
 
     // A settings copy as it looks after a while: none of the lists empty, the nullable ones set, values off their defaults.
@@ -73,10 +80,22 @@ public static class StartupJsonTests
             SavedLayouts = [new SavedDockLayout { Slot = 1, Name = "Mine & \"yours\"", Layout = "{\"Version\":3}" }],
             SmartRules = [new SmartRule { Type = "Folder", Path = @"D:\Clips", Preset = "YouTube 1080p" }],
             SquisherPresets = SquishPreset.Defaults(),
+            SideWindows = JsonSerializer.Serialize(SideWindows(), ReflectionCompact),
+            DefaultStartupLayout = "saved:2", PerTabWindowLayouts = false, ExportQualityPreviewLoupe = true,
         };
         settings.SplashStylePresets.Add("Shorts");
         return settings;
     }
+
+    private static List<SideWindowState> SideWindows() =>
+    [
+        new SideWindowState
+        {
+            Id = "side-1", Mode = SideWindowState.PanesMode, Placement = [1930, 40, 2650, 760], Maximized = true,
+            Tree = DockNode.Split(true, (DockNode.Group("media", "effects"), 0.6), (DockNode.Group("keys"), 0.4)),
+        },
+        new SideWindowState { Id = "side-2", Mode = SideWindowState.PreviewMode, Bounds = [10, 20, 800, 450], FullScreen = true },
+    ];
 
     private static EncodingPreset Full()
     {

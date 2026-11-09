@@ -1,0 +1,6 @@
+# Every Background Blur twin at the very bottom of the stack (Z = 0), under every picture of every track.
+ok: Track 2's blur fill on: Background Blur of Second | Main | Second
+ok: its twin at the very bottom, under Track 1's picture: an upper track's blur never covers a lower track
+ok: both tracks' blur fills on: Background Blur of Main | Background Blur of Second | Main | Second
+ok: captions put under Track 1 stay above every twin
+ok: a clip switched off has no twin

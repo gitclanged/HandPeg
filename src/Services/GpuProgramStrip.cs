@@ -103,6 +103,7 @@ public sealed class GpuProgramStrip : IDisposable
     private readonly Dispatcher _home;
     private readonly DispatcherTimer _settle;
     private SequenceExportState? _waiting;
+    private object? _waitingMark;
     private CancellationTokenSource? _drawing;
     private long _asked;
     private bool _disposed;
@@ -144,7 +145,7 @@ public sealed class GpuProgramStrip : IDisposable
             if (Interlocked.Exchange(ref _waiting, null) is { } state)
             {
                 _fresh = false;
-                Draw(state);
+                Draw(state, _waitingMark);
             }
         };
     }
@@ -165,14 +166,27 @@ public sealed class GpuProgramStrip : IDisposable
     public int LastDrawn { get; private set; }
 
     /// <summary>
-    /// The sequence as it is now (the interface's thread; a state nothing edits afterwards, as the player's is): drawn
-    /// <see cref="SettleMilliseconds"/> after the last of a burst.
+    /// The mark the last whole sheet's request carried (Pass 5.4D-TabPerf review: the window's undo mark), set as that sheet is handed to
+    /// <see cref="SheetReady"/>; null after <see cref="Clear"/>. The interface's thread.
     /// </summary>
-    public void Request(SequenceExportState state)
+    public object? SheetMark { get; private set; }
+
+    /// <summary>
+    /// Whether a sheet newer than the last handed out is still to come (the interface's thread): a request settling, or a sheet being
+    /// drawn. The window keeps a sheet with a project tab put behind only when none is (5.4D-TabPerf review).
+    /// </summary>
+    public bool IsPending => _waiting is not null || Volatile.Read(ref _drawing) is not null;
+
+    /// <summary>
+    /// The sequence as it is now (the interface's thread; a state nothing edits afterwards, as the player's is): drawn
+    /// <see cref="SettleMilliseconds"/> after the last of a burst. <paramref name="mark"/> goes with its sheet (<see cref="SheetMark"/>).
+    /// </summary>
+    public void Request(SequenceExportState state, object? mark = null)
     {
         if (_disposed || !IsWanted)
             return;
         _waiting = state;
+        _waitingMark = mark;
         _settle.Stop();
         _settle.Interval = TimeSpan.FromMilliseconds(_fresh ? FirstSettleMilliseconds : SettleMilliseconds);
         _settle.Start();
@@ -182,7 +196,7 @@ public sealed class GpuProgramStrip : IDisposable
     public void Clear()
     {
         _settle.Stop();
-        _waiting = null;
+        (_waiting, _waitingMark, SheetMark) = (null, null, null);
         _fresh = true;
         Interlocked.Exchange(ref _drawing, null)?.Cancel();
         Interlocked.Increment(ref _asked);
@@ -224,7 +238,7 @@ public sealed class GpuProgramStrip : IDisposable
             return await Enqueue(job);
     }
 
-    private async void Draw(SequenceExportState state)
+    private async void Draw(SequenceExportState state, object? mark)
     {
         var asked = Interlocked.Increment(ref _asked);
         var cancellation = new CancellationTokenSource();
@@ -257,7 +271,10 @@ public sealed class GpuProgramStrip : IDisposable
             }, cancellation.Token);
 
             if (sheet is not null && asked == Volatile.Read(ref _asked) && !_disposed)
+            {
+                SheetMark = mark;
                 SheetReady?.Invoke(sheet);
+            }
         }
         catch (OperationCanceledException)
         {

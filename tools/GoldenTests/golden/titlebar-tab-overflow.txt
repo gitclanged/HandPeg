@@ -1,0 +1,7 @@
+# The strip shares its room, narrows its tabs to their initials, then shows a run round the one in front and a count of the rest: never wider than its room.
+ok: 8 tabs in 630: all shown with their names (73 each)
+ok: 9 tabs in 630: all shown, narrowed to their dot and initial (65 each, under the 72 a name needs)
+ok: 30 tabs in 630: 19 of 28 shown round the one in front (tabs 12 to 30 with the 26th in front; 1 to 19 with the first), the other 11 behind the count
+ok: and the strip, its count and + take no more than the 630
+ok: from 60 to 1500 DIPs and 1 to 40 tabs: never wider than the room, the tab in front always shown, compact exactly below 72
+ok: ProjectTabStrip.xaml draws + 24 wide, the count 28 (22 high, under the caption) and a gap of 2 after each tab, as the layout counts them

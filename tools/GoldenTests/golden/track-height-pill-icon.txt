@@ -1,0 +1,8 @@
+# The track-height pill: three track bars and a double-headed arrow, never a Keyframe diamond.
+ok: three horizontal track bars at three heights, each at least 6 DIPs long
+ok: one vertical shaft over most of the height
+ok: an arrowhead of two strokes at each end of the shaft: up and down
+ok: the two heads' feet far apart: no two slanted strokes close into a diamond (the old chevrons' were 0.24 DIPs apart)
+ok: the bars stand clear of the arrow
+ok: drawn: rows of lit pixels across the left (the bars)
+ok: and a column of them on the right (the arrow)

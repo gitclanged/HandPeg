@@ -18,9 +18,9 @@ public static class AudioChannelChoice
     public static IReadOnlyList<LabeledChoice<string>> Choices { get; } =
         [new(Stereo, "Stereo (2.0)"), new(Mono, "Mono (1.0)"), new(Source, "Match Source")];
 
-    /// <summary>The sample rates offered, in Hz; 0 is Auto (each track's own; made sound and silence at 48 kHz).</summary>
+    /// <summary>The sample rates offered, in Hz; 0 is Match Project Settings (5.4A: every render is mixed at the project's rate, 48 kHz unless it says otherwise).</summary>
     public static IReadOnlyList<LabeledChoice<int>> SampleRates { get; } =
-        [new(0, "Auto (Match Source / 48 kHz)"), new(48000, "48000 Hz"), new(44100, "44100 Hz")];
+        [new(0, "Match Project Settings (48 kHz)"), new(48000, "48000 Hz"), new(44100, "44100 Hz")];
 
     public static int NormalizeRate(int value) => value is 48000 or 44100 ? value : 0;
 }
@@ -33,12 +33,33 @@ public sealed record LabeledChoice<T>(T Key, string Value)
 }
 
 /// <summary>
-/// A named snapshot of the Dimensions, Filters, Video and Audio tabs.
+/// A named snapshot of the export settings (the Export tab), and the layout, filters and captions of a preset saved with them.
 /// Nothing about the source or its cut points is stored.
+/// Since 5.4B it is also the one model of an Export Preset: the built-in ones (ExportPresetCatalog) carry a <see cref="Category"/>,
+/// the user's own (presets.json, .hppreset files) none.
 /// </summary>
 public sealed class EncodingPreset
 {
+    /// <summary>The Export Presets selector's groups (5.4B): the built-ins of each, then the user's own ("My Presets").</summary>
+    public const string PlatformCategory = "Platform & Social", StudioCategory = "Studio & Archive", UserCategory = "My Presets";
+
     public string Name { get; set; } = "";
+
+    /// <summary>The selector group of a built-in Export Preset; null (not written) for one the user saved, which is "My Presets".</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Category { get; set; }
+
+    /// <summary>One line under the name in the Export Presets selector; null for none.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Detail { get; set; }
+
+    /// <summary>A built-in Export Preset (it has a <see cref="Category"/>): never written to presets.json, never overwritten by a save.</summary>
+    [JsonIgnore]
+    public bool IsBuiltIn => Category is not null;
+
+    /// <summary>The selector group it is shown in: its <see cref="Category"/>, or "My Presets".</summary>
+    [JsonIgnore]
+    public string Group => Category ?? UserCategory;
 
     // Dimensions
     public string OutputWidth { get; set; } = "";
@@ -59,7 +80,8 @@ public sealed class EncodingPreset
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public int CropRight { get; set; }
-    public string PixelAspectRatio { get; set; } = "Same as source";
+    /// <summary>"Match Project Settings" (5.4A) for the project's own; a preset saved with "Same as source" reads as it.</summary>
+    public string PixelAspectRatio { get; set; } = "Match Project Settings";
     public string CustomPixelAspectRatio { get; set; } = "";
 
     /// <summary>
@@ -157,18 +179,47 @@ public sealed class EncodingPreset
     // Video
     public string VideoEncoder { get; set; } = "libx264";
 
-    /// <summary>The encoder's speed step; empty for its own default (a hardware encoder's best, <c>MainViewModel.BestStepOf</c>; software's medium).</summary>
+    /// <summary>
+    /// The codec a built-in Export Preset wants ("h264", "hevc", "av1", "vp9"): the best encoder of it this PC has, a hardware one
+    /// first (MainViewModel.ResolveEncoder); <see cref="VideoEncoder"/> when none. Null (not written): <see cref="VideoEncoder"/> as it is.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PreferredCodec { get; set; }
+
+    /// <summary>The encoder's speed step; empty for its own default (its best: <c>MainViewModel.BestStepOf</c>, veryslow for x264 and x265 since 5.4B).</summary>
     public string EncoderPreset { get; set; } = "";
+
+    /// <summary>
+    /// The encoder's fastest step, whichever it resolves to (5.4D, Q2 b: Fast Proxy, the one exception to the slowest step everywhere):
+    /// NVENC p1, QuickSync veryfast, AMF speed, x264 and x265 ultrafast, Media Foundation -compression_level 0 (MainViewModel.FastestStepOf).
+    /// A flag, not a step: <see cref="EncoderPreset"/> is one name across every family. False (not written) for every other preset.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool SpeedFirst { get; set; }
+
     public string Tune { get; set; } = "None";
     public string Profile { get; set; } = "Auto";
     public string Level { get; set; } = "Auto";
-    public string RateControl { get; set; } = "Constant Quality (CQ)";
+
+    /// <summary>The rate control as stored (5.4B: VBR, stored "Average Bitrate (ABR)", is the default).</summary>
+    public string RateControl { get; set; } = "Average Bitrate (ABR)";
     public int Quality { get; set; } = 22;
-    public string TargetBitrate { get; set; } = "5000";
-    public string Framerate { get; set; } = "Same as source";
+
+    /// <summary>The video bitrate in kbps; empty (5.4B) for the automatic one worked out from the output's size and rate (MainViewModel.EffectiveBitrateKbps).</summary>
+    public string TargetBitrate { get; set; } = "";
+    public string Framerate { get; set; } = "Match Project Settings";
     public string CustomFramerate { get; set; } = "";
-    public string Colorspace { get; set; } = "Same as source";
-    public bool HardwareDecoding { get; set; } = true;
+
+    /// <summary>The most frames a second a Match Project Settings rate is given (a platform's cap: 60); 0 (not written) for no cap.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public int FramerateCap { get; set; }
+
+    /// <summary>The short side of the picture capped at this many pixels, never above the Sequence's own (a chat's size); 0 (not written) for none.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public int ShortSideCap { get; set; }
+    public string Colorspace { get; set; } = "Match Project Settings";
+
+    // (Its "HardwareDecoding", the dead -hwaccel switch, is not read any more, 5.4B: a file that has it reads without it.)
 
     /// <summary>Encoder options with no control of their own, for example "-g 1 -keyint_min 1".</summary>
     public string ExtraVideoArguments { get; set; } = "";
@@ -202,6 +253,10 @@ public sealed class EncodingPreset
     public bool MergeAudioTracks { get; set; }
     public bool NormalizeAudio { get; set; }
 
+    /// <summary>The loudness Normalize aims at, in LUFS: -14 or -16; 0 (not written) is the default, -16 (5.4B).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public int LoudnessTarget { get; set; }
+
     // (A preset's old "DuckAudio", one switch for the first two streams from before ducking was set lane by lane, is not read
     // any more, 5.2-Arm64AndNpu: each Sub-Lane ducks of its own. A file that has it reads without it.)
 
@@ -226,9 +281,13 @@ public sealed class EncodingPreset
     public string TargetFileSize { get; set; } = "";
 
     /// <summary>
-    /// Set only by built-in presets whose codecs need a particular container (ProRes and PCM need MOV).
+    /// The container (mp4, mkv, mov...): set by built-in presets, and by every preset saved since 5.4B; null leaves it as it is.
     /// </summary>
     public string? Container { get; set; }
+
+    /// <summary>Web Optimized (-movflags +faststart) as the preset has it; null (not written, presets from before 5.4B) leaves it as it is.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? WebOptimized { get; set; }
 
     public override string ToString() => Name;
 }

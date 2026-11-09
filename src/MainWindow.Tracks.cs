@@ -90,7 +90,7 @@ public partial class MainWindow
 
         // A subtitle on the captions' row is not a clip of its own: a press on any of them selects the captions (their place,
         // size and style in the inspector, their box over the player and on the Canvas; 5.0-Verify, the user's bug 3). Their
-        // words and times are the Subtitle Editor's: a double-click opens it.
+        // words and times are the Subtitle Studio's: a double-click opens it.
         if (block.Clip is SubtitleRef)
         {
             SelectClip(_viewModel.CaptionLayer);
@@ -295,7 +295,7 @@ public partial class MainWindow
         switch (row.Data)
         {
             // The captions: each from when it is shown to when it goes. Not dragged here: they follow the sound they were
-            // heard in through every cut, and are reworded and retimed in the Subtitle Editor (right-click, Edit Captions...).
+            // heard in through every cut, and are reworded and retimed in the Subtitle Studio (right-click, Edit Captions...).
             case Layer { IsCaptions: true }:
                 foreach (var (from, to, text, _) in _viewModel.GetSubtitleSegments())
                     row.Blocks.Add(new TimelineBlock { Left = from * scale, Width = Math.Max((to - from) * scale, 3), Name = text, Fill = SubtitleClipBrush, Clip = new SubtitleRef(from) });
@@ -436,6 +436,19 @@ public partial class MainWindow
                         _viewModel.MoveSoundToOwnLane(live, track);
                     else
                         _viewModel.MoveClipToTrack(live, track, StartOf(built, left, at, perPixel));
+                },
+
+                // Dragged to a seam above, below or between the picture tracks (5.4A): onto a new track there, its family with it.
+                CanMoveToNewTrack = clip.IsAudio ? null : (beside, above, at) =>
+                    beside is Layer track && LiveClip(clip, built, quiet: true) is { } live
+                    && _viewModel.CanMoveClipToNewTrack(live, track, above, StartOf(built, left, at, perPixel)),
+                MoveToNewTrack = clip.IsAudio ? null : (beside, above, at) =>
+                {
+                    if (beside is not Layer track || LiveClip(clip, built) is not { } live)
+                        return;
+
+                    CrashReporter.Note("timeline", above ? "drag: onto a new track above" : "drag: onto a new track below");
+                    _viewModel.MoveClipToNewTrack(live, track, above, StartOf(built, left, at, perPixel));
                 },
 
                 // A J/L cut: its sound reaching out past its picture's edges; Alt on the lower half of an edge makes or changes one.
@@ -1310,7 +1323,7 @@ public partial class MainWindow
     /// </summary>
     private static string? NotAClip(object? selected, string what) => selected switch
     {
-        Layer { IsCaptions: true } => $"The captions are words, not a clip: they are not {what}. Their words are edited in the Subtitle Editor; select a clip to cut it.",
+        Layer { IsCaptions: true } => $"The captions are words, not a clip: they are not {what}. Their words are edited in the Subtitle Studio; select a clip to cut it.",
         Layer { IsBackground: true } => $"The blur fill's settings are not a clip: they are not {what}. Select a clip to cut it.",
         _ => null,
     };
@@ -1378,6 +1391,20 @@ public partial class MainWindow
     {
         LetGoOfDrag();
         if (_viewModel.DuplicateClips(ClipboardSelection()))
+            ScheduleClipRedraw();
+    }
+
+    /// <summary>Whether Alt+Up / Alt+Down have a clip to move (5.4A): a selected picture clip that can go onto a track of its own.</summary>
+    private bool CanMoveSelectedToNewTrack() => _viewModel.CanMoveClipsToNewTrack(ClipboardSelection());
+
+    /// <summary>
+    /// The selected clips onto a track above or below (5.4A): with the keys (<paramref name="ontoNeighbour"/>) onto the next track that
+    /// way where it is free, otherwise a new track; the clip menu's items always a new track. One step of Undo, the selection kept.
+    /// </summary>
+    private void MoveSelectedToNewTrack(bool above, bool ontoNeighbour = false)
+    {
+        LetGoOfDrag();
+        if (_viewModel.MoveClipsToNewTrack(ClipboardSelection(), above, ontoNeighbour))
             ScheduleClipRedraw();
     }
 
@@ -1518,6 +1545,7 @@ public partial class MainWindow
         if (layer.IsEmptyTrack)
         {
             AddTrackPresetItems(menu, layer, flat: false);
+            menu.Items.Add(ManageGamePresetsItem());
             Separate();
             AddUnlinkItem(menu, layer, layer);
             Add("Delete Track", () => _viewModel.RemoveTrack(layer));
@@ -1528,6 +1556,7 @@ public partial class MainWindow
         if (onHeader && _viewModel.CanHaveTrackPreset(layer))
         {
             AddTrackPresetItems(menu, layer, flat: false);
+            menu.Items.Add(ManageGamePresetsItem());
             Separate();
         }
 
@@ -1573,6 +1602,17 @@ public partial class MainWindow
             Add("Cut", () => { SelectWithGroup(clip); CutSelectedClips(); }, gesture: "edit.cut");
             Add("Duplicate", () => { SelectWithGroup(clip); DuplicateSelectedClips(); }, gesture: "edit.duplicate",
                 tip: "A copy of this clip (or the clips selected with it), with its Cutouts, right after it on the same track where there is room.");
+
+            // Onto a track of its own (5.4A): one click, its stream sounds and Cutouts with it, one step of Undo.
+            if (!clip.IsAudio)
+            {
+                var movable = _viewModel.CanMoveClipsToNewTrack([clip]);
+                Add("Move to New Track Above", () => { SelectWithGroup(clip); MoveSelectedToNewTrack(above: true); }, movable, gesture: "clip.newTrackAbove",
+                    tip: "Puts this clip (or the clips selected with it) on a new track just above its own, with its stream sounds and Cutouts; a clip alone on its track goes above the next track up.");
+                Add("Move to New Track Below", () => { SelectWithGroup(clip); MoveSelectedToNewTrack(above: false); }, movable, gesture: "clip.newTrackBelow",
+                    tip: "Puts this clip (or the clips selected with it) on a new track just below its own, with its stream sounds and Cutouts; a clip alone on its track goes below the next track down.");
+            }
+
             Add("Paste Attributes...", () => { SelectWithGroup(clip); PasteAttributesToSelection(); }, _viewModel.HasCopiedAttributes, gesture: "edit.pasteAttributes",
                 tip: "Gives this clip (or the clips selected with it) the parts you choose of the copied clip's look: its transform, crop, opacity, effects, keyframes, mask, fades or sound.");
         }
@@ -1646,6 +1686,7 @@ public partial class MainWindow
             AddTrackItem(presets, "Open Cutout & Mask Studio...", () => OpenCutoutStudio(clip), tip: StudioTip);
         if (_viewModel.GamePresetTargets([clip]).Count > 0)
             presets.Items.Add(GamePresetMenu(clip));
+        presets.Items.Add(ManageGamePresetsItem());
         if (layer.HasMask)
         {
             AddTrackItem(presets, "Mask from a File or a Ready Shape...", () => OpenMaskTool(clip),
@@ -1957,6 +1998,25 @@ public partial class MainWindow
         Edge("Right %", () => clip.CropRightPercent, v => clip.CropRightPercent = v);
         Edge("Top %", () => clip.CropTopPercent, v => clip.CropTopPercent = v);
         Edge("Bottom %", () => clip.CropBottomPercent, v => clip.CropBottomPercent = v);
+
+        // Interactive Crop and Reset Crop (5.4B: from the Video tab's crop cross, which the Export tab no longer has): this clip's.
+        // The tick shows the mode itself, whichever clip it was started on, so any clip's menu turns it off (as does Esc).
+        AddSeparator(crop);
+        if (clip.IsFile)
+        {
+            var wasOn = _viewModel.IsInteractiveCropActive;
+            var interactive = new MenuItem
+            {
+                Header = "Interactive Crop", IsCheckable = true, IsChecked = wasOn,
+                ToolTip = wasOn
+                    ? "Interactive Crop is on. Choose it to stop (or press Esc)."
+                    : "Drag a rectangle over the video in the player to set this clip's crop. Double-click inside it to centre it. Choose it again, or press Esc, to stop.",
+            };
+            interactive.Click += (_, _) => _viewModel.CropInteractively(clip, !wasOn);
+            crop.Items.Add(interactive);
+        }
+
+        AddTrackItem(crop, "Reset Crop", () => _viewModel.ResetClipCrop(clip), tip: "Nothing of this clip's picture is cut off any more (one step of Undo).");
         menu.Items.Add(crop);
 
         AddSeparator(menu);
@@ -2030,6 +2090,18 @@ public partial class MainWindow
         if (menu.Items.Count == 0)
             menu.Items.Add(new MenuItem { Header = "None Saved Yet: Make One in the Cutout Studio", IsEnabled = false });
         return menu;
+    }
+
+    /// <summary>Saving a Game Preset and moving one to or from a .hpstyle file (5.4C: on the menus since the Timeline's "..." went).</summary>
+    private MenuItem ManageGamePresetsItem()
+    {
+        var item = new MenuItem
+        {
+            Header = "Save, Import or Export Game Presets...",
+            ToolTip = "Game Presets: save the layout, Cutouts, color, blur and subtitle settings as one, or load a .hpstyle file (you choose which of its parts to take), or save one to a file.",
+        };
+        item.Click += (_, e) => ManageStyles_Click(UnifiedTimeline, e);
+        return item;
     }
 
     /// <summary>

@@ -1,0 +1,7 @@
+# The memory hygiene's quiet test is set after the first frame; a compaction is asked for after a tab is closed or let go.
+ok: MemoryHygiene.IsQuiet is set in one place only (HookTabMemory), once (_memoryHooked)
+ok: it is hooked only as tabs kept live change or a compaction is asked for, never from the window's start (Law 1: after the first frame)
+ok: nothing of it in InitializeProjectTabs (before the first frame)
+ok: quiet: nothing playing, switching, dragged on the Timeline or recording
+ok: a compaction is asked for after each way a tab is closed (behind, the last one emptied, the one in front), once it is let go and the switch is over
+ok: and after a tab kept live is let go to its cache file (the valve)

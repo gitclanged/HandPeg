@@ -1,0 +1,11 @@
+# A used file out of Project Media with its clips (5.4D, Q5 b): asked first, one step, Undo brings both back, a locked track refuses.
+   on the Sequence: 2 clips of game.mp4, 1 of other.mp4; game.mp4 70-75, other.mp4 80-85 | game.mp4 0-60
+   asked: Remove from Project Media | game.mp4 is played by 2 clips on the Sequence. Taking it out of Project Media deletes those 2 clips too (into the recycle bin). One step of Undo brings back both. The files on disk stay. | Remove from Project Media & Delete 2 Clips
+ok: declined: nothing changes, no step, and the status line says how many clips play it (as before)
+ok: the question names the file, and its button says "Remove from Project Media & Delete 2 Clips"
+   confirmed: 1 file out, 1 step ("remove game.mp4 from Project Media and delete 2 clips"), 0 clips of it left, 1 of the other, 2 in the recycle bin, pooled: D:/media/other.mp4
+ok: confirmed: one step ("remove game.mp4 from Project Media and delete 2 clips") takes the file out and deletes its two clips into the recycle bin; the other file and its clip stay
+ok: Undo brings back the file and both clips; Redo takes them out again
+ok: the window's question (ConfirmWarning, Cancel the default) is asked in place of Confirm; one clip says "Delete 1 Clip"
+ok: the window asks it with the ConfirmDialog, Cancel the button Enter presses
+ok: a clip on a locked track refuses the whole step: the file and its clip stay, and the status line says the track is locked

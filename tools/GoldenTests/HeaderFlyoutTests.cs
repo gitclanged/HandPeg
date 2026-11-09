@@ -18,10 +18,10 @@ namespace HandPegGoldenTests;
 /// <summary>
 /// header-flyouts-placement (Pass 5.3-Stage3, the user's bug: the Layout Selector opened far to the left of the Layout button on the
 /// touch-screen laptop, and jumped while layouts were previewed under it). (1) Where UiScale.FlyoutCorner puts a flyout against its
-/// button, side by side, and kept inside the room it is given: pure numbers. (2) MainWindow.xaml leaves the five flyouts' placement
+/// button, side by side, and kept inside the room it is given: pure numbers. (2) MainWindow.xaml leaves the four flyouts' placement
 /// to code (no Placement or offsets of their own, so nothing WPF mirrors). (3) A real window on this PC's monitor at HandPeg's scale,
 /// its panes laid out by a real DockManager in Standard Editing with a header of four buttons: a flyout placed by
-/// UiScale.PlaceAgainst against the Layout button opens under it, right edges level, 6 DIPs down; the four built-in layouts are
+/// UiScale.PlaceAgainst against the Layout button opens under it, right edges level, 6 DIPs down; the five built-in layouts are
 /// previewed under it (the dock laid out again, the button moved, taken out and put back) and the panes put back as they were, and
 /// the flyout never moves by a pixel; opened again, it is under the button where the button now is. A flyout over a button (the
 /// Views menu) opens above it, left edges level. What a Relative placement would have done on this PC (mirrored or not) is printed
@@ -29,7 +29,8 @@ namespace HandPegGoldenTests;
 /// </summary>
 public static class HeaderFlyoutTests
 {
-    private static readonly IReadOnlyList<string> TabIds = ["Tab:Summary", "Tab:Video", "Tab:Filters", "Tab:Audio", "Tab:Export", "Tab:Command Preview"];
+    // (5.4A: no Tab:Summary, the retired tab; 5.4B: no Tab:Video.)
+    private static readonly IReadOnlyList<string> TabIds = ["Tab:Filters", "Tab:Audio", "Tab:Export", "Tab:Command Preview"];
 
     public static GraphResult Run()
     {
@@ -93,7 +94,8 @@ public static class HeaderFlyoutTests
         var main = XDocument.Load(Path.Combine(RepositoryRoot(), "src", "MainWindow.xaml"));
         XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
         Line(text, $"MainWindow.xaml, each placed in code by UiScale.PlaceAgainst (no Placement, PlacementTarget or offsets of its own):");
-        foreach (var name in new[] { "LayoutSelector", "LayoutFlyout", "AddMediaFlyout", "SettingsFlyout", "ViewsPopup" })
+        // (5.4D: the Layout button's menu, LayoutFlyout, is retired: the Layout Selector is its one Layout UI.)
+        foreach (var name in new[] { "LayoutSelector", "AddMediaFlyout", "SettingsFlyout", "ViewsPopup" })
         {
             var popup = main.Descendants().FirstOrDefault(e => (string?)e.Attribute(x + "Name") == name);
             var own = popup?.Attributes().Select(a => a.Name.LocalName).Where(a => a is "Placement" or "PlacementTarget" or "HorizontalOffset" or "VerticalOffset").ToList() ?? [];
@@ -116,7 +118,7 @@ public static class HeaderFlyoutTests
         throw new DirectoryNotFoundException("the repository (HandPegApp.csproj) above " + AppContext.BaseDirectory);
     }
 
-    // ----- (3) A real window, a real dock, the four built-in layouts previewed under an open flyout -----
+    // ----- (3) A real window, a real dock, the five built-in layouts previewed under an open flyout -----
 
     private static void Idle()
     {
@@ -230,7 +232,7 @@ public static class HeaderFlyoutTests
                 old.IsOpen = false;
             }
 
-            // The four built-in layouts previewed under it, then the panes as they were.
+            // The five built-in layouts previewed under it (5.4D: the Vertical Creator Split the fifth), then the panes as they were.
             var saved = dock.Save();
             var moved = 0;
             foreach (var (name, layout) in MainWindow.BuiltInLayoutStates(TabIds))

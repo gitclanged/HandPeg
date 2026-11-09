@@ -113,9 +113,12 @@ public partial class FirstRunWindow : Window
             _workspaceChosen = true;
     }
 
-    /// <summary>The built-in layout whose card is chosen, by the name the Layout button lists it under.</summary>
+    /// <summary>
+    /// The built-in layout whose card is chosen, by the name the Layout button lists it under (the main window takes it up and makes it the
+    /// Default layout too, 5.4D: MainWindow.TakeFirstRunLayout).
+    /// </summary>
     private string ChosenWorkspace() =>
-        new[] { StandardLayoutCard, ColorLayoutCard, AssemblyLayoutCard, ShortsLayoutCard }.FirstOrDefault(c => c.IsChecked == true)?.Tag as string
+        new[] { StandardLayoutCard, ColorLayoutCard, AssemblyLayoutCard, ShortsLayoutCard, VerticalCreatorLayoutCard }.FirstOrDefault(c => c.IsChecked == true)?.Tag as string
         ?? "Standard Editing";
 
     // ----- The required components: two packages -----

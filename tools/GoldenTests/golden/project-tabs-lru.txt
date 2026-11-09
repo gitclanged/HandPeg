@@ -1,0 +1,23 @@
+# The project tabs alone: three hot stills at most, headers small (under 4 KB with their layout), Ctrl+Tab round the strip, tabs.json and leftovers read back.
+ok: made with one tab in front, in memory: nothing written and no lock taken (the window's first frame)
+ok: its files go in a folder of the session's own under the root
+ok: five tabs in front in turn: only the three most recent (3, 4, 5) keep a still, frozen; 1 and 2 are their headers alone
+ok: tab 1 back in front: tab 3, now the fourth most recent, lets its still go
+ok: a cold tab is given no still
+ok: a header with a 120-character name and a long path is under 1 KB
+ok: with Standard Editing's layout in it (5.4D), under 4 KB
+ok: and reads back as it was
+ok: a damaged header, one with no id and one of another shape read as none
+ok: Ctrl+Tab from tab 1: 2, 3, 4, 5, round to 1, 2
+ok: Ctrl+Shift+Tab from tab 1: round to 5, then 4, 3
+ok: no tabs.json (no folder yet): none read
+ok: tabs.json reads back: the order, and tab 1 in front
+ok: a damaged tabs.json reads as none (nothing thrown)
+ok: its leftovers found: the tabs with a project file, in tabs.json's order (tab 2's header alone is not one)
+ok: a leftover's saved fingerprint and project read back
+ok: the next session offers a leftover once, behind the tab in front, cold
+ok: closing tab 4 deletes its three files
+ok: the tab in front is never closed before another is in front
+ok: closing the last tab brings the one before it to the front; any other, the one after it
+ok: writing a tab took the session's lock
+ok: a clean close deletes every file of the session's folder, its lock and the folder

@@ -169,6 +169,23 @@ public interface ITimelineTransaction : IDisposable
     void SetMasterGain(double decibels);
 
     /// <summary>
+    /// The project's colour space, pixel aspect and sample rate (5.4A, <see cref="TimelineDocument.ProjectSettings"/>); a sample rate
+    /// other than 44100, 48000 or 96000 is 48000. Like the master gain, a change of them alone still raises
+    /// <see cref="TimelineDocument.Committed"/>, so it is a step of Undo; the same values again change nothing.
+    /// </summary>
+    void SetProjectSettings(ProjectColorSpace colorSpace, ProjectPixelAspect pixelAspect, int sampleRate);
+
+    /// <summary>
+    /// Puts files into Project Media (5.4C, <see cref="TimelineDocument.MediaPool"/>), each once (compared without case), at the end, in
+    /// the order given; an empty path or a web address is left out. Like the master gain, a change of it alone still raises
+    /// <see cref="TimelineDocument.Committed"/>. False when every one was there already.
+    /// </summary>
+    bool AddToMediaPool(IEnumerable<string> paths);
+
+    /// <summary>Takes files out of Project Media (5.4C); false when none of them was there. Whether a clip still plays one is the caller's to ask.</summary>
+    bool RemoveFromMediaPool(IEnumerable<string> paths);
+
+    /// <summary>
     /// How fast a clip that plays its file runs (<see cref="Layer.SlowestSpeed"/> to <see cref="Layer.FastestSpeed"/>):
     /// it plays the same stretch of its file, so its end moves; the clips after it on its track that it would run into
     /// move on as far as it grew; its keyframes, its effects' keyframes and ranges and its J/L cut are scaled with it.
@@ -295,6 +312,8 @@ internal sealed class TimelineTransaction : ITimelineTransaction
 
     // The Sequence's own values (5.2B: its master gain), as they were before this transaction first changed them, and whether it changed any.
     private double? _masterGainBefore;
+    private (ProjectColorSpace ColorSpace, ProjectPixelAspect PixelAspect, int SampleRate)? _projectSettingsBefore;
+    private List<string>? _mediaPoolBefore;
     private bool _documentTouched;
 
     /// <summary>While set, every split made records its two halves (ResizeFold, folding more at a fold's tail, swaps their ids).</summary>
@@ -365,6 +384,10 @@ internal sealed class TimelineTransaction : ITimelineTransaction
             (_doc.Folds, _doc.RestoredFolds) = (_foldsBefore, _restoredBefore);
         if (_masterGainBefore is { } gain)
             _doc.MasterGainDb = gain;
+        if (_projectSettingsBefore is { } settings)
+            (_doc.ColorSpace, _doc.PixelAspect, _doc.SampleRate) = settings;
+        if (_mediaPoolBefore is { } pool)
+            _doc.MediaPool = pool;
         Close();
     }
 
@@ -427,6 +450,49 @@ internal sealed class TimelineTransaction : ITimelineTransaction
         foreach (var open in _doc.OpenTransactions)
             open._masterGainBefore ??= _doc.MasterGainDb;
         _doc.OpenTransactions[^1]._documentTouched = true;
+    }
+
+    /// <summary>The project's colour space, pixel aspect and sample rate as they are before this change writes them (5.4A).</summary>
+    private void RememberProjectSettings()
+    {
+        foreach (var open in _doc.OpenTransactions)
+            open._projectSettingsBefore ??= (_doc.ColorSpace, _doc.PixelAspect, _doc.SampleRate);
+        _doc.OpenTransactions[^1]._documentTouched = true;
+    }
+
+    /// <summary>Project Media as it is before this change writes it (5.4C): a copy of the list, which is then changed in place.</summary>
+    private void RememberMediaPool()
+    {
+        foreach (var open in _doc.OpenTransactions)
+            open._mediaPoolBefore ??= [.. _doc.MediaPool];
+        _doc.OpenTransactions[^1]._documentTouched = true;
+    }
+
+    /// <summary>The files given that Project Media does not hold yet, each once, in order (empty paths and web addresses left out).</summary>
+    private List<string> NewToPool(IEnumerable<string> paths)
+    {
+        var added = new List<string>();
+        foreach (var given in paths)
+        {
+            var path = TimelineDocument.PoolPath(given);
+            if (path.Length > 0 && !path.Contains("://", StringComparison.Ordinal) && !_doc.PoolHolds(path)
+                && !added.Exists(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase)))
+            {
+                added.Add(path);
+            }
+        }
+
+        return added;
+    }
+
+    /// <summary>A clip just placed (5.4C): its file goes into Project Media, when the document pools placed files and does not hold it yet.</summary>
+    private void PoolPlaced(TimelineClip clip)
+    {
+        if (!_doc.PoolsPlacedFiles || TimelineDocument.PoolFileOf(clip) is not { } path || _doc.PoolHolds(path))
+            return;
+
+        RememberMediaPool();
+        _doc.MediaPool.Add(path);
     }
 
     /// <summary>Lets go of the stretches put back whose stretch is no longer there (<see cref="RestoredFold.SpanIn"/> null).</summary>
@@ -756,6 +822,39 @@ internal sealed class TimelineTransaction : ITimelineTransaction
         return true;
     });
 
+    public void SetProjectSettings(ProjectColorSpace colorSpace, ProjectPixelAspect pixelAspect, int sampleRate) => Step(() =>
+    {
+        var rate = sampleRate is 44100 or 48000 or 96000 ? sampleRate : TimelineDocument.DefaultSampleRate;
+        if (colorSpace == _doc.ColorSpace && pixelAspect == _doc.PixelAspect && rate == _doc.SampleRate)
+            return false;
+
+        RememberProjectSettings();
+        (_doc.ColorSpace, _doc.PixelAspect, _doc.SampleRate) = (colorSpace, pixelAspect, rate);
+        return true;
+    });
+
+    public bool AddToMediaPool(IEnumerable<string> paths) => Step(() =>
+    {
+        var added = NewToPool(paths);
+        if (added.Count == 0)
+            return false;
+
+        RememberMediaPool();
+        _doc.MediaPool.AddRange(added);
+        return true;
+    });
+
+    public bool RemoveFromMediaPool(IEnumerable<string> paths) => Step(() =>
+    {
+        var gone = paths.Select(TimelineDocument.PoolPath).Where(p => p.Length > 0).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (!_doc.MediaPool.Exists(p => gone.Contains(TimelineDocument.PoolPath(p))))
+            return false;
+
+        RememberMediaPool();
+        _doc.MediaPool.RemoveAll(p => gone.Contains(TimelineDocument.PoolPath(p)));
+        return true;
+    });
+
     public double SetClipSpeed(TimelineClip clip, double speed, bool freeUnquantized = false) => Step(() => Respeed(clip, speed, freeUnquantized));
 
     public void SetAudioLink(TimelineClip clip, bool linked, double slipSeconds) => Step(() => Change(clip, c =>
@@ -1077,6 +1176,9 @@ internal sealed class TimelineTransaction : ITimelineTransaction
                 throw new TimelineEditException("The clip would be shorter than the shortest clip (or its file has nothing left from its offset).");
 
             Land(track, clip, start, end, allowCrossfadeOverlap, free);
+
+            // Its file is in Project Media from now on (5.4C), until taken out of the bin: deleting the clip leaves it there.
+            PoolPlaced(clip);
             return clip;
         }
         catch

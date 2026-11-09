@@ -1,0 +1,20 @@
+# Where a drop goes: with clips on the Sequence, media dropped anywhere is added to the timeline, never opened over the project.
+ok: clips on the Sequence, an mp4 from Explorer on the Player: added at the playhead
+ok: a picture or a sound the same
+ok: a video with a project: the video added, the project left out
+ok: a project or a bundle with one open: opened in a Project Tab, never over it
+ok: while busy: the open path, which says to wait
+ok: a file that is neither media nor a project keeps today's path
+ok: nothing open, one mp4: opened
+ok: nothing open, three: the first opened, the others following it
+ok: a sound never follows in line
+ok: on the timeline where it was let go; on the Audio tab as sound
+ok: a link: downloaded and added with clips on the Sequence, opened with none, placed where let go on the timeline
+ok: a project open with no clips: a tile from the media browser is added (4.1.1-B), a file from Explorer opened as before
+ok: media from Explorer onto the Media Browser pane: into Project Media (a video, a picture, a sound)
+ok: a project open with no clips yet: into Project Media too
+ok: a tile dragged from the browser and let go over it: at the playhead, as before
+ok: a video with a project over the bin: the video into Project Media; a project alone: opened in a Project Tab
+ok: a link over the bin keeps today's path (downloaded, at the playhead); a file that is not media too
+ok: with nothing open (5.4D), media over the Media Browser goes into Project Media too (the blank window keeps it); a project alone, a file that is not media and a tile from the browser are opened as before
+ok: with clips on the Sequence no drop of media, anywhere, ever opens over the project

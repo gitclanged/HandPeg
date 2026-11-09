@@ -222,6 +222,12 @@ public sealed class AudioMixer : IDisposable
         _feeders?.Wake();
     }
 
+    /// <summary>
+    /// Disposes the decoders the retired voices gave back and nothing has rented again (any thread; a project tab put behind, Pass
+    /// 5.4A): after an empty program, every file the last one played is let go. Voices still being retired hand theirs back later.
+    /// </summary>
+    public void ReleaseIdleDecoders() => _pool.ReleaseIdle();
+
     private AudioEffect[] Make(AudioEffectSpec[] specs)
     {
         var effects = new AudioEffect[specs.Length];

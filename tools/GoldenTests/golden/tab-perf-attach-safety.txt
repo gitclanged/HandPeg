@@ -1,0 +1,11 @@
+# A tab put behind lets go of its selected view; its frozen copy is only read; a tab coming back never tells HasSource false on the way.
+ok: tab A: one edit (a step of Undo for its history), then a clip selected
+ok: DetachForTab: the Inspector and Keyframes pane let go of A's selected view (KeyLayer null); A's context keeps it
+ok: FrozenStateDiffers on the thread pool (200 times): unsaved, and a reader on this thread never saw the frozen copy's name, Settings name, time or history blanked
+ok: and it writes to no field of it (MainViewModel.Tabs.cs)
+ok: a clean tab's frozen copy reads as its saved fingerprint (the name, Settings name and time read blank, as a fingerprint has them), and keeps its name
+ok: A back: its selected view is the Inspector's again
+ok: B (dropped files, no file open) comes back after A (a file open)
+ok: HasSource told once, as B's Sequence is in place, and true (told: True)
+ok: and the window never lets go of the engine (UnloadGpu, which clears every live tab's frames) on a HasSource false mid-switch
+ok: AttachTab holds HasSource from its file set until its Sequence is in place

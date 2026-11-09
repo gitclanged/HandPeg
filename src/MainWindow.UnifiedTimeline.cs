@@ -349,8 +349,8 @@ public partial class MainWindow
             rows.Insert(rows.IndexOf(top) + 1, captionRow!);
         }
 
-        // Where the Background Blur is drawn (5.2.0's re-cut, the user's P0): under one clip family's pictures, its row the last of that
-        // family's stack, under its Cutouts; under several families', the last of the picture rows, under them all.
+        // Where the Background Blur is drawn (5.4A: under every picture): its row the last of the lowest family's stack, under its
+        // Cutouts, when that family alone has blur fills; otherwise the last of the picture rows, under them all.
         if (backgroundRow is { Parent: null } && BlurFamilyRow(byTrack) is { } family)
             Adopt(family, backgroundRow);
         if (backgroundRow is { Parent: null })
@@ -582,7 +582,7 @@ public partial class MainWindow
             Accent = SubtitleClipBrush,
             Offered = captions.CanHide ? RowSwitches.Hidden : RowSwitches.None,
             State = captions.IsHidden ? RowSwitches.Hidden : RowSwitches.None,
-            Tip = "The captions: they follow the sound they were heard in through every cut. Right-click for the Subtitle Editor and their style.",
+            Tip = "The captions: they follow the sound they were heard in through every cut. Right-click for the Subtitle Studio and their style.",
         };
         BuildRowBlocks(row, scale, seconds);
         return row;
@@ -590,7 +590,8 @@ public partial class MainWindow
 
     /// <summary>
     /// The row of the one track family (a track and the Sub-Lanes made to go with it, TimelineLowering.FamilyOf) whose clips have every
-    /// blur fill there is; null when none has one, or several do.
+    /// blur fill there is, when that family is the lowest picture family (5.4A: every blur twin is drawn under every picture, so the row
+    /// sits in that family's stack only where nothing lies under it); null when none has one, several do, or the family is higher up.
     /// </summary>
     private TimelineRow? BlurFamilyRow(Dictionary<Guid, TimelineRow> byTrack)
     {
@@ -607,7 +608,13 @@ public partial class MainWindow
             family = root;
         }
 
-        return family is not null && byTrack.TryGetValue(family.Id, out var row) ? row : null;
+        if (family is null || document.Tracks.FirstOrDefault(t => t.Kind is TimelineTrackKind.Video or TimelineTrackKind.Switch && t.ParentTrackId is null) is not { } lowest
+            || !ReferenceEquals(Services.Gpu.TimelineLowering.FamilyOf(lowest, document), family))
+        {
+            return null;
+        }
+
+        return byTrack.TryGetValue(family.Id, out var row) ? row : null;
     }
 
     private TimelineRow BackgroundRow(Layer background, double scale, double seconds)

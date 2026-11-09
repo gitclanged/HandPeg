@@ -1,0 +1,27 @@
+# Ctrl+T, Ctrl+W, Ctrl+Tab, Ctrl+Shift+Tab: the project tabs' keys, legal, taken while typing, and nobody else's in any preset.
+ok: tab.new: "New Project Tab" in Project, on Ctrl+T by default, taken even while a text box has the keyboard
+ok: tab.new: Ctrl+T is a legal shortcut for it
+ok: tab.new in WASD (Default): Ctrl+T alone, and no other action has it
+ok: tab.new in Classic Broadcast Track-Edit: Ctrl+T alone, and no other action has it
+ok: tab.new in Studio Razor & Ripple: Ctrl+T alone, and no other action has it
+ok: tab.new in Color & Node Studio: Ctrl+T alone, and no other action has it
+ok: tab.close: "Close Project Tab" in Project, on Ctrl+W by default, taken even while a text box has the keyboard
+ok: tab.close: Ctrl+W is a legal shortcut for it
+ok: tab.close in WASD (Default): Ctrl+W alone, and no other action has it
+ok: tab.close in Classic Broadcast Track-Edit: Ctrl+W alone, and no other action has it
+ok: tab.close in Studio Razor & Ripple: Ctrl+W alone, and no other action has it
+ok: tab.close in Color & Node Studio: Ctrl+W alone, and no other action has it
+ok: tab.next: "Next Project Tab" in Project, on Ctrl+Tab by default, taken even while a text box has the keyboard
+ok: tab.next: Ctrl+Tab is a legal shortcut for it
+ok: tab.next in WASD (Default): Ctrl+Tab alone, and no other action has it
+ok: tab.next in Classic Broadcast Track-Edit: Ctrl+Tab alone, and no other action has it
+ok: tab.next in Studio Razor & Ripple: Ctrl+Tab alone, and no other action has it
+ok: tab.next in Color & Node Studio: Ctrl+Tab alone, and no other action has it
+ok: tab.prev: "Previous Project Tab" in Project, on Ctrl+Shift+Tab by default, taken even while a text box has the keyboard
+ok: tab.prev: Ctrl+Shift+Tab is a legal shortcut for it
+ok: tab.prev in WASD (Default): Ctrl+Shift+Tab alone, and no other action has it
+ok: tab.prev in Classic Broadcast Track-Edit: Ctrl+Shift+Tab alone, and no other action has it
+ok: tab.prev in Studio Razor & Ripple: Ctrl+Shift+Tab alone, and no other action has it
+ok: tab.prev in Color & Node Studio: Ctrl+Shift+Tab alone, and no other action has it
+ok: T alone still keys and Tab alone still holds X-Ray: only the Ctrl chords are the tabs'
+ok: KeybindManager.CheckPresets(): no preset gives a chord to two actions or binds one that cannot be (the clip keys Alt+Up and Alt+Down too)

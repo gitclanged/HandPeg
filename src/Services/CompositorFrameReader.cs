@@ -7,7 +7,8 @@ namespace HandPegApp.Services;
 /// The other end of the compositor's output (Pass 5.0-Core): a Direct3D 11 device of this process on the worker's card,
 /// with the worker's shared output textures opened by name (ID3D11Device1::OpenSharedResourceByName, keyed mutex key 0).
 /// <para>The hot path (5.0D's GpuViewportControl) copies the presented texture into its own swap chain on the card:
-/// <see cref="CopyPresentedTo"/>, no pixel leaves video memory. <see cref="TryRead"/> brings one frame back to the
+/// <see cref="CopyPresentedTo"/>, no pixel leaves video memory; a side window's Live Video Preview copies the canvas's part of it
+/// (5.4C, <see cref="CopyPresentedRegionTo"/>) on the same device. <see cref="TryRead"/> brings one frame back to the
 /// processor, for the golden tests and diagnostics only.</para>
 /// </summary>
 public sealed unsafe class CompositorFrameReader : IDisposable
@@ -80,6 +81,39 @@ public sealed unsafe class CompositorFrameReader : IDisposable
         {
             _gpu!.Context.CopyResource(destination, texture);
             Sequence = Volatile.Read(ref control.PresentedSequence);
+        }
+        finally
+        {
+            _ = Dxgi.ReleaseSync(mutex, 0);
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// A rectangle of the presented frame (left, top, right, bottom in its pixels, kept inside it) copied to the top-left corner of a
+    /// texture of this reader's device (BGRA8, at least that large): a side window's Live Video Preview, the canvas without the player's
+    /// bars (5.4C). Waits at most <paramref name="milliseconds"/> for the frame (0: never waits; false when it is busy).
+    /// </summary>
+    internal bool CopyPresentedRegionTo(nint destination, int left, int top, int right, int bottom, uint milliseconds = 0)
+    {
+        if (!Open())
+            return false;
+        ref var control = ref _client.Memory.Control;
+        var (width, height) = (control.OutputWidth, control.OutputHeight);
+        (left, top) = (Math.Clamp(left, 0, width), Math.Clamp(top, 0, height));
+        (right, bottom) = (Math.Clamp(right, left, width), Math.Clamp(bottom, top, height));
+        if (right - left < 1 || bottom - top < 1)
+            return false;
+
+        var index = Volatile.Read(ref control.PresentedIndex);
+        var (texture, mutex) = _opened[index];
+        if (Dxgi.AcquireSync(mutex, 0, milliseconds) != 0)
+            return false;
+        try
+        {
+            var box = new Box { Left = (uint)left, Top = (uint)top, Front = 0, Right = (uint)right, Bottom = (uint)bottom, Back = 1 };
+            _gpu!.Context.CopySubresourceRegion(destination, 0, 0, 0, texture, 0, &box);
         }
         finally
         {

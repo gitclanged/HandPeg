@@ -76,8 +76,9 @@ public partial class MainWindow
     /// </summary>
     private bool TimelineDragHeld => UnifiedTimeline.Surface.IsDragging;
 
+    // A key that changes the project waits for a timeline drag to end, and for a project tab switch to finish (5.4A).
     private bool RefusedWhileDragging(string id) =>
-        TimelineDragHeld && KeybindManager.Action(id) is { } action && action.Has(KeyActionFlags.ChangesProject);
+        (TimelineDragHeld || _switchingTab) && KeybindManager.Action(id) is { } action && action.Has(KeyActionFlags.ChangesProject);
 
     // ----- Actions -----
 
@@ -98,6 +99,11 @@ public partial class MainWindow
             ["edit.redo"] = (always, () => RunUndo(redo: true)),
             ["file.addMedia"] = (always, () => AddMedia_Click(AddMediaButton, new RoutedEventArgs())),
             ["ui.settings"] = (always, () => OpenSettings()),
+            // The title bar's project tabs (5.4A, MainWindow.ProjectTabs.cs): each says in the status bar when it cannot be done now.
+            ["tab.new"] = (always, () => _ = NewProjectTabAsync()),
+            ["tab.close"] = (always, () => _ = CloseProjectTabAsync(null)),
+            ["tab.next"] = (always, () => _ = CycleProjectTabAsync(1)),
+            ["tab.prev"] = (always, () => _ = CycleProjectTabAsync(-1)),
             ["captions.generate"] = (source, () => GenerateCaptionsFrom(null)),
 
             ["transport.playPause"] = (always, () => PlayPause_Click(this, new RoutedEventArgs())),
@@ -128,6 +134,9 @@ public partial class MainWindow
             ["edit.paste"] = (source, () => _viewModel.PasteClips(_viewModel.PositionMs / 1000)),
             ["edit.duplicate"] = (source, DuplicateSelectedClips),
             ["edit.pasteAttributes"] = (source, PasteAttributesToSelection),
+            // Alt+Up / Alt+Down (5.4A): only while a selected clip can move, so with none the key is the focused control's.
+            ["clip.newTrackAbove"] = (CanMoveSelectedToNewTrack, () => MoveSelectedToNewTrack(above: true, ontoNeighbour: true)),
+            ["clip.newTrackBelow"] = (CanMoveSelectedToNewTrack, () => MoveSelectedToNewTrack(above: false, ontoNeighbour: true)),
 
             ["marker.add"] = (source, () => _viewModel.AddMarker()),
             ["marker.ping"] = (source, () => _viewModel.PingToMark()),
@@ -261,7 +270,7 @@ public partial class MainWindow
     /// </summary>
     private bool TryRunBound(string id, InputChord chord, KeyEventArgs e, object sender, IInputElement? focused)
     {
-        if (KeybindManager.Action(id) is not { } action || KeyBelongsToFocus(chord.Key, focused))
+        if (KeybindManager.Action(id) is not { } action || KeyBelongsToFocus(chord, focused))
             return false;
 
         // The Keyframes pane's rows copy and paste their own keyframes (Ctrl+C, Ctrl+V, Ctrl+A) while they hold the keyboard.
@@ -307,11 +316,12 @@ public partial class MainWindow
         return true;
     }
 
-    private bool KeyBelongsToFocus(Key key, IInputElement? focused) => key switch
+    private bool KeyBelongsToFocus(InputChord chord, IInputElement? focused) => OwnerOfKeys(focused)?.OwnsKey(chord.Key, chord.Mods) == true || chord.Key switch
     {
         // A slider other than the timeline keeps its arrow keys (volume, zoom, opacity...).
         Key.Left or Key.Right => focused is Slider slider && !ReferenceEquals(slider, TimelineSlider),
         Key.Home or Key.End => focused is ItemsControl or ListBoxItem or Slider,
+        Key.Up or Key.Down when (chord.Mods & ModifierKeys.Alt) != 0 => AltArrowBelongsToFocus(chord.Key, focused),
         // (Down on Add Layer opens its kinds instead: AddLayerButton_PreviewKeyDown.)
         Key.Up or Key.Down => focused is ItemsControl or ListBoxItem or Slider or ScrollViewer or KeyLanesView or FrameworkElement { Name: "AddLayerButton" },
         Key.PageUp or Key.PageDown => focused is ItemsControl or ListBoxItem or ScrollViewer,
@@ -324,7 +334,28 @@ public partial class MainWindow
         _ => false,
     };
 
-    // ----- Keys before the shortcuts: Caps Lock's echo, and Esc for the dial and the tour -----
+    /// <summary>
+    /// The control that claims keys for itself (5.4C): the focused element or the nearest of its parents that is an <see cref="IOwnsKeys"/>
+    /// (the Media Browser's filmstrip cutter, the Subtitle Studio), so its keys are its own instead of the shortcuts'.
+    /// </summary>
+    internal static IOwnsKeys? OwnerOfKeys(IInputElement? focused)
+    {
+        for (var node = focused as DependencyObject; node is not null;
+             node = node is Visual or System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(node) ?? LogicalTreeHelper.GetParent(node) : LogicalTreeHelper.GetParent(node))
+            if (node is IOwnsKeys owner)
+                return owner;
+        return null;
+    }
+
+    /// <summary>
+    /// Whether Alt+Up or Alt+Down (5.4A: they move a clip up or down a track) is the focused control's own: a list, a scroller or any
+    /// other button gives them up; a combo box (Alt+Down opens it, Alt+Up closes it) keeps both, and the three buttons that open a
+    /// flyout on Alt+Down (Quick FX, Add Track, the Effects pane's Add: their own PreviewKeyDown runs after the window's) keep Down.
+    /// </summary>
+    internal static bool AltArrowBelongsToFocus(Key key, IInputElement? focused) =>
+        focused is ComboBox || (key == Key.Down && focused is ButtonBase { Name: "QuickFxButton" or "AddLayerButton" or "AddButton" });
+
+    // ----- Keys before the shortcuts: Caps Lock's echo, and Esc for the dial, the tour and Interactive Crop -----
 
     // Caps Lock ran a shortcut and is to be switched back as it is let go; the press HandPeg sends for that, still to come
     // back as a key of its own (and until when it is waited for).
@@ -335,7 +366,7 @@ public partial class MainWindow
     /// <summary>
     /// The keys the input layers take before any shortcut (MainWindow_PreviewKeyDown's first step): the Caps Lock press
     /// HandPeg sent itself (RestoreCapsLock) is swallowed; any other key hides a toggled X-Ray; Esc closes an open dial or ends
-    /// the tour. (4.4-BugHunt: the navigation keys are ordinary shortcuts now, after the text box's keys.)
+    /// the tour (Interactive Crop's Esc comes after the text box's keys: EndCropOnEscape). (4.4-BugHunt: the navigation keys are ordinary shortcuts now, after the text box's keys.)
     /// </summary>
     private bool TakeOverlayKey(KeyEventArgs e)
     {
@@ -371,6 +402,22 @@ public partial class MainWindow
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// 5.4B: Interactive Crop has no toggle of its own any more (only the clip menu's), so an Esc nothing else wanted ends it: never one
+    /// a text box, a drop-down or an open flyout (its own window: a Popup's) has the keyboard for.
+    /// </summary>
+    private bool EndCropOnEscape(KeyEventArgs e, IInputElement? focused)
+    {
+        if (KeybindManager.KeyOf(e) != Key.Escape || Keyboard.Modifiers != ModifierKeys.None || !_viewModel.IsInteractiveCropActive)
+            return false;
+        if (focused is DependencyObject element && PresentationSource.FromDependencyObject(element) is { } source
+            && !ReferenceEquals(source, PresentationSource.FromVisual(this)))
+            return false;
+        _viewModel.IsInteractiveCropActive = false;
+        e.Handled = true;
+        return true;
     }
 
     // Windows switched Caps Lock as its key went down; one more press, sent now that the key is up, switches it back. Its
@@ -424,6 +471,37 @@ public partial class MainWindow
         Keyboard.ClearFocus();
     }
 
+    /// <summary>
+    /// A press outside a pane that owns keys while it holds the keyboard (<see cref="IOwnsKeys"/>, 5.4C: the Media Browser's cutter and
+    /// its Project Media list, the Subtitle Studio) takes the keyboard from it the same way: the timeline and the player take no keyboard
+    /// of their own, so without this a click there left Space, J/K/L, I/O, the arrows, Enter and Delete with the pane. A press inside the
+    /// pane, or in a popup, leaves it be.
+    /// </summary>
+    internal static void ReleaseOwnedKeys(DependencyObject? pressed)
+    {
+        if (Keyboard.FocusedElement is not DependencyObject focused || OwnerOfKeys(Keyboard.FocusedElement) is not DependencyObject owner)
+            return;
+
+        while (pressed is not null and not Visual)
+            pressed = LogicalTreeHelper.GetParent(pressed);
+
+        DependencyObject? top = null;
+        for (var at = pressed; at is not null; at = VisualTreeHelper.GetParent(at))
+        {
+            if (ReferenceEquals(at, owner))
+                return;
+            top = at;
+        }
+
+        if (top is not Window)
+            return;
+
+        // The scope forgets it too, or the window's next activation would hand it the keyboard again.
+        if (FocusManager.GetFocusScope(focused) is { } scope)
+            FocusManager.SetFocusedElement(scope, null);
+        Keyboard.ClearFocus();
+    }
+
     // ----- Mouse buttons -----
 
     private MouseButton? _dialButton;
@@ -439,7 +517,10 @@ public partial class MainWindow
         // A press outside the text box holding the keyboard takes it from the box. Not the side buttons': Mouse 4 is Undo,
         // which takes back the box's own typing while that is the newest.
         if (e.ChangedButton is MouseButton.Left or MouseButton.Right or MouseButton.Middle)
+        {
             ReleaseTypingFocus(e.OriginalSource as DependencyObject);
+            ReleaseOwnedKeys(e.OriginalSource as DependencyObject);
+        }
 
         // A press on the video lands on the window kept over it, which never takes the keyboard: the window the player is
         // in is brought forward, as a click on the video always did, so the shortcuts are heard after it.
@@ -791,6 +872,8 @@ public partial class MainWindow
     // The timeline zooms about the moment under the pointer (the playhead off the timeline's own surface) and pans along.
     private void NavigateTimeline(int zoom, int pan, double seconds)
     {
+        // A key's pan or zoom takes over from a coast still running (5.4C).
+        StopTimelineMomentum();
         if (zoom != 0)
             ZoomTimeline(Math.Pow(NavTimelineZoomRate, zoom * seconds), TimelineAnchor());
         if (pan != 0 && ViewSpan > 0)

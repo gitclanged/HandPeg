@@ -14,7 +14,11 @@ namespace HandPegApp.ViewModels;
 
 public partial class MainViewModel : ObservableObject
 {
-    private const string SameAsSource = "Same as source";
+    /// <summary>
+    /// The first choice of Export's Framerate, Colorspace and Pixel Aspect (5.4A, which retired "Same as source"): what the project's
+    /// settings say (MainViewModel.ProjectSettings.cs). A preset or project saved with "Same as source" reads as it (Pick).
+    /// </summary>
+    public const string MatchProject = "Match Project Settings";
     private const string CustomOption = "Custom";
     public const string CopyOption = "Copy (Stream Copy)";
     private const string NoneOption = "None";
@@ -27,6 +31,13 @@ public partial class MainViewModel : ObservableObject
     // Properties that have no influence on the generated FFmpeg command.
     private static readonly HashSet<string> NonCommandProperties =
     [
+        nameof(IsExportQualityPreview), nameof(ExportQualityPreviewMode), nameof(ExportQualityPreviewWipe), nameof(ExportQualityPreviewStatus),
+        // 5.4D: the preview's Magnifier is a viewer preference.
+        nameof(ExportQualityPreviewLoupe),
+        // 5.4B: the automatic bitrate's views follow the settings that build the command (raised as it is built, UpdateProjectedOutput).
+        nameof(EffectiveBitrateKbps), nameof(AutoBitrateText),
+        // 5.4C: the output's kind only shows or folds the Export tab's video parts.
+        nameof(IsAudioOnlyExport), nameof(IsVideoExport),
         nameof(CommandPreview), nameof(IsCommandManuallyEdited), nameof(StatusText), nameof(SourcePath), nameof(DownloadResolution),
         nameof(PositionMs), nameof(PositionText), nameof(DurationMs), nameof(DurationText), nameof(TimelineMaximum),
         nameof(IFrameStatusText), nameof(Volume), nameof(EditingJob), nameof(IsEditingQueuedJob),
@@ -44,7 +55,7 @@ public partial class MainViewModel : ObservableObject
         nameof(DefaultPresetChoice),
         nameof(TimelineWaveform), nameof(SelectedMicrophone), nameof(IsRecording), nameof(IsRecordingPaused), nameof(VoiceoverStatus),
         nameof(HasVoiceover), nameof(VoiceoverWaveform), nameof(VoiceoverDuration), nameof(VoiceoverTrimText),
-        nameof(ResolutionPreset), nameof(ShowPresetBarAtTop), nameof(ShowPresetBarInSummary),
+        nameof(ResolutionPreset), nameof(ShowPresetBarAtTop), nameof(ShowPresetBarInExport),
         nameof(TimelineAreaHeight), nameof(AudioTrackRowHeight), nameof(ShowWaveforms),
         nameof(WhisperPrompt), nameof(WhisperLanguage), nameof(WhisperTranslate), nameof(CanEditLayout),
         nameof(CaptionUseExternalAudio), nameof(CaptionUseVideoAudio), nameof(IsPlaying),
@@ -54,9 +65,9 @@ public partial class MainViewModel : ObservableObject
         nameof(IsBusy), nameof(ProgressValue), nameof(IsProgressIndeterminate),
         nameof(ShowTimelineThumbnails), nameof(ShowHoverPreviews), nameof(HasSource), nameof(SoloedTracks),
         nameof(VoiceoverMixWaveform), nameof(VoiceoverMixStart), nameof(VoiceoverMixWidth),
-        nameof(CopyBypassWarning), nameof(ShowLinkedAudio), nameof(ShowTimelineOptionsBelow), nameof(HasAudioClips),
+        nameof(CopyBypassWarning), nameof(ProjectColorNote), nameof(ShowLinkedAudio), nameof(ShowTimelineOptionsBelow), nameof(HasAudioClips),
         nameof(KeyframesEnabled), nameof(KeyframesSnap), nameof(KeyframesCreate), nameof(KeyLayer), nameof(ActiveKeyLayer), nameof(SelectedTextLayer), nameof(IsTextLayerSelected),
-        nameof(SubtitleSourcePath), nameof(SubtitleTrackSummary), nameof(HasSubtitleCues), nameof(IsSubtitleEditorOpen), nameof(WhisperModelChoice), nameof(WhisperModelStatus), nameof(AutosaveEnabled), nameof(SyncMasterTimeline), nameof(CaptionOptionsEnabled), nameof(CompactTrackControls), nameof(HasTextCues), nameof(SubtitlesAreImages),
+        nameof(SubtitleSourcePath), nameof(SubtitleTrackSummary), nameof(HasSubtitleCues), nameof(WhisperModelChoice), nameof(WhisperModelStatus), nameof(AutosaveEnabled), nameof(SyncMasterTimeline), nameof(CaptionOptionsEnabled), nameof(CompactTrackControls), nameof(HasTextCues), nameof(SubtitlesAreImages),
         nameof(SelectedStylePreset), nameof(SelectedProject), nameof(StyleName), nameof(SnapClips), nameof(LayerControlsShown), nameof(LoopPlayback), nameof(ShowSafeMargins), nameof(EditLayersOnPlayer), nameof(IsPlayerMuted),
         nameof(MasterTimelineHeight), nameof(LayerTrackHeight), nameof(AudioTrackHeight), nameof(LayerBarHeight),
         nameof(ShowKeyframesPane), nameof(ShowEffectsPane), nameof(ShowMediaBrowser), nameof(IsMediaBrowserVisible), nameof(SourceActionText), nameof(ShowClipKeyframes), nameof(HasDeleted), nameof(RecycleBinText),
@@ -84,7 +95,7 @@ public partial class MainViewModel : ObservableObject
     {
         StartupTrace.Mark("MainViewModel: start");
         _videoEncoder = EncoderOption.Copy;
-        Presets = [.. PresetStore.TakeEarly()];
+        Presets = [.. ExportPresetCatalog.BuiltIns, .. PresetStore.TakeEarly()];
         Initialize();
 
         var missing = DependencyUpdater.GetMissing();
@@ -199,6 +210,22 @@ public partial class MainViewModel : ObservableObject
     // The default encoder from the settings, while it is a hardware one the probe has not reported on yet.
     private string? _pendingDefaultEncoder;
 
+    // 5.4C, the probe race: the codec(s) a built-in Export Preset wanted on hardware ("hevc"), when it was applied before the hardware
+    // probe had listed any encoder and so fell back to its software one; ApplyHardwareEncoders resolves it again once, unless an encoder
+    // was picked by hand since (OnPropertyChanged lets go of it). _resolvingEncoder marks the encoder set by a preset or the probe.
+    private string? _pendingPreferredCodec;
+    private bool _resolvingEncoder;
+    private bool _hardwareEncodersListed;
+
+    // 5.4D, Q2 (b): a speed-first preset (EncodingPreset.SpeedFirst: Fast Proxy) applied: its encoder at the fastest step (FastestStepOf;
+    // Media Foundation's -compression_level 0), the probe's re-pick too, until an encoder or a step is picked by hand or another preset
+    // is applied. _placingStep marks a step set by HandPeg itself (the probe's default step, a hardware failure's software retry).
+    private bool _speedFirst;
+    private bool _placingStep;
+
+    /// <summary>Whether a speed-first preset's fastest step holds (5.4D: for the golden tests and the command).</summary>
+    internal bool SpeedFirstHolds => _speedFirst;
+
     /// <summary>Raised with a local file path when a source is ready to be played.</summary>
     public event Action<string>? MediaLoaded;
 
@@ -232,29 +259,34 @@ public partial class MainViewModel : ObservableObject
     // ----- Option lists -----
 
     public IReadOnlyList<string> DownloadResolutions { get; } = ["Best", "2160p", "1440p", "1080p", "720p", "480p", "360p"];
-    public IReadOnlyList<string> Containers { get; } = ["mp4", "mkv", "webm", "mov", "gif", "webp"];
-    public IReadOnlyList<string> PixelAspectRatios { get; } = [SameAsSource, "1:1", "4:3", "16:9", CustomOption];
+    /// <summary>The containers offered, the Save dialog's filter in the same order; the sound-only files last (5.4C: an Audio Only export).</summary>
+    public IReadOnlyList<string> Containers { get; } = ["mp4", "mkv", "webm", "mov", "gif", "webp", "flac", "wav", "mp3"];
+    public IReadOnlyList<string> PixelAspectRatios { get; } = [MatchProject, "1:1", "4:3", "16:9", CustomOption];
 
     /// <summary>Software encoders, followed by whichever hardware encoders passed the probe.</summary>
     public ObservableCollection<EncoderOption> VideoEncoders { get; } = [EncoderOption.Copy, .. EncoderOption.Software];
 
     private static EncoderOption DefaultVideoEncoder => EncoderOption.Software[0];
-    public IReadOnlyList<string> Framerates { get; } = [SameAsSource, "23.976", "24", "25", "29.97", "30", "48", "50", "59.94", "60", "120", "144", "240", CustomOption];
+    public IReadOnlyList<string> Framerates { get; } = [MatchProject, "23.976", "24", "25", "29.97", "30", "48", "50", "59.94", "60", "120", "144", "240", CustomOption];
     public IReadOnlyList<string> AudioEncoders { get; } = [CopyOption, .. AudioTrack.AllCodecs];
     public IReadOnlyList<string> AudioBitrates => AudioTrack.AllBitrates;
     public IReadOnlyList<string> Tunes { get; } = [NoneOption, "film", "animation", "grain", "fastdecode", "zerolatency"];
     public IReadOnlyList<string> Profiles { get; } = [AutoOption, "baseline", "main", "high", "high10"];
     public IReadOnlyList<string> Levels { get; } = [AutoOption, "3.1", "4.0", "4.1", "4.2", "5.1", "5.2"];
-    /// <summary>The three ways of spending data, as presets and projects store them. The Video tab shows them under the selected encoder's own names: see <see cref="RateControlChoices"/>.</summary>
+    /// <summary>The three ways of spending data, as presets and projects store them. The Export tab shows them under the selected encoder's own names: see <see cref="RateControlChoices"/>.</summary>
     public IReadOnlyList<string> RateControls { get; } = [ConstantQuality, AverageBitrate, ConstantBitrate];
-    public IReadOnlyList<string> Colorspaces { get; } = [SameAsSource, TonemapToSdr];
+    public IReadOnlyList<string> Colorspaces { get; } = [MatchProject, TonemapToSdr];
 
     // ----- Presets -----
 
+    /// <summary>The Export Presets (5.4B): the built-in ones (ExportPresetCatalog), then the user's own (presets.json).</summary>
     public ObservableCollection<EncodingPreset> Presets { get; }
 
     [ObservableProperty] private EncodingPreset? _selectedPreset;
     [ObservableProperty] private string _presetName = "";
+
+    // Set while a preset is selected after being applied whole (a Smart Rule's): the selection then applies nothing again.
+    private bool _selectingAppliedPreset;
 
     partial void OnSelectedPresetChanged(EncodingPreset? value)
     {
@@ -262,10 +294,17 @@ public partial class MainViewModel : ObservableObject
             return;
 
         PresetName = value.Name;
-        ApplyPreset(value);
+        if (!_selectingAppliedPreset)
+            ApplyExportPreset(value);
     }
 
-    /// <summary>Saves the Dimensions, Filters, Video and Audio settings under the name in the preset box.</summary>
+    /// <summary>
+    /// Saves the export settings, with the rest of what a preset holds, under the name in the preset box, as one of the user's own
+    /// ("My Presets"). A built-in's name is not taken: the preset is saved as "Name (Custom)" (5.4B).
+    /// </summary>
+    // The "Name (Custom)" presets SavePreset made from a built-in this session (the ones a later save of the same tweak replaces).
+    private readonly HashSet<string> _savedFromBuiltIn = new(StringComparer.OrdinalIgnoreCase);
+
     [RelayCommand]
     private void SavePreset()
     {
@@ -276,10 +315,17 @@ public partial class MainViewModel : ObservableObject
             return;
         }
 
+        // The "Name (Custom)" this session saved from the built-in is not in the way: saving the tweak again replaces it, never adds
+        // "(Custom 2)". One that came from elsewhere (an older preset of that name the upgrade renamed, an import) is kept.
+        if (ExportPresetCatalog.IsBuiltInName(name))
+        {
+            name = PresetStore.UniqueName(name, Presets.Where(p => !p.IsBuiltIn && !_savedFromBuiltIn.Contains(p.Name)));
+            _savedFromBuiltIn.Add(name);
+        }
         var preset = CaptureSettings(name);
 
-        // Saving under an existing name replaces that preset.
-        var existing = Presets.ToList().FindIndex(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        // Saving under an existing name replaces that preset (never a built-in: its name is not taken).
+        var existing = Presets.ToList().FindIndex(p => !p.IsBuiltIn && p.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
         if (existing >= 0)
             Presets[existing] = preset;
         else
@@ -304,10 +350,15 @@ public partial class MainViewModel : ObservableObject
     {
         SelectedPreset = null;
         Presets.Clear();
-        foreach (var preset in PresetStore.Load())
+        foreach (var preset in ExportPresetCatalog.BuiltIns.Concat(PresetStore.Load()))
             Presets.Add(preset);
     }
 
+    /// <summary>
+    /// Applies the whole of a preset: its export settings (ApplyEncodingPart) and, with <paramref name="withLayout"/>, its size, layout,
+    /// crop, captions, filters and colours. A project's settings are put back this way (withLayout false), and a Smart Rule's preset
+    /// (5.4B: picking an Export Preset in the selector applies its export settings only, ApplyExportPreset).
+    /// </summary>
     /// <param name="withLayout">False for a project's own settings: its timeline (its clips, their looks, places and crops) is the project's, not a preset's.</param>
     private void ApplyPreset(EncodingPreset preset, bool withLayout = true)
     {
@@ -335,8 +386,9 @@ public partial class MainViewModel : ObservableObject
         // A preset that names both sides means exactly that size; one side alone is completed from the shape.
         if (string.IsNullOrWhiteSpace(preset.OutputWidth) || string.IsNullOrWhiteSpace(preset.OutputHeight))
             RelinkDimensions();
+        CapShortSide(preset.ShortSideCap);
 
-        PixelAspectRatio = Pick(PixelAspectRatios, preset.PixelAspectRatio, SameAsSource);
+        PixelAspectRatio = Pick(PixelAspectRatios, preset.PixelAspectRatio, MatchProject);
         CustomPixelAspectRatio = preset.CustomPixelAspectRatio;
         BlurRadius = Math.Clamp(preset.BlurRadius, 0, Models.Effects.EffectRegistry.BackgroundMostRadius);
         BlurPasses = Math.Clamp(preset.BlurPasses, 1, MostBlurPasses);
@@ -368,12 +420,6 @@ public partial class MainViewModel : ObservableObject
         WhisperLanguage = Pick(WhisperLanguages, preset.WhisperLanguage ?? "", "en");
         WhisperTranslate = preset.WhisperTranslate;
 
-        // The encoder comes before its preset step: which steps exist depends on the encoder.
-        // A preset may name a hardware encoder this machine does not have; then the current one stays.
-        var encoderFound = VideoEncoders.FirstOrDefault(e => e.Name == preset.VideoEncoder) is { } encoder;
-        if (encoderFound)
-            VideoEncoder = VideoEncoders.First(e => e.Name == preset.VideoEncoder);
-
         LutPath = preset.LutPath;
         if (withLayout)
             SetSequenceEffects(preset.SequenceEffects, preset.SequenceEffectsBypassed);
@@ -391,21 +437,70 @@ public partial class MainViewModel : ObservableObject
         Deinterlace = preset.Deinterlace;
         Denoise = preset.Denoise;
 
-        // A preset that names no step leaves the encoder at its own default.
+        var encoderFound = ApplyEncodingPart(preset);
+        Log(encoderFound
+            ? $"Applied preset \"{preset.Name}\""
+            : $"Applied preset \"{preset.Name}\", but {preset.VideoEncoder} is not available here: kept {VideoEncoder.DisplayName}");
+    }
+
+    /// <summary>
+    /// A preset's export settings (both ways of applying one share them): the encoder (a codec it prefers on this PC's hardware first,
+    /// ResolveEncoder) and its step (none named: its best, BestStepOf), tune, profile and level, rate control, quality and bitrate, frame
+    /// rate (capped where it says), colourspace, the encoder's own settings, 10-bit, the sound (codec, bitrate, rate, channels, mix,
+    /// normalize and its target), the target size, the tracks, the container and Web Optimized. Whether the encoder it names was found.
+    /// </summary>
+    private bool ApplyEncodingPart(EncodingPreset preset)
+    {
+        // The encoder comes before its preset step: which steps exist depends on the encoder.
+        // A preset may name a hardware encoder this machine does not have; then the current one stays.
+        // Another preset ends a speed-first one's state (5.4D); this one's starts once its encoder and step are in place.
+        _speedFirst = false;
+        var (encoder, encoderFound) = ResolveEncoder(preset);
+        _resolvingEncoder = true;
+        try
+        {
+            VideoEncoder = encoder;
+        }
+        finally
+        {
+            _resolvingEncoder = false;
+        }
+
+        // A built-in that wants a codec on hardware, applied before the probe listed the hardware encoders (5.4C): resolved again then.
+        _pendingPreferredCodec = !_hardwareEncodersListed && preset.IsBuiltIn && !encoder.IsHardware && preset.PreferredCodec is { Length: > 0 } wanted ? wanted : null;
+
+        // A preset that names no step leaves the encoder at its own default: its best (5.4B: veryslow for x264 and x265 too).
         if (EncoderPresets.Contains(preset.EncoderPreset))
             EncoderPreset = preset.EncoderPreset;
         else if (preset.EncoderPreset.Length == 0)
-            EncoderPreset = BestStepOf(VideoEncoder.Family) ?? "medium";
+            EncoderPreset = BestStepOf(VideoEncoder) ?? "veryslow";
+
+        // A speed-first preset (5.4D, Fast Proxy) takes the fastest step of the encoder it resolved to, whatever the family; on one with no
+        // steps here (Media Foundation) the command says it (-compression_level 0).
+        if (preset.SpeedFirst)
+        {
+            if (FastestStepOf(VideoEncoder) is { } fastest && EncoderPresets.Contains(fastest))
+                EncoderPreset = fastest;
+            _speedFirst = true;
+        }
+
         Tune = Pick(Tunes, preset.Tune, NoneOption);
         Profile = Pick(Profiles, preset.Profile, AutoOption);
         Level = Pick(Levels, preset.Level, AutoOption);
-        RateControl = Pick(RateControls, preset.RateControl, ConstantQuality);
+        RateControl = Pick(RateControls, preset.RateControl, AverageBitrate);
         Crf = Math.Clamp(preset.Quality, 0, 51);
         TargetBitrate = preset.TargetBitrate;
-        Framerate = Pick(Framerates, preset.Framerate, SameAsSource);
+        Framerate = Pick(Framerates, preset.Framerate, MatchProject);
         CustomFramerate = preset.CustomFramerate;
-        Colorspace = Pick(Colorspaces, preset.Colorspace, SameAsSource);
-        HardwareDecoding = preset.HardwareDecoding;
+
+        // A platform's most frames a second: the project's rate while it is under it, the cap where it is above.
+        if (preset.FramerateCap > 0 && Framerate == MatchProject && Document.FrameRate.IsValid && Document.FrameRate.Fps > preset.FramerateCap + 0.01
+            && preset.FramerateCap.ToString(CultureInfo.InvariantCulture) is var cap && Framerates.Contains(cap))
+        {
+            Framerate = cap;
+        }
+
+        Colorspace = Pick(Colorspaces, preset.Colorspace, MatchProject);
         ExtraVideoArguments = preset.ExtraVideoArguments;
         NvencTune = Pick(NvencTunes, preset.NvencTune, NvencHighQuality);
         NvencMultipass = Pick(NvencMultipasses, preset.NvencMultipass, NvencSinglePass);
@@ -423,6 +518,7 @@ public partial class MainViewModel : ObservableObject
         AudioChannels = AudioChannelChoice.Normalize(preset.AudioChannels);
         MergeAudioTracks = preset.MergeAudioTracks;
         NormalizeAudio = preset.NormalizeAudio;
+        LoudnessTarget = NormalizeLoudness(preset.LoudnessTarget);
         DuckAmountDb = Math.Clamp(preset.DuckAmountDb, -40, -1);
 
         // A preset only speaks for the target size when it was saved with one.
@@ -436,10 +532,9 @@ public partial class MainViewModel : ObservableObject
 
         if (preset.Container is { } container && Containers.Contains(container))
             Container = container;
-
-        Log(encoderFound
-            ? $"Applied preset \"{preset.Name}\""
-            : $"Applied preset \"{preset.Name}\", but {preset.VideoEncoder} is not available here: kept {VideoEncoder.DisplayName}");
+        if (preset.WebOptimized is { } webOptimized)
+            WebOptimized = webOptimized;
+        return encoderFound;
     }
 
     /// <summary>
@@ -581,7 +676,7 @@ public partial class MainViewModel : ObservableObject
     // Never zero, so the thumb rests at the left edge while nothing is loaded.
     public double TimelineMaximum => DurationMs > 0 ? DurationMs : 1;
 
-    // ----- Summary -----
+    // ----- Output (the Export tab's top card, 5.4A) -----
 
     [ObservableProperty] private string _container = "mp4";
     [ObservableProperty] private bool _webOptimized = true;
@@ -602,7 +697,7 @@ public partial class MainViewModel : ObservableObject
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsCustomPixelAspectRatio))]
-    private string _pixelAspectRatio = SameAsSource;
+    private string _pixelAspectRatio = MatchProject;
 
     [ObservableProperty] private string _customPixelAspectRatio = "";
 
@@ -727,10 +822,11 @@ public partial class MainViewModel : ObservableObject
     public bool IsCustomFramerate => Framerate == CustomOption;
     public bool IsAudioReencoded => AudioEncoder != CopyOption;
     [ObservableProperty] private string _hardwareEncoderStatusText = "";
-    [ObservableProperty] private string _encoderPreset = "medium";
+    /// <summary>The encoder's speed step: its best to start with (5.4B, CLAUDE.md 8: veryslow for x264 and x265, BestStepOf).</summary>
+    [ObservableProperty] private string _encoderPreset = "veryslow";
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsCustomFramerate))]
-    private string _framerate = SameAsSource;
+    private string _framerate = MatchProject;
     [ObservableProperty] private int _crf = 22;
 
     [ObservableProperty] private string _tune = NoneOption;
@@ -741,15 +837,24 @@ public partial class MainViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(IsConstantQuality))]
     [NotifyPropertyChangedFor(nameof(IsBitrateMode))]
     [NotifyPropertyChangedFor(nameof(RateControlChoice))]
-    private string _rateControl = ConstantQuality;
+    [NotifyPropertyChangedFor(nameof(AutoBitrateText))]
+    private string _rateControl = AverageBitrate;
 
-    /// <summary>Target bitrate in kbps, used by the two bitrate modes.</summary>
-    [ObservableProperty] private string _targetBitrate = "5000";
+    /// <summary>
+    /// Target bitrate in kbps as typed, used by the two bitrate modes; empty (5.4B, the default) for the automatic one worked out from the
+    /// output's size and rate (<see cref="EffectiveBitrateKbps"/>). Typing a bitrate or a target size takes over from it.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(EffectiveBitrateKbps))]
+    [NotifyPropertyChangedFor(nameof(AutoBitrateText))]
+    private string _targetBitrate = "";
 
     public bool IsConstantQuality => RateControl == ConstantQuality;
     public bool IsBitrateMode => !IsConstantQuality;
 
-    [ObservableProperty] private string _colorspace = SameAsSource;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HdrStatusText))]
+    private string _colorspace = MatchProject;
 
     // ----- Rate Control, under the selected encoder's names -----
     // Every encoder spends data in the same three ways (a constant quality, a bitrate held, a bitrate
@@ -802,7 +907,7 @@ public partial class MainViewModel : ObservableObject
     /// Refills the Rate Control box for the selected encoder; what is chosen stays chosen, under its new name. While the
     /// list is refilled the choice reads as nothing: the box writes nothing into it when its item goes, WPF reads it
     /// straight back, and the new encoder's name (CQP for CRF) handed to the box in the middle of its own refill left it
-    /// showing nothing, though selected (Pass 4.1B; found with the Video tab made before the first frame).
+    /// showing nothing, though selected (Pass 4.1B; found with the Video tab of then made before the first frame).
     /// </summary>
     private void UpdateRateControlChoices()
     {
@@ -893,7 +998,14 @@ public partial class MainViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(HdrStatusText))]
     private bool _isSourceHdr;
 
-    public string HdrStatusText => IsSourceHdr ? "HDR source detected: tonemap it for SDR screens" : "";
+    /// <summary>
+    /// A word under the encoder about an HDR file in an SDR project: tone-mapped to BT.709 only under HDR to SDR (Tonemap), so with
+    /// Match Project Settings it says where to turn that on. None in an HDR project, whose colour note says how it is written (5.4B:
+    /// kept HDR, or tone-mapped and why: ProjectColorNote).
+    /// </summary>
+    public string HdrStatusText => !IsSourceHdr || Models.Timeline.ProjectSettings.IsHdr(Document.ColorSpace) ? ""
+        : Colorspace == TonemapToSdr ? "HDR source in an SDR project: it is tone-mapped to BT.709"
+        : "HDR source in an SDR project: choose HDR to SDR (Tonemap) under Colorspace";
 
     // ----- Audio -----
 
@@ -1039,7 +1151,7 @@ public partial class MainViewModel : ObservableObject
 
     /// <summary>
     /// The hardware encoders as an earlier probe found them for this FFmpeg and these drivers (read on another thread
-    /// while the window was being made), put in the list before the window's first frame: the Video tab then opens with
+    /// while the window was being made), put in the list before the window's first frame: the Export tab then opens with
     /// the encoder it keeps, where a hardware default used to show as Copy, with Copy's warning, until the probe
     /// answered. Not there yet, or none saved: the probe after the first frame does it, as before.
     /// </summary>
@@ -1059,11 +1171,21 @@ public partial class MainViewModel : ObservableObject
     /// </summary>
     private async Task RecheckEarlyEncodersAsync()
     {
-        if (!await Task.Run(EncoderProber.CardsStillMatch))
+        // The cards are listed there too (off this thread, after the first frame): a probe problem of a vendor whose card is not in this
+        // PC ("h264_nvenc: Cannot load nvcuda.dll" on an AMD machine, from an encoder-probe.json of before 5.4B) is then left unsaid.
+        var same = await Task.Run(() =>
+        {
+            var still = EncoderProber.CardsStillMatch();
+            _ = GpuAdapters.All;
+            return still;
+        });
+        if (!same)
             await ProbeHardwareEncodersAsync();
+        else
+            ShowHardwareEncoderStatus();
     }
 
-    /// <summary>Tests the GPU encoders in the background and offers the working ones in the Video tab.</summary>
+    /// <summary>Tests the GPU encoders in the background and offers the working ones in the Export tab.</summary>
     private async Task ProbeHardwareEncodersAsync()
     {
         // A newer probe (after an install or a settings change) makes the result of an older one stale.
@@ -1114,27 +1236,49 @@ public partial class MainViewModel : ObservableObject
             VideoEncoders.Remove(stale);
         foreach (var name in supported)
             VideoEncoders.Add(EncoderOption.FromHardwareName(name));
-        VideoEncoder = VideoEncoders.FirstOrDefault(e => e.Name == selected) ?? DefaultVideoEncoder;
-
-        // The default encoder preset is one of the hardware encoder's own steps, which exist now that it does.
-        if (selected == AppSettings.Current.DefaultVideoEncoder && EncoderPresets.Contains(AppSettings.Current.DefaultEncoderPreset))
-            EncoderPreset = AppSettings.Current.DefaultEncoderPreset;
-
-        HardwareEncoderStatusText = supported.Count switch
+        _hardwareEncodersListed = true;
+        _resolvingEncoder = true;
+        try
         {
-            0 => "No hardware encoders available on this system",
-            1 => "1 hardware encoder available",
-            _ => $"{supported.Count} hardware encoders available",
-        };
+            VideoEncoder = VideoEncoders.FirstOrDefault(e => e.Name == selected) ?? DefaultVideoEncoder;
+
+            // A built-in applied before this list was there fell back to software (5.4C): its codec's hardware encoder now, once, at its
+            // slowest step (UpdateEncoderPresets starts a hardware family there).
+            if (_pendingPreferredCodec is { } wanted && !VideoEncoder.IsHardware
+                && ResolveEncoder(new EncodingPreset { PreferredCodec = wanted, VideoEncoder = VideoEncoder.Name }) is ({ IsHardware: true } hardware, _))
+            {
+                VideoEncoder = hardware;
+                selected = hardware.Name;
+            }
+        }
+        finally
+        {
+            _resolvingEncoder = false;
+            _pendingPreferredCodec = null;
+        }
+
+        // The default encoder preset is one of the hardware encoder's own steps, which exist now that it does. A speed-first preset
+        // (5.4D, Fast Proxy) applied before the probe keeps its fastest step on the encoder it resolves to now, after that default.
+        _placingStep = true;
+        try
+        {
+            if (selected == AppSettings.Current.DefaultVideoEncoder && EncoderPresets.Contains(AppSettings.Current.DefaultEncoderPreset))
+                EncoderPreset = AppSettings.Current.DefaultEncoderPreset;
+            if (_speedFirst && FastestStepOf(VideoEncoder) is { } fastest && EncoderPresets.Contains(fastest))
+                EncoderPreset = fastest;
+        }
+        finally
+        {
+            _placingStep = false;
+        }
+
+        (_hardwareEncoderCount, _hardwareProblems) = (supported.Count, problems);
+        ShowHardwareEncoderStatus();
 
         // What the card can do is known now, for the encoder that is selected as for the others.
         OnPropertyChanged(nameof(CanNvencTemporalAq));
         OnPropertyChanged(nameof(CanTenBit));
         GenerateCommand();
-
-        // An encoder FFmpeg has but could not start is worth a word: it is usually a driver that needs updating.
-        if (problems.Count > 0)
-            HardwareEncoderStatusText += $". Not usable: {string.Join("; ", problems)}";
 
         // Offering an older FFmpeg is not part of putting the list up: it waits for the window to be drawn (this may run
         // before its first frame).
@@ -1143,6 +1287,27 @@ public partial class MainViewModel : ObservableObject
             if (EncoderProber.NvencNeedsOlderFfmpeg)
                 OfferFfmpegForOlderNvidiaDrivers();
         }, System.Windows.Threading.DispatcherPriority.Background);
+    }
+
+    // What the last probe (or the result saved by one) found: how many hardware encoders work, and why the others did not start.
+    private int _hardwareEncoderCount;
+    private List<string> _hardwareProblems = [];
+
+    /// <summary>
+    /// The detected encoders' line on the Export tab: how many work, and an encoder FFmpeg has but could not start (usually a driver
+    /// that needs updating). A problem of a vendor whose card is not in this PC is left out once the cards are listed (5.4B,
+    /// EncoderProber.ProblemsForCardsHere: never listed for it before the first frame, Law 1; RecheckEarlyEncodersAsync says it again after).
+    /// </summary>
+    private void ShowHardwareEncoderStatus()
+    {
+        var text = _hardwareEncoderCount switch
+        {
+            0 => "No hardware encoders available on this system",
+            1 => "1 hardware encoder available",
+            _ => $"{_hardwareEncoderCount} hardware encoders available",
+        };
+        var problems = EncoderProber.ProblemsForCardsHere(_hardwareProblems);
+        HardwareEncoderStatusText = problems.Count > 0 ? $"{text}. Not usable: {string.Join("; ", problems)}" : text;
     }
 
     /// <summary>
@@ -1232,8 +1397,8 @@ public partial class MainViewModel : ObservableObject
         EditingJob = null;
         var (opened, message) = await LoadMediaAsync(source, knownLocalPath: null, applyAutomation: true, cancellationToken);
 
-        // Settings: every video starts as a vertical one.
-        if (opened && AppSettings.Current.DefaultVerticalVideo && !UseVerticalResolution)
+        // Settings: every video starts as a vertical one (5.4A: unless the New Project studio chose the frame on purpose).
+        if (opened && AppSettings.Current.DefaultVerticalVideo && !UseVerticalResolution && !Document.ExplicitFrame)
             UseVerticalResolution = true;
         ForgetHistory();
         MarkSaved();
@@ -1353,19 +1518,19 @@ public partial class MainViewModel : ObservableObject
         {
             if (Presets.FirstOrDefault(p => p.Name.Equals(presetName, StringComparison.OrdinalIgnoreCase)) is { } preset)
             {
-                // Selecting it applies it; when it is already selected, apply it again to undo later changes. It goes on the clip
-                // of the file just opened, not on what is selected on the Timeline.
+                // Applied whole (5.4B: the rule's preset keeps everything it holds, its layout too; the selector applies an Export
+                // Preset's export settings only), then shown as the one selected. It goes on the clip of the file just opened, not on
+                // what is selected on the Timeline.
                 _templateTargetOnly = _openedClip;
                 try
                 {
-                    if (ReferenceEquals(SelectedPreset, preset))
-                        ApplyPreset(preset);
-                    else
-                        SelectedPreset = preset;
+                    ApplyPreset(preset);
+                    _selectingAppliedPreset = true;
+                    SelectedPreset = preset;
                 }
                 finally
                 {
-                    _templateTargetOnly = null;
+                    (_templateTargetOnly, _selectingAppliedPreset) = (null, false);
                 }
 
                 message += $". Preset \"{preset.Name}\" applied automatically.";
@@ -1584,7 +1749,7 @@ public partial class MainViewModel : ObservableObject
 
         // Copy keeps the picture as it is: said once more before the time is spent, when there is work it would skip.
         if (CopyBypassWarning.Length > 0 && !IsCommandManuallyEdited && Confirm is not null
-            && !Confirm("Stream Copy", $"{CopyBypassWarning}\n\nThe video is copied as it is: no clip's effects, crop or place, nothing set on the Filters tab, and no resize reaches the output. To apply them, choose an encoder on the Video tab.", "Encode Anyway"))
+            && !Confirm("Stream Copy", $"{CopyBypassWarning}\n\nThe video is copied as it is: no clip's effects, crop or place, nothing set on the Filters tab, and no resize reaches the output. To apply them, choose a video codec on the Export tab.", "Encode Anyway"))
         {
             return "Encode cancelled.";
         }
@@ -1648,10 +1813,10 @@ public partial class MainViewModel : ObservableObject
             StatusText = $"Warning: {hardware} failed. Retrying with {software}...";
             Notifier.Show("Hardware encoder failed", $"{hardware} could not encode this video. HandPeg is trying again with {software}.");
 
-            // Reflect the switch in the Video tab where that is possible; a hand-edited command is patched in place.
+            // Reflect the switch in the Export tab where that is possible; a hand-edited command is patched in place.
             if (!IsCommandManuallyEdited && VideoEncoders.FirstOrDefault(e => e.Name == software) is { } replacement)
             {
-                VideoEncoder = replacement;
+                PlaceSoftwareRetry(replacement, command);
                 retry = CommandPreview;
             }
             else
@@ -1663,7 +1828,7 @@ public partial class MainViewModel : ObservableObject
             IsProgressIndeterminate = true;
             SetTaskbarProgress(TaskbarItemProgressState.Normal);
             CrashReporter.Note("export", $"{hardware} failed, retried with {software}");
-            // The retry is the GPU's too where the settings make it (the encoder switched on the Video tab); a patched command is FFmpeg's.
+            // The retry is the GPU's too where the settings make it (the encoder switched on the Export tab); a patched command is FFmpeg's.
             await RunExportAsync(retry, ExportStateForGpu(), progress, cancellationToken);
             CrashReporter.Note("export", "finished");
             NotifyFinished("Encode complete", Path.GetFileName(DestinationPath.Trim().Trim('"')));
@@ -1676,6 +1841,27 @@ public partial class MainViewModel : ObservableObject
             CrashReporter.SetContext("export", null);
         }
     });
+
+    /// <summary>
+    /// A hardware failure's software retry on the Export tab (5.4D): <paramref name="replacement"/> put in place as HandPeg's own pick, not
+    /// one by hand (a speed-first state holds), at its fastest step when the export was speed-first or the failed command carried its
+    /// vendor's fastest step (HardwareFallback.HadFastestStep: a step picked by hand too), else at its own default, the slowest. The same
+    /// rule as HardwareFallback.TryRewrite (5.4D review): the same failure retries at the same step, the command hand-edited or not.
+    /// </summary>
+    private void PlaceSoftwareRetry(EncoderOption replacement, string failedCommand)
+    {
+        _placingStep = true;
+        try
+        {
+            VideoEncoder = replacement;
+            if ((_speedFirst || HardwareFallback.HadFastestStep(failedCommand)) && FastestStepOf(replacement) is { } fastest && EncoderPresets.Contains(fastest))
+                EncoderPreset = fastest;
+        }
+        finally
+        {
+            _placingStep = false;
+        }
+    }
 
     /// <summary>
     /// Asks what to do when the target file already exists. Returns false when the user cancelled;
@@ -1803,6 +1989,10 @@ public partial class MainViewModel : ObservableObject
         GenerateCommand();
     }
 
+    // The audio codec chosen before an audio-only container took its own, and that container (5.4C review).
+    private string? _audioEncoderBeforeAudioOnly;
+    private string LastAudioOnlyContainer { get; set; } = "";
+
     partial void OnContainerChanged(string value)
     {
         // GIF and WebP are always encoded. Leaving the encoder on Copy would keep the size, crop
@@ -1810,8 +2000,39 @@ public partial class MainViewModel : ObservableObject
         if (value is "gif" or "webp" && VideoEncoder.Family == EncoderFamily.Copy)
             VideoEncoder = DefaultVideoEncoder;
 
+        // A sound-only file (5.4C) is written with its own codec: FLAC, 16-bit PCM, MP3 (the video encoder is left as it is, unused).
+        // The codec it had is kept and comes back when a video container is chosen again (5.4C review: a WebM left with PCM failed in
+        // the muxer, an MP4 was written with it).
+        if (EncoderCommand.IsAudioOnlyExtension(value))
+        {
+            _audioEncoderBeforeAudioOnly ??= AudioEncoder;
+            AudioEncoder = EncoderCommand.AudioOnlyCodec(value);
+        }
+        else if (_audioEncoderBeforeAudioOnly is { } before)
+        {
+            _audioEncoderBeforeAudioOnly = null;
+            if (AudioEncoder == EncoderCommand.AudioOnlyCodec(LastAudioOnlyContainer))
+                AudioEncoder = before;
+        }
+
+        if (EncoderCommand.IsAudioOnlyExtension(value))
+            LastAudioOnlyContainer = value;
+
         if (!string.IsNullOrWhiteSpace(DestinationPath))
             DestinationPath = Path.ChangeExtension(DestinationPath, value);
+        RaiseOutputKind();
+    }
+
+    partial void OnDestinationPathChanged(string value) => RaiseOutputKind();
+
+    // The output's kind follows the container and the destination's extension: the Export tab's video parts show or fold (5.4C).
+    private void RaiseOutputKind()
+    {
+        OnPropertyChanged(nameof(IsAudioOnlyExport));
+        OnPropertyChanged(nameof(IsVideoExport));
+        OnPropertyChanged(nameof(CopyBypassWarning));
+        if (IsAudioOnlyExport && IsExportQualityPreview)
+            IsExportQualityPreview = false;
     }
 
     // The Crop boxes, which only show the clip they stand for while ShowCropTarget sets them: that clip is as it was, so the
@@ -1820,10 +2041,25 @@ public partial class MainViewModel : ObservableObject
 
     protected override void OnPropertyChanged(PropertyChangedEventArgs e)
     {
+        // A tab coming back (AttachTab, 5.4D-TabPerf review P12): HasSource is told once its own Sequence is in place, never on the way.
+        if (_holdingSource && e.PropertyName == nameof(HasSource))
+        {
+            _sourceHeld = true;
+            return;
+        }
+
         base.OnPropertyChanged(e);
+
+        // An encoder or a step picked by hand ends a speed-first preset's fastest step (5.4D), before the command is built again.
+        if (_speedFirst && !_resolvingEncoder && !_placingStep && e.PropertyName is nameof(VideoEncoder) or nameof(EncoderPreset))
+            _speedFirst = false;
 
         if (e.PropertyName is { } name && !NonCommandProperties.Contains(name) && !(_showingTarget && CropTargetProperties.Contains(name)))
             GenerateCommand();
+
+        // An encoder picked by hand (not a preset's, nor the probe's own re-pick) lets go of a built-in's hardware wish (5.4C).
+        if (e.PropertyName == nameof(VideoEncoder) && !_resolvingEncoder)
+            _pendingPreferredCodec = null;
     }
 
     // While a whole set of settings is being put in place (a preset, an undo step) the command is not built
@@ -1871,6 +2107,8 @@ public partial class MainViewModel : ObservableObject
         UpdateProjectedOutput();
         OnPropertyChanged(nameof(CaptionHint));
         OnPropertyChanged(nameof(CopyBypassWarning));
+        OnPropertyChanged(nameof(ProjectColorNote));
+        OnPropertyChanged(nameof(HdrStatusText));
 
         // The proxies follow the files now on it.
         RefreshProxies();
@@ -1890,13 +2128,14 @@ public partial class MainViewModel : ObservableObject
     }
 
     /// <summary>
-    /// The frame rate to convert to, or null to keep the source's. Custom values may be any positive number.
+    /// The frame rate to convert to, or null to keep the Sequence's own (the project's rate: "Match Project Settings"). Custom values may
+    /// be any positive number.
     /// </summary>
     private string? GetTargetFramerate()
     {
         var text = Framerate switch
         {
-            SameAsSource => "",
+            MatchProject => "",
             CustomOption => CustomFramerate.Trim(),
             _ => Framerate,
         };
@@ -1933,14 +2172,14 @@ public partial class MainViewModel : ObservableObject
     }
 
     /// <summary>
-    /// The value for setsar, or null to leave the pixel shape alone. Written with a slash:
-    /// a colon would be read as the separator between filter options.
+    /// The value for setsar, or null to leave the pixel shape alone (square). Written with a slash:
+    /// a colon would be read as the separator between filter options. "Match Project Settings" is the project's pixel aspect (5.4A).
     /// </summary>
     private string? GetSampleAspectRatio()
     {
         var ratio = PixelAspectRatio switch
         {
-            SameAsSource => "",
+            MatchProject => Models.Timeline.ProjectSettings.SampleAspectOf(Document.PixelAspect) ?? "",
             CustomOption => CustomPixelAspectRatio.Trim(),
             _ => PixelAspectRatio,
         };

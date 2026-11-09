@@ -64,7 +64,9 @@ public sealed partial class MediaBrowserItem : ObservableObject
     };
 
     /// <summary>The second line of the entry: a video's length and size, a file's size, a folder's nothing.</summary>
-    [ObservableProperty] private string _info = "";
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(MetaLine), nameof(DurationText))]
+    private string _info = "";
 
     /// <summary>How long the file plays, in seconds; 0 while not known.</summary>
     public double Seconds { get; set; }
@@ -105,6 +107,98 @@ public sealed partial class MediaBrowserItem : ObservableObject
     public string? StripPath { get; set; }
 
     public int StripFrames { get; set; }
+
+    // ----- Its details (5.4C): the List view's columns and the Filmstrip view's second line -----
+    // Read once the entry is in sight in either view (MediaBrowserFrames.DetailsAsync, kept in the browser's cache), never before.
+
+    /// <summary>The details have been asked for this listing (made or found), so they are not asked for again.</summary>
+    public bool DetailsRequested { get; set; }
+
+    /// <summary>Whether the details are known (read, or found unreadable).</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ResolutionText), nameof(FrameRateText), nameof(DurationText), nameof(CodecText), nameof(AudioText), nameof(MetaLine))]
+    private bool _detailsKnown;
+
+    /// <summary>The picture's width and height in pixels; 0 for a sound, or while not known.</summary>
+    public int VideoWidth { get; private set; }
+
+    public int VideoHeight { get; private set; }
+
+    /// <summary>Frames a second; 0 while not known.</summary>
+    public double FrameRate { get; private set; }
+
+    /// <summary>The video's codec as FFmpeg names it (h264, hevc, av1...), or a sound's when it has no picture; "" while not known.</summary>
+    public string Codec { get; private set; } = "";
+
+    /// <summary>How many sound streams the file has; -1 while not known.</summary>
+    public int AudioStreams { get; private set; } = -1;
+
+    /// <summary>Takes the details read for the file (its length too, when the entry did not have it yet).</summary>
+    public void TakeDetails(double seconds, int width, int height, double frameRate, string codec, int audioStreams)
+    {
+        (VideoWidth, VideoHeight, FrameRate, Codec, AudioStreams) = (Math.Max(width, 0), Math.Max(height, 0), double.IsFinite(frameRate) ? Math.Max(frameRate, 0) : 0, codec, audioStreams);
+        if (Seconds <= 0 && seconds > 0)
+            Seconds = seconds;
+        if (Shape <= 0 && width > 0 && height > 0)
+            Shape = (double)width / height;
+        if (DetailsKnown)
+            OnPropertyChanged(nameof(MetaLine));
+        DetailsKnown = true;
+    }
+
+    /// <summary>"1920x1080"; "" for none.</summary>
+    public string ResolutionText => FormatResolution(VideoWidth, VideoHeight);
+
+    /// <summary>"59.94 fps", "360 fps"; "" for none.</summary>
+    public string FrameRateText => FormatFrameRate(FrameRate);
+
+    /// <summary>"2:03"; "" while not known.</summary>
+    public string DurationText => Seconds > 0 ? FormatSeconds(Seconds) : "";
+
+    /// <summary>"HEVC", "H.264"; "" while not known.</summary>
+    public string CodecText => FormatCodec(Codec);
+
+    /// <summary>"2" sound streams, "None"; "" while not known.</summary>
+    public string AudioText => FormatAudio(AudioStreams);
+
+    /// <summary>The file's size: "12.4 MB"; "" for a folder.</summary>
+    public string SizeText => IsFile && Bytes > 0 ? FormatSize(Bytes) : "";
+
+    /// <summary>The Filmstrip view's second line: "1920x1080 • 60 fps • 2:03" (what is known of it), else what <see cref="Info"/> says.</summary>
+    public string MetaLine => JoinMeta(ResolutionText, FrameRateText, DurationText) is { Length: > 0 } line ? line : Info;
+
+    /// <summary>The parts of a second line that are known, with a bullet between each two.</summary>
+    public static string JoinMeta(params string[] parts) => string.Join(" • ", parts.Where(p => p.Length > 0));
+
+    public static string FormatResolution(int width, int height) =>
+        width > 0 && height > 0 ? string.Create(CultureInfo.InvariantCulture, $"{width}x{height}") : "";
+
+    /// <summary>A rate to two places at most, whole rates without them: "60 fps", "59.94 fps", "23.98 fps".</summary>
+    public static string FormatFrameRate(double fps) =>
+        fps > 0 && double.IsFinite(fps)
+            ? Math.Abs(fps - Math.Round(fps)) < 0.005
+                ? string.Create(CultureInfo.InvariantCulture, $"{Math.Round(fps):0} fps")
+                : string.Create(CultureInfo.InvariantCulture, $"{fps:0.##} fps")
+            : "";
+
+    /// <summary>A codec as people write it: H.264, HEVC, AV1, VP9, ProRes; any other in capitals.</summary>
+    public static string FormatCodec(string codec) => codec.ToLowerInvariant() switch
+    {
+        "" => "",
+        "h264" or "avc" or "avc1" => "H.264",
+        "hevc" or "h265" => "HEVC",
+        "av1" => "AV1",
+        "vp9" => "VP9",
+        "vp8" => "VP8",
+        "prores" => "ProRes",
+        "mpeg2video" => "MPEG-2",
+        "mpeg4" => "MPEG-4",
+        "mjpeg" => "MJPEG",
+        var other => other.ToUpperInvariant(),
+    };
+
+    /// <summary>How many sound streams: "None", "1", "2"...; "" while not known.</summary>
+    public static string FormatAudio(int streams) => streams < 0 ? "" : streams == 0 ? "None" : streams.ToString(CultureInfo.InvariantCulture);
 
     /// <summary>"1:02:03" or "2:03".</summary>
     public static string FormatSeconds(double seconds)

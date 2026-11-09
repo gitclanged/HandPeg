@@ -1,0 +1,12 @@
+# An export ends on its last picture: no frames of black for an audio tail, and the last frame sampled inside its clip.
+ok: a video 0-8 s with an L-cut tail of 0.5 s: exported to its picture's end, 240 frames, not 255 (15 of them black)
+ok: standalone music placed past the picture still runs to its end: 300 frames
+ok: no picture at all: the whole timeline, 150 frames
+ok: a title ending last is a picture: to its end; an adjustment past it adds nothing
+ok: a stream's sound (a child) past its video adds no frame
+ok: unpacked streams end with their video
+ok: an end at 10.0169 s at 60 fps: the last frame's own moment falls at or past the clip's end (the black frame)
+ok: sampled no later than half a frame before it
+ok: every other frame sampled as before; a timing made without a limit has none
+ok: the probe keeps the video stream's own length (9.95 s) beside the container's (10.02 s)
+ok: opened, its clip ends with its picture, its file as long as the container (a trim can still reach the rest)

@@ -25,7 +25,7 @@ namespace HandPegGoldenTests;
 /// both Live Preview switches gone; Undo and Redo named and hidden; Quick FX one button with its slots in the flyout, a pointer click on a
 /// slot handing the keyboard back to the button; and in the live
 /// pane the ruler at its top, the tracks at its left, the rows' scroll bar at its right and the tools at its bottom;
-/// lazy-settings-tabs: every settings tab's body is a template (Summary and Export too), and every part of them the window declares by
+/// lazy-settings-tabs: every settings tab's body is a template (Export too; 5.4A retired the Summary tab), and every part of them the window declares by
 /// hand is named, of its type, in one of them.
 /// Every line says what it proved.
 /// </summary>
@@ -34,13 +34,14 @@ public static class LayoutTests
     private static readonly XNamespace X = "http://schemas.microsoft.com/winfx/2006/xaml";
 
     // The settings tabs' pane ids, in their order (MainWindow.xaml's SettingsTabs: "Tab:" and the header).
-    private static readonly IReadOnlyList<string> TabIds = ["Tab:Summary", "Tab:Video", "Tab:Filters", "Tab:Audio", "Tab:Export", "Tab:Command Preview"];
+    // (5.4A: no Tab:Summary, the retired tab; 5.4B: no Tab:Video, its controls the Export tab's three cards.)
+    private static readonly IReadOnlyList<string> TabIds = ["Tab:Filters", "Tab:Audio", "Tab:Export", "Tab:Command Preview"];
 
     public static IEnumerable<GraphResult> All()
     {
         yield return Case("dock-standard-layout", "# Standard Editing's Canvas is a tab beside the effects and keyframes; version 3 is brought up to it, anything the user made is left alone.", StandardLayout);
         yield return Case("layout-edge-to-edge", "# Edge to edge: a 26 px title bar, no bands round the panes, the transport and Timeline de-cluttered; the live Timeline pane flush.", EdgeToEdge);
-        yield return Case("lazy-settings-tabs", "# Every settings tab's body is a template (Summary and Export too); every part declared by hand is named in one.", LazyTabs);
+        yield return Case("lazy-settings-tabs", "# Every settings tab's body is a template (Export too); every part declared by hand is named in one.", LazyTabs);
     }
 
     private static GraphResult Case(string name, string title, Action<Action<bool, string>, StringBuilder> run)
@@ -341,17 +342,18 @@ public static class LayoutTests
                 templates.Add(template);
         }
 
-        expect(tabs.Select(t => Attr(t, "Header")).SequenceEqual(TabIds.Select(id => id["Tab:".Length..])), "the tabs are Summary, Video, Filters, Audio, Export and Command Preview, in that order");
+        expect(tabs.Select(t => Attr(t, "Header")).SequenceEqual(TabIds.Select(id => id["Tab:".Length..])), "the tabs are Filters, Audio, Export and Command Preview, in that order (no Summary, no Video)");
         var export = tabs.FirstOrDefault(t => Attr(t, "Header") == "Export");
         expect(export is not null && Attr(export, X + "Name") == "ExportTab", "the Export tab itself keeps its name (ExportTab): only its body is a template");
         var exportRoot = export?.Descendants().FirstOrDefault(e => e.Name.LocalName == "DataTemplate")?.Elements().FirstOrDefault();
         expect(exportRoot is not null && Attr(exportRoot, X + "Name") == "ExportPanel", "the Export template's root is ExportPanel (RealizeTabContent finds it there)");
 
         // The parts the window declares by hand, as each template is made (RealizeTabContent): each is named, of its type, in a tab's template.
+        // (5.4B: the Easy | Advanced switch, its cards and the "each section has a tab" hint are gone; the three columns' grid came.)
         string[] declared =
         [
-            "SummaryCards", "ExportPanel", "ExportBarSlot", "ExportSections", "EasyExportButton", "AdvancedExportButton", "EasyExportPanel", "EasyExportCards",
-            "ExportSectionHost", "ExportNoSections", "AudioPanel", "AudioOptionsHost", "AudioOptionsInline", "AudioOptionsButton",
+            "ExportPanel", "ExportBarSlot", "ExportSections", "ExportSectionHost", "ExportColumns",
+            "AudioPanel", "AudioOptionsHost", "AudioOptionsInline", "AudioOptionsButton",
         ];
         foreach (var name in declared)
         {

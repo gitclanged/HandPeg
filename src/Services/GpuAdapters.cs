@@ -46,6 +46,12 @@ public static partial class GpuAdapters
     /// <summary>Every card that can decode, in DXGI's order. Empty when DXGI could not be asked.</summary>
     public static IReadOnlyList<GpuAdapter> All => _found ??= Enumerate();
 
+    /// <summary>
+    /// Whether the cards have been listed already (<see cref="All"/> asked once): what may read them without listing them, which loads
+    /// each card's driver (up to a quarter of a second), asks this first (5.4B: EncoderProber.ProblemsForCardsHere, before the first frame).
+    /// </summary>
+    public static bool IsListed => _found is not null;
+
     /// <summary>A card here is a Qualcomm Adreno: the Media Foundation encoders reach it (EncoderOption.FromHardwareName names them so).</summary>
     public static bool HasQualcommAdreno => All.Any(a => a.IsQualcomm);
 
@@ -65,20 +71,7 @@ public static partial class GpuAdapters
         }
     }
 
-    /// <summary>
-    /// The FFmpeg options that switch hardware decoding on, with a space after them: whichever decoder FFmpeg
-    /// finds, or Direct3D 11 on the card chosen in the settings.
-    /// </summary>
-    public static string DecodeArguments
-    {
-        get
-        {
-            var adapter = AppSettings.Current.HardwareDecodeAdapter;
-            return adapter >= 0 && All.Any(a => a.Index == adapter)
-                ? string.Create(CultureInfo.InvariantCulture, $"-hwaccel d3d11va -hwaccel_device {adapter} ")
-                : "-hwaccel auto ";
-        }
-    }
+    // (DecodeArguments, the "-hwaccel auto" of the dead Enable Hardware Decoding switch, went with it, 5.4B: no export read it.)
 
     /// <summary>
     /// The card background tools decode on (and proxies are encoded on), as Settings says: a card chosen there;

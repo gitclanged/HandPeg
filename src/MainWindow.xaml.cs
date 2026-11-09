@@ -23,7 +23,6 @@ namespace HandPegApp;
 public partial class MainWindow : Window
 {
     private readonly MainViewModel _viewModel = new();
-    private QueueWindow? _queueWindow;
     private bool _isScrubbing;
     private bool _applyingMagnet;
     private bool _updatingFromPlayer;
@@ -158,16 +157,16 @@ public partial class MainWindow : Window
             },
         };
 
-        // The Layout button, in the header: resting on it opens the Layout Selector (layouts and themes, live); a click
-        // opens its menu (Pass 4.1B).
+        // The Layout button, in the header: resting on it opens the Layout Selector (layouts and themes, live; Pass 4.1B), and so does a
+        // click (5.4D: the one Layout UI, the click's menu retired). Escape, the pointer leaving it and the window deactivated close it. Resting
+        // on the button opens nothing while a project tab is being switched: a layout previewed then would be put back over the new tab's.
         _layoutHover = new HoverFlyout([LayoutButton], LayoutSelector, LayoutSelectorPanel)
         {
             Opening = OpeningLayoutSelector,
             HoldsWhileFocused = true,
-            CanOpen = () => !LayoutFlyout.IsOpen,
+            CanOpen = () => !_switchingTab,
         };
-        PreviewMouseDown += CloseLayoutMenuOnPress;
-        Deactivated += (_, _) => CloseLayoutMenu();
+        Deactivated += (_, _) => CloseLayoutSelectorOnDeactivated();
         _autosave.Tick += Autosave_Tick;
         _autosave.Start();
 
@@ -205,6 +204,7 @@ public partial class MainWindow : Window
         InitializePlaybackBar();
         InitializePlayerLayout();
         HookLoupe();
+        HookLoopback();
         _viewModel.SessionCleared += OnSessionCleared;
         _viewModel.PropertyChanged += ViewModel_PropertyChanged;
         // (The last file's Sequence Overview Scrubber pictures go before the new one is opened, which asks for its own.)
@@ -218,12 +218,8 @@ public partial class MainWindow : Window
             EventManager.RegisterClassHandler(typeof(Window), input, touched, handledEventsToo: true);
         InitializeDevFlight();
 
-        // The media browser: what it opens, and what it puts on the timeline at the playhead.
-        MediaBrowser.HasVideo = () => _viewModel.HasSource;
-        MediaBrowser.SuggestFolder = () => _viewModel.HasSource ? Path.GetDirectoryName(_viewModel.LocalMediaPath) : null;
-        MediaBrowser.LoadRequested += path => LoadDroppedFile(path);
-        MediaBrowser.ProjectFiles = _viewModel.MediaFilesInUse;
-        _viewModel.Layers.CollectionChanged += (_, _) => MediaBrowser.ProjectChanged();
+        // The media browser: what it opens, and what it puts on the timeline at the playhead (MainWindow.MediaBrowser.cs).
+        InitializeMediaBrowser();
         InitializeClipLibrary();
         EffectsView.Attach(_viewModel);
         EffectsView.EditMaskRequested += layer => OpenLayerTool(layer, LayerTool.Mask);
@@ -233,12 +229,6 @@ public partial class MainWindow : Window
 
         // The timeline (4.4): its surface, ruler, toolbar and inspector hooked up to the view model and this window.
         InitializeUnifiedTimeline();
-        _viewModel.MediaLoaded += _ => MediaBrowser.ProjectChanged();
-        MediaBrowser.AddRequested += (files, sound) =>
-        {
-            var at = _viewModel.PositionMs / 1000;
-            _ = sound ? AddDroppedAudioAsync([.. files], at) : AddDroppedLayersAsync([.. files], at, null);
-        };
         _viewModel.PreviewRendered += ShowPreview;
         _viewModel.AskOverwrite = AskOverwrite;
         _viewModel.Confirm = (title, message, confirm) => new ConfirmDialog(title, message, confirm) { Owner = this }.ShowDialog() == true;
@@ -304,13 +294,6 @@ public partial class MainWindow : Window
         KeyLanes.PanRequested += PanTimeline;
         KeyLanes.ZoomRequested += ZoomTimeline;
         Loaded += (_, _) => ApplyPaneLayout();
-
-        // The Summary cards, in the order they were last dragged into: put in it as the tab is made (RealizeTabContent).
-        ReorderBehavior.Reordered += panel =>
-        {
-            if (ReferenceEquals(panel, SummaryCards))
-                SaveSummaryCardOrder();
-        };
         Loaded += (_, _) => UpdateBottomBar();
         _viewModel.ActionLogged += FlashStatus;
         _viewModel.LayerLoaded += RedrawLayout;
@@ -495,7 +478,8 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// A project double-clicked while this copy was open (SingleInstance): the window comes to the front (restored from the taskbar), any
-    /// dialog open is answered first, unsaved changes are saved or let go as the user says, then it opens as a launch's project does.
+    /// dialog open is answered first, then it opens in a project tab of its own (5.4A: never in place of the open work, never a prompt),
+    /// once nothing else is running.
     /// </summary>
     private async Task OpenHandedProjectAsync(string path)
     {
@@ -509,35 +493,18 @@ public partial class MainWindow : Window
             // A dialog of this window's up (Settings, a save prompt): the project waits for it to be closed.
             while (System.Windows.Interop.ComponentDispatcher.IsThreadModal && !_windowClosing.IsCancellationRequested)
                 await Task.Delay(250);
-            if (_windowClosing.IsCancellationRequested
-                || !SaveOrLetGoFirst("Open Project", $"Open \"{Path.GetFileNameWithoutExtension(path)}\", which was double-clicked?", "Save, then Open", "Discard and Open"))
+            for (var waited = 0; _viewModel.IsBusy && waited < 300 && !_windowClosing.IsCancellationRequested; waited++)
+                await Task.Delay(100);
+            if (_windowClosing.IsCancellationRequested)
                 return;
 
-            await OpenLaunchRequestAsync(new LaunchRequest(LaunchKind.Project, path));
+            await OpenProjectInTabAsync(path);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             AppLog.Write("A project handed over by another HandPeg could not be opened", ex);
             _viewModel.StatusText = $"{Path.GetFileName(path)} could not be opened: {ex.Message}";
         }
-    }
-
-    /// <summary>
-    /// Before what is open is put away (+ New Project, a project double-clicked): its unsaved changes are saved or let go, as the user says.
-    /// False when they chose to stay with it, or it could not be saved (what it was meant to keep is never lost by a step after it).
-    /// </summary>
-    private bool SaveOrLetGoFirst(string title, string question, string saveText, string discardText)
-    {
-        if (!_viewModel.HasUnsavedChanges)
-            return true;
-
-        var name = _viewModel.CurrentProjectPath.Length > 0 ? Path.GetFileNameWithoutExtension(_viewModel.CurrentProjectPath)
-            : _viewModel.HasSource ? Path.GetFileNameWithoutExtension(_viewModel.LocalMediaPath) : "";
-        var ask = new ConfirmDialog(title, $"{question}\n\nWhat is open has changes that were not saved as a project. Save them first, or let them go?", saveText, discardText) { Owner = this };
-        if (ask.ShowDialog() != true)
-            return false;
-
-        return ask.ChoseOther || _viewModel.SaveProject(name.Length > 0 ? name : $"Project {DateTime.Now:yyyy-MM-dd HH.mm}").StartsWith("Project saved", StringComparison.Ordinal);
     }
 
     private const int ShowWindowRestore = 9;
@@ -566,11 +533,12 @@ public partial class MainWindow : Window
                 break;
 
             case LaunchKind.Video:
-                _viewModel.LoadFile(request.Path);
+                // 5.4D-TabPerf: a video handed over from Explorer names the tab before its probe, as a drop does.
+                DropLater("a video handed over", () => OpenNamingTabAsync(request.Path, () => _viewModel.LoadFileAsync(request.Path)));
                 break;
 
             case LaunchKind.Project:
-                _ = _viewModel.LoadProjectAsync(request.Path);
+                _ = OpenProjectInTabAsync(request.Path);
                 break;
         }
     }
@@ -630,7 +598,8 @@ public partial class MainWindow : Window
     /// </summary>
     private void MainWindow_Closing(object? sender, CancelEventArgs e)
     {
-        if (_closeAsked)
+        // A project tab coming to the front (5.4A) is half in the view model and half in its cache file, and the tabs a dead session left are moved in at idle: never closed under either.
+        if (_closeAsked || RefuseCloseMidSwitch())
         {
             e.Cancel = true;
             return;
@@ -642,7 +611,7 @@ public partial class MainWindow : Window
 
         // The side window's place and size are kept with the arrangement. Set before the window's size is remembered,
         // which writes the settings file: the arrangement's own save waits half a second, and the app is gone by then.
-        Guarded("keep the arrangement", () => _viewModel.SavePaneLayout(s => s.DockLayout = _dock.Save()));
+        Guarded("keep the arrangement", () => _viewModel.SavePaneLayout(SaveDockInto));
         Guarded("remember the window's size", RememberWindowSize);
 
         bool close;
@@ -650,6 +619,10 @@ public partial class MainWindow : Window
         {
             _closeAsked = true;
             close = MayClose();
+
+            // A clean close (5.4A): the project tabs' cache files go, so nothing is offered back at the next start.
+            if (close)
+                Guarded("let the project tabs' cache go", ForgetProjectTabs);
         }
         catch (Exception ex)
         {
@@ -677,6 +650,10 @@ public partial class MainWindow : Window
     /// </summary>
     private bool MayClose()
     {
+        // Every project tab behind the one in front with unsaved changes first (5.4A, MainWindow.ProjectTabs.cs).
+        if (!MayCloseProjectTabs())
+            return false;
+
         var unsaved = _viewModel.HasUnsavedChanges;
         if (unsaved)
             AppLog.Write($"Closing with unsaved changes in {_viewModel.DescribeUnsavedChanges()}.");
@@ -868,6 +845,9 @@ public partial class MainWindow : Window
         if (focused is TextBoxBase or PasswordBox or ComboBox or ComboBoxItem)
             return;
 
+        if (EndCropOnEscape(e, focused))
+            return;
+
         // A layout box chosen with the pointer: the arrow keys nudge it, a pixel of the output (ten with Shift). One undo
         // step for a run of nudges.
         if (e.Key is Key.Left or Key.Right or Key.Up or Key.Down && Keyboard.Modifiers is ModifierKeys.None or ModifierKeys.Shift && TakeNudge(e.Key, focused, e.IsRepeat))
@@ -904,7 +884,8 @@ public partial class MainWindow : Window
         var dialog = new SaveFileDialog
         {
             Title = "Save output as",
-            Filter = "MP4|*.mp4|Matroska|*.mkv|WebM|*.webm|QuickTime|*.mov|Animated GIF|*.gif|Animated WebP|*.webp|All files|*.*",
+            // In the order of the view model's Containers (5.4C: the audio-only FLAC, WAV and MP3 last), so FilterIndex finds the format.
+            Filter = "MP4|*.mp4|Matroska|*.mkv|WebM|*.webm|QuickTime|*.mov|Animated GIF|*.gif|Animated WebP|*.webp|FLAC Audio|*.flac|WAV Audio|*.wav|MP3 Audio|*.mp3|All files|*.*",
             FilterIndex = Math.Max(1, _viewModel.Containers.ToList().IndexOf(_viewModel.Container) + 1),
             FileName = Path.GetFileName(_viewModel.DestinationPath),
             DefaultExt = _viewModel.Container,
@@ -919,19 +900,8 @@ public partial class MainWindow : Window
         if (dialog.ShowDialog() != true)
             return;
 
-        if (dialog.NewProjectRequested)
-            StartNewProject();
-        else if (dialog.BundleRequested)
-            SaveProjectAs(bundle: true);
-        else if (dialog.ProjectToLoad is { } project)
-            await _viewModel.LoadProjectAsync(project);
-    }
-
-    /// <summary>+ New Project: unsaved changes are saved or let go first, as the user says; then the session is emptied.</summary>
-    private void StartNewProject()
-    {
-        if (SaveOrLetGoFirst("New Project", "Start a new project?", "Save, then Start New", "Discard and Start New"))
-            _viewModel.NewProject();
+        // In the project tabs (5.4A): a New Project or a project opened in a tab of its own, never in place of the open work.
+        await ActOnProjectManagerAsync(dialog);
     }
 
     // The session emptied (+ New Project): the player lets its file go, and the drop hint is back where the video was.
@@ -1110,6 +1080,13 @@ public partial class MainWindow : Window
         OpenLaunchWindow();
     }
 
+    // 5.4D (Q12 b): the Game Presets' save, import and export, reachable from the Settings flyout even with nothing on the timeline.
+    private void FlyoutGamePresets_Click(object sender, RoutedEventArgs e)
+    {
+        _settingsHover.Close();
+        ManageStyles_Click(UnifiedTimeline, e);
+    }
+
     // ----- Add Media (the header's): a click picks files; resting on it opens the box for a path or a link -----
     // The Settings button's pattern (HoverFlyout): the flyout opens once the pointer has rested on the button, and
     // leaving the button or the flyout closes it a moment later. While its box has the keyboard (something is being
@@ -1263,12 +1240,8 @@ public partial class MainWindow : Window
         if (dialog.ShowDialog() != true)
             return;
 
-        if (dialog.NewProjectRequested)
-            StartNewProject();
-        else if (dialog.BundleRequested)
-            SaveProjectAs(bundle: true);
-        else if (dialog.ProjectToLoad is { } project)
-            _ = _viewModel.LoadProjectAsync(project);
+        // In the project tabs (5.4A), as from the Header's Projects button.
+        _ = ActOnProjectManagerAsync(dialog);
     }
 
     private void SaveProject()
@@ -1335,18 +1308,7 @@ public partial class MainWindow : Window
         _ = _viewModel.AutosaveAsync();
     }
 
-    private void OpenQueue_Click(object sender, RoutedEventArgs e)
-    {
-        // One queue window at a time: a second click brings the open one forward.
-        if (_queueWindow is null)
-        {
-            _queueWindow = new QueueWindow { Owner = this, DataContext = _viewModel };
-            _queueWindow.Closed += (_, _) => _queueWindow = null;
-            _queueWindow.Show();
-        }
-
-        _queueWindow.Activate();
-    }
+    private void OpenQueue_Click(object sender, RoutedEventArgs e) => OpenRenderQueue();
 
     private void OpenSettings_Click(object sender, RoutedEventArgs e) => OpenSettings();
 
@@ -1408,7 +1370,7 @@ public partial class MainWindow : Window
         if (path.Length == 0)
             BrowseSource_Click(sender, e);
         else if (ProjectStore.IsProjectFile(path))
-            _ = _viewModel.LoadProjectAsync(path);   // A project file (or bundle) in the Source box opens the project.
+            _ = OpenProjectInTabAsync(path);   // A project file (or bundle) in the Source box opens the project (5.4A: in a project tab).
         else
             _viewModel.LoadSourceCommand.Execute(null);
     }
@@ -1464,7 +1426,9 @@ public partial class MainWindow : Window
             RebuildFilmstrip();
         if (e.PropertyName == nameof(MainViewModel.ShowTimelineThumbnails))
             ProgramStripSettingChanged();
-        if (e.PropertyName == nameof(MainViewModel.HasSource) && !_viewModel.HasSource)
+        // Never mid-switch (5.4D-TabPerf review, P12): the tab put behind has let the engine go already (GpuPreviewEngine.Suspend, which
+        // keeps the frames of every tab kept live), and an Unload would clear them all.
+        if (e.PropertyName == nameof(MainViewModel.HasSource) && !_viewModel.HasSource && !_switchingTab)
         {
             ClearProgramStrip();
             UnloadGpu();
@@ -1767,12 +1731,12 @@ public partial class MainWindow : Window
         Dispatcher.BeginInvoke(DrawKeyTimeline, System.Windows.Threading.DispatcherPriority.Loaded);
     }
 
-    // Reset Panes Layout (the Views menu), and Reset Layout (the Layout flyout).
+    // Reset Panes Layout (the Views menu; 5.4D: its one home, the Layout menu's Reset Layout retired): the user's Default layout put back.
     private void ResetPanesLayout_Click(object sender, RoutedEventArgs e)
     {
-        CloseLayoutMenu();
+        _layoutHover.Close();
         _viewModel.ResetPaneLayout();
-        _dock.Reset();
+        ResetToDefaultLayout();
         ViewsButton.IsChecked = false;
     }
 
@@ -1795,9 +1759,6 @@ public partial class MainWindow : Window
     private Grid AudioOptionsHost = null!;
     private StackPanel AudioOptionsInline = null!;
     private System.Windows.Controls.Primitives.ToggleButton AudioOptionsButton = null!;
-
-    // The Summary tab's cards (5.3-Stage2: the tab is a template too, made with the tab by RealizeTabContent); null until then.
-    private StackPanel? SummaryCards;
 
     private void AudioOptionsHost_SizeChanged(object sender, SizeChangedEventArgs e)
     {
@@ -2043,31 +2004,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>The Voiceover Studio: recording, trimming and placing the voiceover that the encode mixes in.</summary>
-    private void OpenVoiceoverStudio_Click(object sender, RoutedEventArgs e)
-    {
-        // Recording goes with watching the video, so the studio does not block the main window.
-        if (_voiceoverStudio is { IsLoaded: true })
-        {
-            _voiceoverStudio.Activate();
-            return;
-        }
-
-        _voiceoverStudio = new VoiceoverStudioDialog(_viewModel) { Owner = this };
-        _voiceoverStudio.Closed += (_, _) => _voiceoverStudio = null;
-
-        // Undo and redo there follow the main window's rule (4.3E): a box's own typing first, the timeline's otherwise. The
-        // studio's other keys stay its own; typing in its boxes is noted for that rule.
-        _voiceoverStudio.PreviewKeyDown += (studio, e) =>
-        {
-            if (UndoKey(e) is not null)
-                MainWindow_PreviewKeyDown(studio, e);
-            else if (Keyboard.FocusedElement is TextBoxBase box && TypesText(e))
-                _typedIn = (box, _viewModel.UndoMark);
-        };
-        _voiceoverStudio.Show();
-    }
-
-    private VoiceoverStudioDialog? _voiceoverStudio;
+    private void OpenVoiceoverStudio_Click(object sender, RoutedEventArgs e) => OpenVoiceoverStudio();
 
     /// <summary>The caption box's look (it is no clip, so it has no cards in the Effects pane): what is changed in it is one step of Undo.</summary>
     private void ShowLayerProperties(Layer layer)
@@ -2115,13 +2052,13 @@ public partial class MainWindow : Window
         return AppPaths.Styles;
     }
 
-    // ----- The Summary tab's lists: encoding presets, style presets, projects -----
+    // ----- Export Presets and Game Presets: saved, and moved to and from files (5.4B: the Export Presets selector, the Timeline's "...") -----
 
-    private const string PresetFileFilter = "HandPeg encoding preset|*.hppreset;*.json|All files|*.*";
+    private const string PresetFileFilter = "HandPeg export preset|*.hppreset;*.json|All files|*.*";
 
     private void ImportPreset_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new OpenFileDialog { Title = "Import Encoding Preset", Filter = PresetFileFilter };
+        var dialog = new OpenFileDialog { Title = "Import Export Preset", Filter = PresetFileFilter };
         if (dialog.ShowDialog(this) == true)
             _viewModel.ImportPreset(dialog.FileName);
     }
@@ -2129,18 +2066,20 @@ public partial class MainWindow : Window
     private void ExportPreset_Click(object sender, RoutedEventArgs e)
     {
         var name = _viewModel.PresetName.Trim().Length > 0 ? _viewModel.PresetName.Trim() : "My Preset";
-        var dialog = new SaveFileDialog { Title = "Export Encoding Preset", Filter = PresetFileFilter, FileName = name + ".hppreset", DefaultExt = "hppreset" };
+        var dialog = new SaveFileDialog { Title = "Export Preset to a File", Filter = PresetFileFilter, FileName = name + ".hppreset", DefaultExt = "hppreset" };
         if (dialog.ShowDialog(this) == true)
             _viewModel.ExportPreset(dialog.FileName);
     }
 
     /// <summary>
     /// The one button of a preset block: a small dialog with what can be done with that kind of preset, each
-    /// as a button that does it. For encoding presets that is also where the name to save one under is typed.
+    /// as a button that does it: saving to the list under a name typed there (<paramref name="save"/>), and moving one to or from a
+    /// file (<paramref name="files"/>). The Export Presets have a button for each (5.4B: + Save Current as Preset..., Import / Export
+    /// Preset...); Game Presets one for both.
     /// </summary>
     /// <param name="nameProperty">The view model's property that holds the name a preset of this kind is saved to the list under.</param>
     /// <returns>"save", "import", "export", or null when the dialog was closed.</returns>
-    private string? AskPresetAction(string title, string about, string nameProperty)
+    private string? AskPresetAction(string title, string about, string nameProperty, bool save = true, bool files = true)
     {
         string? chosen = null;
         var dialog = new Window
@@ -2169,24 +2108,29 @@ public partial class MainWindow : Window
             return button;
         }
 
+        if (save)
         {
             // Saving to the list: the name, and the button that saves under it.
             panel.Children.Add(new TextBlock { Text = "Save the current settings to the list as:", Margin = new Thickness(0, 0, 0, 4) });
             var row = new DockPanel { Margin = new Thickness(0, 0, 0, 14) };
-            var save = Choice("Save", "save", "Saves the current settings to the list under this name. An existing name is replaced.");
-            (save.Margin, save.IsDefault) = (new Thickness(6, 0, 0, 0), true);
-            DockPanel.SetDock(save, Dock.Right);
+            var saveButton = Choice("Save", "save", "Saves the current settings to the list under this name. An existing name is replaced.");
+            (saveButton.Margin, saveButton.IsDefault) = (new Thickness(6, 0, 0, 0), true);
+            DockPanel.SetDock(saveButton, Dock.Right);
             var name = new TextBox { VerticalContentAlignment = VerticalAlignment.Center };
             System.Windows.Automation.AutomationProperties.SetName(name, "Preset Name");
             name.SetBinding(TextBox.TextProperty, new System.Windows.Data.Binding(nameProperty) { Source = _viewModel, UpdateSourceTrigger = System.Windows.Data.UpdateSourceTrigger.PropertyChanged });
-            row.Children.Add(save);
+            row.Children.Add(saveButton);
             row.Children.Add(name);
             panel.Children.Add(row);
             dialog.Loaded += (_, _) => name.Focus();
         }
 
-        panel.Children.Add(Choice("Import from a File...", "import", "Brings a preset in from a file."));
-        panel.Children.Add(Choice("Export to a File...", "export", "Saves the settings as they are now to a file."));
+        if (files)
+        {
+            panel.Children.Add(Choice("Import from a File...", "import", "Brings a preset in from a file."));
+            panel.Children.Add(Choice("Export to a File...", "export", "Saves the settings as they are now to a file."));
+        }
+
         var close = new Button { Content = "Close", Padding = new Thickness(14, 6, 14, 6), Margin = new Thickness(0, 10, 0, 0), HorizontalAlignment = HorizontalAlignment.Right, IsCancel = true };
         panel.Children.Add(close);
         dialog.Content = panel;
@@ -2194,13 +2138,22 @@ public partial class MainWindow : Window
         return chosen;
     }
 
+    /// <summary>The Export Presets selector's "+ Save Current as Preset...": the name asked for, then the settings saved to My Presets under it.</summary>
+    private void SaveCurrentPreset_Click(object sender, RoutedEventArgs e)
+    {
+        if (AskPresetAction("Save Current as Preset", "Saves the export settings as they are now (the size, frame rate, encoder, quality or bitrate, sound and format) to My Presets. A built-in preset's name is kept for it: the copy is saved as its name with (Custom).",
+                nameof(MainViewModel.PresetName), files: false) == "save")
+        {
+            _viewModel.SavePresetCommand.Execute(null);
+        }
+    }
+
+    /// <summary>The Export Presets selector's "Import / Export Preset...": a preset brought in from a .hppreset file, or the settings saved to one.</summary>
     private void ManagePresets_Click(object sender, RoutedEventArgs e)
     {
-        switch (AskPresetAction("Encoding Presets", "An encoding preset is the size, filter, video and audio settings. Save the ones set now to the list, or move a preset to or from a file.", nameof(MainViewModel.PresetName)))
+        switch (AskPresetAction("Import / Export Preset", "An Export Preset is the export's size, frame rate, encoder, quality or bitrate, sound and format. Bring one in from a .hppreset file (it joins My Presets and is applied), or save the settings as they are now to one.",
+                    nameof(MainViewModel.PresetName), save: false))
         {
-            case "save":
-                _viewModel.SavePresetCommand.Execute(null);
-                break;
             case "import":
                 ImportPreset_Click(sender, e);
                 break;
@@ -2224,96 +2177,6 @@ public partial class MainWindow : Window
                 ExportLayout_Click(sender, e);
                 break;
         }
-    }
-
-    // The lists show what is in their folders at the moment they are opened.
-    private void StylePresets_DropDownOpened(object sender, EventArgs e) => _viewModel.RefreshStylePresets();
-
-    private void RecentProjects_DropDownOpened(object sender, EventArgs e) => _viewModel.RefreshRecentProjects();
-
-    /// <summary>Swap Project: opens the chosen project in place of what is open, asking first when that has changes that were not saved.</summary>
-    // ----- The Summary tab's cards: in the order they are dragged into, which is kept -----
-
-    private static readonly string[] SummaryCardIds = ["Output", "EncodingPreset", "StylePreset", "SwapProject"];
-
-    /// <summary>Puts the cards in the order saved (any not named keep their place after those that are); nothing while the tab is not made.</summary>
-    private void ApplySummaryCardOrder()
-    {
-        if (SummaryCards is not { } panel)
-            return;
-
-        var saved = AppSettings.Current.SummaryCardOrder.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var order = saved.Where(SummaryCardIds.Contains).Concat(SummaryCardIds.Where(id => !saved.Contains(id))).ToList();
-        var cards = panel.Children.OfType<FrameworkElement>().ToList();
-        panel.Children.Clear();
-        foreach (var card in cards.OrderBy(c => c.Tag is string id && order.IndexOf(id) is var at and >= 0 ? at : int.MaxValue))
-            panel.Children.Add(card);
-    }
-
-    private void SaveSummaryCardOrder()
-    {
-        if (SummaryCards is { } panel)
-            _viewModel.SavePaneLayout(s => s.SummaryCardOrder = string.Join(",", panel.Children.OfType<FrameworkElement>().Select(c => c.Tag as string).OfType<string>()));
-    }
-
-    private void SummaryCardHeader_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
-    {
-        // Only from inside the Summary tab, so its cards are made.
-        if (SummaryCards is not { } panel || sender is not FrameworkElement { Tag: string id } header
-            || panel.Children.OfType<FrameworkElement>().FirstOrDefault(c => c.Tag as string == id) is not { } card)
-            return;
-
-        var at = panel.Children.IndexOf(card);
-        var menu = new ContextMenu { PlacementTarget = header };
-        void Add(string text, bool enabled, Action action)
-        {
-            var item = new MenuItem { Header = text, IsEnabled = enabled };
-            item.Click += (_, _) =>
-            {
-                action();
-                SaveSummaryCardOrder();
-            };
-            menu.Items.Add(item);
-        }
-
-        Add("Move Up", at > 0, () =>
-        {
-            panel.Children.RemoveAt(at);
-            panel.Children.Insert(at - 1, card);
-        });
-        Add("Move Down", at < panel.Children.Count - 1, () =>
-        {
-            panel.Children.RemoveAt(at);
-            panel.Children.Insert(at + 1, card);
-        });
-        menu.Items.Add(new Separator());
-        Add("Reset Card Order", true, () =>
-        {
-            AppSettings.Current.SummaryCardOrder = "";
-            ApplySummaryCardOrder();
-        });
-        menu.IsOpen = true;
-        e.Handled = true;
-    }
-
-    private async void RecentProjects_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (_viewModel.IsListingProjects || sender is not ComboBox { IsDropDownOpen: true } || e.AddedItems is not [string name])
-            return;
-
-        var path = ProjectStore.PathOfName(name);
-        var previous = e.RemovedItems is [string before] ? before : null;
-        if (!File.Exists(path) || _viewModel.IsBusy
-            || (_viewModel.HasUnsavedChanges && !new ConfirmDialog("Swap Project", $"Open \"{name}\" in place of what is open now?\n\nChanges that were not saved as a project will be lost.", "Swap Project") { Owner = this }.ShowDialog().GetValueOrDefault()))
-        {
-            // Back to what is open: nothing was swapped.
-            _viewModel.RefreshRecentProjects(previous);
-            if (_viewModel.IsBusy)
-                _viewModel.StatusText = "Wait for the running operation to finish, or cancel it, before swapping projects.";
-            return;
-        }
-
-        await _viewModel.LoadProjectAsync(path);
     }
 
     // ----- The bottom of the window -----

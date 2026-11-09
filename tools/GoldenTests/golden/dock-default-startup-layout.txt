@@ -1,0 +1,31 @@
+# The Default layout at start-up: by name or saved:N, the arrangement as it was left kept while it has that shape (a studio open or not), an unknown or deleted one falling back to it, none (settings from before) named from it, in the one Load.
+ok: a 5.3 settings file (ViewDefaultsVersion 6, no DefaultStartupLayout) that kept an arrangement: no Default (null), the arrangement kept
+ok: a first start's file (version 0): Standard Editing, as a fresh install has
+ok: a file from before with no arrangement kept: Standard Editing
+ok: a Default chosen (Color & Effects), or a file of version 9: kept as it is
+ok: the status bar: hidden once for a file from before step 10 (the title bar carries the work), kept shown when turned on since, off for a fresh install
+ok: AppSettings.DefaultStartupLayout starts as Standard Editing (MainWindow.DefaultLayoutName)
+ok: the Default Standard Editing, the arrangement left in Standard Editing (borders dragged, the Master Meter put in): kept as it was
+ok: the arrangement left in the Vertical & Shorts Studio: Standard Editing instead (its Then, none, leaves the Media Browser on Grid)
+ok: the Default Vertical Creator Split over a Standard arrangement: the Vertical Creator Split, its Then run first (the Media Browser on Filmstrip)
+ok: the arrangement left in the Vertical Creator Split, its player dragged wider: kept, and its Then not run (the view the user left stays)
+ok: with the Media pane in a Pane Docker (AppSettings.SideWindows), Standard Editing's arrangement without it is still kept
+ok: Standard Editing left with the Render Queue open and a border dragged: kept as it was (LoadsAlike leaves the studios out of both)
+ok: the Vertical & Shorts Studio left with its Subtitle Studio closed: kept as it was, its Then not run (the Media Browser stays on Grid)
+ok: with the studios left out, no two of the five built-in layouts load alike (so one arrangement names at most one of them)
+ok: saved:2: the user's own layout in place 2 (here Assembly & Media's arrangement)
+ok: the Default's place 2 written over with another layout: still the Default (saved:2, now that layout), and Save Current Layout says "Layout saved as "Temp": your Default layout"
+ok: saved:3 with no layout in place 3 (deleted): the arrangement as it was left
+ok: a saved layout's name is no key (only its place is): the arrangement as it was left
+ok: the Default "Nonexistent Layout": the arrangement as it was left
+ok: the Default "": the arrangement as it was left (Standard Editing's, dragged), and Standard Editing named the Default
+ok: the Default null: the arrangement as it was left (Standard Editing's, dragged), and Standard Editing named the Default
+ok: a 5.3 user's Color & Effects arrangement, dragged, with no Default: kept as it was, and Color & Effects named the Default
+ok: an arrangement of no built-in layout's shape (the media moved to the far left), with no Default: kept as it was, and no Default named
+ok: no arrangement saved yet: the Default layout
+ok: an arrangement that cannot be read: the Default layout
+ok: DockManager.LoadsAlike: Standard's arrangement loads alike Standard Editing, not the Shorts Studio; nothing saved, or another shape, is not alike
+ok: InitializeDocking has one Load: the first-run choice, else StartupLayoutJson, opening on the Timeline
+ok: StartupLayoutJson serialises through the generated metadata and builds nothing (no Load, no Apply)
+ok: TakeFirstRunLayout serialises through the generated metadata and makes the first-run choice the Default layout too
+ok: Reset Layout (the Views menu, and a tab's menu) puts back the Default layout, not always Standard Editing

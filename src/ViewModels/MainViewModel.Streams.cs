@@ -55,7 +55,12 @@ public partial class MainViewModel
                 }
 
                 edit.SetTrackParent(lane, track.Id);
-                edit.PlaceClip(lane, made, allowCrossfadeOverlap: false);
+                var placed = edit.PlaceClip(lane, made, allowCrossfadeOverlap: false);
+
+                // Never past its video's block (5.4A): a stream is the clip's span exactly as it is made, but a span placed otherwise
+                // (quantized another way, or a parent laid out short) must not leave sound hanging past the picture's end.
+                if (placed.End > clip.End + 1e-9 && clip.End - placed.Start >= TimelineDocument.MinimumClipSeconds)
+                    edit.TrimClipEnd(placed, clip.End);
             }
 
             clip.AudioStreamIndex = -1;
@@ -196,14 +201,31 @@ public partial class MainViewModel
     /// </summary>
     private async Task UnpackProjectStreamsAsync()
     {
-        foreach (var view in Layers.Where(l => l.ClipId != Guid.Empty && CanUnpackStreams(l)).DistinctBy(l => l.ImagePath, StringComparer.OrdinalIgnoreCase).ToList())
+        // Pass 5.4D-TabPerf: a probe that comes back after its tab went behind is another project's now, and does nothing here (the
+        // tab starts its unpacking again as it comes back: AttachTab).
+        var generation = _projectGeneration;
+        _unpacking++;
+        try
         {
-            if (await ProbeStreamsAsync(view) is not { Audio.Count: > 1 } info || IsTimelineDragHeld?.Invoke() == true || IsRestoringTimeline)
-                continue;
+            foreach (var view in Layers.Where(l => l.ClipId != Guid.Empty && CanUnpackStreams(l)).DistinctBy(l => l.ImagePath, StringComparer.OrdinalIgnoreCase).ToList())
+            {
+                if (await ProbeStreamsAsync(view) is not { Audio.Count: > 1 } info || generation != _projectGeneration
+                    || IsTimelineDragHeld?.Invoke() == true || IsRestoringTimeline)
+                {
+                    if (generation != _projectGeneration)
+                        return;
+                    continue;
+                }
 
-            // Every clip of that file: they share its lanes.
-            foreach (var clip in Layers.Where(l => CanUnpackStreams(l) && string.Equals(l.ImagePath, view.ImagePath, StringComparison.OrdinalIgnoreCase)).ToList())
-                UnpackStreams(clip, info, undoable: false);
+                // Every clip of that file: they share its lanes.
+                foreach (var clip in Layers.Where(l => CanUnpackStreams(l) && string.Equals(l.ImagePath, view.ImagePath, StringComparison.OrdinalIgnoreCase)).ToList())
+                    UnpackStreams(clip, info, undoable: false);
+            }
+        }
+        finally
+        {
+            if (generation == _projectGeneration)
+                _unpacking = Math.Max(_unpacking - 1, 0);
         }
     }
 

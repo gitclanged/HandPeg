@@ -148,9 +148,11 @@ public partial class MainViewModel
         if (!_findingBeats.Add(model.Id))
             return false;
 
-        var (id, name, stream) = (model.Id, clip.Name, model.AudioStreamIndex);
+        var (id, name, stream, generation) = (model.Id, clip.Name, model.AudioStreamIndex, _projectGeneration);
         StatusText = $"Finding the beats of {name}...";
+        // An add to the clip under way meanwhile (HasPendingAdds: the tabs do not change until its beats are in).
         double[] beats;
+        using var adding = BeginAdd();
         try
         {
             beats = await Task.Run(() => BeatDetector.DetectFileAsync(path, stream, _shutdown.Token), _shutdown.Token);
@@ -169,6 +171,14 @@ public partial class MainViewModel
         finally
         {
             _findingBeats.Remove(id);
+        }
+
+        // Its project tab gone behind while its sound was read (5.4D-TabPerf review, P1): the beats are kept on no clip, never on the
+        // tab in front (a duplicate shares its clip ids).
+        if (generation != _projectGeneration)
+        {
+            StatusText = $"The beats of {name} were not kept: its project tab went behind first. Detect them again there.";
+            return false;
         }
 
         // The clip may have gone, or been made another, while its sound was read: the beats go on the clip that is there now, by its id.

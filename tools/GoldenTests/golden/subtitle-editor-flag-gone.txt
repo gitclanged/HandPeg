@@ -1,0 +1,3 @@
+# The modal subtitle editor's flag is gone (5.4D, Q6 a): no IsSubtitleEditorOpen, no visit, no guard left.
+ok: the view model has no IsSubtitleEditorOpen, nor the modal editor's one-step visit
+ok: Undo has no "Close the Subtitle Studio first", the captions no editor guard, and NonCommandProperties no entry for it

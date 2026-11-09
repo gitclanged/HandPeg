@@ -108,7 +108,8 @@ public sealed class EdgeGrip : FrameworkElement
 /// The Timeline's track-height pill (5.1-Polish, the user's directive): a small up-and-down mark in the zoom corner, its
 /// <see cref="Value"/> the tracks' height (MainViewModel.LayerTrackHeight, 1 to 50). Dragged up the tracks grow (a step every
 /// <see cref="PixelsPerStep"/> DIPs), down they shrink; the wheel over it is two steps a notch; a double-click puts the
-/// usual height back. Drawn in OnRender: two chevrons in a rounded well, in the accent while it is held.
+/// usual height back. Drawn in OnRender (5.4A): three horizontal track bars and a vertical double-headed arrow in a rounded well,
+/// in the accent while it is held (the old pair of chevrons met at their feet and read as a Keyframe diamond).
 /// </summary>
 public sealed class TrackHeightPill : FrameworkElement
 {
@@ -127,6 +128,8 @@ public sealed class TrackHeightPill : FrameworkElement
     private (double FromY, double FromValue)? _drag;
     private Pen? _pen;
     private Brush? _penBrush;
+    private StreamGeometry? _mark;
+    private Size _markSize;
 
     public TrackHeightPill()
     {
@@ -211,12 +214,42 @@ public sealed class TrackHeightPill : FrameworkElement
             _penBrush = mark;
         }
 
-        // Two chevrons, one up and one down, about the middle: taller and lower.
-        var (middle, half, rise) = (width / 2, Math.Min(width, height) * 0.22, Math.Min(width, height) * 0.16);
-        var (upper, lower) = (height / 2 - 3, height / 2 + 3);
-        drawing.DrawLine(_pen, new Point(middle - half, upper + rise), new Point(middle, upper - rise));
-        drawing.DrawLine(_pen, new Point(middle, upper - rise), new Point(middle + half, upper + rise));
-        drawing.DrawLine(_pen, new Point(middle - half, lower - rise), new Point(middle, lower + rise));
-        drawing.DrawLine(_pen, new Point(middle, lower + rise), new Point(middle + half, lower - rise));
+        if (_mark is null || _markSize != new Size(width, height))
+        {
+            var geometry = new StreamGeometry();
+            using (var context = geometry.Open())
+                foreach (var (from, to) in MarkStrokes(width, height))
+                {
+                    context.BeginFigure(from, false, false);
+                    context.LineTo(to, true, false);
+                }
+
+            geometry.Freeze();
+            (_mark, _markSize) = (geometry, new Size(width, height));
+        }
+
+        drawing.DrawGeometry(null, _pen, _mark);
+    }
+
+    /// <summary>
+    /// The mark's strokes in a well of this size (5.4A): three horizontal track bars on the left, a vertical shaft on the right with an
+    /// arrowhead at each end (the up-and-down of a height). No two slanted strokes meet at a foot, so it never closes into a diamond.
+    /// </summary>
+    internal static (Point From, Point To)[] MarkStrokes(double width, double height)
+    {
+        var (shaft, head, rise) = (width - 3.5, Math.Min(2.5, width * 0.14), Math.Min(2.5, height * 0.125));
+        var (left, right, middle, gap) = (3.0, Math.Max(3.0, shaft - head - 1.5), height / 2, Math.Min(4.0, height * 0.2));
+        var (top, bottom) = (Math.Min(4.0, height * 0.2), height - Math.Min(4.0, height * 0.2));
+        return
+        [
+            (new Point(left, middle - gap), new Point(right, middle - gap)),
+            (new Point(left, middle), new Point(right, middle)),
+            (new Point(left, middle + gap), new Point(right, middle + gap)),
+            (new Point(shaft, top), new Point(shaft, bottom)),
+            (new Point(shaft - head, top + rise), new Point(shaft, top)),
+            (new Point(shaft + head, top + rise), new Point(shaft, top)),
+            (new Point(shaft - head, bottom - rise), new Point(shaft, bottom)),
+            (new Point(shaft + head, bottom - rise), new Point(shaft, bottom)),
+        ];
     }
 }

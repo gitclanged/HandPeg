@@ -1,0 +1,38 @@
+# Fast Proxy at the encoder's fastest step (5.4D, Q2 b): p1, veryfast, speed, ultrafast, -compression_level 0; every other preset the slowest.
+ok: FastestStepOf: NVENC p1, QuickSync veryfast, AMF speed; Media Foundation none of its steps (its -compression_level 0 instead)
+   Fast Proxy on h264_nvenc: -c:v h264_nvenc -preset p1 -rc vbr -cq 28 -b:v 0 -tune hq -pix_fmt yuv420p
+ok: Fast Proxy with h264_nvenc here: h264_nvenc at p1 (-preset p1), the fastest step
+   Fast Proxy on h264_qsv: -c:v h264_qsv -preset veryfast -q:v 28 -pix_fmt yuv420p
+ok: Fast Proxy with h264_qsv here: h264_qsv at veryfast (-preset veryfast), the fastest step
+   Fast Proxy on h264_amf: -c:v h264_amf -quality speed -rc cqp -qp_i 28 -qp_p 28 -usage transcoding -pix_fmt yuv420p
+ok: Fast Proxy with h264_amf here: h264_amf at speed (-quality speed), the fastest step
+ok: Fast Proxy with no H.264 hardware encoder: x264 at ultrafast
+   Fast Proxy on h264_mf: -c:v h264_mf -rate_control quality -quality 45 -compression_level 0 -hw_encoding 1 -pix_fmt nv12
+ok: Fast Proxy on a Snapdragon (Media Foundation only): h264_mf at -compression_level 0, in place of 100
+ok: another preset applied after it ends it: Master Quality is back at -compression_level 100
+ok: every other preset stays at the slowest step: Small File 720p after it is hevc_nvenc at p7
+ok: Fast Proxy picked before the probe answered: x264 at ultrafast at first, then h264_nvenc at p1 when the probe lists it (over the settings' default step, p5)
+ok: a step picked by hand ends it: the probe's h264_qsv then starts at its slowest step (veryslow), not its fastest
+ok: a pick by hand ends it: p4 chosen stays p4; x264 chosen in place of NVENC starts at veryslow
+   h264_nvenc -> libx264: ffmpeg -i in.mp4 -c:v libx264 -preset ultrafast -crf 28 out.mp4
+ok: the retry of h264_nvenc at its fastest step is ultrafast
+   h264_qsv -> libx264: ffmpeg -i in.mp4 -c:v libx264 -preset ultrafast -crf 28 out.mp4
+ok: the retry of h264_qsv at its fastest step is ultrafast
+   h264_amf -> libx264: ffmpeg -i in.mp4 -c:v libx264 -preset ultrafast -crf 28 out.mp4
+ok: the retry of h264_amf at its fastest step is ultrafast
+   h264_mf -> libx264: ffmpeg -i in.mp4 -c:v libx264 -preset ultrafast -crf 28 -pix_fmt yuv420p out.mp4
+ok: the retry of h264_mf at its fastest step is ultrafast
+   hevc_nvenc -> libx265: ffmpeg -i in.mp4 -c:v libx265 -preset veryslow -crf 20 out.mp4
+ok: the retry of hevc_nvenc at its slowest step is veryslow
+   h264_mf -> libx264: ffmpeg -i in.mp4 -c:v libx264 -preset veryslow -crf 28 out.mp4
+ok: the retry of h264_mf at its slowest step is veryslow
+ok: the Export tab follows a retry: the software encoder is put in place (PlaceSoftwareRetry) with the failed command
+ok: HadFastestStep: p1, veryfast, speed and -compression_level 0 are a vendor's fastest step; p7, veryslow, high_quality and -compression_level 100 are not
+   NVENC at p1 by hand, failed: the Export tab retries at ultrafast, the rewritten command at ultrafast
+ok: NVENC picked by hand at p1 (not speed-first) fails: the Export tab retries x264 at ultrafast, as the rewritten command does
+   NVENC at p7 by hand, failed: the Export tab retries at veryslow, the rewritten command at veryslow
+ok: NVENC picked by hand at p7 (not speed-first) fails: the Export tab retries x264 at veryslow, as the rewritten command does
+ok: Fast Proxy's NVENC fails: the Export tab retries x264 at ultrafast, and the speed-first state holds (HandPeg's pick, not one by hand)
+   Fast Proxy on h264_mf, then + New Project: -c:v h264_mf -rate_control quality -quality 45 -compression_level 100 -hw_encoding 1 -pix_fmt nv12
+ok: Fast Proxy on h264_mf, then + New Project: the speed-first state ends and the new project exports at -compression_level 100
+ok: the encoding defaults (launch, + New Project, a style preset when they override styles) always end a speed-first state

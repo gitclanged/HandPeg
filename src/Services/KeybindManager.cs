@@ -94,6 +94,12 @@ public static class KeybindManager
         new("edit.redo", "Redo", Project, "\uE7A6", ["Ctrl+Y", "Ctrl+Shift+Z"], KeyActionFlags.Fixed | KeyActionFlags.Repeat | KeyActionFlags.ChangesProject),
         new("file.addMedia", "Add Media", Project, "\uE710", [], KeyActionFlags.ChangesProject),
         new("ui.settings", "Settings", Project, "\uE713", [], KeyActionFlags.ChangesProject),
+        // The title bar's project tabs (5.4A, MainWindow.ProjectTabs.cs): a new one, the one in front closed, the next and the one before.
+        // Taken before a focused control (a text box, a tab strip's own Ctrl+Tab) as saving is.
+        new("tab.new", "New Project Tab", Project, "\uE710", ["Ctrl+T"], KeyActionFlags.WorksInText),
+        new("tab.close", "Close Project Tab", Project, "\uE8BB", ["Ctrl+W"], KeyActionFlags.WorksInText),
+        new("tab.next", "Next Project Tab", Project, "\uE76C", ["Ctrl+Tab"], KeyActionFlags.WorksInText),
+        new("tab.prev", "Previous Project Tab", Project, "\uE76B", ["Ctrl+Shift+Tab"], KeyActionFlags.WorksInText),
         // The Auto-Captions dialog, from anywhere (5.1-Polish: the dial HandPeg comes with has it). Unbound.
         new("captions.generate", "Generate Auto-Captions...", Tools, "\uE7F0", [], KeyActionFlags.ChangesProject),
 
@@ -122,6 +128,9 @@ public static class KeybindManager
         new("edit.paste", "Paste Clips at Playhead", Editing, "\uE77F", ["Ctrl+V"], KeyActionFlags.ChangesProject),
         new("edit.duplicate", "Duplicate Clips", Editing, "\uF413", ["Ctrl+D"], KeyActionFlags.ChangesProject),
         new("edit.pasteAttributes", "Paste Attributes...", Editing, "\uE77F", ["Ctrl+Alt+V"], KeyActionFlags.ChangesProject),
+        // A clip onto a track above or below (5.4A): the next track that way where it is free, else a new track there; its family with it.
+        new("clip.newTrackAbove", "Move Clip to Track Above", Editing, "\uE74A", ["Alt+Up"], KeyActionFlags.ChangesProject),
+        new("clip.newTrackBelow", "Move Clip to Track Below", Editing, "\uE74B", ["Alt+Down"], KeyActionFlags.ChangesProject),
 
         new("marker.add", "Add Marker", Markers, "\uE7C1", ["C", "M"], KeyActionFlags.ChangesProject),
         // Ping-to-Mark (5.2C): a highlight at the playhead; Alt + a click on the player's picture also marks where to look.

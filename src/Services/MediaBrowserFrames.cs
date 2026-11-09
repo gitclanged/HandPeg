@@ -44,6 +44,45 @@ public static class MediaBrowserFrames
             return result;
         }, token);
 
+    /// <summary>
+    /// A file's details for the List view's columns and the Filmstrip view's second line (5.4C): its length, picture size, frame rate,
+    /// codec and number of sound streams; null when it cannot be read. Kept in the browser's cache as its own kind ("details"), apart
+    /// from the tiles' "probe" (whose three parts the tiles read). All of it on the thread pool, as <see cref="DescribeAsync"/>.
+    /// </summary>
+    public static Task<MediaDetails?> DetailsAsync(string path, CancellationToken token, WorkLane lane = WorkLane.Background) =>
+        Task.Run<MediaDetails?>(async () =>
+        {
+            if (ReadKept(path, "details", ".txt") is { } kept && ParseDetails(kept) is { } known)
+                return known;
+
+            var info = await MediaProbe.ProbeAsync(path, token, lane);
+            if (info is null)
+                return null;
+
+            var details = new MediaDetails(Math.Max(info.DurationSeconds, 0), info.Video?.Width ?? 0, info.Video?.Height ?? 0, info.Video?.FrameRate ?? 0,
+                info.Video?.Codec ?? info.Audio.FirstOrDefault()?.Codec ?? "", info.Audio.Count);
+            WriteKept(path, "details", ".txt", FormatDetails(details));
+            return details;
+        }, token);
+
+    /// <summary>The "details" kind's text: "1|seconds|width|height|fps|codec|audio streams" (invariant; the codec never holds a bar).</summary>
+    internal static string FormatDetails(MediaDetails details) => string.Create(CultureInfo.InvariantCulture,
+        $"1|{details.Seconds:0.###}|{details.Width}|{details.Height}|{details.FrameRate:0.####}|{details.Codec.Replace('|', '_')}|{details.AudioStreams}");
+
+    /// <summary>The details from their kept text; null for text of another version or shape.</summary>
+    internal static MediaDetails? ParseDetails(string text)
+    {
+        var parts = text.Trim().Split('|');
+        return parts.Length == 7 && parts[0] == "1"
+               && double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds)
+               && int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var width)
+               && int.TryParse(parts[3], NumberStyles.Integer, CultureInfo.InvariantCulture, out var height)
+               && double.TryParse(parts[4], NumberStyles.Float, CultureInfo.InvariantCulture, out var fps)
+               && int.TryParse(parts[6], NumberStyles.Integer, CultureInfo.InvariantCulture, out var audio)
+            ? new MediaDetails(seconds, width, height, fps, parts[5], audio)
+            : null;
+    }
+
     private static (double Seconds, int Width, int Height)? ParseProbe(string text)
     {
         var parts = text.Split('|');
@@ -348,3 +387,9 @@ public static class MediaBrowserFrames
         }
     }
 }
+
+/// <summary>
+/// What the Media Browser's List view shows of a file (5.4C): its length in seconds, its picture's size (0 for a sound), its frame rate,
+/// its codec as FFmpeg names it (the picture's, else the first sound's) and how many sound streams it has.
+/// </summary>
+public sealed record MediaDetails(double Seconds, int Width, int Height, double FrameRate, string Codec, int AudioStreams);

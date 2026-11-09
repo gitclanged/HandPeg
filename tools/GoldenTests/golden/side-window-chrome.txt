@@ -1,0 +1,21 @@
+# A real side window: HandPeg's 26 DIP title bar and frame, its mode box, its place; side windows restored after the first frame without laying the main window out again.
+ok: its frame is HandPeg's: WindowChrome, caption 26 (CaptionBarHeight), glass 0,0,0,1, square, no Aero buttons, Windows' resize border
+ok: its title names its number and mode; owned by the main window, no taskbar button
+ok: its title bar is drawn 26 DIPs tall, on the title bar's brush (TitleBarBrush)
+ok: Minimize, Maximize and Close take the CaptionButton / CaptionCloseButton styles; they and the mode box are hit-test visible in the chrome
+ok: hit-tested by the frame hook, the Close button and the mode box are the window's own (HTCLIENT): they take their clicks
+ok: the title beside them is the caption (HTCAPTION): dragging it moves the window
+ok: the body under the title bar is the window's own (never its caption)
+ok: placed as saved (SetWindowPlacement), it reads back the same restored place: 100,100,1100,900
+ok: choosing Live Video Preview in the mode box asks the dock manager (ModeRequested), the window waiting to be told
+ok: shown as a Live Video Preview: the body is the preview, a native surface in the aspect panel, its handle told once (PreviewSurfaceChanged)
+ok: back to a Pane Docker: the docker's host again, the surface gone (told again, for its mirror to be let go), the mode box following
+ok: loaded before the main window is shown: its tree laid out, no side window made yet
+ok: after the main window's first frame both come back: Pane Docker 1, and Live Video Preview 2 with its surface
+ok: the main window's tree is still the one laid out before its first frame: restoring them laid it out no more
+ok: Media is in docker 1, Effects in the main window
+ok: docker 1 is where it was saved
+ok: + New Side Window: Live Video Preview 3, laid out on its own (the main window's tree untouched again)
+ok: by the screen's order (WindowOrder), the new side window is above the main window that owns it
+ok: docker 1 closed by its own button: Media is back in the main window, the window gone from the list
+ok: the side windows left are numbered 1 and 2 again

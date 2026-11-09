@@ -1,0 +1,14 @@
+# The cutter's sub-clip: In and Out on the file's own clock, carried by a drag as invariant text, and a placed clip cut to it with no undo step of its own.
+ok: a sub-clip's drag text is invariant ("12.5|31.25" under de-DE) and reads back
+ok: Out before In, words, one number, not text, nothing, a negative In: no sub-clip
+ok: its drag format sits beside the browser's own (both carried with the file)
+ok: a still's moment: the MediaOffset clock shifted by how far the video starts after the container (never earlier), as FileMomentAt does
+ok: ClampRange: inside the file, Out at least a tenth of a second after In
+ok: I at 10 s: In 10, Out the end; O at 20 s: Out 20; each told (RangeChanged)
+ok: O before In: In goes back to the start
+ok: Clear: the whole file, no sub-clip marked
+ok: 30 frames at 30 fps: a second later, settled; the playhead never past the file's end
+ok: the cutter keeps I, O, Space, Left, Right, Home, End, J, K, L and Enter (Shift too), never with Ctrl, never Delete or another key; the window asks it first
+ok: with no file, marking does nothing
+ok: FitToSourceRange(12.5, 31.25): MediaOffset 12.5, 18.75 s long, no step of Undo of its own
+ok: a sub-clip shorter than the shortest clip changes nothing

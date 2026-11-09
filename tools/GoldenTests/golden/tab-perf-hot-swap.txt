@@ -1,0 +1,22 @@
+# A project tab kept live in memory: put behind and brought back by a swap of references, exactly as it was, and as the cold path opens it.
+ok: tab 1: a project opened the cold way, clean, nothing to undo
+ok: two edits: the first clip trimmed to 3 s, the second deleted
+ok: tab 1 has unsaved changes, an undo mark and a clip selected
+ok: DetachForTab: the context holds the live Sequence itself; the view model holds an empty one in its place
+ok: the detached Sequence has no Committed handler (Document is the only timeline); the stand-in has the view model's
+ok: its two steps of Undo moved with it (by reference); the view model keeps none, and nothing unsaved
+ok: it may have unsaved changes (the cheap look), its saved state's fingerprint with it
+ok: its frozen copy (for the cache file) is a copy of its own, the same clips, with its two steps of history
+ok: the exact dot worked out from the frozen copy (the thread pool's): unsaved; the copy is left as it was (its name and history)
+ok: tab 2: another Sequence, a clip deleted (one step of Undo)
+ok: tab 1's detached Sequence is as it was: nothing done in tab 2 reached it
+ok: AttachTab: tab 1's very Sequence is the view model's again (its handler back); tab 2's is detached
+ok: the same undo mark (the same packed step), the same clips, as many views
+ok: the same fingerprint, and its unsaved changes still unsaved (no MarkSaved)
+ok: its selection followed into its new views by the clip's id
+ok: its project file (a save while behind updates it) and its playhead
+ok: Undo goes on where it left off: the deleted clip is back, still unsaved
+ok: and Redo takes it again
+ok: the cold path (its cache file's state opened) gives the same project: the same fingerprint, clips, dot and history
+ok: a tab saved while it was behind (SaveTabInPlace) comes back saved, its history kept
+ok: and tab 1 is behind again, detached, as Redo left it

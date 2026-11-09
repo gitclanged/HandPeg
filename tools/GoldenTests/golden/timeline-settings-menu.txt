@@ -13,6 +13,7 @@
    Snap to Audio Beats  -> AppSettings.SnapToBeats (True in a new install)
    Snap Cuts to I-Frames  -> the project's or the session's, not kept in the settings
    Follow Playhead During Playback  -> AppSettings.TimelineFollowsPlayhead (True in a new install)
+   Enable Momentum Scrolling on Timeline & Filmstrips  -> AppSettings.EnableMomentumScrolling (True in a new install)
    Show Sub-Second Time in Frames (HH:MM:SS:FF)  -> AppSettings.ShowTimesAsFrames (True in a new install)
 [Bars & Sizing]
    Show Quick FX Button  -> AppSettings.ShowCreatorHotbar (True in a new install)

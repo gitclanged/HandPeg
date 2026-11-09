@@ -300,6 +300,13 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
             _autoScroll.Stop();
             DisarmMenu();
         };
+
+        // Hidden (its tab put behind another, its pane closed): a coast stops where it is (5.4C).
+        IsVisibleChanged += (_, e) =>
+        {
+            if (!(bool)e.NewValue)
+                StopMomentum();
+        };
         ReadLook();
     }
 
@@ -546,6 +553,8 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         _sequenceSeconds = sequenceSeconds;
         if (PixelsPerSecond != scale || sequenceChanged)
         {
+            // A zoom, a fit, another sequence: a coast along the old view stops (5.4C).
+            _momentumX?.Stop();
             Invalidate();
             PlaceLine(_playhead, _playheadSeconds, ref _playheadHeight, playhead: true);
             PlaceLine(_skim, _skimSeconds, ref _skimHeight, playhead: false);
@@ -567,6 +576,26 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
 
     /// <summary>Whether one of a row's mini-stacks is open: where it is going, while it moves.</summary>
     public bool IsExpanded(TimelineRow row, ChildStack stack) => _expansion.TryGetValue((row.Key, stack), out var expansion) && expansion.Target >= 0.5;
+
+    /// <summary>
+    /// The mini-stacks open now (or on their way open), by their rows' keys (Pass 5.4D-TabPerf): a project tab put behind keeps them, since
+    /// another project's rows have the same keys ("captions", "background", a track's number).
+    /// </summary>
+    public IReadOnlyList<(object Key, ChildStack Stack)> SaveExpansion() => [.. _expansion.Where(e => e.Value.Target >= 0.5).Select(e => e.Key)];
+
+    /// <summary>
+    /// The mini-stacks a project tab kept (<see cref="SaveExpansion"/>) open again as it comes back to the front, at once, and every other
+    /// one closed (Pass 5.4D-TabPerf). Nothing moves: the lanes are laid out where they are.
+    /// </summary>
+    public void RestoreExpansion(IReadOnlyList<(object Key, ChildStack Stack)>? open)
+    {
+        _expansion.Clear();
+        foreach (var key in open ?? [])
+            _expansion[key] = new Expansion { Current = 1, Target = 1 };
+        if (!IsMoving())
+            StopTicking();
+        Relayout();
+    }
 
     /// <summary>Opens or closes every mini-stack of a row (see <see cref="SetExpanded(TimelineRow, ChildStack, bool)"/>).</summary>
     public void SetExpanded(TimelineRow row, bool expanded)
@@ -967,12 +996,12 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         return false;
     }
 
-    // ----- What moves by itself: stacks opening and closing, a fold sliding into place -----
+    // ----- What moves by itself: stacks opening and closing, a fold sliding into place, a coast -----
 
-    // Whether anything is on its way: a stack not yet where it is going, or a fold still sliding.
+    // Whether anything is on its way: a stack not yet where it is going, a fold still sliding, or the view coasting (5.4C).
     private bool IsMoving()
     {
-        if (_slide is not null)
+        if (_slide is not null || _momentumX?.IsCoasting == true || _momentumY?.IsCoasting == true)
             return true;
 
         foreach (var expansion in _expansion.Values)
@@ -1036,9 +1065,66 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
 
         if (laidOut)
             Relayout();
+        StepMomentum(now * 1000.0 / Stopwatch.Frequency);
         if (!IsMoving())
             StopTicking();
     }
+
+    /// <summary>
+    /// One frame of momentum at <paramref name="nowMs"/> (<see cref="MomentumScroller.Now"/>'s clock, 5.4C): the view pans on by what the
+    /// coast along it covered (through <see cref="PanRequested"/>; the host moves the view at once), the rows scroll on by theirs. A view
+    /// or rows that did not move (an end reached, the view fitted) stop that coast; so does a drag. Whether anything moved. The frame
+    /// loop calls it; a test steps it with its own clock.
+    /// </summary>
+    internal bool StepMomentum(double nowMs)
+    {
+        if (IsDragging)
+        {
+            StopMomentum();
+            return false;
+        }
+
+        var moved = false;
+        if (_momentumX is { IsCoasting: true } alongX)
+        {
+            var pixels = alongX.Tick(nowMs);
+            if (pixels != 0)
+            {
+                var before = ViewOffsetX;
+                RaisePan(pixels);
+                if (ViewOffsetX == before)
+                    alongX.Stop();
+                else
+                    moved = true;
+            }
+        }
+
+        if (_momentumY is { IsCoasting: true } downY)
+        {
+            var rows = downY.Tick(nowMs);
+            if (rows != 0)
+            {
+                var before = _verticalOffset;
+                VerticalOffset = before + rows;
+                if (_verticalOffset == before)
+                    downY.Stop();
+                else
+                    moved = true;
+            }
+        }
+
+        return moved;
+    }
+
+    /// <summary>Stops any coast of the view or the rows where it is (a press, the playhead turning the page, another pan taking over).</summary>
+    public void StopMomentum()
+    {
+        _momentumX?.Stop();
+        _momentumY?.Stop();
+    }
+
+    /// <summary>Whether the view or the rows are coasting (5.4C).</summary>
+    public bool IsCoasting => _momentumX?.IsCoasting == true || _momentumY?.IsCoasting == true;
 
     // Moves every stack that is on its way; whether any moved (the lanes are laid out again for it).
     private bool StepExpansion(double seconds)
@@ -1069,9 +1155,10 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         return moved;
     }
 
-    // Leaving the screen: whatever was moving is where it was going, and the clock stops.
+    // Leaving the screen: whatever was moving is where it was going, a coast stops where it is, and the clock stops.
     private void SettleMotion()
     {
+        StopMomentum();
         var moving = IsMoving();
         StopTicking();
         _slide = null;

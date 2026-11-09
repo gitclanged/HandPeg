@@ -1,93 +1,411 @@
 <Window x:Class="HandPegApp.ProjectManagerWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="HandPeg Projects" Width="820" Height="560" MinWidth="560" MinHeight="320"
+        Title="HandPeg Projects" Width="1000" Height="680" MinWidth="720" MinHeight="460"
         Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <Window.Resources>
+        <!-- One side of the mode bar (New Project | Open / Manage Projects | Project Settings): the mode shown is filled with the accent -->
+        <Style x:Key="ModeButton" TargetType="RadioButton">
+            <Setter Property="GroupName" Value="StudioMode" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="side" CornerRadius="5" Padding="14,4,14,5" Background="Transparent">
+                            <TextBlock Text="{TemplateBinding Content}" Foreground="{TemplateBinding Foreground}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="side" Property="Background" Value="{DynamicResource AccentBrush}" />
+                                <Setter Property="Foreground" Value="{DynamicResource OnAccentBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- A card of related settings: its title, then its rows (the inspector cards' look: 6 px corners, 12 px inside, 8 px between rows) -->
+        <Style x:Key="StudioCard" TargetType="Border">
+            <Setter Property="Background" Value="{DynamicResource CardBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Padding" Value="12" />
+            <Setter Property="Margin" Value="0,0,0,8" />
+        </Style>
+        <Style x:Key="CardTitle" TargetType="TextBlock">
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="0,0,0,8" />
+        </Style>
+        <Style x:Key="RowLabel" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
+            <Setter Property="Margin" Value="0,0,0,4" />
+        </Style>
+
+        <!-- A choice shown as a card (the aspects): outlined, filled with the accent while chosen -->
+        <Style x:Key="ChoiceCard" TargetType="RadioButton">
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+            <Setter Property="Margin" Value="0,0,8,0" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="card" CornerRadius="6" BorderThickness="1" BorderBrush="{DynamicResource ControlBorderBrush}"
+                                Background="{DynamicResource InsetBrush}" Padding="10,8" MinWidth="96">
+                            <ContentPresenter HorizontalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="card" Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="card" Property="Background" Value="{DynamicResource AccentBrush}" />
+                                <Setter TargetName="card" Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                                <Setter Property="Foreground" Value="{DynamicResource OnAccentBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="card" Property="BorderBrush" Value="{DynamicResource TextBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
     <DockPanel Margin="12">
-        <!-- Save the current session, or start a new one -->
-        <Border DockPanel.Dock="Top" Style="{StaticResource Panel}" Margin="0,0,0,10">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <TextBlock Text="Project name:" VerticalAlignment="Center" Margin="0,0,12,0" />
-                <TextBox Grid.Column="1" x:Name="NameBox" VerticalContentAlignment="Center"
-                         ToolTip="Saving under the name of an existing project replaces it." />
-                <Button Grid.Column="2" Content="Save Project" Margin="6,0,0,0" Click="Save_Click"
-                        ToolTip="Save the loaded source, its cut segments and all settings." />
-                <Button Grid.Column="3" Content="Save as Bundle..." Margin="6,0,0,0" Click="SaveBundle_Click" AutomationProperties.Name="Save Project Bundle"
-                        ToolTip="Saves the project with every video, sound and picture it uses in one .hpb file, to carry it to another PC or keep it whole. The files are stored as they are (no compression), so it is about as quick as copying them. Opening the bundle unpacks it into a folder beside it." />
-                <Button Grid.Column="4" Content="+ New Project" Margin="6,0,0,0" Click="NewProject_Click" AutomationProperties.Name="New Project"
-                        ToolTip="Starts again with nothing open, as HandPeg starts: no video, no clips, cuts, markers or subtitles, the encoding settings back to their defaults. Changes not saved are asked about first." />
-            </Grid>
+        <!-- The three modes (5.4A): make a new project, open or manage the saved ones, or set the open project's settings -->
+        <Border DockPanel.Dock="Top" HorizontalAlignment="Left" Margin="0,0,0,10" Padding="2" CornerRadius="7" Background="{DynamicResource InsetBrush}"
+                BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1">
+            <StackPanel Orientation="Horizontal" AutomationProperties.Name="Project Manager Mode">
+                <RadioButton x:Name="NewModeButton" Style="{StaticResource ModeButton}" Content="New Project" Checked="Mode_Checked"
+                             AutomationProperties.Name="New Project Mode"
+                             ToolTip="Make a project: its name and folder, its frame, rate and colour space, a Game Preset to start from, and the media to lay on its Sequence." />
+                <RadioButton x:Name="ManageModeButton" Style="{StaticResource ModeButton}" Content="Open / Manage Projects" Checked="Mode_Checked"
+                             AutomationProperties.Name="Open / Manage Projects"
+                             ToolTip="Save the open project, open a saved one, or delete one." />
+                <RadioButton x:Name="SettingsModeButton" Style="{StaticResource ModeButton}" Content="Project Settings" Checked="Mode_Checked"
+                             AutomationProperties.Name="Project Settings"
+                             ToolTip="The open project's frame, rate, colour space, pixel aspect and sample rate: what Export's Match Project Settings writes." />
+            </StackPanel>
         </Border>
 
-        <Grid DockPanel.Dock="Bottom" Margin="0,10,0,0">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
-            </Grid.ColumnDefinitions>
-            <StackPanel Orientation="Horizontal">
-                <Button Content="Open File..." Click="OpenFile_Click" AutomationProperties.Name="Open Project or Bundle File"
-                        ToolTip="Opens a project (.hproj) or a project bundle (.hpb) from anywhere." />
-                <Button Content="Open Directory" Margin="6,0,0,0" Click="OpenDirectory_Click"
-                        ToolTip="Opens the projects folder in File Explorer." />
-            </StackPanel>
-            <Button Grid.Column="1" x:Name="DeleteButton" Content="Delete Project" Margin="6,0,0,0" IsEnabled="False" Click="Delete_Click"
-                    ToolTip="Deletes the selected project file. The video it refers to is not touched." />
-            <TextBlock Grid.Column="2" x:Name="MessageText" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center"
-                       TextTrimming="CharacterEllipsis" Margin="12,0" />
-            <Button Grid.Column="3" x:Name="LoadButton" Content="Load Project" IsEnabled="False" Click="Load_Click" />
-            <Button Grid.Column="4" Content="Close" Margin="6,0,0,0" MinWidth="80" IsCancel="True" />
-        </Grid>
-
-        <DockPanel DockPanel.Dock="Top" Margin="2,0,0,6">
-            <CheckBox x:Name="PreviewsBox" DockPanel.Dock="Right" Content="Show video &amp; hover previews" VerticalAlignment="Center"
-                      Checked="PreviewsBox_Changed" Unchecked="PreviewsBox_Changed" AutomationProperties.Name="Show Video and Hover Previews in Project Manager"
-                      ToolTip="Each project shows a picture of the video it was opened with; with the pointer across it, the frames along the video. Made once and kept in the media browser's cache (Settings, Caches). Also in Settings, General." />
-            <TextBlock Text="Recent Projects" FontWeight="SemiBold" VerticalAlignment="Center" />
+        <!-- What is said, and Close, under every mode -->
+        <DockPanel DockPanel.Dock="Bottom" Margin="0,10,0,0">
+            <Button DockPanel.Dock="Right" Content="Close" Margin="6,0,0,0" MinWidth="80" IsCancel="True" />
+            <TextBlock x:Name="MessageText" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,12,0" />
         </DockPanel>
-        <ListBox x:Name="ProjectList" SelectionChanged="ProjectList_SelectionChanged" MouseDoubleClick="ProjectList_MouseDoubleClick"
-                 VirtualizingStackPanel.IsVirtualizing="True" VirtualizingStackPanel.VirtualizationMode="Recycling" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-            <!-- Each row is named by its project for screen readers and UI Automation (ProjectRow.Name). -->
-            <ListBox.ItemContainerStyle>
-                <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
-                    <Setter Property="AutomationProperties.Name" Value="{Binding Name}" />
-                </Style>
-            </ListBox.ItemContainerStyle>
-            <ListBox.ItemTemplate>
-                <DataTemplate>
-                    <Grid Margin="0,3">
+
+        <Grid>
+            <!-- ===== New Project ===== -->
+            <Grid x:Name="NewProjectMode" Visibility="Collapsed">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="400" MinWidth="320" />
+                    <ColumnDefinition Width="12" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
+                    <StackPanel>
+                        <Border Style="{StaticResource StudioCard}">
+                            <StackPanel>
+                                <TextBlock Text="Project" Style="{StaticResource CardTitle}" />
+                                <TextBlock Text="Name" Style="{StaticResource RowLabel}" />
+                                <TextBox x:Name="NewNameBox" VerticalContentAlignment="Center" AutomationProperties.Name="New Project Name"
+                                         ToolTip="What the project is called: its first save offers this name." />
+                                <TextBlock Text="Location" Style="{StaticResource RowLabel}" Margin="0,8,0,4" />
+                                <DockPanel>
+                                    <Button DockPanel.Dock="Right" Content="Browse..." Margin="6,0,0,0" Padding="10,2" Click="BrowseFolder_Click"
+                                            AutomationProperties.Name="Choose New Project Location" ToolTip="Choose the folder the project is saved in." />
+                                    <TextBox x:Name="NewFolderBox" VerticalContentAlignment="Center" AutomationProperties.Name="New Project Location" TextChanged="NewFolder_TextChanged"
+                                             ToolTip="The folder the project is saved in, the first time it is saved." />
+                                </DockPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource StudioCard}">
+                            <StackPanel>
+                                <TextBlock Text="Format" Style="{StaticResource CardTitle}" />
+                                <StackPanel Orientation="Horizontal" AutomationProperties.Name="Aspect Ratio">
+                                    <RadioButton x:Name="WideCard" Style="{StaticResource ChoiceCard}" GroupName="Aspect" IsChecked="True" Checked="Format_Changed"
+                                                 AutomationProperties.Name="16:9 Horizontal" ToolTip="A wide frame, as most videos and screens are.">
+                                        <StackPanel>
+                                            <Rectangle Width="32" Height="18" Margin="0,0,0,6" RadiusX="2" RadiusY="2" StrokeThickness="1.5"
+                                                       Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}" />
+                                            <TextBlock Text="16:9 Horizontal" HorizontalAlignment="Center" />
+                                        </StackPanel>
+                                    </RadioButton>
+                                    <RadioButton x:Name="VerticalCard" Style="{StaticResource ChoiceCard}" GroupName="Aspect" Checked="Format_Changed"
+                                                 AutomationProperties.Name="9:16 Vertical" ToolTip="A tall frame, for Shorts and other phone-first platforms.">
+                                        <StackPanel>
+                                            <Rectangle Width="14" Height="24" Margin="0,0,0,0" RadiusX="2" RadiusY="2" StrokeThickness="1.5"
+                                                       Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}" />
+                                            <TextBlock Text="9:16 Vertical" HorizontalAlignment="Center" />
+                                        </StackPanel>
+                                    </RadioButton>
+                                    <RadioButton x:Name="SquareCard" Style="{StaticResource ChoiceCard}" GroupName="Aspect" Checked="Format_Changed"
+                                                 AutomationProperties.Name="1:1 Square" ToolTip="A square frame.">
+                                        <StackPanel>
+                                            <Rectangle Width="20" Height="20" Margin="0,0,0,4" RadiusX="2" RadiusY="2" StrokeThickness="1.5"
+                                                       Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}" />
+                                            <TextBlock Text="1:1 Square" HorizontalAlignment="Center" />
+                                        </StackPanel>
+                                    </RadioButton>
+                                </StackPanel>
+
+                                <TextBlock Text="Resolution" Style="{StaticResource RowLabel}" Margin="0,8,0,4" />
+                                <ComboBox x:Name="ResolutionBox" SelectedIndex="1" SelectionChanged="Format_SelectionChanged" AutomationProperties.Name="New Project Resolution"
+                                          ToolTip="How many pixels across the frame's short side (1080p: 1920 x 1080 wide, 1080 x 1920 tall).">
+                                    <ComboBoxItem Content="720p" Tag="720" />
+                                    <ComboBoxItem Content="1080p" Tag="1080" />
+                                    <ComboBoxItem Content="1440p" Tag="1440" />
+                                    <ComboBoxItem Content="4K" Tag="2160" />
+                                    <ComboBoxItem Content="Custom W x H" Tag="0" />
+                                </ComboBox>
+                                <StackPanel x:Name="CustomSizePanel" Orientation="Horizontal" Margin="0,6,0,0" Visibility="Collapsed">
+                                    <TextBox x:Name="CustomWidthBox" Width="80" Text="1920" VerticalContentAlignment="Center" TextChanged="Format_TextChanged"
+                                             AutomationProperties.Name="Custom Width" ToolTip="The frame's width in pixels (made even)." />
+                                    <TextBlock Text="x" VerticalAlignment="Center" Margin="8,0" />
+                                    <TextBox x:Name="CustomHeightBox" Width="80" Text="1080" VerticalContentAlignment="Center" TextChanged="Format_TextChanged"
+                                             AutomationProperties.Name="Custom Height" ToolTip="The frame's height in pixels (made even)." />
+                                </StackPanel>
+
+                                <TextBlock Text="Frame rate" Style="{StaticResource RowLabel}" Margin="0,8,0,4" />
+                                <ComboBox x:Name="FrameRateBox" SelectedIndex="0" SelectionChanged="Format_SelectionChanged" AutomationProperties.Name="New Project Frame Rate"
+                                          ToolTip="The Sequence's rate: every edit lands on its frames. Auto takes the first clip's own rate.">
+                                    <ComboBoxItem Content="60" Tag="60" />
+                                    <ComboBoxItem Content="30" Tag="30" />
+                                    <ComboBoxItem Content="120" Tag="120" />
+                                    <ComboBoxItem Content="24" Tag="24" />
+                                    <ComboBoxItem Content="Auto from First Clip" Tag="0" />
+                                </ComboBox>
+
+                                <TextBlock Text="Colour space" Style="{StaticResource RowLabel}" Margin="0,8,0,4" />
+                                <ComboBox x:Name="ColorSpaceBox" SelectedIndex="0" SelectionChanged="Format_SelectionChanged" AutomationProperties.Name="New Project Colour Space"
+                                          ToolTip="BT.709 SDR for most footage. HDR for HDR recordings: the export is tone-mapped to SDR (HDR output is not available yet).">
+                                    <ComboBoxItem Content="BT.709 SDR" />
+                                    <ComboBoxItem Content="HDR (tone-mapped to SDR on export)" />
+                                </ComboBox>
+
+                                <TextBlock x:Name="FrameSummary" Foreground="{DynamicResource MutedTextBrush}" Margin="0,8,0,0" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource StudioCard}">
+                            <StackPanel>
+                                <TextBlock Text="Game Preset" Style="{StaticResource CardTitle}" />
+                                <ListBox x:Name="PresetCards" SelectionMode="Single" SelectionChanged="PresetCards_SelectionChanged" MaxHeight="240"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled" AutomationProperties.Name="Game Preset Cards"
+                                         Background="Transparent" BorderThickness="0">
+                                    <ListBox.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <WrapPanel />
+                                        </ItemsPanelTemplate>
+                                    </ListBox.ItemsPanel>
+                                    <ListBox.ItemContainerStyle>
+                                        <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                                            <Setter Property="AutomationProperties.Name" Value="{Binding Name}" />
+                                            <Setter Property="Margin" Value="0,0,6,6" />
+                                        </Style>
+                                    </ListBox.ItemContainerStyle>
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Width="104" Height="52" CornerRadius="6" BorderThickness="1" BorderBrush="{DynamicResource ControlBorderBrush}"
+                                                    Background="{DynamicResource InsetBrush}" Padding="6" ToolTip="{Binding About}">
+                                                <TextBlock Text="{Binding Name}" TextWrapping="Wrap" TextTrimming="CharacterEllipsis" TextAlignment="Center"
+                                                           VerticalAlignment="Center" HorizontalAlignment="Center" />
+                                            </Border>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+
+                <!-- The media the project starts with: the Media Browser as a picker (a click chooses a file, or lets it go) -->
+                <Border Grid.Column="2" Style="{StaticResource StudioCard}" Margin="0">
+                    <DockPanel>
+                        <DockPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+                            <Button DockPanel.Dock="Right" x:Name="ClearPickedButton" Content="Clear" Padding="10,2" IsEnabled="False" Click="ClearPicked_Click"
+                                    AutomationProperties.Name="Clear Chosen Media" ToolTip="Let go of every file chosen." />
+                            <TextBlock Text="Media" FontWeight="SemiBold" VerticalAlignment="Center" />
+                            <TextBlock x:Name="PickedText" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" Margin="10,0,0,0"
+                                       TextTrimming="CharacterEllipsis" Text="Click the clips to start with, in the order they go on the Sequence." />
+                        </DockPanel>
+                        <Border x:Name="PickerHost" />
+                    </DockPanel>
+                </Border>
+
+                <DockPanel Grid.Row="1" Grid.ColumnSpan="3" Margin="0,10,0,0">
+                    <Button DockPanel.Dock="Right" x:Name="CreateButton" Content="Create Project" MinWidth="120" Click="Create_Click"
+                            AutomationProperties.Name="Create Project"
+                            ToolTip="Makes the project in a tab of its own, with these settings, the Game Preset and the media chosen laid on its Sequence." />
+                    <TextBlock Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,12,0"
+                               Text="With no media chosen, the project starts empty: the first file dropped on it keeps these settings." />
+                </DockPanel>
+            </Grid>
+
+            <!-- ===== Open / Manage Projects: save the open project, open a saved one, delete one ===== -->
+            <DockPanel x:Name="ManageMode">
+                <Border DockPanel.Dock="Top" Style="{StaticResource Panel}" Margin="0,0,0,10">
+                    <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <!-- The project's baked thumbnail (else the opened video's picture), in a 16:9 box; the pointer across it scrubs through the video's frames -->
-                        <Border Width="128" Height="72" Margin="0,0,12,0" Background="#FF0E0E0E" CornerRadius="3" ClipToBounds="True"
-                                Visibility="{Binding PictureVisibility}" MouseMove="Picture_MouseMove" MouseLeave="Picture_MouseLeave"
-                                ToolTip="Move the pointer across the picture to see the video's frames.">
-                            <Image Source="{Binding Picture}" Stretch="Uniform" />
-                        </Border>
-                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                            <TextBlock Text="{Binding Entry.SourceName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                            <TextBlock Text="{Binding Entry.SourcePath}" Foreground="{DynamicResource MutedTextBrush}" TextTrimming="CharacterEllipsis" />
-                        </StackPanel>
-                        <StackPanel Grid.Column="2" Margin="16,0,0,0" VerticalAlignment="Center">
-                            <TextBlock Text="{Binding Entry.Name}" HorizontalAlignment="Right" />
-                            <TextBlock Text="{Binding Entry.SavedText}" Foreground="{DynamicResource MutedTextBrush}" HorizontalAlignment="Right" />
-                        </StackPanel>
+                        <TextBlock Text="Project name:" VerticalAlignment="Center" Margin="0,0,12,0" />
+                        <TextBox Grid.Column="1" x:Name="NameBox" VerticalContentAlignment="Center"
+                                 ToolTip="Saving under the name of an existing project replaces it." />
+                        <Button Grid.Column="2" Content="Save Project" Margin="6,0,0,0" Click="Save_Click"
+                                ToolTip="Save the loaded source, its cut segments and all settings." />
+                        <Button Grid.Column="3" Content="Save as Bundle..." Margin="6,0,0,0" Click="SaveBundle_Click" AutomationProperties.Name="Save Project Bundle"
+                                ToolTip="Saves the project with every video, sound and picture it uses in one .hpb file, to carry it to another PC or keep it whole. The files are stored as they are (no compression), so it is about as quick as copying them. Opening the bundle unpacks it into a folder beside it." />
+                        <Button Grid.Column="4" Content="+ New Project" Margin="6,0,0,0" Click="NewProject_Click" AutomationProperties.Name="New Project"
+                                ToolTip="Make a new project: its frame, rate, colour space, Game Preset and media (the New Project mode)." />
                     </Grid>
-                </DataTemplate>
-            </ListBox.ItemTemplate>
-        </ListBox>
+                </Border>
+
+                <Grid DockPanel.Dock="Bottom" Margin="0,10,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Orientation="Horizontal">
+                        <Button Content="Open File..." Click="OpenFile_Click" AutomationProperties.Name="Open Project or Bundle File"
+                                ToolTip="Opens a project (.hproj) or a project bundle (.hpb) from anywhere." />
+                        <Button Content="Open Directory" Margin="6,0,0,0" Click="OpenDirectory_Click"
+                                ToolTip="Opens the projects folder in File Explorer." />
+                    </StackPanel>
+                    <Button Grid.Column="1" x:Name="DeleteButton" Content="Delete Project" Margin="6,0,0,0" IsEnabled="False" Click="Delete_Click"
+                            ToolTip="Deletes the selected project file. The video it refers to is not touched." />
+                    <Button Grid.Column="3" x:Name="LoadButton" Content="Load Project" IsEnabled="False" Click="Load_Click" />
+                </Grid>
+
+                <DockPanel DockPanel.Dock="Top" Margin="2,0,0,6">
+                    <CheckBox x:Name="PreviewsBox" DockPanel.Dock="Right" Content="Show video &amp; hover previews" VerticalAlignment="Center"
+                              Checked="PreviewsBox_Changed" Unchecked="PreviewsBox_Changed" AutomationProperties.Name="Show Video and Hover Previews in Project Manager"
+                              ToolTip="Each project shows a picture of the video it was opened with; with the pointer across it, the frames along the video. Made once and kept in the media browser's cache (Settings, Caches). Also in Settings, General." />
+                    <TextBlock Text="Recent Projects" FontWeight="SemiBold" VerticalAlignment="Center" />
+                </DockPanel>
+                <ListBox x:Name="ProjectList" SelectionChanged="ProjectList_SelectionChanged" MouseDoubleClick="ProjectList_MouseDoubleClick"
+                         VirtualizingStackPanel.IsVirtualizing="True" VirtualizingStackPanel.VirtualizationMode="Recycling" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                    <!-- Each row is named by its project for screen readers and UI Automation (ProjectRow.Name). -->
+                    <ListBox.ItemContainerStyle>
+                        <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                            <Setter Property="AutomationProperties.Name" Value="{Binding Name}" />
+                        </Style>
+                    </ListBox.ItemContainerStyle>
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Margin="0,3">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <!-- The project's baked thumbnail (else the opened video's picture), in a 16:9 box; the pointer across it scrubs through the video's frames -->
+                                <Border Width="128" Height="72" Margin="0,0,12,0" Background="#FF0E0E0E" CornerRadius="3" ClipToBounds="True"
+                                        Visibility="{Binding PictureVisibility}" MouseMove="Picture_MouseMove" MouseLeave="Picture_MouseLeave"
+                                        ToolTip="Move the pointer across the picture to see the video's frames.">
+                                    <Image Source="{Binding Picture}" Stretch="Uniform" />
+                                </Border>
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding Entry.SourceName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="{Binding Entry.SourcePath}" Foreground="{DynamicResource MutedTextBrush}" TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="2" Margin="16,0,0,0" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding Entry.Name}" HorizontalAlignment="Right" />
+                                    <TextBlock Text="{Binding Entry.SavedText}" Foreground="{DynamicResource MutedTextBrush}" HorizontalAlignment="Right" />
+                                </StackPanel>
+                            </Grid>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </DockPanel>
+
+            <!-- ===== Project Settings: the open project's, through one undo step ===== -->
+            <Grid x:Name="SettingsMode" Visibility="Collapsed">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="420" MinWidth="320" />
+                    <ColumnDefinition Width="12" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
+                    <Border Style="{StaticResource StudioCard}" VerticalAlignment="Top">
+                        <StackPanel>
+                            <TextBlock Text="Project Settings" Style="{StaticResource CardTitle}" />
+                            <TextBlock x:Name="SettingsSummary" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,8" />
+
+                            <TextBlock Text="Frame (width x height)" Style="{StaticResource RowLabel}" />
+                            <StackPanel Orientation="Horizontal">
+                                <TextBox x:Name="SettingsWidthBox" Width="80" VerticalContentAlignment="Center" AutomationProperties.Name="Project Frame Width"
+                                         ToolTip="The output frame's width in pixels; taller than wide makes a vertical project." />
+                                <TextBlock Text="x" VerticalAlignment="Center" Margin="8,0" />
+                                <TextBox x:Name="SettingsHeightBox" Width="80" VerticalContentAlignment="Center" AutomationProperties.Name="Project Frame Height"
+                                         ToolTip="The output frame's height in pixels." />
+                            </StackPanel>
+
+                            <TextBlock Text="Frame rate" Style="{StaticResource RowLabel}" Margin="0,8,0,4" />
+                            <ComboBox x:Name="SettingsRateBox" AutomationProperties.Name="Project Frame Rate"
+                                      ToolTip="The Sequence's rate. It can change only while the Sequence has no clips: every edit lies on its frames." />
+
+                            <TextBlock Text="Colour space" Style="{StaticResource RowLabel}" Margin="0,8,0,4" />
+                            <ComboBox x:Name="SettingsColorBox" AutomationProperties.Name="Project Colour Space"
+                                      ToolTip="What the project's pictures are made in. An HDR project exports tone-mapped to BT.709 SDR (HDR output is not available yet)." />
+
+                            <TextBlock Text="Pixel aspect" Style="{StaticResource RowLabel}" Margin="0,8,0,4" />
+                            <ComboBox x:Name="SettingsAspectBox" AutomationProperties.Name="Project Pixel Aspect"
+                                      ToolTip="The shape of the export's pixels, under Match Project Settings: square for almost everything." />
+
+                            <TextBlock Text="Sample rate" Style="{StaticResource RowLabel}" Margin="0,8,0,4" />
+                            <ComboBox x:Name="SettingsSampleRateBox" AutomationProperties.Name="Project Sample Rate"
+                                      ToolTip="The rate every render is mixed at under Match Project Settings." />
+
+                            <TextBlock x:Name="SettingsNote" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,8,0,0" />
+                            <Button x:Name="ApplySettingsButton" Content="Apply" HorizontalAlignment="Left" MinWidth="100" Margin="0,10,0,0" Click="ApplySettings_Click"
+                                    AutomationProperties.Name="Apply Project Settings" ToolTip="Gives the open project these settings (one step of Undo)." />
+                        </StackPanel>
+                    </Border>
+                </ScrollViewer>
+
+                <Border Grid.Column="2" Style="{StaticResource StudioCard}" Margin="0" VerticalAlignment="Stretch">
+                    <DockPanel>
+                        <TextBlock DockPanel.Dock="Top" Text="Source Information" Style="{StaticResource CardTitle}" />
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <ItemsControl x:Name="SourceRows" AutomationProperties.Name="Project Source Information" Grid.IsSharedSizeScope="True">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="0,2">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" SharedSizeGroup="SourceLabel" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="{Binding Label}" Foreground="{DynamicResource MutedTextBrush}" Margin="0,0,16,0" />
+                                            <TextBlock Grid.Column="1" Text="{Binding Value}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Value}" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+                    </DockPanel>
+                </Border>
+            </Grid>
+        </Grid>
     </DockPanel>
 </Window>

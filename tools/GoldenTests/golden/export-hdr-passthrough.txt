@@ -1,0 +1,28 @@
+# An HDR project stays HDR with 10-bit HEVC or AV1 and HDR pictures only: P010 piped, tagged BT.2020; SDR commands unchanged.
+   SDR project: tone-mapped (the project is SDR)
+   PQ, HDR to SDR chosen: tone-mapped (Colorspace is HDR to SDR)
+   PQ, a GIF: tone-mapped (an animated GIF or WebP is 8-bit SDR)
+   PQ, Copy: tone-mapped (Copy keeps the file as it is)
+   PQ, x264 10-bit: tone-mapped (choose an HEVC or AV1 encoder and tick 10-bit to keep HDR)
+   PQ, x265 8-bit: tone-mapped (tick 10-bit to keep HDR)
+   PQ, NVENC HEVC without 10-bit on the card: tone-mapped (HEVC (NVIDIA NVENC) has no 10-bit on this card)
+   PQ, x265 10-bit, Extra Options' -pix_fmt: tone-mapped (Extra Options set a pixel format of their own)
+   PQ, x265 10-bit, an image on it: tone-mapped (an image clip is SDR, which an HDR export would show too bright)
+   PQ, x265 10-bit, HDR pictures only: kept HDR
+   HLG, NVENC HEVC 10-bit: kept HDR
+ok: the rule (Q1): HDR under Match Project Settings, 10-bit on, an HEVC/AV1 encoder that does 10-bit here, HDR pictures only; 8-bit or H.264 is tone-mapped with the hint
+ok: an HDR project at the defaults is still tone-mapped to BT.709 SDR, and says why
+   PQ, x265 10-bit: HDR10 PQ project: exported as HDR10 (PQ), 10-bit BT.2020. No mastering display or MaxCLL metadata is written.
+ok: with x265 and 10-bit it is kept HDR: no tone-map, HdrTransfer smpte2084, yuv420p10le, and the note says HDR10 (PQ), 10-bit
+ok: while the player (8-bit BT.709) still shows it tone-mapped
+ok: an HLG project is tagged arib-std-b67
+ok: HDR to SDR chosen tone-maps whatever the encoder
+ok: an SDR picture on the Sequence (an image) blocks it: tone-mapped, and the note names it
+   SDR: ffmpeg -hide_banner -y -f rawvideo -pix_fmt yuv420p -video_size 3840x2160 -framerate 30/1 -color_range tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 -i pipe:0 -map 0:v:0 -c:v libx265 -preset veryslow -crf 20 -pix_fmt yuv420p10le -color_range tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 -map_chapters -1 -movflags +faststart D:/out/hdr.mp4
+   HDR: ffmpeg -hide_banner -y -f rawvideo -pix_fmt p010le -video_size 3840x2160 -framerate 30/1 -color_range tv -colorspace bt2020nc -color_primaries bt2020 -color_trc smpte2084 -i pipe:0 -map 0:v:0 -c:v libx265 -preset veryslow -crf 20 -pix_fmt yuv420p10le -color_range tv -colorspace bt2020nc -color_primaries bt2020 -color_trc smpte2084 -map_chapters -1 -movflags +faststart D:/out/hdr.mp4
+ok: without HdrTransfer the command is as before: I420 piped, BT.709 tagged in and out
+ok: with it: P010 piped (twice NV12's bytes, FlagReadbackP010), tagged BT.2020nc / BT.2020 / smpte2084 on the pipe and on the stream, nothing BT.709
+ok: and nothing else differs
+ok: options that name no pixel format are handed 10 bits: p010le to a hardware encoder (HLG tagged arib-std-b67), yuv420p10le to a software one
+ok: Auto-Captions with no text cues (transcribed at export) block it too: tone-mapped, and the note says the captions are SDR
+ok: an HDR source in an SDR project under Match Project Settings points to HDR to SDR (Tonemap); with it chosen, says it is tone-mapped

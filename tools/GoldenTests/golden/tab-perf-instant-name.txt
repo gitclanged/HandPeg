@@ -1,0 +1,15 @@
+# A file opened into a tab with nothing open names the tab at once, with the name the open leaves; a failed open puts the name back.
+ok: a video dropped on a blank + tab is opened into it (RouteOf: OpenOrReplace, LoadDroppedFile)
+ok: the tab is named for the file as its open begins, before the file is probed or open
+ok: once it is open, the name is the very same (the file's): nothing is renamed as the open ends
+ok: an open that failed puts New Project back (the name the + tab had)
+ok: a name the New Project studio gave comes first, before and after the open, exactly as before
+ok: a project file's name comes first of all
+ok: no name is taken with a video open or a project file (they name the tab), in a tab not brought back (new work gets a tab of its own), nor from a link
+ok: NewProjectName and CurrentProjectPath are told when they change (HasSource and LocalMediaPath were)
+ok: and not when they are set to what they are
+ok: the window refreshes the tab's name at once on a change of any of the four
+ok: the name only: no fingerprint or dot, playing or not, never mid-switch or for a tab not brought back
+ok: the name is taken as the open begins and let go as it ends (the view model's name then); a tab put behind meanwhile keeps no name of an open not made in it
+ok: OpenNamingTabAsync: named before the open, the name put right in its finally (a failed or faulted open too)
+ok: every open into a tab with nothing open goes through it: a drop (OpenOrReplace, several files), the Media pane and File > Open (LoadDroppedFile), a drop on a Game Preset

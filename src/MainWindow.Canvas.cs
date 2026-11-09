@@ -296,7 +296,7 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Draws the output frame, in whatever shape Resolution &amp; Cropping on the Video tab gives it, with a box
+    /// Draws the output frame, in whatever shape the Export tab's Resolution gives it, with a box
     /// for each track's clip (5.2-AuditB: every video's alike), and the caption box when auto-captions are. Every box is
     /// dragged to move its layer, and carries a resize handle on its corner. The boxes and the sliders show the same
     /// numbers: moving either moves the other.

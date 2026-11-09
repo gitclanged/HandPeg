@@ -1,0 +1,7 @@
+# A padded file looped to the end of the timeline: every round as long as its picture, never its container, so no padding at a seam or at the end.
+ok: opened: a padded file (picture 9.95 s at 30 fps, container 10.02 s), its whole length the picture's 298 frames
+ok: four rounds (three of 298 frames and a short last one) from 0 s to the 30 s end
+ok: every round, the first included, no longer than the picture: no padding shown at a seam
+ok: and every round's media inside the picture, the last one too: no frozen or black tail at the end
+ok: the rounds meet end to start, with no gap
+ok: the rounds after the first from the file's first frame, silent (4.2.0's loop)

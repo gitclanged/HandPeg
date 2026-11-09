@@ -97,6 +97,10 @@ public sealed partial class UnifiedTimelineControl
     private DropMark? _dropMark;
     private FormattedText? _dropWords;
     private string? _dropWordsOf;
+
+    // The words on a new track's insertion bar (5.4A), laid out once for the screen's DPI.
+    private FormattedText? _newTrackWords;
+    private const string NewTrackWords = "+ New Video Track";
     private FormattedText? _emptyHint;
 
     // Words laid out once: glyphs and short texts, by text, colour, size and face.
@@ -1365,6 +1369,7 @@ public sealed partial class UnifiedTimelineControl
         _emptyHint = null;
         _dropWords = null;
         _dropWordsOf = null;
+        _newTrackWords = null;
         foreach (var lane in _lanes)
         {
             lane.Row.NameText = null;
@@ -1445,8 +1450,8 @@ public sealed partial class UnifiedTimelineControl
             };
 
             // A slip slides its frames alone: its sound stack's lanes are not moved (a slip carries only its captions), so the sound
-            // they play stays at the block's own left until the let-go.
-            var away = drag.Target is not null;
+            // they play stays at the block's own left until the let-go. Half seen over another row, or at a seam (5.4A).
+            var away = drag.Target is not null || drag.NewTrack is not null;
             if (away)
                 drawing.PushOpacity(0.5);
             DrawBlock(drawing, lane, block, rect, contentLeft, null, from, to, dpi, drag.Kind == BlockEdit.Slip ? rect.Left : null);
@@ -1483,6 +1488,11 @@ public sealed partial class UnifiedTimelineControl
                 var ghost = new Rect(block.Left - _originX, over.Top + 1, Math.Max(block.Width, 3), Math.Max(over.Height - 2, 1));
                 drawing.DrawRoundedRectangle(drag.Fits ? GhostFill : RefusedFill, drag.Fits ? GhostOutline : RefusedOutline, ghost, 3, 3);
             }
+
+            // At a seam (5.4A): the insertion bar where the new track goes, across the time area, in the accent (red where it may not
+            // go there after all), and what it means.
+            if (drag.NewTrack is { } seam)
+                DrawNewTrackBar(drawing, seam.Y, drag.NewTrackFits && drag.FamilyFits, from, to, dpi.PixelsPerDip);
         }
 
         if (_fadeDrag is { } fadeDrag && LaneOf(fadeDrag.Row) is >= 0 and var fadeLane)
@@ -1560,6 +1570,21 @@ public sealed partial class UnifiedTimelineControl
         (false, true) => string.Create(CultureInfo.InvariantCulture, $"L Cut: the sound lasts {seconds:0.00} s past the picture"),
         _ => string.Create(CultureInfo.InvariantCulture, $"The sound stops {-seconds:0.00} s before the picture ends"),
     };
+
+    /// <summary>
+    /// A new track's insertion bar (5.4A, a clip dragged to a seam): 3 DIPs across the time area at <paramref name="y"/> (laid out), in the
+    /// accent where the clip may go (red where it may not), with "+ New Video Track" on it at the left. The words are laid out once.
+    /// </summary>
+    private void DrawNewTrackBar(DrawingContext drawing, double y, bool fits, double from, double to, double pixelsPerDip)
+    {
+        var bar = fits ? _accent : RefusedOutline.Brush;
+        drawing.DrawRectangle(bar, null, new Rect(from, y - 1.5, to - from, 3));
+        _newTrackWords ??= new FormattedText(NewTrackWords, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, LabelFace, 10.5, Brushes.White, pixelsPerDip);
+        var text = _newTrackWords;
+        var box = new Rect(from + 8, Math.Max(y - text.Height - 4, 0), text.Width + 10, text.Height + 2);
+        drawing.DrawRoundedRectangle(bar, null, box, 3, 3);
+        drawing.DrawText(text, new Point(box.Left + 5, box.Top + 1));
+    }
 
     /// <summary>Where dropped files would land: a bar at the moment on the row (or a band for a new row under them all), and how many.</summary>
     private void DrawDropMark(DrawingContext drawing, DropMark mark, double scale, double from, double to, double pixelsPerDip)
@@ -1658,17 +1683,33 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
+    /// How many waveform tiles the timeline keeps at most (Pass 5.4D-TabPerf, the UI thread): 256, and more while project tabs are kept in
+    /// memory (the window sets 256 + 128 for each, at most 1024, each tile some 32 KB), so a tab's sounds are not drawn again as it comes
+    /// back. Made smaller, the next tile made trims the rest.
+    /// </summary>
+    public static int WaveTileCapacity
+    {
+        get => WaveTiles.CacheCap;
+        set => WaveTiles.CacheCap = Math.Max(WaveTiles.LeastCap, Math.Min(value, WaveTiles.MostCap));
+    }
+
+    /// <summary>
     /// Waveforms as frozen tiles (4.4): a sound's peaks drawn once per zoom step (every doubling of how many pixels a second
     /// of the sound takes) in stretches 512 pixels long, at unit height, so a track's height, its gain and a mini-stack's
     /// thin lanes never make one again, and a pan or a drag only places them. At most 8 are made a render (crossing a zoom
-    /// step never stalls a frame; the step below stands in meanwhile), and at most about 256 are kept, those of sounds no
-    /// longer held going with them. Used on the UI thread only.
+    /// step never stalls a frame; the step below stands in meanwhile), and at most about 256 are kept (Pass 5.4D-TabPerf: more
+    /// while project tabs are kept in memory, <see cref="WaveTileCapacity"/>), those of sounds no longer held going with them.
+    /// Used on the UI thread only.
     /// </summary>
     private static class WaveTiles
     {
         public const double TilePixels = 512;
         public const int LeastBucket = -12, MostBucket = 16;
-        private const int CacheCap = 256, BuildsPerRender = 8, MostColumns = 1024;
+        public const int LeastCap = 256, MostCap = 1024;
+        private const int BuildsPerRender = 8, MostColumns = 1024;
+
+        /// <summary>How many tiles are kept at most (<see cref="WaveTileCapacity"/>).</summary>
+        public static int CacheCap { get; set; } = LeastCap;
 
         private sealed class Tile(StreamGeometry geometry, long used)
         {

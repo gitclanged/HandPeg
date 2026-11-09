@@ -43,6 +43,10 @@ public partial class MainWindow
         };
         TitleText.SizeChanged += (_, _) => FitTitleStatus();
         TitleRight.SizeChanged += (_, _) => FitTitleStatus();
+        ProjectTabStrip.SizeChanged += (_, _) => FitTitleStatus();
+
+        // The project tabs (5.4A): one tab, made in memory, at the first frame; nothing read from the disk before it.
+        InitializeProjectTabs();
         DependencyPropertyDescriptor.FromProperty(TitleProperty, typeof(Window)).AddValueChanged(this, (_, _) => TitleText.Text = Title);
         DependencyPropertyDescriptor.FromProperty(VisibilityProperty, typeof(UIElement)).AddValueChanged(UpdateNotice, (_, _) => ApplyStatusBar());
         // Inside WM_SIZE: a new place for the window waits until that message is done (WPF lays it out from that message's size).
@@ -142,30 +146,68 @@ public partial class MainWindow
         TitleStatus.ToolTip = work.IsVisible ? "Work in progress: rest the pointer here to see it all, pause it or cancel it." : status.Length > 0 ? status : null;
         TitleProgress.Visibility = work.IsVisible ? Visibility.Visible : Visibility.Collapsed;
         UpdateTitleProgress();
+        PlaceTitleStatus();
     }
 
     // The status stays in the middle of the bar, between what is at its two ends, never under them (5.3-Stage3: a long one ran from
-    // the window's name to under the caption buttons; the Settings screen's FitTitleStatus already held it).
+    // the window's name to under the caption buttons; the Settings screen's FitTitleStatus already held it). Since 5.4A the project tabs
+    // after the name count as the left end, and the tabs themselves share the room between the name and the buttons (FitProjectTabs).
+    // 5.4C: tabs reaching the middle push the status right instead of hiding it (TitleStatusPlace).
     private void FitTitleStatus()
     {
-        var left = TitleText.ActualWidth + TitleText.Margin.Left + TitleText.Margin.Right;
-        TitleStatus.MaxWidth = Math.Max(0, TitleBar.ActualWidth - 2 * Math.Max(left, TitleRight.ActualWidth));
+        PlaceTitleStatus();
+        FitProjectTabs(TitleBar.ActualWidth - TitleNameWidth - TitleRight.ActualWidth);
     }
 
-    /// <summary>The dim fill: as far across as the work has got, or (work that cannot say) the whole bar, fainter.</summary>
+    private double TitleNameWidth => TitleText.ActualWidth + TitleText.Margin.Left + TitleText.Margin.Right;
+
+    // The status where it fits (5.4C): its whole text measured as one line, then laid between the ends by TitleStatusPlace.
+    private void PlaceTitleStatus()
+    {
+        TitleStatusText.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        var wanted = TitleStatusText.DesiredSize.Width + TitleStatus.Padding.Left + TitleStatus.Padding.Right;
+        var (left, width) = TitleStatusPlace(TitleBar.ActualWidth, TitleNameWidth + ProjectTabStrip.ActualWidth, TitleRight.ActualWidth, wanted);
+        TitleStatus.Margin = new Thickness(left, 0, 0, 0);
+        TitleStatus.MaxWidth = width;
+    }
+
+    /// <summary>The narrowest the status is shown, in DIPs: less than this between the ends, and it hides rather than show an ellipsis.</summary>
+    internal const double TitleStatusMinWidth = 64;
+
+    /// <summary>
+    /// Where the status lies on the bar and how wide it may be (5.4C, the user's call; pure: titlebar-tab-hittest): in the middle while
+    /// it fits there; pushed right by the left end (the name and the tabs) as far as the right end (the caption buttons) lets it; trimmed
+    /// only once it fills the whole gap between them; and hidden (width 0) when that gap is under <see cref="TitleStatusMinWidth"/>.
+    /// </summary>
+    internal static (double Left, double Width) TitleStatusPlace(double barWidth, double leftWidth, double rightWidth, double wanted)
+    {
+        var room = barWidth - leftWidth - rightWidth;
+        if (room < TitleStatusMinWidth || wanted <= 0)
+            return (Math.Max(0, leftWidth), 0);
+        // Never Math.Clamp: with the status filling the gap its two bounds are the same number, and rounding can put the lower a hair
+        // over the upper (which throws). The left end wins.
+        var width = Math.Min(wanted, room);
+        return (Math.Max(leftWidth, Math.Min((barWidth - width) / 2, barWidth - rightWidth - width)), width);
+    }
+
+    /// <summary>The dim fill and the rail at its foot: as far across as the work has got, or (work that cannot say) the whole bar, fainter.
+    /// Both lie over the project tabs (5.4D: ZIndex 10, never hit), so the rail shows even where an opaque tab face hides the wash.</summary>
     private void UpdateTitleProgress()
     {
         if (TitleProgress.Visibility != Visibility.Visible)
             return;
 
         var work = WorkScheduler.Summary;
-        TitleProgressFill.Width = work.IsIndeterminate ? TitleBar.ActualWidth : TitleBar.ActualWidth * Math.Clamp(work.Percent, 0, 100) / 100;
+        TitleProgressFill.Width = work.IsIndeterminate ? TitleBar.ActualWidth : TitleBar.ActualWidth * Math.Max(0, Math.Min(work.Percent, 100)) / 100;
         TitleProgressFill.Opacity = work.IsIndeterminate ? TitleProgressFaint : TitleProgressStrength;
+        TitleProgressRail.Width = TitleProgressFill.Width;
+        TitleProgressRail.Opacity = work.IsIndeterminate ? TitleProgressRailFaint : 1;
     }
 
     // How strongly the accent colour lies over the title bar: every theme's fill is this wash, so its contrast and saturation against
-    // the bar go with it (the user's call: a quarter stronger than the 0.14 and 0.07 of before, on all five themes).
-    private const double TitleProgressStrength = 0.175, TitleProgressFaint = 0.0875;
+    // the bar go with it (CLAUDE.md section 8, 5.4D: a 16% wash, half that for work that cannot say, now that the 2 DIP rail carries the
+    // progress over the tabs; 0.175 / 0.0875 before).
+    private const double TitleProgressStrength = 0.16, TitleProgressFaint = 0.08, TitleProgressRailFaint = 0.5;
 
     // ----- The caption buttons -----
 
@@ -614,7 +656,7 @@ public partial class MainWindow
     //   the desktop drawing the frame (answering it while minimized turned that off for good, measured).
     // - WM_NCUAHDRAWCAPTION, WM_NCUAHDRAWFRAME: swallowed in every state (WindowChrome's worker has no answer for them).
     // - WM_NCHITTEST: the frame hit-tested in real pixels (FrameHitTest).
-    // A window with Windows' own caption (the side window, DockWindows) has no such hook: its caption must repaint on activation.
+    // The side windows (5.4C, DockWindows) draw their own frame too: WindowChrome and this hook, as the Settings screen.
 
     /// <summary>What <see cref="FrameHook"/> does with a message (<see cref="FrameDecision"/>).</summary>
     internal enum FrameAnswer
@@ -661,8 +703,8 @@ public partial class MainWindow
     };
 
     /// <summary>
-    /// The window hook of every window that draws its own frame: the main window's (through <see cref="TitleBarHook"/>) and the
-    /// Settings screen's (4.4). Windows never paints a classic caption or frame over its picture (see the section above); maximized
+    /// The window hook of every window that draws its own frame: the main window's (through <see cref="TitleBarHook"/>), the
+    /// Settings screen's (4.4) and the side windows' (5.4C). Windows never paints a classic caption or frame over its picture (see the section above); maximized
     /// beside a taskbar that hides itself, the window is placed short of it (its client area always the whole window); and its frame
     /// is hit-tested in real pixels (FrameHitTest), so its title bar's buttons take their clicks under HandPeg's UI scale.
     /// </summary>

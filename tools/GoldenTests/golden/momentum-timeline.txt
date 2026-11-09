@@ -1,0 +1,26 @@
+# The real Timeline and its ruler: Shift + wheel, the sideways wheel and a middle-button flick coast the view on and stop at its end; the plain wheel coasts the rows; a press, Ctrl + wheel or a zoom stops it.
+ok: laid out without a window: 10 s across, rows 684 DIPs tall in a 300 DIP control
+ok: four quick Shift + wheel notches each pan 120 DIPs later, and the view coasts on
+ok: stepped, it pans on later in 299 shrinking steps (794 DIPs) and stops by itself
+ok: once stopped, a frame pans nothing
+ok: a touchpad's sideways scroll (30 a message, 8 ms apart) pans later and coasts on
+ok: a middle-button flick (300 DIPs in 60 ms) pans one for one, then the view coasts on
+ok: its first 100 ms pan on 453 DIPs later, slowing
+ok: a press on the timeline stops the coast where it is
+ok: a slow middle-button drag (100 DIP/s) stops dead when let go
+ok: a flick held still for 40 ms before letting go stops dead (careful cut alignment never coasts)
+ok: a flick near the end coasts into it and stops there (the view at 50 s, its last start)
+ok: Ctrl + wheel zooms (twice) and stops the coast; it never coasts itself
+ok: the view set to another span (a zoom, a fit) stops the coast
+ok: three quick plain notches scroll the rows 48 DIPs each (144) and coast on
+ok: the rows coast on down to the bottom (384) and stop there
+ok: and back up, to the top, where they stop
+ok: with Enable Momentum Scrolling off, four quick notches pan 120 each and nothing more
+ok: on the ruler, a middle-button flick pans one for one and coasts on
+ok: its coast pans on later, slowing (238 DIPs in 50 ms)
+ok: a zoom (the ruler shown at another span) stops it
+ok: a slow drag on the ruler stops dead
+ok: quick Shift + wheel notches over the ruler coast too
+ok: and a press on the ruler stops it
+ok: WM_MOUSEHWHEEL reaches the timeline through a hook of its own (MainWindow.TimelineView.cs), not TitleBarHook or FrameHook
+ok: the playhead turning the page (FollowPlayhead) stops a coast first

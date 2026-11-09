@@ -1,0 +1,18 @@
+# A project written straight into its file (5.4D-TabPerf): the very bytes its text was, the undo steps' Base64 escaped as before, whole or not at all, without the text of all of it.
+ok: the file written as a stream is the project's text, byte for byte
+ok: no byte order mark
+ok: every step's Base64 is the text Convert.ToBase64String made, escaped as before (23 steps)
+ok: the steps' "+" and "/" are there to be escaped ("+" as \u002B)
+ok: read back, the history is the one written, step for step and byte for byte (the newest twenty undo steps)
+ok: and the Sequence and the name are as they were
+ok: read and written again as a stream, the same file
+   the file: 852668 bytes, SHA-256 19436689F35749264A19261A04E0AD55B19321652178EE7CC55193D031AE174E
+ok: a write that fails part of the way passes the failure on and leaves the old file as it was
+ok: and leaves nothing beside it (no half-written .tmp)
+ok: a file of a newer format is refused, never written over
+ok: a newer format is refused from the header at the start of a big text
+ok: a text whose header comes after 9,000 characters (by hand) is read as before
+ok: and one without its writer's name
+ok: a big text of format 5 is refused as format 5
+ok: and one that is no project as none
+ok: a streamed write allocates at least one and a half times the file's size less than the text made first (its string alone is twice it)

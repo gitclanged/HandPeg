@@ -375,7 +375,7 @@ public static class DogfoodTests
     private static void EncoderSteps(Action<bool, string> expect, StringBuilder text)
     {
         expect(MainViewModel.BestStepOf(EncoderFamily.Nvenc) == "p7", "NVENC's best is p7");
-        expect(MainViewModel.BestStepOf(EncoderFamily.Amf) == "quality", "AMF's is quality");
+        expect(MainViewModel.BestStepOf(EncoderFamily.Amf) == "high_quality", "AMF's is high_quality (5.4B: slower than quality)");
         expect(MainViewModel.BestStepOf(EncoderFamily.Qsv) == "veryslow", "QSV's is veryslow");
         expect(MainViewModel.BestStepOf(EncoderFamily.Software) is null, "software has no such default");
 
@@ -388,7 +388,7 @@ public static class DogfoodTests
             vm.VideoEncoder = option;
         }
 
-        expect(vm.EncoderPreset == "medium", "software starts at medium");
+        expect(vm.EncoderPreset == "veryslow", "software starts at veryslow (5.4B: the highest quality, CLAUDE.md 8)");
         Choose("hevc_qsv");
         expect(vm.EncoderPreset == "veryslow", "QSV starts at veryslow, though it has a medium too");
         vm.EncoderPreset = "fast";
@@ -396,7 +396,7 @@ public static class DogfoodTests
         Choose("h264_nvenc");
         expect(vm.EncoderPreset == "p7", "NVENC starts at p7");
         Choose("hevc_amf");
-        expect(vm.EncoderPreset == "quality", "AMF starts at quality");
+        expect(vm.EncoderPreset == "high_quality", "AMF starts at high_quality");
         Choose("libx264");
         expect(vm.EncoderPresets.Contains(vm.EncoderPreset), "back on software it has one of its own steps");
 

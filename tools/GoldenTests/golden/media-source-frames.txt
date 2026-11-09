@@ -1,0 +1,6 @@
+# The preview's stills: latest wins (one made at a time, a newer request takes a waiting one's place), none asked for while a drag and drop holds work.
+ok: one still at a time: the second request, waiting, is replaced by the third (null), the first and the third made; asked for: 1 fast, 3
+ok: while a drag and drop holds background work, no still is asked for
+ok: let go, the still waiting is made
+ok: Cancel lets go of the request waiting (null)
+ok: a request already cancelled is never made (null)

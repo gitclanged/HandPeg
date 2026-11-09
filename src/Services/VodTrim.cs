@@ -135,7 +135,8 @@ public static class VodTrim
                 return clip;
 
             var moved = clip.Snapshot();
-            (moved.SourcePath, moved.MediaOffset, moved.SourceDuration) = (piece.Path, clip.MediaOffset - piece.From, piece.Length);
+            // A piece is a file of its own: how long its picture is beside its container is not known (5.4A, PictureDuration 0).
+            (moved.SourcePath, moved.MediaOffset, moved.SourceDuration, moved.PictureDuration) = (piece.Path, clip.MediaOffset - piece.From, piece.Length, 0.0);
             var look = TimelineTransaction.CopyOf(clip.State);
             (look.ImagePath, look.MediaOffset, look.MediaDuration) = (piece.Path, Math.Max(look.MediaOffset - piece.From, 0), piece.Length);
             moved.State = look;

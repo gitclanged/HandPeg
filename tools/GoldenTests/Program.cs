@@ -143,6 +143,32 @@ public static class Program
         if (filter is null || "exploded-3d-transition-pacing".Contains(filter, StringComparison.OrdinalIgnoreCase))
             results.Add(ExplodedViewTests.Pacing());
         results.Add(ExplodedViewTests.Gestures());
+        // Pass 5.4A: the NLE fixes (a clip onto a new track, the blur under every picture, drops, the export's end, the pill), Project
+        // Settings with the Summary tab retired and the New Project studio, and the title bar's project tabs.
+        results.AddRange(NleFixesTests.All());
+        results.AddRange(ProjectSettingsTests.All());
+        results.AddRange(ProjectTabsTests.All());
+        // Pass 5.4B: the title-bar tabs shown only for a project (and dragged, their menu and card), the unified Export Presets and
+        // the 3-column Export tab with its defaults and HDR passthrough, and the Export Quality Preview (the encode loopback).
+        results.AddRange(ProjectTabsPolishTests.All());
+        results.AddRange(ExportPresetsTests.All());
+        if (filter is null || "export-loopback".Contains(filter, StringComparison.OrdinalIgnoreCase) || "export-hdr-readback".Contains(filter, StringComparison.OrdinalIgnoreCase))
+            results.AddRange(ExportLoopbackTests.All());
+        // Pass 5.4C: the Project Media bin and the Media Browser's three views, momentum scrolling, the studios as dock panes with the
+        // new Vertical & Shorts Studio layout, and any number of side windows.
+        results.AddRange(MediaBrowserTests.All());
+        results.AddRange(MomentumTests.All());
+        results.AddRange(StudioPanesTests.All());
+        results.AddRange(SideWindowTests.All());
+        // Pass 5.4D: the dock splitter and the unified Layout selector with the default startup layout (A), the Live Encoded Preview on
+        // the player bar and the 5.4C answers (B), each project tab's own 3D view and window layout (C).
+        results.AddRange(LayoutSelectorTests.All());
+        results.AddRange(EncodedPreviewQaTests.All());
+        results.AddRange(TabWindowStateTests.All());
+        // Pass 5.4D-TabPerf: tabs kept live and swapped (T), the worker's frame cache and memory (W), the managed heap (H).
+        results.AddRange(TabPerfTests.All());
+        results.AddRange(WorkerMemoryTests.All());
+        results.AddRange(MemoryHygieneTests.All());
         // Last of all: its tour needs the WPF Application it makes, and a view model works otherwise once there is one (its command
         // and its undo steps go through the dispatcher, which nothing here pumps), so no test after it would see what it saw alone.
         results.AddRange(UiScaleTests.All());
@@ -150,6 +176,13 @@ public static class Program
         // layouts under an open one; after the UI-scale tests, on the WPF Application they made.
         if (filter is null || "header-flyouts-placement".Contains(filter, StringComparison.OrdinalIgnoreCase))
             results.Add(HeaderFlyoutTests.Run());
+        // Pass 5.4D's cases on the WPF Application made above.
+        results.AddRange(LayoutSelectorTests.Live());
+        results.AddRange(EncodedPreviewQaTests.Live());
+        results.AddRange(TabWindowStateTests.Live());
+        results.AddRange(TabPerfTests.Live());
+        results.AddRange(WorkerMemoryTests.Live());
+        results.AddRange(MemoryHygieneTests.Live());
         if (filter is not null)
             results = results.Where(r => r.Golden.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
 

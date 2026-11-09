@@ -6,45 +6,67 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using System.Windows.Threading;
-using HandPegApp.Services;
 using HandPegApp.ViewModels;
 using Microsoft.Win32;
 
-namespace HandPegApp;
+namespace HandPegApp.Views;
 
 /// <summary>
-/// Where the voiceover is made: recorded from a microphone with Record, Pause and Stop, or brought in from
-/// a file, then trimmed, placed and set to a level. The voiceover belongs to the main window's settings,
-/// and the encode takes it as a second input.
+/// The Voiceover Studio as a dock pane (5.4C; the Voiceover Studio window until then): where the voiceover is made, recorded from
+/// a microphone with Record, Pause and Stop, or brought in from a file, then trimmed, placed and set to a level. The voiceover
+/// belongs to the main window's settings, and the encode takes it as a second input. The recording lives in the view model, so it
+/// goes on while the pane is behind another tab; closing the pane finishes it (<see cref="FinishRecording"/>). Every dock rebuild
+/// takes the pane out and puts it back, so it listens to the view model only while it is loaded, and attaching twice does nothing.
+/// Its keys are the main window's (in a side window too: the window hands them on).
 /// </summary>
-public partial class VoiceoverStudioDialog : Window
+public partial class VoiceoverStudioPane : UserControl
 {
     private readonly MainViewModel _viewModel;
+    private bool _attached, _microphonesAsked;
 
-    public VoiceoverStudioDialog(MainViewModel viewModel)
+    public VoiceoverStudioPane(MainViewModel viewModel)
     {
         InitializeComponent();
         _viewModel = viewModel;
-        DataContext = viewModel;
-        ThemeManager.ApplyTitleBar(this);
-
-        Loaded += (_, _) =>
-        {
-            if (_viewModel.Microphones.Count == 0)
-                _viewModel.RefreshMicrophonesCommand.Execute(null);
-        };
-
-        // The bar follows the recording and the cuts for as long as the window is open.
         _timer.Tick += (_, _) => UpdateCursor();
+        Loaded += (_, _) => Attach();
+        Unloaded += (_, _) => Detach();
+    }
+
+    /// <summary>The bar follows the recording and the cuts for as long as the pane is in a window.</summary>
+    private void Attach()
+    {
+        if (_attached)
+            return;
+
+        _attached = true;
         _viewModel.PropertyChanged += ViewModel_PropertyChanged;
         _viewModel.TimelineChanged += RedrawRecordBar;
-        Closed += (_, _) =>
-        {
-            _timer.Stop();
-            _viewModel.PropertyChanged -= ViewModel_PropertyChanged;
-            _viewModel.TimelineChanged -= RedrawRecordBar;
-        };
+
+        // The microphones are looked for the first time the studio is shown (not when HandPeg starts).
+        if (!_microphonesAsked && _viewModel.Microphones.Count == 0)
+            _viewModel.RefreshMicrophonesCommand.Execute(null);
+        _microphonesAsked = true;
         SyncRecordClock();
+        RedrawRecordBar();
+    }
+
+    private void Detach()
+    {
+        if (!_attached)
+            return;
+
+        _attached = false;
+        _timer.Stop();
+        _viewModel.PropertyChanged -= ViewModel_PropertyChanged;
+        _viewModel.TimelineChanged -= RedrawRecordBar;
+    }
+
+    /// <summary>The pane is closed in the middle of a recording: it is finished, so that nothing said is lost.</summary>
+    public void FinishRecording()
+    {
+        if (_viewModel.StopVoiceoverCommand.CanExecute(null))
+            _viewModel.StopVoiceoverCommand.Execute(null);
     }
 
     // ----- The recording timeline -----
@@ -67,7 +89,6 @@ public partial class VoiceoverStudioDialog : Window
             RedrawRecordBar();
     }
 
-
     private void RecordBar_SizeChanged(object sender, SizeChangedEventArgs e) => RedrawRecordBar();
 
     /// <summary>Starts, holds or resets the clock behind the moving line, following what the recorder is doing.</summary>
@@ -80,8 +101,10 @@ public partial class VoiceoverStudioDialog : Window
                 if (!_resuming)
                     _recordClock.Reset();
                 _recordClock.Start();
-                _timer.Start();
             }
+
+            if (_attached)
+                _timer.Start();
         }
         else
         {
@@ -158,18 +181,9 @@ public partial class VoiceoverStudioDialog : Window
             Title = "Choose the voiceover",
             Filter = "Audio|*.wav;*.mp3;*.m4a;*.aac;*.flac;*.ogg;*.opus;*.wma|All files|*.*",
         };
-        if (dialog.ShowDialog(this) == true)
+        // Owned by the window the pane is in (the main window, or a side window).
+        var owner = Window.GetWindow(this);
+        if ((owner is null ? dialog.ShowDialog() : dialog.ShowDialog(owner)) == true)
             await _viewModel.ImportVoiceoverAsync(dialog.FileName);
-    }
-
-    private void Close_Click(object sender, RoutedEventArgs e) => Close();
-
-    /// <summary>Closing in the middle of a recording finishes it, so that nothing said is lost.</summary>
-    protected override void OnClosing(CancelEventArgs e)
-    {
-        if (_viewModel.StopVoiceoverCommand.CanExecute(null))
-            _viewModel.StopVoiceoverCommand.Execute(null);
-
-        base.OnClosing(e);
     }
 }

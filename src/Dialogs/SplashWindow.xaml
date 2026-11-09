@@ -87,7 +87,7 @@
             </ItemsControl>
         </StackPanel>
         <TextBlock x:Name="NoStylesText" Visibility="Collapsed" Foreground="{DynamicResource MutedTextBrush}" Margin="0,16,0,0" TextWrapping="Wrap"
-                   Text="There are no Game Presets yet. Set up Cutouts, colors or captions, then use Export Game Preset on the Summary tab: Game Presets saved in the Styles folder appear here." />
+                   Text="There are no Game Presets yet. Set up Cutouts, colors or captions, then use Export Game Preset under the ... button beside the Timeline's Game Presets box: Game Presets saved in the Styles folder appear here." />
 
         <!-- The Social Sharing Squisher: a video dropped on a preset is squeezed under its size, here, without being opened -->
         <StackPanel x:Name="SquisherPanel" Margin="0,18,0,0">

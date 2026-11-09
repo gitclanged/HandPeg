@@ -1,0 +1,17 @@
+# The studios are dock panes: UserControls made by factories, listed in Tabs and Panes, the old windows and the Subtitle Editor gone.
+ok: no "Subtitle Editor" is left in src (it is the Subtitle Studio)
+ok: the old windows' files are gone: SubtitleEditorWindow, VoiceoverStudioDialog, QueueWindow
+ok: the four are UserControls, not windows: SubtitleStudioPane, VoiceoverStudioPane, RenderQueuePane, VideoScopesPane
+ok: SubtitleStudioPane.xaml: a UserControl with its title slot for SubtitleStudio
+ok: VoiceoverStudioPane.xaml: a UserControl with its title slot for VoiceoverStudio
+ok: RenderQueuePane.xaml: a UserControl with its title slot for RenderQueue
+ok: VideoScopesPane (built in code): its title slot for VideoScopes
+ok: the Subtitle Studio claims its keys (IOwnsKeys)
+ok: none of them is in MainWindow.xaml (its PaneLibrary is parsed before the first frame: Law 1)
+ok: RegisterStudioPanes registers the four with factories (made when first shown)
+ok: none is made ahead at idle (RealizeTabsWhenIdle: Law 2)
+ok: Tabs and Panes lists the four (PaneToggles ends with StudioToggles), each ticked while the arrangement holds it
+ok: the Render Queue and Voiceover Studio openers open their panes
+ok: Edit Captions opens the Subtitle Studio pane, making the cues from the captions first when there are none
+ok: the Subtitle Studio is not modal, never sets IsSubtitleEditorOpen, runs no clock and keeps no undo of its own
+ok: closing the Voiceover Studio finishes a recording under way, as closing its window did

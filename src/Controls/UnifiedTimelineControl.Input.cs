@@ -75,6 +75,18 @@ public sealed partial class UnifiedTimelineControl
 
         /// <summary>The block itself rides with another block of its group (its parent's move or trim takes it): only the group's other edits are made.</summary>
         public bool CarriedByGroup { get; set; }
+
+        /// <summary>Where the pointer was pressed, down the rows (laid out): a move goes for a new track's seam only once it has gone far enough from it.</summary>
+        public double PointerY { get; init; }
+
+        /// <summary>
+        /// The seam a move is over (5.4A): a new track goes in above or below the top-level picture row <c>Beside</c>, the insertion bar
+        /// drawn at <c>Y</c> (laid out). Null while it is over none, or the host refuses it there.
+        /// </summary>
+        public (TimelineRow Beside, bool Above, double Y)? NewTrack { get; set; }
+
+        /// <summary>Whether the block may go onto the new track at <see cref="NewTrack"/> (the host's CanMoveToNewTrack, and its children within the timeline).</summary>
+        public bool NewTrackFits { get; set; }
     }
 
     // An edge pressed at a seam of folded dead air (4.4 BugHunt, Q11): the seam, which edge (true: the later clip's start,
@@ -164,6 +176,15 @@ public sealed partial class UnifiedTimelineControl
     // A drag with the middle button: where the pointer was.
     private double? _panFrom;
 
+    // Momentum (5.4C): along the view (Shift + wheel, the sideways wheel, a middle-button flick) and down the rows (the plain wheel),
+    // made at their first use, so nothing of it exists before Frame 1; how far the middle-button drag has panned since its press.
+    private MomentumScroller? _momentumX, _momentumY;
+    private double _panTravel;
+
+    private MomentumScroller MomentumX => _momentumX ??= new MomentumScroller();
+
+    private MomentumScroller MomentumY => _momentumY ??= new MomentumScroller();
+
     private IReadOnlyList<double> _snapTimes = [];
     private double _skimSeconds = double.NaN;
 
@@ -206,24 +227,44 @@ public sealed partial class UnifiedTimelineControl
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            if (CallbackFailed is { } failed)
-            {
-                try
-                {
-                    failed(ex);
-                }
-                catch (Exception reporting) when (reporting is not OutOfMemoryException)
-                {
-                    Services.AppLog.Write("Timeline: telling of a failed edit failed", reporting);
-                }
-            }
-            else
-            {
-                Services.AppLog.Write("Timeline: an edit failed", ex);
-            }
-
-            return false;
+            return Failed(ex);
         }
+    }
+
+    /// <summary>A coast's pan step raised as <see cref="Raise"/> does, with nothing made for it (5.4C review: it runs every frame).</summary>
+    private bool RaisePan(double pixels)
+    {
+        try
+        {
+            PanRequested?.Invoke(pixels);
+            return true;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            return Failed(ex);
+        }
+    }
+
+    // What the host did for a raise threw: told to CallbackFailed, else written to the log. Always false.
+    private bool Failed(Exception ex)
+    {
+        if (CallbackFailed is { } failed)
+        {
+            try
+            {
+                failed(ex);
+            }
+            catch (Exception reporting) when (reporting is not OutOfMemoryException)
+            {
+                Services.AppLog.Write("Timeline: telling of a failed edit failed", reporting);
+            }
+        }
+        else
+        {
+            Services.AppLog.Write("Timeline: an edit failed", ex);
+        }
+
+        return false;
     }
 
     // ----- Pressing -----
@@ -758,7 +799,7 @@ public sealed partial class UnifiedTimelineControl
             : BlockEdit.Move;
         return new BlockDrag
         {
-            Row = row, Block = block, Kind = kind, PointerX = point.X, Left = left, Width = block.Width,
+            Row = row, Block = block, Kind = kind, PointerX = point.X, PointerY = point.Y, Left = left, Width = block.Width,
             Ripple = ripple && kind is BlockEdit.TrimEnd or BlockEdit.TrimStart,
             Alt = modifiers.HasFlag(ModifierKeys.Alt) && kind is BlockEdit.Move or BlockEdit.Slip,
         };
@@ -1421,10 +1462,9 @@ public sealed partial class UnifiedTimelineControl
     {
         base.OnMouseMove(e);
         var point = e.GetPosition(this);
-        if (_panFrom is { } from)
+        if (_panFrom is not null)
         {
-            PanRequested?.Invoke(from - point.X);
-            _panFrom = point.X;
+            MiddlePanMove(point.X, MomentumScroller.Now());
             NotePointer(point);
             return;
         }
@@ -1547,11 +1587,27 @@ public sealed partial class UnifiedTimelineControl
                 drag.Block.Left = drag.Group is { Count: > 0 } ? Math.Max(left, drag.GroupFloor) : drag.Block.MayStartBeforeZero ? left : Math.Max(left, 0);
                 if (drag.Group is { Count: > 0 })
                 {
-                    drag.Target = null;
+                    (drag.Target, drag.NewTrack) = (null, null);
                 }
                 else if (pointerMoved)
                 {
-                    TargetUnder(drag, point);
+                    // At a seam above, below or between the picture tracks (5.4A): onto a new track there, where the host takes it;
+                    // anywhere else (or refused there), the row under the pointer as before.
+                    if (NewTrackSeamAt(point, drag) is { } seam && OffersNewTrack(drag, seam))
+                    {
+                        drag.Target = null;
+                    }
+                    else
+                    {
+                        drag.NewTrack = null;
+                        TargetUnder(drag, point);
+                    }
+                }
+                else if (drag.NewTrack is { } seam && drag.Block.CanMoveToNewTrack is { } canNew)
+                {
+                    var (fits, at) = (false, drag.Block.Left);
+                    Raise(() => fits = canNew(seam.Beside.Data, seam.Above, at));
+                    drag.NewTrackFits = fits;
                 }
                 else if (drag.Target is { } target && drag.Block.CanMoveTo is { } canMoveTo)
                 {
@@ -1568,6 +1624,117 @@ public sealed partial class UnifiedTimelineControl
         FollowFamily(drag);
         _overlayDirty = true;
         InvalidateVisual();
+    }
+
+    /// <summary>
+    /// The seam a moved block is over (5.4A, the user's directive: a clip dragged above the top picture track, below the bottom one, or
+    /// into the band along the seam between two of them goes onto a new track there): the top-level picture row the new track goes
+    /// beside, above it or below it, and where the insertion bar is drawn (laid out). A seam between two rows is said as the lower row's,
+    /// above it. The band on each side of a seam is the outer min(14, a quarter) DIPs of the top-level row's own lane, so a row at the
+    /// least height keeps a middle to land on. Only for a block that can go onto a new track, never for a group, and only once the
+    /// pointer has gone twice the system's drag distance up or down from where it was pressed (a move along its own row near its edge
+    /// is never taken for one); at the edges of the block's own track only the one it is heading for. Null for none.
+    /// </summary>
+    private (TimelineRow Beside, bool Above, double Y)? NewTrackSeamAt(Point point, BlockDrag drag)
+    {
+        if (drag.Group is { Count: > 0 } || drag.Block.MoveToNewTrack is null || drag.Block.CanMoveToNewTrack is null
+            || Math.Abs(point.Y - drag.PointerY) <= 2 * SystemParameters.MinimumVerticalDragDistance)
+        {
+            return null;
+        }
+
+        // The picture groups, top to bottom: each top-level Video (or empty) row's run of lanes (its lanes in front above it, its
+        // stacks under it), with its band.
+        _seamGroups.Clear();
+        for (var i = 0; i < _lanes.Count; i++)
+        {
+            var root = i;
+            for (var steps = 0; steps <= _lanes.Count && _lanes[root].Depth > 0 && _lanes[root].Parent >= 0; steps++)
+                root = _lanes[root].Parent;
+            if (_lanes[root] is not { Depth: 0, Row.Kind: TimelineRowKind.Video or TimelineRowKind.Empty })
+                continue;
+
+            if (_seamGroups.Count > 0 && _seamGroups[^1].Root == root && _seamGroups[^1].Last == i - 1)
+            {
+                _seamGroups[^1] = _seamGroups[^1] with { Last = i, Bottom = _lanes[i].Bottom };
+                continue;
+            }
+
+            _seamGroups.Add(new SeamGroup(root, i, i, _lanes[i].Top, _lanes[i].Bottom, Math.Min(SeamBand, _lanes[root].Height / 4)));
+        }
+
+        if (_seamGroups.Count == 0)
+            return null;
+
+        var y = point.Y;
+        var own = -1;
+        for (var g = 0; g < _seamGroups.Count && own < 0; g++)
+        {
+            if (ReferenceEquals(_lanes[_seamGroups[g].Root].Row, drag.Row))
+                own = g;
+        }
+
+        // Which group is above the seam and which below it (-1: the end of the stack), the row the new track goes beside, where the bar is.
+        (int Upper, int Lower, TimelineRow Beside, bool Above, double Y)? found = null;
+        var (first, last) = (_seamGroups[0], _seamGroups[^1]);
+        if (y < first.Top + first.Band)
+        {
+            found = (-1, 0, _lanes[first.Root].Row, true, first.Top);
+        }
+        else if (y >= last.Bottom - last.Band && (y < last.Bottom + LaneGap || BelowPictures(y)))
+        {
+            found = (_seamGroups.Count - 1, -1, _lanes[last.Root].Row, false, last.Bottom);
+        }
+        else
+        {
+            for (var g = 0; g + 1 < _seamGroups.Count; g++)
+            {
+                var (upper, lower) = (_seamGroups[g], _seamGroups[g + 1]);
+                if (lower.First == upper.Last + 1 && y >= upper.Bottom - upper.Band && y < lower.Top + lower.Band)
+                {
+                    found = (g, g + 1, _lanes[lower.Root].Row, true, (upper.Bottom + lower.Top) / 2);
+                    break;
+                }
+            }
+        }
+
+        if (found is not { } seam)
+            return null;
+
+        // At its own track's edges, only the one the pointer is heading for: up for the seam over it, down for the one under it.
+        if (own >= 0 && ((seam.Lower == own && y >= drag.PointerY) || (seam.Upper == own && y <= drag.PointerY)))
+            return null;
+        return (seam.Beside, seam.Above, seam.Y);
+    }
+
+    /// <summary>Whether a height under the picture rows is still below them for a new track: empty space under every row, or the Background row.</summary>
+    private bool BelowPictures(double y)
+    {
+        var under = LaneAt(y);
+        return under < 0 || _lanes[under] is { Depth: 0, Row.Kind: TimelineRowKind.Background };
+    }
+
+    // How deep a seam's band is on each side at most (DIPs of the row's own lane): a quarter of the lane where that is less.
+    private const double SeamBand = 14;
+
+    // A run of lanes that one top-level picture row and its stacks make (NewTrackSeamAt): its root lane, first and last lane, extent and band.
+    private readonly record struct SeamGroup(int Root, int First, int Last, double Top, double Bottom, double Band);
+
+    private readonly List<SeamGroup> _seamGroups = [];
+
+    /// <summary>Asks the host whether the block may go onto a new track at this seam; when it may, the drag is over it (true). Refused, nothing changes.</summary>
+    private bool OffersNewTrack(BlockDrag drag, (TimelineRow Beside, bool Above, double Y) seam)
+    {
+        if (drag.Block.CanMoveToNewTrack is not { } canNew)
+            return false;
+
+        var (fits, at) = (false, drag.Block.Left);
+        Raise(() => fits = canNew(seam.Beside.Data, seam.Above, at));
+        if (!fits)
+            return false;
+
+        (drag.NewTrack, drag.NewTrackFits) = (seam, true);
+        return true;
     }
 
     // The other row a moved block is over (one it may be let go on, its CanMoveTo says whether), or none.
@@ -2194,18 +2361,27 @@ public sealed partial class UnifiedTimelineControl
         _drag = null;
         ReleaseMouseCapture();
         e.Handled = true;
+        CommitDrag(drag);
+    }
+
+    /// <summary>
+    /// A dragged block let go (the release of <see cref="OnMouseLeftButtonUp"/>, its own method so a test can drive it without a mouse,
+    /// <see cref="ReleaseBlockDrag"/>): what the drag did is made, or the block is laid back where it was. False when it was refused.
+    /// </summary>
+    private bool CommitDrag(BlockDrag drag)
+    {
         var block = drag.Block;
         var made = true;
         try
         {
             // Alt and a click that did not move: a cut there (the block goes back to where it was).
-            if (drag.Alt && drag.Travel < RazorTravel && drag.Target is null)
+            if (drag.Alt && drag.Travel < RazorTravel && drag.Target is null && drag.NewTrack is null)
             {
                 PutBack(drag);
                 var scale = PixelsPerSecond;
                 var at = scale > 0 ? drag.PointerX / scale : _viewStart;
                 Raise(() => RazorRequested?.Invoke(drag.Row, block, at));
-                return;
+                return true;
             }
 
             // An edge at a seam: the fold shown again, or more folded into it, by as much as it went.
@@ -2213,7 +2389,7 @@ public sealed partial class UnifiedTimelineControl
             {
                 if (Math.Abs(grip.Seconds) > 1e-4 && block.SeamTrim is { } seamTrim)
                     made = Raise(() => seamTrim(grip.AtStart, grip.Seconds));
-                return;
+                return made;
             }
 
             var changed = Math.Abs(block.Left - drag.Left) > 0.5 || Math.Abs(block.Width - drag.Width) > 0.5;
@@ -2223,6 +2399,13 @@ public sealed partial class UnifiedTimelineControl
             {
                 if (changed)
                     made = CommitGroup(drag, group);
+            }
+
+            // Let go at a seam (5.4A): onto a new track there (or, refused, laid back where it was).
+            else if (drag.NewTrack is { } seam && block.MoveToNewTrack is { } moveNew)
+            {
+                var at = block.Left;
+                made = drag.NewTrackFits && drag.FamilyFits && Raise(() => moveNew(seam.Beside.Data, seam.Above, at));
             }
 
             // Let go on another row: it goes there (or, refused, is laid back where it was).
@@ -2250,7 +2433,7 @@ public sealed partial class UnifiedTimelineControl
             }
 
             // Pressed and let go where it was: a click, which the host may make something of (5.0: the selection).
-            if (!changed && drag.Travel < RazorTravel && Math.Abs(drag.Slip) <= 0.5)
+            if (!changed && drag.Travel < RazorTravel && Math.Abs(drag.Slip) <= 0.5 && drag.NewTrack is null)
             {
                 var row = drag.Row;
                 Raise(() => BlockClicked?.Invoke(row, block));
@@ -2262,7 +2445,40 @@ public sealed partial class UnifiedTimelineControl
                 PutBack(drag);
             EndDrag();
         }
+
+        return made;
     }
+
+    /// <summary>A block pressed at a point on the control (its own coordinates), its drag begun as a press with the mouse begins it: for a test, without a mouse (5.4A).</summary>
+    internal void PressBlockAt(TimelineRow row, TimelineBlock block, Point point, ModifierKeys modifiers)
+    {
+        var laid = Laid(point);
+        _drag = StartDrag(row, block, laid, modifiers);
+        _lastPointer = laid;
+        BeginDrag();
+    }
+
+    /// <summary>The pointer of a block's drag at a point on the control (<see cref="PressBlockAt"/>). False with no drag.</summary>
+    internal bool MoveBlockDrag(Point point)
+    {
+        if (_drag is not { } drag)
+            return false;
+        _lastPointer = Laid(point);
+        Follow(drag, _lastPointer, pointerMoved: true);
+        return true;
+    }
+
+    /// <summary>A block's drag let go (<see cref="PressBlockAt"/>): what <see cref="CommitDrag"/> makes of it. False with no drag, or when it was refused.</summary>
+    internal bool ReleaseBlockDrag()
+    {
+        if (_drag is not { } drag)
+            return false;
+        _drag = null;
+        return CommitDrag(drag);
+    }
+
+    /// <summary>The seam a block's drag is over now (5.4A): the key of the row the new track goes beside and whether above it; null for none.</summary>
+    internal (object Key, bool Above)? NewTrackSeam => _drag?.NewTrack is { } seam ? (seam.Beside.Key, seam.Above) : null;
 
     /// <summary>
     /// A selected group let go (5.0): the dragged block's edit and each other block's, made as one through
@@ -2322,6 +2538,10 @@ public sealed partial class UnifiedTimelineControl
     protected override void OnLostMouseCapture(MouseEventArgs e)
     {
         base.OnLostMouseCapture(e);
+
+        // A middle-button drag taken away mid-way is no flick: nothing coasts from it (a release lets go of its capture after it is done).
+        if (_panFrom is not null)
+            _momentumX?.Stop();
         _panFrom = null;
         _clickOnly = null;
         if (_marqueePress is not null)
@@ -2416,31 +2636,122 @@ public sealed partial class UnifiedTimelineControl
     {
         // Always answered here (5.1-DogfoodPolish, the user's bug: the wheel with the left button held), and it works under a drag.
         e.Handled = true;
-        var modifiers = Keyboard.Modifiers;
+        WheelAt(e.Delta, Keyboard.Modifiers, MomentumScroller.Now(), Math.Max(e.GetPosition(this).X - _headerWidth, 0));
+    }
 
+    /// <summary>
+    /// The wheel (<paramref name="delta"/>, 120 a notch, up positive) with these keys at <paramref name="nowMs"/>: Alt steps the tracks'
+    /// height, Ctrl zooms about <paramref name="zoomAt"/> (pixels from the time area's left), Shift pans the view and the plain wheel
+    /// scrolls the rows, both with momentum (5.4C): a fast stream coasts on, a tick against the coast stops it. Under a drag the wheel
+    /// moves exactly a notch and never coasts. Test seam; <see cref="OnMouseWheel"/> calls it.
+    /// </summary>
+    internal void WheelAt(int delta, ModifierKeys modifiers, double nowMs, double zoomAt = 0)
+    {
         // Alt + the wheel (5.1-Polish, the user's directive): every track taller (a notch up) or lower.
         if (modifiers.HasFlag(ModifierKeys.Alt))
         {
-            var notches = (int)Math.Round(e.Delta / 120.0);
-            var steps = notches != 0 ? notches : Math.Sign(e.Delta);
+            StopMomentum();
+            var notches = (int)Math.Round(delta / 120.0);
+            var steps = notches != 0 ? notches : Math.Sign(delta);
             Raise(() => TrackHeightStepped?.Invoke(steps));
             return;
         }
 
         if (modifiers.HasFlag(ModifierKeys.Control))
         {
-            ZoomRequested?.Invoke(Math.Pow(1.25, e.Delta / 120.0), Math.Max(e.GetPosition(this).X - _headerWidth, 0));
+            StopMomentum();
+            ZoomRequested?.Invoke(Math.Pow(1.25, delta / 120.0), zoomAt);
         }
         else if (modifiers.HasFlag(ModifierKeys.Shift))
         {
-            PanRequested?.Invoke(-e.Delta);
+            PanWheelAt(-delta, nowMs);
         }
         else
         {
-            VerticalOffset = _verticalOffset - e.Delta / 120.0 * WheelStep;
+            var rows = -delta / 120.0 * WheelStep;
+            if (IsDragging)
+            {
+                VerticalOffset = _verticalOffset + rows;
+            }
+            else
+            {
+                var (before, step) = (_verticalOffset, MomentumY.Wheel(rows, nowMs));
+                VerticalOffset = before + step;
+
+                // At the top or the bottom already: nothing coasts on into it.
+                if (step != 0 && _verticalOffset == before)
+                    MomentumY.Stop();
+                KeepTicking();
+            }
         }
 
         FollowHeldDrag();
+    }
+
+    /// <summary>
+    /// A wheel along the view by <paramref name="pixels"/> (positive: later) at <paramref name="nowMs"/>: Shift + the wheel (its notch
+    /// negated) and the sideways wheel of a touchpad or a tilting wheel (MainWindow's own hook, as Windows sends it), with momentum; under
+    /// a drag exactly as given, never coasting. Test seam.
+    /// </summary>
+    internal void PanWheelAt(double pixels, double nowMs)
+    {
+        if (IsDragging)
+        {
+            PanRequested?.Invoke(pixels);
+            return;
+        }
+
+        var (before, step) = (ViewOffsetX, MomentumX.Wheel(pixels, nowMs));
+        if (step != 0)
+            PanRequested?.Invoke(step);
+
+        // The view at an end, or fitted (it does not pan): nothing coasts on into it.
+        if (step != 0 && ViewOffsetX == before)
+            MomentumX.Stop();
+        KeepTicking();
+    }
+
+    /// <summary>The middle button pressed at <paramref name="x"/> (pixels from the control's left): any coast stops and the pan begins. Test seam.</summary>
+    internal void MiddlePanPress(double x, double nowMs)
+    {
+        _panFrom = x;
+        _panTravel = 0;
+        MomentumX.Press(nowMs);
+        MomentumX.Sample(0, nowMs);
+    }
+
+    /// <summary>The middle-button drag at <paramref name="x"/>: the view pans with the pointer, one pixel for one. Test seam.</summary>
+    internal void MiddlePanMove(double x, double nowMs)
+    {
+        if (_panFrom is not { } from)
+            return;
+
+        _panFrom = x;
+        _panTravel += from - x;
+        MomentumX.Sample(_panTravel, nowMs);
+        PanRequested?.Invoke(from - x);
+    }
+
+    /// <summary>The middle button let go: a flick (250 DIP/s or more, still moving within the last 40 ms) coasts on. Test seam.</summary>
+    internal void MiddlePanRelease(double nowMs)
+    {
+        _panFrom = null;
+        if (MomentumX.Release(nowMs) != 0)
+            KeepTicking();
+    }
+
+    // A coast begun: the control's own frame loop carries it, while the control is on screen (a test steps it itself).
+    private void KeepTicking()
+    {
+        if (((_momentumX?.IsCoasting ?? false) || (_momentumY?.IsCoasting ?? false)) && IsVisible)
+            StartTicking();
+    }
+
+    // Any press on the control (any button, touch and the pen too, before anything else of it): a coast stops where it is (5.4C).
+    protected override void OnPreviewMouseDown(MouseButtonEventArgs e)
+    {
+        base.OnPreviewMouseDown(e);
+        StopMomentum();
     }
 
     /// <summary>The view moved under a drag held still: what is dragged goes on from where the pointer is over the view now.</summary>
@@ -2478,7 +2789,7 @@ public sealed partial class UnifiedTimelineControl
         base.OnMouseDown(e);
         if (e.ChangedButton == MouseButton.Middle && !IsDragging && CaptureMouse())
         {
-            _panFrom = e.GetPosition(this).X;
+            MiddlePanPress(e.GetPosition(this).X, MomentumScroller.Now());
             Cursor = Cursors.ScrollWE;
             e.Handled = true;
         }
@@ -2489,8 +2800,11 @@ public sealed partial class UnifiedTimelineControl
         base.OnMouseUp(e);
         if (e.ChangedButton == MouseButton.Middle && _panFrom is not null)
         {
+            // Let go of the capture first (losing it mid-drag stops a coast), then the flick, if it was one, coasts on.
+            var now = MomentumScroller.Now();
             _panFrom = null;
             ReleaseMouseCapture();
+            MiddlePanRelease(now);
             e.Handled = true;
         }
     }

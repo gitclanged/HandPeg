@@ -309,8 +309,9 @@ public static class TimelineStackSoundTests
         set.Load(null);
         text.Append("   the playback bar's defaults: ").Append(set.Save()).Append('\n');
         expect(set.Options.All(o => o.Id != "LivePreview") && !set.Save().Contains("LivePreview", StringComparison.Ordinal), "the playback bar offers no Live Preview control, and starts without it");
+        // (5.4D: a list saved before version 3 also shows the Live Encoded Preview once, PlaybackControlSet.Later.)
         set.Load("LivePreview,Volume,@2");
-        expect(set["Volume"] && !set["LivePreview"] && set.Save() == "Volume,@2", "a bar saved with Live Preview on it loads the rest, and saves without it");
+        expect(set["Volume"] && !set["LivePreview"] && set.Save() == "ExportQualityPreview,Volume,@3", "a bar saved with Live Preview on it loads the rest, and saves without it");
 
         // The main window's XAML binds nothing to the switch (a binding left would only fail at run time).
         var xaml = RepositoryFile(Path.Combine("src", "MainWindow.xaml"));

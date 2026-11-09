@@ -1,0 +1,17 @@
+# The Subtitle Studio pane over a real view model: each gesture one step of the main history, the player's playhead and Play, Delete its own.
+ok: loaded over an empty track: 0 subtitles, Add Caption on, nothing selected to edit, the offset 0
+ok: Add Caption: one cue, selected, one step ("add a subtitle") of the main history; IsSubtitleEditorOpen stays off
+ok: typing changes the cue at once, and takes no step while it goes on
+ok: once the typing rests it is one step ("edit the subtitles")
+ok: Undo is the main Undo: the words typed are taken back, and the box shows it
+ok: Redo is the main Redo: they come back
+ok: a start typed in moves the cue: one step
+ok: the Global Offset moves every cue as it is typed
+ok: and is one step when the box is left
+ok: the strip's playhead follows the player's (PositionMs 2000: 0:02.000)
+ok: Split at the playhead: "hello" | "there", one step, the second half selected
+ok: it claims Delete and Back, not Ctrl+Delete, not Space
+ok: Delete in the pane deletes the selected cue: one step ("delete a subtitle")
+ok: Play plays the main player, and its glyph follows the player's state
+ok: taken out (a dock rebuild) it stops following; put back, it follows again
+ok: IsSubtitleEditorOpen was never set: the main player kept drawing the captions throughout

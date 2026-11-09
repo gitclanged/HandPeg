@@ -1,0 +1,15 @@
+# No project tabs are drawn until a project is started or opened: the strip collapsed and empty on the first frame, shown by work, a project file or Ctrl+T.
+ok: MainWindow.xaml: the title bar's ProjectTabStrip starts collapsed (nothing of it measured, arranged or drawn on the first frame)
+ok: ProjectTabStrip.xaml: its own root sets no Visibility (a strip made anywhere else, as titlebar-tab-hittest makes one, is drawn)
+ok: one blank tab, opened from no file, not revealed: no tabs drawn
+ok: a second tab (Ctrl+T or + while shown, or tabs left by a dead session): drawn
+ok: the one tab holds work (a clip dropped, a New Project made, a frame chosen): drawn
+ok: the one tab was opened from a project file: drawn
+ok: the one tab could not be brought back (its work is in its cache file, the view model empty): drawn
+ok: Ctrl+T or + while hidden reveals the blank tab itself, [ New Project x ] [ + ]: drawn
+ok: no count but one hides it
+ok: a fresh view model (the start-up's blank project): the strip hidden
+ok: the same with a clip on the Sequence: the strip shown
+ok: and emptied again (the last tab closed: a new project in it): hidden again
+ok: collapsed with a tab in it: no tab container generated, no button templated, no width (zero elements laid out)
+ok: shown: the tab is made and drawn, with + after it

@@ -86,7 +86,10 @@ public static class ProjectBundle
             if (trimLongVods && VodTrim.Plan(state) is { Count: > 0 } plan)
             {
                 if (VodTrim.Cut(plan, trimFolder, cancel) is { Count: > 0 } cut)
+                {
                     (state, pieces) = VodTrim.Remap(state, cut);
+                    state.Timeline.MediaPool = PoolWithPieces(state.Timeline.MediaPool, pieces);
+                }
             }
 
             var (files, missing) = PackWhole(state, bundlePath, progress, cancel, pieces);
@@ -104,6 +107,46 @@ public static class ProjectBundle
                 AppLog.Write("Project bundle: the trimmed stretches could not all be deleted", ex);
             }
         }
+    }
+
+    /// <summary>
+    /// Project Media with each trimmed recording in it (5.4C) as the pieces that went in for it, in its place and each once, so the bundle's
+    /// bin holds every piece its clips play (a recording only in the bin is never trimmed: no clip reads it, so it goes in whole).
+    /// </summary>
+    internal static List<string> PoolWithPieces(IReadOnlyList<string> pool, IReadOnlyDictionary<string, IReadOnlyList<VodTrim.Piece>> trimmed)
+    {
+        var kept = new List<string>(pool.Count);
+        void Keep(string path)
+        {
+            if (!kept.Contains(path, StringComparer.OrdinalIgnoreCase))
+                kept.Add(path);
+        }
+
+        foreach (var path in pool)
+        {
+            string full;
+            try
+            {
+                full = Path.GetFullPath(path.Trim().Trim('"'));
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                Keep(path);
+                continue;
+            }
+
+            if (trimmed.TryGetValue(full, out var cut) && cut.Count > 0)
+            {
+                foreach (var piece in cut)
+                    Keep(piece.Path);
+            }
+            else
+            {
+                Keep(path);
+            }
+        }
+
+        return kept;
     }
 
     /// <param name="trimmed">The pieces of each recording trimmed (VodTrim.Cut): anything still naming one of them (a look kept elsewhere in the

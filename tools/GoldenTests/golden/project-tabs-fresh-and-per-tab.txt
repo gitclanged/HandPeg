@@ -1,0 +1,11 @@
+# Only a fresh tab is let go as empty (a studio project with no files, or one whose clips were all deleted, is kept); the New Project name and folder are each tab's own.
+ok: a tab of dropped files holds something
+ok: every clip deleted: no source, but its undo history is kept, so the tab is not let go as empty
+ok: a new project is fresh: the only kind let go as empty
+ok: a view model as HandPeg starts holds nothing
+ok: the studio makes "Foo" in D:/Work, 1080 x 1920, no files
+ok: no source, yet not empty: its frame was chosen and it has a name (written to the cache like any tab, never reset by a switch)
+ok: its header carries the studio's name and folder; a waiting Game Preset stays in memory, never written
+ok: a new project in the next tab: no name
+ok: "Foo" brought back: its name, folder and chosen frame are its own again
+ok: the blank tab brought back after it: "Foo"'s name, folder and frame do not follow (its first save never goes to D:/Work)

@@ -1,0 +1,9 @@
+# Each project tab's disk work runs in order on the thread pool: write, delete, write keeps the last; a read sees the write before it.
+ok: a tab's chain held: its write, a delete and a write wait their turn (nothing on the disk yet)
+ok: let go, the chain runs out in order
+ok: write, delete, write: the last write is what is there
+ok: a read asked after a write sees it (ProjectTabs.Enqueue<T>)
+ok: write then delete: nothing is left (a tab brought back keeps no cache file)
+ok: a failure is its own task's: the chain goes on after it
+ok: a tab closed while its cache file is still to be written: its files are deleted after the write, never left behind
+ok: nothing left waiting: WaitFor for every tab returns at once

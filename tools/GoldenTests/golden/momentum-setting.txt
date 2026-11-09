@@ -1,0 +1,6 @@
+# Enable Momentum Scrolling: on in a new install, kept in the settings file, in Settings > Timeline & Player and once in the Timeline Settings menu.
+ok: AppSettings.EnableMomentumScrolling is true in a new install
+ok: it is written to the settings file (source-generated JSON)
+ok: a file from before it reads true; a file with it off reads false
+ok: Settings has one CheckBox bound to it, in the Timeline & Player tab
+ok: the Timeline Settings menu (the gear and the tab's right-click) holds it once, in Snapping & Playback: "Enable Momentum Scrolling on Timeline & Filmstrips"

@@ -1,0 +1,9 @@
+# Duplicate Project in New Tab: a never-saved copy right after its original, from its cache file or from the tab in front, its saved state not copied.
+ok: the copy goes right after its original, not in front yet
+ok: an insert before the first or past the last is clamped to the strip
+ok: the copy's project file is the original's, byte for byte, and reads back
+ok: the copy has no saved fingerprint (it was never saved: always unsaved), the original keeps its own
+ok: its header is written last: unsaved, no project file, its first save named "Montage (Copy)"
+ok: nothing half-copied is left beside it
+ok: the tab in front's capture is written under the copy's name with no saved fingerprint (it comes back unsaved)
+ok: a clean close deletes the copies with the session's other files

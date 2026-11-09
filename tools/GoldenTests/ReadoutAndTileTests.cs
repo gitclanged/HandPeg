@@ -154,9 +154,9 @@ public static class ReadoutAndTileTests
         expect(readouts.Count(r => r.Descendants().Any(t => Attr(t, "Text") == "{Binding DurationText}")) == 1, "so is the duration at the scrubber's right end");
         expect(readouts.Count(r => r.Descendants().Any(t => t.Name.LocalName == "Run" && Attr(t, "Text") == "{Binding PositionText, Mode=OneWay}")) == 1,
             "so is the playback bar's position and duration");
-        var subtitles = XDocument.Load(Path.Combine(src, "Views", "SubtitleEditorWindow.xaml"));
-        expect(Named(subtitles, "TimeText")?.Parent?.Name.LocalName == "TimeReadout", "so is the caption editor's time (TimeText)");
-        var voiceover = XDocument.Load(Path.Combine(src, "Dialogs", "VoiceoverStudioDialog.xaml"));
+        var subtitles = XDocument.Load(Path.Combine(src, "Views", "SubtitleStudioPane.xaml"));
+        expect(Named(subtitles, "TimeText")?.Parent?.Name.LocalName == "TimeReadout", "so is the Subtitle Studio's time (TimeText)");
+        var voiceover = XDocument.Load(Path.Combine(src, "Views", "VoiceoverStudioPane.xaml"));
         expect(Attr(Named(voiceover, "RecordTimeText"), "Typography.NumeralAlignment") == "Tabular", "the voiceover's count (RecordTimeText, a sentence) has tabular figures");
         expect(Attr(position, "Margin") == "12,0,6,0", "the gutter between the position and the scrubber is 6 DIPs (it was 12)");
         var duration = readouts.Single(r => r.Descendants().Any(t => Attr(t, "Text") == "{Binding DurationText}"));
@@ -191,10 +191,10 @@ public static class ReadoutAndTileTests
 
         // The real pane, with no window: seven videos, the size slider at 40 (a tile of about 209).
         var settings = AppSettings.Current;
-        var size = settings.BrowserTileSize;
+        var (size, view) = (settings.BrowserTileSize, settings.BrowserView);
         try
         {
-            settings.BrowserTileSize = 40;
+            (settings.BrowserTileSize, settings.BrowserView) = (40, "Grid");
             var pane = new MediaBrowserPane();
             pane.Items.ItemsSource = Enumerable.Range(1, 7).Select(i => new MediaBrowserItem($"D:/media/clip{i}.mp4", MediaBrowserKind.Video, $"clip{i}.mp4")).ToList();
             foreach (var width in new[] { 180.0, 250, 330, 700 })
@@ -228,7 +228,7 @@ public static class ReadoutAndTileTests
         }
         finally
         {
-            settings.BrowserTileSize = size;
+            (settings.BrowserTileSize, settings.BrowserView) = (size, view);
         }
     }
 

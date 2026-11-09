@@ -47,6 +47,13 @@ public sealed partial class AppSettings
     public bool PanTimelineWhenNotZoomed { get; set; }
 
     /// <summary>
+    /// Momentum (coasting) after a flick or a fast wheel on the Timeline, the Subtitle Studio's strip and the Media Browser's lists and
+    /// filmstrip (5.4C; <see cref="MomentumScroller"/>): only from 250 DIP/s, never after a pause of 40 ms before letting go, and any
+    /// press stops it. On by default; also in the Timeline Settings menu.
+    /// </summary>
+    public bool EnableMomentumScrolling { get; set; } = true;
+
+    /// <summary>
     /// The developer flight recorder (<see cref="DevFlightRecorder"/>, 4.4.0), also on while %AppData%\HandPeg\dev-verbose.flag exists:
     /// Settings > General > Diagnostics > Verbose flight recorder (5.2.0's re-cut, the user's answer), off by default. Never written
     /// unless set: "devVerboseLogging": true in appsettings.json.

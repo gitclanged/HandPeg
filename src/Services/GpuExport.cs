@@ -28,7 +28,8 @@ public sealed class GpuExportException(string message, Exception? inner = null) 
 /// left alone.</item>
 /// <item><b>Exact frames.</b> Each scene asks the worker for every media layer's exact frame
 /// (<see cref="FrameSceneHeader.FlagExactFrames"/>), stretched over the export's frame (no letterbox), read back
-/// (<see cref="FrameSceneHeader.FlagReadback"/>, NV12 converted on the card) and checked: a frame drawn with a stand-in, more layers than a scene
+/// (<see cref="FrameSceneHeader.FlagReadback"/>, NV12 converted on the card; an HDR export kept HDR as 10-bit P010, 5.4B:
+/// <see cref="FrameSceneHeader.FlagReadbackP010"/>, piped as it comes) and checked: a frame drawn with a stand-in, more layers than a scene
 /// holds, or a video the worker cannot decode (each is drawn once alone over magenta first) stops the export, which says so.</item>
 /// <item><b>Pipelined.</b> One thread renders (publish, wait, copy the readback out, publish the next at once); FFmpeg's
 /// standard input (or the GIF encoder) is fed from the other buffer meanwhile, I420 made from the NV12 readback as it goes. Two buffers of one frame each; the canvas frames the
@@ -208,6 +209,22 @@ public sealed class GpuExport : IDisposable
     /// </summary>
     public static GpuExportCommand? CommandFor(SequenceExportState state, out string whyNot)
     {
+        // An Audio Only export (5.4C): the sound alone, its length the Sequence's on the canvas's own clock (no output rate: no frame is
+        // made); neither the frame's size nor the compositor's tables matter.
+        if (EncoderCommand.IsAudioOnly(state))
+        {
+            var plan = ExportSoundPlan.For(state, pictureOnly: false, audioOnly: true);
+            var silent = EncoderCommand.WhyNotAudio(state, plan);
+            if (silent is not null || EncoderCommand.Timing(state with { TargetFramerate = null }) is not { } length)
+            {
+                whyNot = silent ?? "the sequence's length cannot be followed";
+                return null;
+            }
+
+            whyNot = "";
+            return EncoderCommand.BuildAudioOnly(state, plan, length);
+        }
+
         if (WhyNot(state) is { } reason || EncoderCommand.Timing(state) is not { } timing)
         {
             whyNot = WhyNot(state) ?? "the export's frame rate cannot be followed";
@@ -220,16 +237,35 @@ public sealed class GpuExport : IDisposable
     }
 
     /// <summary>
-    /// Starts a compositor for an export, on the compositor's card (AppSettings.CompositorGpuAdapter), with a standby, and
-    /// waits until it is ready: off the UI thread. When the card's will not start, the processor's software renderer (WARP)
-    /// is tried: slower, never wrong. Null (and why) when neither starts.
+    /// The card an export and a Render Preview are composited on (5.4C, Settings' Export GPU): <see cref="AppSettings.ExportGpuAdapter"/>
+    /// while it is set and still one of <paramref name="cards"/>, else the Compositor GPU (<see cref="AppSettings.CompositorGpuAdapter"/>,
+    /// -1 its Auto). Off the UI thread only: the cards are listed by DXGI (GpuAdapters.All), never before the first frame.
+    /// </summary>
+    internal static int ExportAdapter(AppSettings settings, IReadOnlyList<GpuAdapter> cards) =>
+        settings.ExportGpuAdapter >= 0 && cards.Any(c => c.Index == settings.ExportGpuAdapter) ? settings.ExportGpuAdapter : settings.CompositorGpuAdapter;
+
+    /// <summary>
+    /// Starts a compositor for an export, on the Export GPU (<see cref="ExportAdapter"/>: the Compositor GPU unless Settings names
+    /// another card), with a standby, and waits until it is ready: off the UI thread. When the Export GPU is another card and will not
+    /// start, the Compositor GPU is tried (5.4C review); when that will not either, the processor's software renderer (WARP): slower,
+    /// never wrong. Null (and why) when none starts.
     /// </summary>
     public static CompositorClient? StartCompositor(out string whyNot)
     {
         var settings = AppSettings.Current;
-        if (Start(settings.CompositorGpuAdapter, out whyNot) is { } client)
+        var adapter = ExportAdapter(settings, GpuAdapters.All);
+        if (Start(adapter, out whyNot) is { } client)
             return client;
-        if (GpuAdapters.WarpIndex is not { } warp || warp == settings.CompositorGpuAdapter)
+        if (adapter != settings.CompositorGpuAdapter)
+        {
+            AppLog.Write($"GPU export: on the Export GPU {whyNot}; the Compositor GPU draws it instead.");
+            if (Start(settings.CompositorGpuAdapter, out var onCompositor) is { } fallback)
+                return fallback;
+            whyNot = $"{whyNot}, and on the Compositor GPU too ({onCompositor})";
+            adapter = settings.CompositorGpuAdapter;
+        }
+
+        if (GpuAdapters.WarpIndex is not { } warp || warp == adapter)
             return null;
 
         AppLog.Write($"GPU export: {whyNot}; the processor's software renderer (WARP) draws it instead.");
@@ -332,6 +368,13 @@ public sealed class GpuExport : IDisposable
     {
         if (CommandFor(state, out var why) is not { } command)
             throw new GpuExportException($"This export cannot be made: {why}.");
+        if (command.Encoder == ExportEncoder.Sound)
+        {
+            // Sound alone (5.4C): no compositor, no frames.
+            await RunAudioOnlyAsync(state, arguments, progress, cancellationToken);
+            return;
+        }
+
         if (arguments is not null)
             command = command with { Arguments = arguments };
 
@@ -371,6 +414,36 @@ public sealed class GpuExport : IDisposable
         }
     }
 
+    /// <summary>
+    /// An Audio Only export (5.4C: FLAC, WAV, MP3), for the view model: the Sequence's sound rendered by the engine (one track, off this
+    /// thread), then FFmpeg encodes that render alone, nothing on its standard input. No compositor is started, no frame drawn, no
+    /// subtitle burned. <paramref name="arguments"/> are the command box's when it was edited by hand (its sound token filled in as the
+    /// state's is). Throws <see cref="GpuExportException"/> when it cannot be made, <see cref="InvalidOperationException"/> when FFmpeg
+    /// failed, <see cref="OperationCanceledException"/> when cancelled.
+    /// </summary>
+    public static async Task RunAudioOnlyAsync(SequenceExportState state, IReadOnlyList<string>? arguments, IProgress<FfmpegProgress> progress, CancellationToken cancellationToken)
+    {
+        if (CommandFor(state, out var why) is not { Encoder: ExportEncoder.Sound } command)
+            throw new GpuExportException($"This export cannot be made: {(why.Length > 0 ? why : "it is not an audio-only file")}.");
+        if (arguments is not null)
+            command = command with { Arguments = arguments };
+
+        var rendered = await RenderSoundAsync(state, command, progress, cancellationToken);
+        try
+        {
+            // FFmpeg as a Copy export runs it (the executable resolved, the arguments checked to arrive as meant, its time= lines the progress).
+            var line = string.Join(" ", EncoderCommand.WithRenders(command.Arguments, rendered).Prepend(command.Executable).Select(EncoderCommand.QuoteArgument));
+            progress.Report(new FfmpegProgress("Encoding the sound...", null, null));
+            var clock = Stopwatch.StartNew();
+            await FfmpegRunner.RunAsync(line, progress, cancellationToken);
+            AppLog.Write(string.Create(CultureInfo.InvariantCulture, $"Audio Only export: \"{Path.GetFileName(command.OutputPath)}\" encoded in {clock.Elapsed.TotalSeconds:0.0} s, no compositor started."));
+        }
+        finally
+        {
+            ExportSoundPlan.DeleteRenders(rendered);
+        }
+    }
+
     // The export itself, once it is planned.
     private static async Task RunPreparedAsync(GpuExport export, CompositorClient client, IProgress<FfmpegProgress> progress, CancellationToken cancellationToken)
     {
@@ -396,7 +469,7 @@ public sealed class GpuExport : IDisposable
         if (command.Sound.Count == 0 || command.Sound.All(t => t.IsCopy))
             return command.Sound;
 
-        var plan = ExportSoundPlan.For(state, EncoderCommand.IsPictureOnly(state));
+        var plan = ExportSoundPlan.For(state, EncoderCommand.IsPictureOnly(state), command.Encoder == ExportEncoder.Sound);
         var frames = (long)Math.Round(command.Timing.OutputSeconds(command.Timing.OutputFrames) * plan.SampleRate);
         progress.Report(new FfmpegProgress("Rendering the sound...", null, null));
         var clock = Stopwatch.StartNew();
@@ -443,7 +516,8 @@ public sealed class GpuExport : IDisposable
             throw new GpuExportException($"The preview cannot be made: {reason}.");
         var output = EncoderCommand.ParseFrameRate(state.TargetFramerate);
         var length = TimelineLowering.Lowering(state).SequenceSeconds;
-        var timing = GpuExportTiming.Window(fromSeconds, Math.Min(toSeconds, length), state.Timeline.FrameRate, output);
+        var timing = GpuExportTiming.Window(fromSeconds, Math.Min(toSeconds, length), state.Timeline.FrameRate, output)
+            with { SampleLimitSeconds = EncoderCommand.SampleLimitOf(length, state.Timeline.FrameRate) };
         if (timing.OutputFrames <= 0)
             throw new GpuExportException("The preview cannot be made: the stretch holds no frame.");
 
@@ -569,7 +643,7 @@ public sealed class GpuExport : IDisposable
 
     /// <summary>
     /// FFmpeg, as FfmpegRunner runs a command (the arguments checked to arrive as meant), its standard input the frames. Its
-    /// arguments are EncoderCommand's, which writes no graph; a hand-edited command, or the Extra options of the Video tab, may
+    /// arguments are EncoderCommand's, which writes no graph; a hand-edited command, or the Extra options of the Export tab, may
     /// still carry one the user typed (a -vf, say): it reaches FFmpeg on the command line as it was typed (5.2-Arm64AndNpu: no
     /// graph goes in a file any more), held to what Windows starts a program with.
     /// </summary>
@@ -834,12 +908,16 @@ public sealed class GpuExport : IDisposable
         var layers = MemoryMarshal.CreateSpan(ref _client.Layer(0), CompositorProtocol.MaxLayers);
         var seconds = Command.Timing.CanvasSeconds(wanted.Frame);
 
+        // The moment the frame is drawn at: a hair into it, never as late as the last picture's end (5.4A: the last frame of a
+        // Sequence whose end is off the frame grid sampled past its clip's end, and was black).
+        var at = Command.Timing.SampleSeconds(wanted.Frame, FrameHair);
+
         // The captions the next moments show, drawn before the frame is (5.1-Polish): a caption that cannot be drawn (no room
         // in the resource table, or no words) gives the export to FFmpeg rather than leave it out of a frame.
-        if (_plan.HasCaptions && !_plan.PrepareCaptions(seconds + FrameHair, seconds + CaptionLookaheadSeconds))
+        if (_plan.HasCaptions && !_plan.PrepareCaptions(at, seconds + CaptionLookaheadSeconds))
             throw new GpuExportException(string.Create(CultureInfo.InvariantCulture, $"The caption at {seconds:0.000} s could not be drawn for the GPU export."));
 
-        var count = _plan.Evaluate(seconds + FrameHair, ref header, layers);
+        var count = _plan.Evaluate(at, ref header, layers);
         if (count >= CompositorProtocol.MaxLayers)
             throw new GpuExportException(string.Create(CultureInfo.InvariantCulture, $"At {seconds:0.000} s more layers are on at once than a GPU scene holds ({CompositorProtocol.MaxLayers})."));
         for (var i = 0; i < count; i++)
@@ -852,8 +930,9 @@ public sealed class GpuExport : IDisposable
         (header.OutputWidth, header.OutputHeight) = (Command.Width, Command.Height);
 
         // The sound's bands at the frame's moment (5.2B), for the effects that pulse with it; 0 where none are known.
-        WriteBands(ref header, _energies, seconds);
-        header.Flags |= FrameSceneHeader.FlagExactFrames | (wanted.Source == -2 ? 0 : FrameSceneHeader.FlagReadback | (Command.PipesNv12 ? FrameSceneHeader.FlagReadbackNv12 : 0));
+        WriteBands(ref header, _energies, at - FrameHair);
+        header.Flags |= FrameSceneHeader.FlagExactFrames | (wanted.Source == -2 ? 0 : FrameSceneHeader.FlagReadback
+            | (Command.PipesP010 ? FrameSceneHeader.FlagReadbackP010 : Command.PipesNv12 ? FrameSceneHeader.FlagReadbackNv12 : 0));
         LeaveHints(seconds);
         return _client.Publish();
     }
@@ -967,7 +1046,7 @@ public sealed class GpuExport : IDisposable
             if (frame == last)
                 continue;
             last = frame;
-            var found = _plan.MediaAt(timing.CanvasSeconds(frame) + FrameHair, _media);
+            var found = _plan.MediaAt(timing.SampleSeconds(frame, FrameHair), _media);
             for (var i = 0; i < found; i++)
             {
                 if (_media[i].SourceId is >= 0 and < CompositorProtocol.MaxSources && !seen[_media[i].SourceId])

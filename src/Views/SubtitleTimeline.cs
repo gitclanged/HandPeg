@@ -8,13 +8,18 @@ using HandPegApp.Models;
 namespace HandPegApp.Views;
 
 /// <summary>
-/// The Subtitle Editor's timeline: the cues as blocks along a strip of time that slides under a playhead
+/// The Subtitle Studio's timeline: the cues as blocks along a strip of time that slides under a playhead
 /// which stays in the middle. Everything is drawn in OnRender from the cues themselves; there is no element
 /// per cue, so a film's worth of subtitles scrolls and zooms as readily as ten do.
 ///
 /// Time is mapped to pixels by two transforms: a scale (pixels to the second, changed by the mouse wheel)
 /// and a translation (changed by dragging the strip, which is the same as scrubbing: the playhead does not
 /// move, the time under it does). A cue is dragged by its middle to move it and by an end to retime that end.
+///
+/// A flick of the strip coasts on (5.4C, a <see cref="MomentumScroller"/>): the time under the playhead goes on
+/// changing and slows to a stop, each step told as a scrub. A slow drag, a rest of 40 ms before letting go and
+/// a cue's drag never coast; any press, the wheel, the strip hidden, or the position set from outside (playback,
+/// a typed time) stops it. Its frame hook is there only while it coasts.
 /// </summary>
 public sealed class SubtitleTimeline : FrameworkElement
 {
@@ -38,6 +43,10 @@ public sealed class SubtitleTimeline : FrameworkElement
     private readonly ConditionalWeakTable<SubtitleCue, Label> _labels = [];
     private double _position;
     private Drag? _drag;
+
+    // Momentum (5.4C): made at its first press; whether a coast has the frame; whether the coast itself is setting the position.
+    private MomentumScroller? _momentum;
+    private bool _coastHooked, _coastSetting;
 
     // The strip (ruler, cues, words) is drawn into a visual of its own, three screens wide around the playhead,
     // and slid by a transform as the time under the playhead changes: playing draws nothing until the view runs
@@ -73,6 +82,12 @@ public sealed class SubtitleTimeline : FrameworkElement
         _strip.Transform = _stripShift;
         AddVisualChild(_strip);
         AddVisualChild(_head);
+        Unloaded += (_, _) => StopCoast();
+        IsVisibleChanged += (_, e) =>
+        {
+            if (!(bool)e.NewValue)
+                StopCoast();
+        };
     }
 
     protected override int VisualChildrenCount => 2;
@@ -99,16 +114,23 @@ public sealed class SubtitleTimeline : FrameworkElement
     private static readonly Brush ActiveWordBrush = Frozen(Color.FromArgb(0x48, 0xFF, 0xFF, 0xFF));
     private static readonly Pen WordPen = FrozenPen(Color.FromArgb(0xE0, 0xFF, 0xE0, 0x66), 1.5);
 
-    /// <summary>The moment under the playhead.</summary>
+    /// <summary>The moment under the playhead. Set from outside to another moment, it stops a coast (5.4C); the same moment again (a host
+    /// echoing a scrub back) does not.</summary>
     public double PositionSeconds
     {
         get => _position;
         set
         {
-            _position = Math.Clamp(double.IsFinite(value) ? value : 0, 0, Math.Max(DurationSeconds, 0));
+            var position = Math.Clamp(double.IsFinite(value) ? value : 0, 0, Math.Max(DurationSeconds, 0));
+            if (!_coastSetting && position != _position)
+                StopCoast();
+            _position = position;
             Slide();
         }
     }
+
+    /// <summary>Whether the strip is coasting on after a flick (5.4C): a host that follows the player may leave the position alone meanwhile.</summary>
+    public bool IsCoasting => _momentum?.IsCoasting == true;
 
     /// <summary>The strip was dragged: the moment now under the playhead.</summary>
     public event Action<double>? Scrubbed;
@@ -354,22 +376,52 @@ public sealed class SubtitleTimeline : FrameworkElement
 
     protected override void OnMouseWheel(MouseWheelEventArgs e)
     {
-        // About the playhead: the moment under it stays there, and the strip opens out or closes in around it.
+        // About the playhead: the moment under it stays there, and the strip opens out or closes in around it. A coast stops.
+        StopCoast();
         _zoom.ScaleX = Math.Clamp(_zoom.ScaleX * Math.Pow(1.2, e.Delta / 120.0), SmallestZoom, LargestZoom);
         InvalidateVisual();
         e.Handled = true;
     }
 
+    // Any press on the strip (any button, before anything else of it): a coast stops where it is (5.4C).
+    protected override void OnPreviewMouseDown(MouseButtonEventArgs e)
+    {
+        base.OnPreviewMouseDown(e);
+        StopCoast();
+    }
+
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
     {
-        var point = e.GetPosition(this);
+        Begin(e.GetPosition(this), MomentumScroller.Now(), CaptureMouse());
+        e.Handled = true;
+    }
+
+    /// <summary>A left press at <paramref name="point"/> at <paramref name="nowMs"/>, as if the mouse were captured (5.4C test seam).</summary>
+    internal void PressAt(Point point, double nowMs) => Begin(point, nowMs, captured: true);
+
+    /// <summary>The pointer at <paramref name="point"/> at <paramref name="nowMs"/> during a press (test seam).</summary>
+    internal void MoveTo(Point point, double nowMs) => Follow(point, nowMs);
+
+    /// <summary>The left button let go at <paramref name="nowMs"/>: a flick of the strip coasts on (test seam).</summary>
+    internal void ReleaseAt(double nowMs) => End(nowMs);
+
+    // A press: a cue under it is selected (and its drag begun), elsewhere the strip is taken hold of to scrub; any coast stops, and the
+    // strip's drag is sampled from here for a flick.
+    private void Begin(Point point, double nowMs, bool captured)
+    {
+        StopCoast();
         var hit = Hit(point);
         if (hit is { } found)
             Press(found.Cue, found.Grip, point);
 
-        if (CaptureMouse())
-            _drag = new Drag(hit?.Grip ?? Grip.Pan, point.X, _position, hit?.Cue, hit?.Cue.Start ?? 0, hit?.Cue.End ?? 0, hit?.Word ?? -1);
-        e.Handled = true;
+        if (!captured)
+            return;
+
+        _drag = new Drag(hit?.Grip ?? Grip.Pan, point.X, _position, hit?.Cue, hit?.Cue.Start ?? 0, hit?.Cue.End ?? 0, hit?.Word ?? -1);
+        _momentum ??= new MomentumScroller();
+        _momentum.Press(nowMs);
+        if (_drag.Grip == Grip.Pan)
+            _momentum.Sample(point.X, nowMs);
     }
 
     // A press on a cue selects it; a press on a word of the cue that is selected makes that word the active one.
@@ -398,9 +450,10 @@ public sealed class SubtitleTimeline : FrameworkElement
         base.OnMouseRightButtonDown(e);
     }
 
-    protected override void OnMouseMove(MouseEventArgs e)
+    protected override void OnMouseMove(MouseEventArgs e) => Follow(e.GetPosition(this), MomentumScroller.Now());
+
+    private void Follow(Point point, double nowMs)
     {
-        var point = e.GetPosition(this);
         if (_drag is not { } drag)
         {
             Cursor = Hit(point)?.Grip switch
@@ -426,6 +479,7 @@ public sealed class SubtitleTimeline : FrameworkElement
         if (drag.Cue is not { } cue || drag.Grip == Grip.Pan)
         {
             // Dragging the strip to the right brings earlier moments under the playhead.
+            _momentum?.Sample(point.X, nowMs);
             PositionSeconds = drag.Position - seconds;
             Scrubbed?.Invoke(_position);
             return;
@@ -454,7 +508,11 @@ public sealed class SubtitleTimeline : FrameworkElement
         CueDragged?.Invoke(cue);
     }
 
-    protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
+    protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e) => End(MomentumScroller.Now());
+
+    // Let go: a cue's drag is done; a click on the empty strip selects nothing; a flick of the strip (250 DIP/s or more, still
+    // moving within the last 40 ms) coasts on. Never a cue's drag.
+    private void End(double nowMs)
     {
         if (_drag is not { } drag)
             return;
@@ -465,6 +523,12 @@ public sealed class SubtitleTimeline : FrameworkElement
             CueReleased?.Invoke(cue);
         else if (drag is { Moved: false, Cue: null })
             Select(null);
+
+        var flick = drag is { Moved: true } && (drag.Cue is null || drag.Grip == Grip.Pan) ? _momentum?.Release(nowMs) ?? 0 : 0;
+        if (flick != 0)
+            HookCoast();
+        else
+            _momentum?.Stop();
     }
 
     protected override void OnLostMouseCapture(MouseEventArgs e)
@@ -472,8 +536,80 @@ public sealed class SubtitleTimeline : FrameworkElement
         base.OnLostMouseCapture(e);
         if (_drag is { Moved: true, Cue: { } cue } drag && drag.Grip != Grip.Pan)
             CueReleased?.Invoke(cue);
+
+        // Taken away mid-drag (End lets go of its own capture after the drag is over): nothing coasts.
+        if (_drag is not null)
+            StopCoast();
         _drag = null;
     }
+
+    /// <summary>
+    /// One frame of the coast at <paramref name="nowMs"/>: the time under the playhead moves on by what the coast covered (the strip
+    /// coasting right brings earlier moments) and is told as a scrub; the start or the end of the strip stops it. Whether it moved
+    /// (test seam; the frame hook calls it).
+    /// </summary>
+    internal bool StepCoast(double nowMs)
+    {
+        var moved = false;
+        if (_momentum is { IsCoasting: true } momentum)
+        {
+            var pixels = momentum.Tick(nowMs);
+            if (pixels != 0 && _zoom.ScaleX > 0)
+            {
+                var before = _position;
+                _coastSetting = true;
+                try
+                {
+                    PositionSeconds = _position - pixels / _zoom.ScaleX;
+                }
+                finally
+                {
+                    _coastSetting = false;
+                }
+
+                if (_position == before)
+                {
+                    momentum.Stop();
+                }
+                else
+                {
+                    moved = true;
+                    Scrubbed?.Invoke(_position);
+                }
+            }
+        }
+
+        if (_momentum?.IsCoasting != true)
+            UnhookCoast();
+        return moved;
+    }
+
+    private void StopCoast()
+    {
+        _momentum?.Stop();
+        UnhookCoast();
+    }
+
+    // The frame is hooked only while a coast runs and the strip is shown; a test steps the coast itself.
+    private void HookCoast()
+    {
+        if (_coastHooked || !IsVisible)
+            return;
+
+        _coastHooked = true;
+        CompositionTarget.Rendering += OnCoastFrame;
+    }
+
+    private void UnhookCoast()
+    {
+        if (!_coastHooked)
+            return;
+
+        _coastHooked = false;
+        CompositionTarget.Rendering -= OnCoastFrame;
+    }
+
+    private void OnCoastFrame(object? sender, EventArgs e) => StepCoast(MomentumScroller.Now());
 
     private static Brush Frozen(Color color)
     {

@@ -1,0 +1,14 @@
+# A hardware encoder's problem is said only for a vendor whose card is here, and the cards are never listed for it before the first frame.
+ok: AMD: "h264_nvenc: Cannot load nvcuda.dll" is left unsaid
+ok: AMD: "h264_amf: driver too old" is said
+ok: AMD: "h264_qsv: no device" is left unsaid
+ok: AMD: "h264_mf: no encoder" is said
+ok: NVIDIA + Intel: "h264_nvenc: OpenEncodeSessionEx failed" is said
+ok: NVIDIA + Intel: "h264_qsv: unsupported" is said
+ok: NVIDIA + Intel: "h264_amf: Cannot load amfrt64.dll" is left unsaid
+ok: Adreno: "h264_nvenc: Cannot load nvcuda.dll" is left unsaid
+ok: Adreno: "h264_mf: busy" is said
+ok: no card listed: "h264_nvenc: Cannot load nvcuda.dll" is said
+ok: not listed yet: every problem is kept, and asking listed no card (no DXGI before the first frame, Law 1)
+ok: listed (an AMD card): the NVENC problem is left out, AMD's is said
+ok: ApplyHardwareEncoders (which runs before the first frame) lists no card: the status line filters only what is listed, and the recheck after the first frame lists them off the window's thread

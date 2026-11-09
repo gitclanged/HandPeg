@@ -7,7 +7,7 @@ using HandPegApp.Services;
 namespace HandPegApp.Views;
 
 /// <summary>
-/// The Subtitle Editor's picture (5.0-Verify, in place of its libmpv player): a black frame the shape of the caption box
+/// The Subtitle Studio's picture (5.0-Verify, in place of its libmpv player): a black frame the shape of the caption box
 /// (of the output frame, for a picture track) with the subtitle that is up at the editor's playhead on it, drawn by WPF as
 /// the GPU preview's TextRasterizer draws a caption the way libass draws the export's: bold, the style's colours, outline and
 /// size at the box's scale, the line centred across and standing on a 12th of the box; TikTok Pop's spoken word in the
@@ -15,6 +15,9 @@ namespace HandPegApp.Views;
 /// decoded: the editor moves <see cref="Time"/>, and a new moment is drawn only when what it shows has changed.
 /// <para>A picture track's subtitles are pictures that only a decoder can draw, so one that is up is shown as a marked bar
 /// where such subtitles sit, numbered: enough to see a retimed cue come and go.</para>
+/// <para>Not shown since 5.4C: the Subtitle Studio is a dock pane with no picture of its own, the main player drawing the captions
+/// as they are edited. Kept (with MainViewModel.SubtitleEditorCaptions and SubtitleFrameSize) for a caption preview of its own, should
+/// a studio torn off into a side window want one.</para>
 /// </summary>
 public sealed class SubtitlePreview : FrameworkElement
 {

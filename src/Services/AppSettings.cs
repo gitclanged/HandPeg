@@ -160,6 +160,27 @@ public sealed partial class AppSettings
 
     public List<SmartRule> SmartRules { get; set; } = [];
 
+    /// <summary>
+    /// Gives the Smart Rules and the default preset that name a renamed built-in Export Preset by its old name the new one (5.4B,
+    /// ExportPresetCatalog.RenamedBuiltIns), unless the user still has a preset of the old name (<paramref name="userHas"/>: a changed
+    /// old built-in, kept as theirs). Called as the presets are read (PresetStore.Load, off the window's thread); saved with the
+    /// settings the next time they are. Whether anything was renamed.
+    /// </summary>
+    public bool RenamePresetReferences(IReadOnlyDictionary<string, string> renamed, Func<string, bool> userHas)
+    {
+        string? NewName(string name) => name.Length > 0 && renamed.TryGetValue(name.Trim(), out var now) && !userHas(name.Trim()) ? now : null;
+        var changed = false;
+        if (NewName(DefaultPreset) is { } preset)
+            (DefaultPreset, changed) = (preset, true);
+        foreach (var rule in SmartRules ?? [])
+        {
+            if (NewName(rule.Preset) is { } named)
+                (rule.Preset, changed) = (named, true);
+        }
+
+        return changed;
+    }
+
     /// <summary>When on, saving a preset also stores the Target File Size that is set at the time.</summary>
     public bool SaveTargetSizeInPresets { get; set; }
 
@@ -412,19 +433,27 @@ public sealed partial class AppSettings
     /// <summary>The media browser shows the Clip Library (5.2C: the user's own clips, ClipLibrary) rather than the project's files or a folder.</summary>
     public bool BrowserShowsLibrary { get; set; }
 
+    /// <summary>How the media browser lays its files out (5.4C): "Grid" (tiles), "List" (a table of each file's details) or "Filmstrip"
+    /// (a preview and sub-clip cutter beside a list). Empty: Grid, or List where the tile size was a list's.</summary>
+    public string BrowserView { get; set; } = "";
+
+    /// <summary>The width of the list beside the Filmstrip view's preview, in DIPs (5.4C).</summary>
+    public double BrowserFilmstripListWidth { get; set; } = 240;
+
     // Interface
     public bool ShowCommandPreviewTab { get; set; }
 
     /// <summary>Shows the Advanced tab: colour correction, sharpening and the live frame preview.</summary>
     public bool ShowAdvancedFiltersTab { get; set; } = true;
 
-    public const string PresetBarInSummary = "Show in Summary Tab";
+    /// <summary>The Export Presets selector in the Export tab's first card (5.4B; the preset bar of 5.4A; "Show in Summary Tab", the retired tab's, reads as it).</summary>
+    public const string PresetBarInExport = "Show in Export Tab";
     public const string PresetBarAtTop = "Show at top of Window";
 
-    public static IReadOnlyList<string> PresetBarLocations { get; } = [PresetBarInSummary, PresetBarAtTop];
+    public static IReadOnlyList<string> PresetBarLocations { get; } = [PresetBarInExport, PresetBarAtTop];
 
     /// <summary>Where the bar for choosing and saving presets is: one of <see cref="PresetBarLocations"/>.</summary>
-    public string PresetBarLocation { get; set; } = PresetBarInSummary;
+    public string PresetBarLocation { get; set; } = PresetBarInExport;
 
     /// <summary>Draws waveforms after each load: the mix of the active tracks behind the timeline, and each track in the Audio tab.</summary>
     public bool ShowTimelineWaveform { get; set; } = true;
@@ -460,8 +489,9 @@ public sealed partial class AppSettings
     public bool PlayerHardwareAcceleration { get; set; } = true;
 
     /// <summary>
-    /// Hardware Decode Adapter: which graphics card decodes for an encode, by its Direct3D number, so that the
-    /// work can be given to a second card. -1 leaves the choice to FFmpeg.
+    /// The Export GPU (Settings > Hardware, read as <see cref="ExportGpuAdapter"/>; stored under its old name): the graphics card an
+    /// export and a Render Preview are composited on (their clips decoded there too), by its DXGI number, so the work can be given to a
+    /// second card (5.4C, GpuExport.ExportAdapter). -1, or a card no longer there: the Compositor GPU.
     /// </summary>
     public int HardwareDecodeAdapter { get; set; } = -1;
 
@@ -500,9 +530,6 @@ public sealed partial class AppSettings
 
     /// <summary>Threads whisper transcribes with; 0 is Auto (whisper's own default, at most 4).</summary>
     public int WhisperThreads { get; set; }
-
-    /// <summary>The order of the Summary tab's cards, by their names, comma-separated; empty for the order they were designed in.</summary>
-    public string SummaryCardOrder { get; set; } = "";
 
     /// <summary>The progress chip at the bottom left shows background work too, not only exports and loads.</summary>
     public bool ShowBackgroundTasks { get; set; } = true;
@@ -605,20 +632,20 @@ public sealed partial class AppSettings
     public List<string>? HiddenTabs { get; set; }
 
     /// <summary>
-    /// What is hidden until asked: the Export tab stands for the Video tab (its contents, the chapters among them, are in
-    /// it), and the Audio tab, its tracks, stays after Layers until the unified timeline (4.1.1; the Export tab's Audio
-    /// Export group has the codec and the mix either way).
+    /// What is hidden until asked: nothing (5.4B retired the Video tab, which was hidden to start with: its controls are the Export tab's
+    /// three columns; a saved list naming "Tab:Video" names a pane that is no longer there, and changes nothing).
     /// </summary>
-    public static IReadOnlyList<string> DefaultHiddenTabs { get; } = ["Tab:Video"];
+    public static IReadOnlyList<string> DefaultHiddenTabs { get; } = [];
 
     /// <summary>The Sequence Overview Scrubber pane (Tabs and Panes; named for the master timeline it was until 4.4).</summary>
     public bool ShowMasterTimeline { get; set; } = true;
 
     /// <summary>
     /// The status bar at the bottom of the window (HandPeg starts without it, 4.1.1: <see cref="ApplyEditorDefaults"/>). The
-    /// title bar carries the status and the progress either way (Pass 4.1B, always since 4.1.1).
+    /// title bar carries the status and the progress either way (Pass 4.1B, always since 4.1.1). Off for everyone since 5.4D
+    /// (ViewDefaultsVersion 10, the user's call: the title bar's progress is the one home); Tabs and Panes still brings it back.
     /// </summary>
-    public bool ShowStatusBar { get; set; } = true;
+    public bool ShowStatusBar { get; set; }
 
     /// <summary>The Keyframes pane beside the player: the selected clip's keyframes on a timeline of their own.</summary>
     public bool ShowKeyframesPane { get; set; }
@@ -632,7 +659,8 @@ public sealed partial class AppSettings
     /// <summary>The controls the playback bar shows, by name (see PlaybackControlSet); null for the defaults.</summary>
     public string? PlaybackControls { get; set; }
 
-    /// <summary>Where every pane is, in the main window and the side window (Docking.DockLayoutState as JSON); null for where they start.</summary>
+    /// <summary>Where every pane is in the main window's arrangement (Docking.DockLayoutState as JSON; side windows: SideWindows, 5.4C);
+    /// null for where they start.</summary>
     public string? DockLayout { get; set; }
 
     /// <summary>
@@ -650,6 +678,21 @@ public sealed partial class AppSettings
 
     /// <summary>How many layouts of the user's own are kept (the brief of Pass 2E).</summary>
     public const int SavedLayoutSlots = 3;
+
+    /// <summary>
+    /// The layout a fresh window opens in (Pass 5.4D: the Layout selector's "★ Default" pill, a first-run choice): a built-in
+    /// layout's name, or "saved:N" for the user's own layout in place N. Unknown or empty: the last arrangement (DockLayout). Null in
+    /// settings from before 5.4D that kept an arrangement (ViewDefaultsVersion 9), until the start-up names the built-in layout of its shape.
+    /// </summary>
+    public string? DefaultStartupLayout { get; set; } = "Standard Editing";
+
+    /// <summary>Each project tab remembers its own window layout and takes it back when brought to the front (Pass 5.4D;
+    /// the Layout selector's footer and Settings). Off: every tab shares the window's layout.</summary>
+    public bool PerTabWindowLayouts { get; set; } = true;
+
+    /// <summary>The Export Quality Preview's Magnifier (Pass 5.4D, Q10 b): the loupe follows the pointer over the compare
+    /// without an edge slider held. A viewer preference; the preview itself is never saved.</summary>
+    public bool ExportQualityPreviewLoupe { get; set; }
 
     /// <summary>Whether clips on the timeline show a diamond at each of their keyframes.</summary>
     public bool ShowClipKeyframes { get; set; } = true;
@@ -761,6 +804,7 @@ public sealed partial class AppSettings
     /// <summary>The constant-quality value (CRF, CQ, CQP...); null for the built-in one.</summary>
     public int? DefaultQuality { get; set; }
 
+    /// <summary>The video bitrate in kbps; blank for the automatic one (5.4B: from the output's size and rate, MainViewModel.AutoBitrateKbps).</summary>
     public string DefaultTargetBitrate { get; set; } = "";
     public string DefaultFramerate { get; set; } = "";
     public string DefaultCustomFramerate { get; set; } = "";
@@ -775,7 +819,9 @@ public sealed partial class AppSettings
     public string DefaultMergeAudio { get; set; } = "";
 
     public bool DefaultNormalizeAudio { get; set; }
-    public bool DefaultHardwareDecoding { get; set; } = true;
+
+    // (The default of the dead "Enable Hardware Decoding (-hwaccel auto)" switch, DefaultHardwareDecoding, is not read any more, 5.4B: no
+    // export read it. A settings file that has it reads without it.)
 
     /// <summary>The default encoding settings are put back after a style preset is applied, where the style set something else (a vertical frame, say).</summary>
     public bool DefaultsOverrideStyles { get; set; }
@@ -819,8 +865,11 @@ public sealed partial class AppSettings
     /// <summary>Use <see cref="SquisherEncoderPreset"/> in place of the encoder's most careful preset.</summary>
     public bool SquisherManualPreset { get; set; }
 
-    /// <summary>The encoder preset used while the override is on: "medium", "p5", "balanced"...</summary>
-    public string SquisherEncoderPreset { get; set; } = "medium";
+    /// <summary>
+    /// The encoder preset used while the override is on: "veryslow", "p5", "balanced"... It starts at the slowest (5.4C: "medium"
+    /// before), so ticking the override does not quietly mean a faster step; a file that saved one keeps it.
+    /// </summary>
+    public string SquisherEncoderPreset { get; set; } = "veryslow";
 
     /// <summary>Writes the open project to "Name.autosave.hproj" every so often, in the background.</summary>
     public bool AutosaveEnabled { get; set; }
@@ -853,7 +902,7 @@ public sealed partial class AppSettings
     {
         TimelineHeight = 5;
         ResetPaneLayout();
-        PresetBarLocation = PresetBarInSummary;
+        PresetBarLocation = PresetBarInExport;
 
         ShowAdvancedFiltersTab = true;
         ShowTimelineWaveform = true;
@@ -924,8 +973,8 @@ public sealed partial class AppSettings
     public (string Categories, bool Mark) SponsorBlockRequest =>
         SponsorBlockMode == SponsorBlockIgnore ? ("", false) : (SponsorBlockCategories, SponsorBlockMode == SponsorBlockChapters);
 
-    /// <summary>The Export tab shows the Easy Social Export cards instead of the Video and Audio sections (Pass 4.2B-2).</summary>
-    public bool UseEasySocialExport { get; set; }
+    // (UseEasySocialExport, the Export tab's Easy | Advanced switch of 4.2B-2, is not read any more, 5.4B: its cards are Export Presets now,
+    // ExportPresetCatalog. A settings file that has it reads without it.)
 
     /// <summary>
     /// The preset to apply automatically to a source. A rule for a folder the file is in wins over a rule
@@ -1088,6 +1137,45 @@ public sealed partial class AppSettings
                     settings.ViewDefaultsVersion = 6;
                     if (viewDefaults >= 1)
                         settings.ShowTimesAsFrames = true;
+                }
+
+                // The Squisher's first preset is the chat's own 10 MB limit since 5.4C ("Discord (10 MB)"): an untouched "Discord
+                // (Non-Nitro)" (20 MB, or the 25 MB of before) takes its name and size once. One the user changed stays theirs.
+                if (settings.ViewDefaultsVersion < 7)
+                {
+                    settings.ViewDefaultsVersion = 7;
+                    foreach (var preset in settings.SquisherPresets ?? [])
+                    {
+                        if (preset is { Name: "Discord (Non-Nitro)", TargetSizeMb: 20 or 25, AudioKbps: 96 })
+                            (preset.Name, preset.TargetSizeMb) = ("Discord (10 MB)", 10);
+                    }
+                }
+
+                // The Export GPU is where exports are composited since 5.4C; a card saved before then meant something else (the card an
+                // export decoded on, or nothing at all in 5.4B), often the second card a hardware test chose: it goes back to Auto once.
+                if (settings.ViewDefaultsVersion < 8)
+                {
+                    settings.ViewDefaultsVersion = 8;
+                    if (viewDefaults >= 1)
+                        settings.HardwareDecodeAdapter = -1;
+                }
+
+                // HandPeg opens in the Default layout since 5.4D (DefaultStartupLayout, Standard Editing to start with). A file from before it
+                // that kept an arrangement has no Default: none is set (null), so the arrangement the user left is kept (MainWindow.StartupLayoutJson
+                // makes the built-in layout of its shape the Default). A first start's file (version 0) and a Default chosen since stay as they are.
+                if (settings.ViewDefaultsVersion < 9)
+                {
+                    settings.ViewDefaultsVersion = 9;
+                    if (viewDefaults >= 1 && settings.DockLayout is not null && settings.DefaultStartupLayout == "Standard Editing")
+                        settings.DefaultStartupLayout = null;
+                }
+
+                // The status bar is hidden once for everyone (5.4D, the user's call: no second progress row at the bottom; the title bar's
+                // wash and rail carry the work). Tabs and Panes, or the title bar status's right-click, still brings it back.
+                if (settings.ViewDefaultsVersion < 10)
+                {
+                    settings.ViewDefaultsVersion = 10;
+                    settings.ShowStatusBar = false;
                 }
 
                 // (4.1.1 brought Editor Mode's saved views to its own once, by the mode a file named. Every file written since

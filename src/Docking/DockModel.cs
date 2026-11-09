@@ -71,7 +71,11 @@ public enum DockZone
     Bottom,
 }
 
-/// <summary>The arrangement of both windows' panes, for one mode.</summary>
+/// <summary>
+/// The main window's arrangement of panes, for one mode. The <c>Side*</c> members are the single side window of HandPeg before 5.4C:
+/// read once, to become the first Pane Docker (<see cref="SideWindowStates.Migrate"/>), and never written again (each side window is
+/// a <see cref="SideWindowState"/> in AppSettings.SideWindows now).
+/// </summary>
 public sealed class DockLayoutState
 {
     /// <summary>
@@ -119,6 +123,149 @@ public sealed class DockLayoutState
         {
             return null;
         }
+    }
+}
+
+/// <summary>What a side window shows (5.4C): a mirror of the player's picture, or panes arranged as freely as in the main window.</summary>
+public enum SideWindowMode
+{
+    LiveVideoPreview,
+    PaneDocker,
+}
+
+/// <summary>
+/// One side window (5.4C: as many as wanted, each its own monitor's): what it shows, the panes it holds (a Pane Docker's; a Live
+/// Video Preview holds none), and where it was. Saved as a list, JSON, in AppSettings.SideWindows.
+/// </summary>
+public sealed class SideWindowState
+{
+    public const string PanesMode = "panes", PreviewMode = "preview";
+
+    /// <summary>Its name among the side windows, kept while it is open (and saved with it).</summary>
+    public string Id { get; set; } = "";
+
+    /// <summary><see cref="PanesMode"/> (a Pane Docker) or <see cref="PreviewMode"/> (a Live Video Preview).</summary>
+    public string Mode { get; set; } = PanesMode;
+
+    /// <summary>A Pane Docker's panes; null while it holds none, and always for a Live Video Preview.</summary>
+    public DockNode? Tree { get; set; }
+
+    /// <summary>
+    /// Its restored place, as Windows keeps it (GetWindowPlacement's normal position: left, top, right, bottom in workspace pixels),
+    /// so it comes back on the monitor it was on whatever that one's scale; null for where it first opens.
+    /// </summary>
+    public int[]? Placement { get; set; }
+
+    /// <summary>A place in DIPs (left, top, width, height) from the single side window before 5.4C: used once, when it has no Placement.</summary>
+    public double[]? Bounds { get; set; }
+
+    public bool Maximized { get; set; }
+
+    /// <summary>Whether it covers its whole monitor, title bar and taskbar included (F11, or a double-click on the picture).</summary>
+    public bool FullScreen { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool IsPreview => Mode == PreviewMode;
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public SideWindowMode WindowMode => IsPreview ? SideWindowMode.LiveVideoPreview : SideWindowMode.PaneDocker;
+
+    public static string ModeOf(SideWindowMode mode) => mode == SideWindowMode.LiveVideoPreview ? PreviewMode : PanesMode;
+}
+
+/// <summary>The side windows as saved (AppSettings.SideWindows), read and written through the generated metadata; window-free.</summary>
+public static class SideWindowStates
+{
+    private static System.Text.Json.Serialization.Metadata.JsonTypeInfo<List<SideWindowState>> Json => Services.AppSettingsJsonContext.Default.ListSideWindowState;
+
+    /// <summary>The side windows saved (JSON); none when there are none or they cannot be read. Unknown modes read as Pane Dockers.</summary>
+    public static List<SideWindowState> Read(string? saved)
+    {
+        try
+        {
+            var list = saved is { Length: > 0 } ? System.Text.Json.JsonSerializer.Deserialize(saved, Json) ?? [] : [];
+            list.RemoveAll(s => s is null);
+            foreach (var side in list)
+            {
+                if (side.Mode != SideWindowState.PreviewMode)
+                    side.Mode = SideWindowState.PanesMode;
+            }
+
+            return list;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return [];
+        }
+    }
+
+    public static string Write(IEnumerable<SideWindowState> sides) => System.Text.Json.JsonSerializer.Serialize(sides.ToList(), Json);
+
+    /// <summary>A copy sharing nothing with the one given.</summary>
+    public static SideWindowState Copy(SideWindowState side) =>
+        System.Text.Json.JsonSerializer.Deserialize(System.Text.Json.JsonSerializer.Serialize(side, Services.AppSettingsJsonContext.Default.SideWindowState), Services.AppSettingsJsonContext.Default.SideWindowState)!;
+
+    /// <summary>
+    /// The single side window of an arrangement saved before 5.4C, as the first Pane Docker: added to <paramref name="sides"/> when it
+    /// was open and held panes (its place and maximized state kept), unless one with its id is there already. The arrangement's legacy
+    /// members are cleared in any case (the closed side window's arrangement goes: its panes are in the main window already), so they
+    /// are never written again. True when a docker was added.
+    /// </summary>
+    public static bool Migrate(DockLayoutState state, List<SideWindowState> sides)
+    {
+        var added = false;
+        if (state.SideOpen && state.Side is { } tree && tree.AllPanes().Any() && sides.All(s => s.Id != LegacyId))
+        {
+            sides.Insert(0, new SideWindowState
+            {
+                Id = LegacyId, Mode = SideWindowState.PanesMode, Tree = tree,
+                Bounds = state.SideBounds is { Length: 4 } bounds ? [.. bounds] : null, Maximized = state.SideMaximized,
+            });
+            added = true;
+        }
+
+        (state.Side, state.SideOpen, state.SideBounds, state.SideMaximized, state.SideClosed) = (null, false, null, false, null);
+        return added;
+    }
+
+    /// <summary>The id the single side window of before 5.4C takes as a Pane Docker.</summary>
+    public const string LegacyId = "side-1";
+
+    /// <summary>A new id, unlike every one in <paramref name="sides"/>: "side-" and the lowest free number.</summary>
+    public static string NewId(IEnumerable<SideWindowState> sides)
+    {
+        var taken = sides.Select(s => s.Id).ToHashSet(StringComparer.Ordinal);
+        var n = 1;
+        while (taken.Contains("side-" + n.ToString(System.Globalization.CultureInfo.InvariantCulture)))
+            n++;
+        return "side-" + n.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
+    /// Every pane in at most one place, across the side windows and then the main window (a side window keeps what the user put
+    /// there; the main window loses a pane a side window holds): unknown panes out, a Live Video Preview emptied, each tree tidied
+    /// (a Pane Docker left with nothing holds null, and stays open). The main window's top part is never null.
+    /// </summary>
+    public static void Clean(DockLayoutState state, IEnumerable<SideWindowState> sides, Func<string, bool> known)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        DockNode? Clean(DockNode? node)
+        {
+            if (node is null)
+                return null;
+            foreach (var group in node.AllGroups())
+            {
+                group.Panes = group.Panes.Where(p => known(p) && seen.Add(p)).ToList();
+                if (group.Active is { } active && !group.Panes.Contains(active))
+                    group.Active = group.Panes.FirstOrDefault();
+            }
+
+            return DockTree.Tidy(node);
+        }
+
+        foreach (var side in sides)
+            side.Tree = side.IsPreview ? null : Clean(side.Tree);
+        state.Main = Clean(state.Main) ?? DockNode.Group();
     }
 }
 

@@ -1,0 +1,16 @@
+# The Live Encoded Preview's Magnifier (5.4D, Q10 b): the pointer to the output, the header, the loupe's place, a real worker drawing it.
+ok: FrameSceneHeader.LoopbackLoupeX and Y are at bytes 176 and 180, after LoopbackTestFlags (172); the header is still 256 bytes
+ok: FlagLoopbackLoupe is 1024, a bit no other flag uses
+ok: PictureRectOf is the worker's letterbox (fitted, zoomed and panned) on the client's side: a 1920 x 1080 canvas in 1000 x 1000 lies at (0, 218.75), 1000 x 562.5
+ok: LoupePointOf: the middle is (0.5, 0.5); the letterbox's bar has none; zoomed 2x, a corner of the player is on the picture, its far edge not; no size or no number, none
+   a pointer at (300, 200) DIPs on an 800 x 450 player (1600 x 900 pixels, zoom 2, pan 0.1, -0.05): output (0.375, 0.4444), canvas (648, 564)
+ok: through the picture's rectangle in DIPs and the worker's in pixels, the loupe looks at the canvas point under the pointer, at the player's scale x 4
+ok: LoupeAt: a pointer near the top left puts a 130-pixel loupe at (498, 218), one near the bottom right at (12, 12); over a 640 x 640 output's bar, none
+ok: SetLoopbackLoupe marks the scene dirty only (the content stamp stays: no new encode, Law 3); WriteLoopback sets the flag and the point
+ok: DrawLoopback prepares an edge's loupe first, else the Magnifier's at the fractions made its output's pixels, both before it takes the output
+ok: VideoSurface.PointerMoved is raised from the native window's WM_MOUSEMOVE and WM_MOUSELEAVE and from the layer above it, only while something listens
+ok: the window puts the loupe away in the 3D view, while the wipe is dragged and when the pointer leaves; else maps it through the picture's rectangle
+ok: the flyout has a "Magnifier (Loupe)" CheckBox bound both ways to ExportQualityPreviewLoupe
+ok: a real worker draws the Magnifier over the compare in the corner farthest from the point (498, 218, 130 a side), its middle the picture at the point; the rest as it was
+ok: the pointer near the bottom right puts it in the top left corner (12, 12)
+ok: an edge being tuned comes first: its loupe (looking at the layer's top left corner) stands at (498, 218), and none at the pointer's (12, 12)

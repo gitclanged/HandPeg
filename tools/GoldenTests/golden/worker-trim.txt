@@ -1,0 +1,38 @@
+# The compositor worker giving memory back (5.4D-TabPerf, the user's U2): counted requests, a real worker trimmed after 4K frames, the idle rule.
+the control block's new fields (5.4D-TabPerf), in the room 3120..3479 that was free:
+  TrimRequests at 3120
+  TrimsDone at 3124
+  WorkerPrivateBytes at 3128
+  CacheFreeBytes at 3136
+  ClearRequests at 3144
+  ClearsDone at 3148
+  CacheMaximumBytes at 3152
+  CacheCeilingBytes at 3160
+  CacheGrowSteps at 3168
+  IdleTrims at 3172
+  after TexturesMade (ends at 3120), before CacheHits (3480); the block still 4096 bytes
+the worker trims itself standing idle:
+  29 s with nothing asked: waits
+  31 s with nothing asked: trims
+  31 s, trimmed already since the last ask: waits
+  31 s with the Export Quality Preview on: waits
+an asked-for trim hands its memory back to Windows (the driver's Trim, the heap):
+  0.1 s after the last scene (a quick switch to the next tab): waits
+  0.25 s after it: now
+  a minute after it, playing: waits
+a worker that drew 4 frames of 3840 x 2160 with three blurred layers, each read back:
+  a trim with a Redraw sent right after it: served (its count echoed)
+  that trim asked for right after a frame: its memory handed back once the worker was left alone a quarter of a second
+  its private bytes after the trim: down by at least 64 MB (the working textures and the readback's staging)
+  a clear with a Redraw sent right after it: served; the budget at its baseline: yes
+  the next frame after the trim: drawn and read back, the same picture as before it
+a tab put behind after 120 frames of 1920 x 1080 were decoded into the cache (the source cleared, the worker trimmed), then Settings' Clear:
+  the frames decoded: kept in the cache
+  the cache after the tab put behind: as the card's rule says (emptied on unified memory or a small card, every frame kept on a big card)
+  on a big card, the same file registered again: its frames found, nothing decoded (or not a big card)
+  its private bytes after Settings' Clear: down by at least half of what the frames held
+  the cache after it: no frame
+the renderer's kept textures let go of by a trim and made again (1280 x 720, a real renderer):
+  after a 3D frame, the loupe and a flat frame with a blend mode and an Explosion: the canvas copy, the 3D picture and plane, the loupe's textures and the noise held
+  the idle trim's release: every one let go of but the noise; drawn again: the same flat and 3D pictures
+  the asked-for trim's release: every one let go of; drawn again: the same flat and 3D pictures; every texture made again

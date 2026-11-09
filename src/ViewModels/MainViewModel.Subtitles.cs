@@ -10,7 +10,7 @@ using HandPegApp.Services.Gpu;
 namespace HandPegApp.ViewModels;
 
 // The subtitle track: cues imported from a file (.srt, .vtt; or the timings of a .sup or VobSub), made from the
-// auto-captions, or typed in the Subtitle Editor. There is one. While it has text cues, the captions are made
+// auto-captions, or typed in the Subtitle Studio. There is one. While it has text cues, the captions are made
 // of them instead of being transcribed: they are drawn in the caption style, in the caption box, by the same
 // steps (the GPU preview's captions, the caption overlay for the export). A picture track's pictures are decoded
 // for the GPU preview, which draws them over the Sequence's picture (5.0-Verify); the export leaves them out.
@@ -32,8 +32,8 @@ public partial class MainViewModel
     /// <summary>Milliseconds every cue is shifted by: later when positive, earlier when negative.</summary>
     [ObservableProperty] private double _subtitleOffsetMs;
 
-    /// <summary>The Subtitle Editor is open: it draws the subtitles in a player of its own, and the main player leaves them out meanwhile.</summary>
-    [ObservableProperty] private bool _isSubtitleEditorOpen;
+    // (5.4D, Q6 a: the modal editor's flag, IsSubtitleEditorOpen, and its one-step visit are gone. The Subtitle Studio is a dock pane
+    // since 5.4C: the main player goes on drawing the captions, and each of its gestures is a step of its own, CommitSubtitleEdits.)
 
     public bool HasSubtitleCues => SubtitleCues.Count > 0;
 
@@ -50,7 +50,7 @@ public partial class MainViewModel
             var from = SubtitleSourcePath.Length > 0 ? Path.GetFileName(SubtitleSourcePath) : "made in HandPeg";
             var count = $"{SubtitleCues.Count} cue{(SubtitleCues.Count == 1 ? "" : "s")}";
             return SubtitlesAreImages
-                ? $"{from}  ·  {count}, image-based: shown in the player and retimed in the Subtitle Editor, but not written into the export"
+                ? $"{from}  ·  {count}, image-based: shown in the player and retimed in the Subtitle Studio, but not written into the export"
                 : $"{from}  ·  {count}, drawn as captions in the caption style";
         }
     }
@@ -158,7 +158,7 @@ public partial class MainViewModel
     // ----- Anchored captions (4.4) -----
     // Captions made from a source the timeline plays as clips (the main file, a sound clip) are kept in that source's own
     // time, with each word's own times, and the cues are a view of them: projected through every clip that plays the
-    // source after every commit, undo and load (ReprojectCaptions). Edits made in the Subtitle Editor are written back into
+    // source after every commit, undo and load (ReprojectCaptions). Edits made in the Subtitle Studio are written back into
     // the source's time (WriteBackCaptions). Cues of a track with no anchors are on the timeline's clock, as before 4.4.
 
     // The anchored captions, in their source's time and ordered by their start; and what they were made from (null for none).
@@ -180,7 +180,7 @@ public partial class MainViewModel
             return;
         }
 
-        if (_captionAnchorSource is null || SubtitlesAreImages || IsSubtitleEditorOpen)
+        if (_captionAnchorSource is null || SubtitlesAreImages)
             return;
 
         // Told only when something moved: the preview's captions are then made again (SyncEditorCaptions).
@@ -189,7 +189,7 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Takes what was changed on the cues of anchored captions (in the Subtitle Editor, in place) back into their source's
+    /// Takes what was changed on the cues of anchored captions (in the Subtitle Studio, in place) back into their source's
     /// time, and shows them again from there. A cue still as it was projected changes nothing.
     /// </summary>
     private void WriteBackCaptions()
@@ -340,18 +340,9 @@ public partial class MainViewModel
         }
     }
 
-    // The subtitles as the last undo step left them. The Subtitle Editor changes cues in place and says so
+    // The subtitles as the last undo step left them. The Subtitle Studio changes cues in place and says so
     // afterwards (CommitSubtitleEdits): what it changed is told apart from what was there by comparing with this.
     private string _committedSubtitles = "null";
-
-    // The one undo step everything done in the Subtitle Editor goes into while it is open (4.3E). The editor is modal, so
-    // nothing else is changed meanwhile, and it keeps finer steps of its own (each typing run, drag, split, addition and
-    // deletion): the main window's Undo then takes back the whole visit at once, instead of the editor's every pause
-    // pushing the timeline's twenty steps out.
-    private byte[]? _subtitleVisitStep;
-
-    // The subtitles as they were when the editor was opened: a visit that leaves them so leaves no step behind.
-    private string _subtitlesAtVisit = "null";
 
     /// <summary>
     /// Changes whenever the undo history does (a step taken, undone or redone): the main window tells by it whether typing
@@ -359,13 +350,9 @@ public partial class MainViewModel
     /// </summary>
     public object? UndoMark => _undo.Count > 0 ? _undo[^1].State : null;
 
-    /// <summary>Whether the newest undo step is the open Subtitle Editor's one step, which what is done in it now goes into.</summary>
-    private bool InSubtitleVisit => IsSubtitleEditorOpen && _subtitleVisitStep is { } step && _undo.Count > 0 && ReferenceEquals(_undo[^1].State, step);
-
     /// <summary>
     /// Makes an undo step of the edits made to the cues in place since the last step: one that brings back the
-    /// cues as they were then. Nothing when nothing was changed. While the Subtitle Editor is open, the edits go
-    /// into its visit's one step instead.
+    /// cues as they were then. Nothing when nothing was changed.
     /// </summary>
     private void CheckpointSubtitleEdits()
     {
@@ -379,42 +366,19 @@ public partial class MainViewModel
         if (now == _committedSubtitles)
             return;
 
-        if (!IsSubtitleEditorOpen)
-            Checkpoint("edit the subtitles", SnapshotBeforeSubtitleEdits());
-        else if (!InSubtitleVisit)
-            BeginSubtitleVisit(SnapshotBeforeSubtitleEdits());
+        Checkpoint("edit the subtitles", SnapshotBeforeSubtitleEdits());
         _committedSubtitles = now;
-
-        // Taken back in the editor to what they were when it was opened: the visit changed nothing after all.
-        if (InSubtitleVisit && now == _subtitlesAtVisit)
-        {
-            _undo.RemoveAt(_undo.Count - 1);
-            _subtitleVisitStep = null;
-        }
     }
 
     /// <summary>The timeline as it is, with the subtitles as the last undo step left them: what undoing the edits made in place since brings back.</summary>
     private TimelineSnapshot SnapshotBeforeSubtitleEdits() =>
         CaptureSnapshot() with { Subtitles = JsonSerializer.Deserialize<SubtitleTrackData?>(_committedSubtitles) };
 
-    /// <summary>Takes the open Subtitle Editor's one undo step, bringing back the state given; what is done in the editor from now on goes into it.</summary>
-    private void BeginSubtitleVisit(TimelineSnapshot before)
-    {
-        Checkpoint("edit the subtitles", before);
-        _subtitleVisitStep = !_isBackgroundWorker && _undo.Count > 0 ? _undo[^1].State : null;
-    }
-
-    /// <summary>
-    /// Takes the undo step a change to the cues is made after: a step of its own, named for it; while the Subtitle Editor
-    /// is open, its visit's one step (taken now when the visit has none yet), the editor keeping the change as a step of its own.
-    /// </summary>
+    /// <summary>Takes the undo step a change to the cues is made after: a step of its own, named for it.</summary>
     private void CheckpointSubtitles(string what)
     {
         CheckpointSubtitleEdits();
-        if (!IsSubtitleEditorOpen)
-            Checkpoint(what);
-        else if (!InSubtitleVisit)
-            BeginSubtitleVisit(CaptureSnapshot());
+        Checkpoint(what);
     }
 
     private void NotifySubtitlesChanged()
@@ -439,7 +403,7 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Called when cues were edited by hand (in the Subtitle Editor): they are put in order and numbered again,
+    /// Called when cues were edited by hand (in the Subtitle Studio): they are put in order and numbered again,
     /// the timeline shows them as they are now, and the main player is given them again.
     /// </summary>
     public void CommitSubtitleEdits()
@@ -475,20 +439,6 @@ public partial class MainViewModel
         }
     }
 
-    partial void OnIsSubtitleEditorOpenChanged(bool value)
-    {
-        // Each visit of the editor is one undo step of its own, measured from the subtitles as it found them.
-        _subtitleVisitStep = null;
-        if (value)
-            _subtitlesAtVisit = JsonSerializer.Serialize(CaptureSubtitles());
-
-        // Closed: the main player draws them again, as they now are. Open: it lets go of them.
-        if (!value)
-            RefreshSubtitlePreview();
-        if (!_isBackgroundWorker)
-            InvalidatePreviewState();
-    }
-
     /// <summary>Has the main player show the subtitle track as it is now.</summary>
     private void RefreshSubtitlePreview()
     {
@@ -498,14 +448,14 @@ public partial class MainViewModel
         if (SubtitlesAreImages || !HasSubtitleCues)
             ShowPictureSubtitles();
 
-        if (PreviewSubtitles && !IsSubtitleEditorOpen)
+        if (PreviewSubtitles)
             RefreshLiveCaptionsSoon();
     }
 
     // ----- The picture track in the GPU preview (5.0-Verify) -----
     // Its file is decoded once, in the background (PictureSubtitleDecoder: HandPeg's FFmpeg, the pictures kept packed in
     // memory), and each cue is paired with the picture its file shows at the cue's own moment there (_subtitleOriginal), so
-    // a cue retimed in the Subtitle Editor or moved by the offset keeps its picture. The GPU preview is given them with the
+    // a cue retimed in the Subtitle Studio or moved by the offset keeps its picture. The GPU preview is given them with the
     // sequence (PreviewPictureSubtitles, the state's PictureSubtitles) and told when they changed (CaptionsChanged).
 
     // The file's pictures as far as they have been read, which file (its path, size and time) they are of, the decode
@@ -518,12 +468,11 @@ public partial class MainViewModel
 
     /// <summary>
     /// The picture track's cues with their pictures, for the GPU preview (as far as its file has been read: a track put in
-    /// with nothing open is read the first time the preview asks); null when there is none, or while the Subtitle Editor
-    /// shows the track instead.
+    /// with nothing open is read the first time the preview asks); null when there is none.
     /// </summary>
     public PictureSubtitleTrack? PreviewPictureSubtitles()
     {
-        if (!SubtitlesAreImages || !HasSubtitleCues || IsSubtitleEditorOpen)
+        if (!SubtitlesAreImages || !HasSubtitleCues)
             return null;
         if (_pictureSetOf.Length == 0)
             ShowPictureSubtitles();
@@ -640,14 +589,14 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// What the Subtitle Editor's preview draws a text track with: its cues as captions on the timeline's clock (one line per
+    /// What the Subtitle Studio's preview draws a text track with: its cues as captions on the timeline's clock (one line per
     /// cue, its words timed as the export times them), the caption style, and what the style's sizes are multiplied by in
     /// the caption box (as <see cref="WriteCaptionFile"/> works it out). The box is <see cref="SubtitleFrameSize"/>.
     /// </summary>
     public (IReadOnlyList<List<CaptionWord>> Lines, CaptionStyle Style, double TextScale) SubtitleEditorCaptions() =>
         (GetCueCaptions(), CaptionStyle, CaptionTextScale());
 
-    /// <summary>The size of the frame the Subtitle Editor shows the subtitles on: the caption box for words, the output frame for pictures.</summary>
+    /// <summary>The size of the frame the Subtitle Studio shows the subtitles on: the caption box for words, the output frame for pictures.</summary>
     public (int Width, int Height) SubtitleFrameSize
     {
         get
@@ -677,7 +626,7 @@ public partial class MainViewModel
             if (words.Length == 0 || end - start < 0.02)
                 continue;
 
-            // Each word from its boundary to the next: the ones set in the Subtitle Editor, or its share by length.
+            // Each word from its boundary to the next: the ones set in the Subtitle Studio, or its share by length.
             var breaks = cue.GetBreaks();
             var caption = new List<CaptionWord>(words.Length);
             for (var i = 0; i < words.Length; i++)
@@ -857,32 +806,6 @@ public partial class MainViewModel
         cue.WordBreaks = breaks.Count > 0 ? [.. breaks] : null;
         NotifySubtitlesChanged();
         return true;
-    }
-
-    /// <summary>
-    /// Puts the cues (and the offset) back as the Subtitle Editor's own Undo kept them. In place: the cues there are take
-    /// the values in order, so a picture track's cues stay matched to its file's pictures and the editor's timeline goes on
-    /// drawing the same list. Like the editor's other changes, it reaches the main window's Undo when the editor commits
-    /// (CommitSubtitleEdits), in the visit's one step.
-    /// </summary>
-    public void RestoreSubtitleCues(IReadOnlyList<SubtitleCueState> cues, double offsetMs)
-    {
-        for (var i = 0; i < cues.Count; i++)
-        {
-            if (i == SubtitleCues.Count)
-                SubtitleCues.Add(new SubtitleCue { Index = i + 1 });
-
-            // The words before their boundaries: words of another count let go of the boundaries they had. A cue showing an
-            // anchored caption takes back the piece it showed (4.4), so it is written back through the same clip.
-            var (cue, state) = (SubtitleCues[i], cues[i]);
-            cue.Text = state.Text ?? "";
-            cue.WordBreaks = (double[]?)state.Breaks?.Clone();
-            (cue.Start, cue.End, cue.Piece) = (state.Start, state.End, state.Piece);
-        }
-
-        while (SubtitleCues.Count > cues.Count)
-            SubtitleCues.RemoveAt(SubtitleCues.Count - 1);
-        SubtitleOffsetMs = offsetMs;
     }
 
     /// <summary>

@@ -1,0 +1,29 @@
+# Project Media is the project's own bin: saved with it, kept by Undo, a clip's file taken in, kept after its clips go, removed only when no clip plays it.
+ok: a new document's pool is empty, left out of the file, and it pools no placed file (only the view model's do)
+ok: AddToMediaPool says it changed something
+ok: each file once (case and quotes aside), in order; an empty path and a web address left out
+ok: written as "mediaPool" once it holds files, and read back the same
+ok: Clone and Clone(deep) copy the pool (a list of their own) and whether it pools placed files
+ok: a change of the pool alone is a commit (a step of Undo like any other)
+ok: a transaction rolled back puts the pool back as it was, and raises nothing
+ok: removing a file it does not hold, or adding one it holds, changes nothing (false)
+ok: a document that does not pool placed files (a golden's, a project read for its thumbnail) keeps its pool as it is
+ok: one that does takes in a video's and a picture's file (a text clip has none)
+ok: the clip deleted, its file stays in the pool
+ok: PoolFileOf: no web address; a picture's file from its look when the clip names none, trimmed and unquoted
+ok: the view model's document pools placed files; a blank project holds nothing for a tab
+ok: AddToProjectMedia: the media files once each (a text file left out), one step of Undo
+ok: Project Media lists them in order, and the tab is not empty any more
+ok: Undo takes them out again
+ok: Redo puts them back
+ok: an undo step (UndoSteps.Pack, Unpack) carries the pool
+ok: the New Project studio's picks: put in with no step of Undo, and the tab holds them
+ok: a file opened onto the Sequence is in Project Media, and a clip plays it
+ok: Remove from Project Media refuses a file a clip plays: no step, and the status line says how many clips use it
+ok: the clip deleted, the file stays in Project Media
+ok: with no clip playing it, Remove takes it out, one step of Undo
+ok: a project with no pool reads back with none (ProjectStore), and TimelineToOpen seeds it from its clips' files, each once, in the order the track holds them
+ok: a project that has a pool keeps it as it is
+ok: MoveFiles points the pool's entries at the moved files too
+ok: a bundle with long recordings trimmed: the bin holds each trimmed recording as its pieces, in its place; a file only in the bin goes in whole
+ok: MediaFilesInUse holds the bin's files (a download only in the bin is pinned and copied too)

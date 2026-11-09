@@ -145,16 +145,24 @@ public partial class SettingsWindow
         UpdateTitleProgress();
     }
 
-    /// <summary>The dim fill: as far across as the work has got, or (work that cannot say) the whole bar, fainter.</summary>
+    /// <summary>
+    /// The dim fill and the accent rail under it: as far across as the work has got, or (work that cannot say) the whole bar, fainter. As
+    /// the editor's own bar draws them (5.4D, MainWindow.UpdateTitleProgress).
+    /// </summary>
     private void UpdateTitleProgress()
     {
         if (TitleProgress.Visibility != Visibility.Visible)
             return;
 
         var work = WorkScheduler.Summary;
-        TitleProgressFill.Width = work.IsIndeterminate ? TitleBar.ActualWidth : TitleBar.ActualWidth * Math.Clamp(work.Percent, 0, 100) / 100;
-        TitleProgressFill.Opacity = work.IsIndeterminate ? 0.07 : 0.14;
+        TitleProgressFill.Width = work.IsIndeterminate ? TitleBar.ActualWidth : TitleBar.ActualWidth * Math.Max(0, Math.Min(work.Percent, 100)) / 100;
+        TitleProgressFill.Opacity = work.IsIndeterminate ? TitleProgressFaint : TitleProgressStrength;
+        TitleProgressRail.Width = TitleProgressFill.Width;
+        TitleProgressRail.Opacity = work.IsIndeterminate ? TitleProgressRailFaint : 1;
     }
+
+    // The wash's strength (and while the work cannot say how far it has got), and the rail's then: the editor's (MainWindow.TitleBar.cs).
+    private const double TitleProgressStrength = 0.16, TitleProgressFaint = 0.08, TitleProgressRailFaint = 0.5;
 
     // The status stays in the middle of the bar, between what is at its two ends, never under them.
     private void FitTitleStatus() =>

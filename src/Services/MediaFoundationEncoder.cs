@@ -6,8 +6,10 @@ namespace HandPegApp.Services;
 /// FFmpeg's Media Foundation encoders (h264_mf, hevc_mf, av1_mf, Pass 5.0): Windows' own door to a card's hardware
 /// encoder, and the one there is on Snapdragon / Adreno ARM64 machines, which have no NVENC, QuickSync or AMF. They take
 /// none of the vendor encoders' options: rate control is "-rate_control" (cbr, u_vbr, pc_vbr, quality) with
-/// "-quality 0-100" for the constant-quality mode, and "-hw_encoding 1" refuses Windows' software encoder, which Media
-/// Foundation would otherwise hand over without a word. The probe and the export build their options here.
+/// "-quality 0-100" for the constant-quality mode (the quality LEVEL, CODECAPI_AVEncCommonQuality), "-compression_level 0-100"
+/// the trade of speed for quality (CODECAPI_AVEncCommonQualityVsSpeed; 100 the slowest and best, 5.4C), and "-hw_encoding 1"
+/// refuses Windows' software encoder, which Media Foundation would otherwise hand over without a word. The probe and the export
+/// build their options here.
 /// </summary>
 public static class MediaFoundationEncoder
 {
@@ -22,6 +24,21 @@ public static class MediaFoundationEncoder
 
     /// <summary>The same as one piece of a command line.</summary>
     public const string HardwareOnlyArgument = "-hw_encoding 1";
+
+    /// <summary>
+    /// The encoder's slowest, best step (5.4C: every encoder starts at its slowest step): QualityVsSpeed at 100. FFmpeg's "-quality"
+    /// is the constant-quality level, not this, so it is never used for it (a second "-quality" would overrule the CQ slider's).
+    /// </summary>
+    public const string SlowestStepArgument = "-compression_level 100";
+
+    /// <summary>
+    /// The encoder's fastest step (5.4D: a speed-first preset, Fast Proxy, the user's "as fast as possible"): QualityVsSpeed at 0. In
+    /// place of <see cref="SlowestStepArgument"/>, never beside it.
+    /// </summary>
+    public const string FastestStepArgument = "-compression_level 0";
+
+    /// <summary>The step argument: the fastest for a speed-first preset (5.4D), else the slowest.</summary>
+    public static string StepArgument(bool fastest) => fastest ? FastestStepArgument : SlowestStepArgument;
 
     /// <summary>
     /// The pixel format a Media Foundation encoder is handed: NV12, P010 in 10 bits (5.2). Media Foundation's hardware encoders
@@ -48,7 +65,11 @@ public static class MediaFoundationEncoder
     /// </summary>
     public static int QualityFromCrf(int crf) => Math.Clamp((int)Math.Round(100 - Math.Clamp(crf, 0, 51) * (100.0 / 51)), 1, 100);
 
-    /// <summary>The whole option string an export adds after "-c:v name" for a Media Foundation encoder.</summary>
-    public static string ExportArguments(bool bitrateMode, bool constantBitrate, int kilobits, int crf) =>
-        (bitrateMode && kilobits > 0 ? BitrateArguments(kilobits, constantBitrate) : QualityArguments(crf)) + " " + HardwareOnlyArgument;
+    /// <summary>
+    /// The whole option string an export adds after "-c:v name" for a Media Foundation encoder: its rate control, the slowest step
+    /// (the fastest with <paramref name="fastest"/>, 5.4D: a speed-first preset) and hardware only. The Export tab's command
+    /// (MainViewModel.BuildVideoCodecArguments) is built from it, so what ships is what is tested.
+    /// </summary>
+    public static string ExportArguments(bool bitrateMode, bool constantBitrate, int kilobits, int crf, bool fastest = false) =>
+        (bitrateMode && kilobits > 0 ? BitrateArguments(kilobits, constantBitrate) : QualityArguments(crf)) + " " + StepArgument(fastest) + " " + HardwareOnlyArgument;
 }

@@ -1,0 +1,27 @@
+# The Layout Selector is the one Layout UI: a click opens it too, the cards four to a row with the Default pill, the footer card, the menu retired.
+ok: the click's menu is retired from MainWindow.xaml: LayoutFlyout, LayoutFlyoutPanel, SideWindowCheck, BuiltInLayoutRows, SavedLayoutRows, SavedLayoutsTitle
+ok: and from the code: OpenLayoutMenu, CloseLayoutMenu, FillLayoutRows, LayoutFlyout_KeyDown, _layoutMenuFrom, TakeUpLayout, LayoutFlyout
+ok: resting on the Layout button opens nothing while a project tab is being switched (CanOpen); no press in the window closes it
+ok: the window deactivated (Alt+Tab): a preview put back, then the selector closed (it is topmost)
+ok: a click on the Layout button opens the Layout Selector when it is not open, and never closes it
+ok: Down, the menu key, Enter or Space (a click from the keyboard) opens it with the first card chosen
+ok: Escape on the Layout button closes the selector it opened
+ok: what came from the keyboard: InputManager's most recent device is the keyboard (not the pointer, a touch or a pen)
+ok: a pill, a × or the CheckBox clicked with the pointer: the keyboard back where it was as the selector opened, the selector released; from the keyboard, the card keeps it
+ok: the Layout button's tooltip tells of the click, the selector's footer and Reset Layout's place
+ok: the cards 191 DIPs wide in 776: 4 to a row, 8 cards in 2 rows; the themes as wide
+ok: the footer: a card under the themes (InspectorCardBrush edged InspectorCardBorderBrush, 1 px, 6 px corners, 12 px inside: CLAUDE.md 10.3)
+ok: in it: Each project tab remembers its own layout, + New Side Window, the side windows' rows (SideWindowRows) and Save Current Layout; no Reset Layout
+ok: Reset Layout has one home, the Views menu (CLAUDE.md 10.1)
+ok: the CheckBox saves AppSettings.PerTabWindowLayouts at once and shows it as it is each time the selector opens (Settings sets it too)
+ok: Save Current Layout puts a preview back and closes the selector before its modal window, then saves the arrangement through the dock
+ok: + New Side Window puts a preview back, then closes the selector, before the window opens (and saves the arrangement)
+ok: a side window's row and its close button put a preview back first too
+ok: the keyboard leaving the cards (Tab to the footer) with the selector open puts a preview back, as the pointer leaving them does
+ok: each card has its pill (★ Default, else ☆ Set Default) and a saved card its ×, their clicks handled so the card's own (KeepLayout) never fires
+ok: ★ Default always shown; ☆ Set Default and × while the card is pointed at or has the keyboard
+ok: the Default layout is part of what the cards are drawn from (_cardsKey)
+ok: setting the Default saves it at once (a built-in layout by name, the user's own as saved:N), draws the cards again and says so
+ok: deleting one of the user's own puts the preview back first, leaves the selector open, and when it was the Default makes Standard Editing the Default again
+ok: AppSettings.DefaultStartupLayout keys: a built-in layout's name, saved:N for the user's own in place N
+ok: the selector is still placed by PlaceLayoutSelector (UiScale.PlaceAgainst, CLAUDE.md 9)

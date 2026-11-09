@@ -247,6 +247,62 @@ public sealed partial class GpuPreviewEngine
         Invalidate();
     }
 
+    /// <summary>
+    /// Where the camera is going (5.4D: a project tab put behind keeps it in its header): its turn, distance and spacing as the user
+    /// left them, whether the view is on or not (the flat picture's pose is the way out's end, never this).
+    /// </summary>
+    internal CameraPose TargetPose
+    {
+        get
+        {
+            lock (_camera)
+                return new(_yaw, _pitch, _zoom, _spacing);
+        }
+    }
+
+    /// <summary>
+    /// Into the 3D view or out of it at once, with no way in or out (5.4D: a project tab put behind, or one brought back to the front as it
+    /// was left): the camera drawn is where it is going from the next scene on. Into it at <paramref name="pose"/> (held to the camera's
+    /// limits as an orbit, the wheel and the spacing are; the view's start when null or not a number).
+    /// </summary>
+    internal void SetExplodedInstant(bool on, CameraPose? pose = null)
+    {
+        lock (_camera)
+        {
+            _wantExploded = on;
+            _transitionClock = null;
+            _cameraTicks = 0;
+            (_liftedKey, _liftedBy, _orbiting) = (0, 0, false);
+            if (on)
+            {
+                (_yaw, _pitch, _zoom, _spacing) = HeldToLimits(pose ?? new(DefaultYaw, DefaultPitch, DefaultZoom, DefaultSpacing));
+                _lastExploded.Reset();
+                _drawingExploded = true;
+                Drawn = Target;
+            }
+            else
+            {
+                Drawn = CameraPose.Flat;
+                if (_drawingExploded)
+                    (_drawingExploded, _flatSince) = (false, Stopwatch.GetTimestamp());
+            }
+        }
+
+        Invalidate();
+    }
+
+    /// <summary>A pose held to what the camera can do: the turns short of edge on, the distance and the spacing within theirs, the view's start for what is not a number.</summary>
+    internal static CameraPose HeldToLimits(CameraPose pose)
+    {
+        static double Held(double value, double fallback, double low, double high) =>
+            double.IsFinite(value) ? Math.Max(low, Math.Min(value, high)) : fallback;
+
+        return new(Held(pose.Yaw, DefaultYaw, -ExplodedCamera.MaxTurnDegrees, ExplodedCamera.MaxTurnDegrees),
+            Held(pose.Pitch, DefaultPitch, -ExplodedCamera.MaxTurnDegrees, ExplodedCamera.MaxTurnDegrees),
+            Held(pose.Zoom, DefaultZoom, ExplodedCamera.MinZoom, ExplodedCamera.MaxZoom),
+            Held(pose.Spacing, DefaultSpacing, MinSpacing, MaxSpacing));
+    }
+
     /// <summary>Turns the camera by so many degrees (positive yaw: towards the right; positive pitch: up), held short of edge on.</summary>
     public void Orbit(double yawDegrees, double pitchDegrees)
     {
@@ -392,46 +448,71 @@ public sealed partial class GpuPreviewEngine
                 return;
             }
 
-            header.ViewMode = 1;
-            header.Flags |= FrameSceneHeader.FlagDepthRails;
-            header.CameraYaw = (float)_drawnYaw;
-            header.CameraPitch = (float)_drawnPitch;
-            header.CameraZoom = (float)_drawnZoom;
-            header.ExplodedZSpread = (float)(_drawnSpacing * Math.Max(Math.Max(header.CanvasWidth, header.CanvasHeight), 1));
-
-            // Each layer at its track's place in the plan's stack, which is as deep as the plan whatever is on now (5.0-Release:
-            // a caption between its cues, or a layer waiting for its texture, no longer moves the planes above it or the
-            // camera's middle). The clip selected is outlined, and another clip of its track playing while it is not more
-            // faintly, so the selected layer's plane never blinks off at its cuts; a layer dragged in depth is drawn where
-            // the drag has it.
             var plan = Volatile.Read(ref _plan);
-            var count = Math.Clamp(header.ActiveLayerCount, 0, layers.Length);
-            header.ExplodedDepth = plan.PlaceLayers(layers, count);
-            var selected = Interlocked.Read(ref _selectedClipKey);
-            var selectedPlace = selected != 0 ? plan.PlaceOf(selected) : -1;
-            for (var k = 0; k < count; k++)
-            {
-                ref var layer = ref layers[k];
-                if ((layer.Flags & GpuLayerDescriptor.FlagBlurFillOnly) != 0)
-                {
-                    // A blur fill's own plane (5.2.0's re-cut): outlined while the Background Blur is selected.
-                    if (selected == GpuScenePlan.BlurFillKey)
-                        layer.Flags |= GpuLayerDescriptor.FlagSelected;
-                }
-                else if (selected != 0)
-                {
-                    if (layer.ClipKey == selected)
-                        layer.Flags |= GpuLayerDescriptor.FlagSelected;
-                    else if (selectedPlace >= 0 && layer.ZDepth == selectedPlace)
-                        layer.Flags |= GpuLayerDescriptor.FlagSelectedTrack;
-                }
-
-                if (_liftedKey != 0 && layer.ClipKey == _liftedKey && (layer.Flags & GpuLayerDescriptor.FlagBlurFillOnly) == 0)
-                    layer.ZDepth += (float)_liftedBy;
-            }
-
+            WriteStack(ref header, layers, Drawn, plan);
             _lastExploded.Take(header, layers, plan, ++_explodedVersion);
         }
+    }
+
+    /// <summary>
+    /// A scene of <paramref name="plan"/> drawn in 3D with the camera at <paramref name="pose"/>, not stepped and not kept for picking
+    /// (5.4D: a project tab's still as it was shown, GpuPreviewEngine.CaptureThumbnail; the pump's thread).
+    /// </summary>
+    private void WriteCameraAt(ref FrameSceneHeader header, Span<GpuLayerDescriptor> layers, CameraPose pose, GpuScenePlan plan)
+    {
+        lock (_camera)
+            WriteStack(ref header, layers, pose, plan);
+    }
+
+    /// <summary>The 3D view's camera and each layer's place, outline and lift written into a scene (under _camera).</summary>
+    private void WriteStack(ref FrameSceneHeader header, Span<GpuLayerDescriptor> layers, CameraPose pose, GpuScenePlan plan)
+    {
+        header.ViewMode = 1;
+        header.Flags |= FrameSceneHeader.FlagDepthRails;
+        header.CameraYaw = (float)pose.Yaw;
+        header.CameraPitch = (float)pose.Pitch;
+        header.CameraZoom = (float)pose.Zoom;
+        header.ExplodedZSpread = (float)(pose.Spacing * Math.Max(Math.Max(header.CanvasWidth, header.CanvasHeight), 1));
+
+        // Each layer at its track's place in the plan's stack, which is as deep as the plan whatever is on now (5.0-Release:
+        // a caption between its cues, or a layer waiting for its texture, no longer moves the planes above it or the
+        // camera's middle). The clip selected is outlined, and another clip of its track playing while it is not more
+        // faintly, so the selected layer's plane never blinks off at its cuts; a layer dragged in depth is drawn where
+        // the drag has it.
+        var count = Math.Clamp(header.ActiveLayerCount, 0, layers.Length);
+        header.ExplodedDepth = plan.PlaceLayers(layers, count);
+        var selected = Interlocked.Read(ref _selectedClipKey);
+        var selectedPlace = selected != 0 ? plan.PlaceOf(selected) : -1;
+        for (var k = 0; k < count; k++)
+        {
+            ref var layer = ref layers[k];
+            if ((layer.Flags & GpuLayerDescriptor.FlagBlurFillOnly) != 0)
+            {
+                // A blur fill's own plane (5.2.0's re-cut): outlined while the Background Blur is selected.
+                if (selected == GpuScenePlan.BlurFillKey)
+                    layer.Flags |= GpuLayerDescriptor.FlagSelected;
+            }
+            else if (selected != 0)
+            {
+                if (layer.ClipKey == selected)
+                    layer.Flags |= GpuLayerDescriptor.FlagSelected;
+                else if (selectedPlace >= 0 && layer.ZDepth == selectedPlace)
+                    layer.Flags |= GpuLayerDescriptor.FlagSelectedTrack;
+            }
+
+            if (_liftedKey != 0 && layer.ClipKey == _liftedKey && (layer.Flags & GpuLayerDescriptor.FlagBlurFillOnly) == 0)
+                layer.ZDepth += (float)_liftedBy;
+        }
+    }
+
+    /// <summary>
+    /// The camera a still as it is shown is drawn with (5.4D): where it is going while the 3D view is asked for (a way in
+    /// under way is drawn as it will land); null for the flat picture.
+    /// </summary>
+    private CameraPose? ShownPose()
+    {
+        lock (_camera)
+            return _wantExploded ? new CameraPose(_yaw, _pitch, _zoom, _spacing) : null;
     }
 
     /// <summary>

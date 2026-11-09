@@ -102,20 +102,47 @@
             </Setter>
         </Style>
 
-        <!-- The bar where presets are chosen and saved. Shown in the Summary tab or above the tabs, as set in Settings. -->
+        <!--
+            The Export Presets selector (5.4B: the encoding presets and the 1-click social cards of before, one system): the built-ins grouped
+            "Platform & Social" and "Studio & Archive", then the user's own ("My Presets"), each with its one line as a tool tip; picking one
+            sets the export's settings only (never the view's current item: a list view would pick its first preset as the tab is made). Shown
+            in the Export tab's first card or above the tabs, as set in Settings (PresetBarFrame there).
+        -->
         <DataTemplate x:Key="PresetBar">
-            <Border Style="{StaticResource Panel}" Padding="12,8">
-                <StackPanel Orientation="Horizontal">
-                    <TextBlock Text="Encoding Presets:" VerticalAlignment="Center" Margin="0,0,12,0" />
-                    <ComboBox MinWidth="260" Margin="0" ItemsSource="{Binding Presets}" SelectedItem="{Binding SelectedPreset}"
-                              AutomationProperties.Name="Encoding Presets"
-                              ToolTip="Applies the preset's size, filters, layout, video, audio and caption settings." />
-                    <TextBlock Text="Name:" VerticalAlignment="Center" Margin="24,0,8,0" />
-                    <TextBox Width="240" VerticalContentAlignment="Center" AutomationProperties.Name="Preset Name"
-                             Text="{Binding PresetName, UpdateSourceTrigger=PropertyChanged}"
-                             ToolTip="Name to save the current settings under. An existing name is replaced." />
-                    <Button Content="Save Preset" Margin="6,0,0,0" Command="{Binding SavePresetCommand}" />
-                </StackPanel>
+            <StackPanel>
+                <ComboBox Margin="0,4" ItemsSource="{Binding PresetsView}" SelectedItem="{Binding SelectedPreset}" IsSynchronizedWithCurrentItem="False" MinWidth="220"
+                          AutomationProperties.Name="Export Presets"
+                          ToolTip="Export Presets: picking one sets the export's size, frame rate, encoder, quality or bitrate, sound and format for a platform or a studio use. The layout, the looks and the captions stay as they are (Game Presets set those).">
+                    <ComboBox.GroupStyle>
+                        <GroupStyle>
+                            <GroupStyle.HeaderTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" Foreground="{DynamicResource MutedTextBrush}" Margin="6,8,6,2" />
+                                </DataTemplate>
+                            </GroupStyle.HeaderTemplate>
+                        </GroupStyle>
+                    </ComboBox.GroupStyle>
+                    <ComboBox.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding Name}" ToolTip="{Binding Detail}" />
+                        </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                </ComboBox>
+                <WrapPanel Margin="0,4">
+                    <Button Content="+ Save Current as Preset..." Margin="0,0,6,4" Padding="10,3" Click="SaveCurrentPreset_Click"
+                            AutomationProperties.Name="Save Current as Preset"
+                            ToolTip="Saves the export settings as they are now to My Presets under a name you type. A built-in preset's name is kept for it: the copy is saved as its name with (Custom)." />
+                    <Button Content="Import / Export Preset..." Margin="0,0,0,4" Padding="10,3" Click="ManagePresets_Click"
+                            AutomationProperties.Name="Manage Export Presets"
+                            ToolTip="Brings a preset in from a .hppreset file, or saves the settings as they are now to one, to use on another PC." />
+                </WrapPanel>
+            </StackPanel>
+        </DataTemplate>
+
+        <!-- The selector as a pane of its own above the tabs (Settings: Preset Bar at the top of the window). -->
+        <DataTemplate x:Key="PresetBarFrame">
+            <Border Style="{StaticResource Panel}" Padding="12,6">
+                <ContentControl Content="{Binding}" ContentTemplate="{StaticResource PresetBar}" Focusable="False" />
             </Border>
         </DataTemplate>
 
@@ -315,6 +342,26 @@
             </Setter>
         </Style>
 
+        <!--
+            An inspector card (5.4B, CLAUDE.md 10.3: the Export tab's three columns): a dark surface with a hairline edge, 6 px corners and
+            12 px inside; its rows are 8 px apart (each a margin of 4 above and below). The brushes are the theme's (ThemeManager, App.xaml).
+        -->
+        <Style x:Key="ExportCard" TargetType="Border">
+            <Setter Property="Background" Value="{DynamicResource InspectorCardBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource InspectorCardBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Padding" Value="12" />
+            <Setter Property="VerticalAlignment" Value="Top" />
+        </Style>
+
+        <!-- A card's title: the first row, in its group's words. -->
+        <Style x:Key="ExportCardTitle" TargetType="TextBlock">
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Margin" Value="0,0,0,8" />
+        </Style>
+
         <!-- A card of the Layout Selector: a small picture of a layout's panes and its name; edged while pointed at, and traced in the chosen edge (SelectedBorderBrush) while it is the layout or theme in use (Tag "active"). -->
         <Style x:Key="LayoutCard" TargetType="Button">
             <Setter Property="Margin" Value="4" />
@@ -345,6 +392,43 @@
                 </Setter.Value>
             </Setter>
         </Style>
+
+        <!--
+            5.4D: a pill at the top right of a layout card's picture (MakeLayoutCards): "★ Default" on the layout HandPeg opens in (Tag
+            "default", in the chosen edge's colour, always shown), "☆ Set Default" on the others and "×" on the user's own, shown while the
+            card is pointed at or has the keyboard.
+        -->
+        <Style x:Key="LayoutPill" TargetType="Button">
+            <Setter Property="Padding" Value="7,1,7,2" />
+            <Setter Property="Margin" Value="4,0,0,0" />
+            <Setter Property="FontSize" Value="10.5" />
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+            <Setter Property="Background" Value="{DynamicResource PanelBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderBrush}" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="pill" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="9" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="Tag" Value="default">
+                                <Setter TargetName="pill" Property="BorderBrush" Value="{DynamicResource SelectedBorderBrush}" />
+                                <Setter Property="Foreground" Value="{DynamicResource SelectedBorderBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="pill" Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                                <Setter TargetName="pill" Property="Background" Value="{DynamicResource HoverFillBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="pill" Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
     <!-- The window drawn by HandPeg (Pass 4.1B): its own title bar over the content, Windows' frame, shadow and snapping kept. -->
@@ -368,11 +452,16 @@
             <ColumnDefinition Width="*" />
             <ColumnDefinition Width="Auto" />
         </Grid.ColumnDefinitions>
-        <Canvas x:Name="TitleProgress" Grid.ColumnSpan="3" IsHitTestVisible="False" ClipToBounds="True" Visibility="Collapsed">
-            <Rectangle x:Name="TitleProgressFill" Height="{StaticResource CaptionBarHeight}" Width="0" Fill="{DynamicResource AccentBrush}" Opacity="0.175" />
+        <!-- 5.4D: over the project tabs (ZIndex 10, never hit): a 16% wash across the bar and a 2 DIP accent rail along its foot (MainWindow.TitleBar.cs). -->
+        <Canvas x:Name="TitleProgress" Grid.ColumnSpan="3" Panel.ZIndex="10" IsHitTestVisible="False" ClipToBounds="True" Visibility="Collapsed">
+            <Rectangle x:Name="TitleProgressFill" Height="{StaticResource CaptionBarHeight}" Width="0" Fill="{DynamicResource AccentBrush}" Opacity="0.16" />
+            <Rectangle x:Name="TitleProgressRail" Canvas.Left="0" Canvas.Bottom="0" Height="2" Width="0" Fill="{DynamicResource AccentBrush}" />
         </Canvas>
         <TextBlock x:Name="TitleText" Text="HandPeg" Margin="14,0,12,0" VerticalAlignment="Center" FontSize="12" IsHitTestVisible="False" />
-        <Border x:Name="TitleStatus" Grid.ColumnSpan="3" HorizontalAlignment="Center" Background="Transparent" Padding="12,0" Visibility="Collapsed"
+        <!-- 5.4A: the project tabs, browser-style ([ • Name × ] [ + ]): each tab and + take their clicks, the rest stays the caption (MainWindow.ProjectTabs.cs). -->
+        <local:ProjectTabStrip x:Name="ProjectTabStrip" Grid.Column="1" HorizontalAlignment="Left" VerticalAlignment="Center" Visibility="Collapsed" />
+        <!-- 5.4C: placed by MainWindow.PlaceTitleStatus (its left margin and width): centred while it fits, pushed right by the tabs. -->
+        <Border x:Name="TitleStatus" Grid.ColumnSpan="3" HorizontalAlignment="Left" Background="Transparent" Padding="12,0" Visibility="Collapsed"
                 WindowChrome.IsHitTestVisibleInChrome="True" MouseEnter="WorkChip_MouseEnter" MouseLeave="WorkFlyout_MouseLeave"
                 AutomationProperties.Name="Status" AutomationProperties.AutomationId="TitleStatus">
             <Border.ContextMenu>
@@ -487,18 +576,24 @@
                Opened="ViewsPopup_Opened" Closed="ViewsPopup_Closed">
             <local:ButtonChrome Style="{StaticResource FlyoutChrome}" Padding="12,10">
                 <StackPanel TextElement.Foreground="{DynamicResource TextBrush}" MinWidth="250">
-                    <!-- The timeline's I-frame checkboxes, always here since 5.3-Stage2 (the playback bar no longer carries them; Timeline Settings has them too). -->
+                    <!-- The timeline's checkboxes, always here since 5.3-Stage2 (the playback bar no longer carries them; Timeline Settings has
+                         them too). One Timeline section since 5.4C (the user's: it was two, above and below the lists). -->
                     <StackPanel x:Name="ViewsPlaybackOptions" Margin="0,0,0,8">
                         <TextBlock Text="Timeline" FontWeight="SemiBold" Margin="0,0,0,4" />
                         <CheckBox Content="Snap cuts to I-frames" IsChecked="{Binding SnapToIFrames}" Margin="0,2"
                                   ToolTip="Splits move onto the I-frames of the video clip they cut, which is what a stream copy needs to cut without encoding." />
                         <CheckBox Content="Show I-frames" IsChecked="{Binding ShowIFrames}" Margin="0,2"
                                   ToolTip="Draws a thin line on the timeline at every I-frame." />
+                        <CheckBox Content="Keyframe diamonds on clips" IsChecked="{Binding ShowClipKeyframes}" Margin="0,2"
+                                  ToolTip="Draws a diamond on a clip's block at each of its keyframes." />
+                        <CheckBox Content="Sync Sequence Overview Scrubber Stretch" IsChecked="{Binding SyncMasterTimeline}" Margin="0,2" AutomationProperties.Name="Sync Sequence Overview Scrubber Stretch"
+                                  ToolTip="The timeline is zoomed with Ctrl + wheel and moved along with Shift + wheel or a middle-button drag. On: the Sequence Overview Scrubber is stretched and moved with it. Off: it always shows the whole sequence." />
                     </StackPanel>
                     <!--
                         Tabs and Panes (Pass 4.1B): every settings tab and every pane this mode has, each shown or hidden for
                         this mode alone; made each time the menu opens (MainWindow.Export.cs, TabsAndPanes), the same list a
-                        tab's right-click menu has.
+                        tab's right-click menu has. 5.4C: each list under its own heading, the panes in two columns (they are
+                        twice as many as the tabs, and more with the studios), so the three columns come out even.
                     -->
                     <TextBlock Text="Tabs and Panes" FontWeight="SemiBold" Margin="0,0,0,4" />
                     <Grid>
@@ -506,79 +601,74 @@
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <StackPanel x:Name="ViewsTabList" Margin="0,0,24,0" AutomationProperties.Name="Tabs" />
-                        <StackPanel Grid.Column="1" x:Name="ViewsPaneList" AutomationProperties.Name="Panes" />
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <TextBlock Text="Tabs" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" Margin="0,0,0,2" />
+                        <TextBlock Grid.Column="1" Text="Panes" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" Margin="0,0,0,2" />
+                        <StackPanel Grid.Row="1" x:Name="ViewsTabList" Margin="0,0,24,0" VerticalAlignment="Top" AutomationProperties.Name="Tabs" />
+                        <UniformGrid Grid.Row="1" Grid.Column="1" x:Name="ViewsPaneList" Columns="2" VerticalAlignment="Top" AutomationProperties.Name="Panes" />
                     </Grid>
-                    <TextBlock Text="Timeline" FontWeight="SemiBold" Margin="0,8,0,4" />
-                    <CheckBox Content="Sync Sequence Overview Scrubber Stretch" IsChecked="{Binding SyncMasterTimeline}" Margin="0,2" AutomationProperties.Name="Sync Sequence Overview Scrubber Stretch"
-                              ToolTip="The timeline is zoomed with Ctrl + wheel and moved along with Shift + wheel or a middle-button drag. On: the Sequence Overview Scrubber is stretched and moved with it. Off: it always shows the whole sequence." />
-                    <CheckBox Content="Keyframe diamonds on clips" IsChecked="{Binding ShowClipKeyframes}" Margin="0,2"
-                              ToolTip="Draws a diamond on a clip's block at each of its keyframes." />
                     <!-- Where the panes are: moved by dragging their tabs; this puts them back. -->
-                    <TextBlock Text="Arrange" FontWeight="SemiBold" Margin="0,8,0,4" />
-                    <TextBlock TextWrapping="Wrap" MaxWidth="250" Foreground="{DynamicResource MutedTextBrush}" Margin="0,0,0,4"
-                               Text="Drag a pane by its tab (its title, or the tab that comes up at its top-left corner) onto another pane, to a side of one, or out of the window into the side window. The borders between panes are dragged to resize them." />
+                    <TextBlock Text="Arrange" FontWeight="SemiBold" Margin="0,10,0,4" />
+                    <TextBlock TextWrapping="Wrap" MaxWidth="420" HorizontalAlignment="Left" Foreground="{DynamicResource MutedTextBrush}" Margin="0,0,0,4"
+                               Text="Drag a pane by its tab (its title, or the tab that comes up when the pointer rests on its top-left corner) onto another pane, to a side of one, or out of the window into a side window of its own. The borders between panes are dragged to resize them." />
                     <Button Content="Reset Panes Layout" Click="ResetPanesLayout_Click" Padding="10,4" Margin="0,8,0,0" HorizontalContentAlignment="Left"
                             AutomationProperties.Name="Reset Panes Layout"
-                            ToolTip="Puts every pane back where this mode starts with it (the Standard Editing layout), at the size it starts with." />
+                            ToolTip="Puts every pane back where your Default layout (★ in the Layout Selector; Standard Editing unless you chose another) has it, at the size it starts with, and closes the Pane Dockers." />
                 </StackPanel>
             </local:ButtonChrome>
         </Popup>
 
         <!--
-            The Layout button's menu (a click, Pass 4.1B), opened beside the header's button (OpenLayoutMenu); a press
-            anywhere else closes it. The side window, the built-in
-            layouts, the user's own (rows made in code: FillLayoutRows), Save Current Layout and Reset Layout.
-        -->
-        <Popup x:Name="LayoutFlyout" AllowsTransparency="True" StaysOpen="True">
-            <local:ButtonChrome x:Name="LayoutFlyoutPanel" Style="{StaticResource FlyoutChrome}" Padding="6"
-                    KeyDown="LayoutFlyout_KeyDown" TextElement.Foreground="{DynamicResource TextBrush}">
-                <StackPanel MinWidth="220">
-                    <StackPanel.Resources>
-                        <Style TargetType="Button" BasedOn="{StaticResource FlyoutRowButton}" />
-                    </StackPanel.Resources>
-                    <!-- The side window, ticked while it is open. -->
-                    <Button Click="SideWindowRow_Click" AutomationProperties.Name="Side Window"
-                            ToolTip="Side Window: a second HandPeg window for panes, to put on another monitor. Drag any pane's tab out of the window (or right-click a tab, Move to Side Window) to put it there. Closing it puts its panes back.">
-                        <DockPanel MinWidth="194">
-                            <Path x:Name="SideWindowCheck" DockPanel.Dock="Right" Data="M 1,5 L 4.5,8.5 L 11,1.5" Width="12" Height="10" Margin="12,0,2,0" VerticalAlignment="Center"
-                                  Stroke="{DynamicResource AccentBrush}" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Visibility="Hidden" />
-                            <TextBlock Text="Side Window" />
-                        </DockPanel>
-                    </Button>
-                    <Border Height="1" Margin="6,4" Background="{DynamicResource ControlBorderBrush}" />
-                    <TextBlock Text="Layouts" FontWeight="SemiBold" Foreground="{DynamicResource MutedTextBrush}" Margin="10,2,0,2" />
-                    <StackPanel x:Name="BuiltInLayoutRows" />
-                    <TextBlock x:Name="SavedLayoutsTitle" Text="Saved Layouts" FontWeight="SemiBold" Foreground="{DynamicResource MutedTextBrush}" Margin="10,6,0,2" />
-                    <StackPanel x:Name="SavedLayoutRows" />
-                    <Border Height="1" Margin="6,4" Background="{DynamicResource ControlBorderBrush}" />
-                    <Button Content="Save Current Layout..." Click="SaveCurrentLayout_Click" AutomationProperties.Name="Save Current Layout"
-                            ToolTip="Keeps the panes as they are now as a layout of your own, in one of three places for this mode: name it, or write over one kept before." />
-                    <Button Content="Reset Layout" Click="ResetPanesLayout_Click" AutomationProperties.Name="Reset Layout"
-                            ToolTip="Puts every pane back where this mode starts with it (the Standard Editing layout), at the size it starts with." />
-                </StackPanel>
-            </local:ButtonChrome>
-        </Popup>
-
-        <!--
-            The Layout Selector (resting on the Layout button, Pass 4.1B: HoverFlyout): a card for each built-in layout and
-            each of the user's own, a small picture of its panes drawn when it opens (DockManager.Miniature), and under
-            them the Themes row, as wide. While the pointer (or the keyboard) is on a layout card the window takes that
-            layout (the player only moves: it floats over its place); on a theme card every window takes that theme. A
-            click keeps it; leaving the cards, Escape or the pointer gone from the selector and the button puts things back
-            as they were. Placed once, where it opened, so it stays put while the window changes under it (PlaceLayoutSelector).
+            The Layout Selector (resting on the Layout button or a click on it, Pass 4.1B: HoverFlyout; 5.4D: the one Layout UI, the click's
+            menu retired): a card for each built-in layout and each of the user's own, a small picture of its panes drawn when it opens
+            (DockManager.Miniature) with its pill ("★ Default" on the layout HandPeg opens in, "☆ Set Default" and, on the user's own, "×"),
+            four to a row; under them the Themes row, as wide; and the footer: each project tab's own layout, the side windows and Save
+            Current Layout. While the pointer (or the keyboard) is on a layout card the window takes that layout (the player only moves: it
+            floats over its place); on a theme card every window takes that theme. A click keeps it; leaving the cards (the pointer, or the
+            keyboard), Escape, the window deactivated or the pointer gone from the selector and the button puts things back as they were.
+            Placed once, where it opened, so it stays put while the window changes under it (PlaceLayoutSelector). Reset Layout is in the
+            Views menu only (one home per control).
         -->
         <Popup x:Name="LayoutSelector" AllowsTransparency="True" StaysOpen="True" Closed="LayoutSelector_Closed">
             <local:ButtonChrome x:Name="LayoutSelectorPanel" Style="{StaticResource FlyoutChrome}" Padding="10,8,10,10"
                     KeyDown="LayoutSelector_KeyDown" TextElement.Foreground="{DynamicResource TextBrush}">
-                <StackPanel>
+                <StackPanel Width="776">
                     <DockPanel Margin="4,0,4,6">
-                        <TextBlock DockPanel.Dock="Right" Text="Point at one to see it; click to keep it" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" Margin="16,0,0,0" />
+                        <TextBlock DockPanel.Dock="Right" Text="Point at one to see it; click to keep it; ★ is where HandPeg opens" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" Margin="16,0,0,0" />
                         <TextBlock Text="Layouts" FontWeight="SemiBold" VerticalAlignment="Center" />
                     </DockPanel>
-                    <WrapPanel x:Name="LayoutCards" Width="576" Background="Transparent" MouseLeave="LayoutCards_MouseLeave" AutomationProperties.Name="Layouts" />
+                    <WrapPanel x:Name="LayoutCards" Width="776" Background="Transparent" MouseLeave="LayoutCards_MouseLeave"
+                               IsKeyboardFocusWithinChanged="LayoutCards_IsKeyboardFocusWithinChanged" AutomationProperties.Name="Layouts" />
                     <TextBlock Text="Themes" FontWeight="SemiBold" Margin="4,8,4,4" />
-                    <UniformGrid x:Name="ThemeCards" Rows="1" Width="576" Background="Transparent" MouseLeave="ThemeCards_MouseLeave" AutomationProperties.Name="Themes" />
+                    <UniformGrid x:Name="ThemeCards" Rows="1" Width="776" Background="Transparent" MouseLeave="ThemeCards_MouseLeave" AutomationProperties.Name="Themes" />
+                    <!--
+                        5.4D: the footer, a card (CLAUDE.md 10.3): each project tab's own layout, a new side window and a row for each one open
+                        (made in code: UpdateSideWindowCheck), and Save Current Layout.
+                    -->
+                    <Border x:Name="LayoutFooter" Margin="4,10,4,0" Padding="12" CornerRadius="6" BorderThickness="1"
+                            Background="{DynamicResource InspectorCardBrush}" BorderBrush="{DynamicResource InspectorCardBorderBrush}">
+                        <StackPanel>
+                            <DockPanel>
+                                <Button DockPanel.Dock="Right" Content="Save Current Layout..." Click="SaveCurrentLayout_Click" Padding="10,4" Margin="8,0,0,0"
+                                        AutomationProperties.Name="Save Current Layout"
+                                        ToolTip="Keeps the panes as they are now as a layout of your own, in one of three places: name it, or write over one kept before. It joins the cards above." />
+                                <Button DockPanel.Dock="Right" Content="+ New Side Window" Click="SideWindowRow_Click" Padding="10,4" Margin="8,0,0,0"
+                                        AutomationProperties.Name="New Side Window"
+                                        ToolTip="A new side window, to put on another monitor: a live view of the player to start with, or (its title bar's choice) a Pane Docker that holds any panes. Drag any pane's tab out of the window to put it in a new one." />
+                                <CheckBox x:Name="PerTabLayoutsBox" Content="Each project tab remembers its own layout" VerticalAlignment="Center" Click="PerTabLayoutsBox_Click"
+                                          AutomationProperties.Name="Each project tab remembers its own layout"
+                                          ToolTip="On: each project tab keeps the window's layout it was left in, and takes it back when brought to the front. Off: every tab shares one layout. (Also in Settings.)" />
+                            </DockPanel>
+                            <StackPanel x:Name="SideWindowRows" AutomationProperties.Name="Side Windows">
+                                <StackPanel.Resources>
+                                    <Style TargetType="Button" BasedOn="{StaticResource FlyoutRowButton}" />
+                                </StackPanel.Resources>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
                 </StackPanel>
             </local:ButtonChrome>
         </Popup>
@@ -801,6 +891,8 @@
                               Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
                               Data="M 2,3 L 9,0.8 L 16,3 L 9,5.2 Z M 2,8 L 9,5.8 L 16,8 L 9,10.2 Z M 2,13 L 9,10.8 L 16,13 L 9,15.2 Z" />
                     </ToggleButton>
+                    <!-- 5.4B/5.4D: the Live Encoded Preview toggle and its flyout, made in code (MainWindow.LoopbackPreview.cs), shown by default beside the 3D view. -->
+                    <ContentControl x:Name="ExportQualityPreviewBarSlot" local:OverflowStrip.Priority="12" Focusable="False" VerticalAlignment="Center" />
                     <Button local:OverflowStrip.Priority="10" Style="{StaticResource TransportButton}" Content="&#xE722;" Tag="ExportFrame" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[ExportFrame], Converter={StaticResource BoolToVisibility}}"
                             ToolTip="Export Frame: saves the frame as it is shown (as the layout makes it) as a PNG in the output's folder." AutomationProperties.Name="Export Frame" />
                     <Button local:OverflowStrip.Priority="55" Style="{StaticResource TransportButton}" Content="&#xE7B3;" Margin="14,0,3,0" Command="{Binding RenderPreviewCommand}"
@@ -1111,13 +1203,13 @@
                     </Button>
                 </Grid>
                 <!--
-                    Layout: resting on it opens the Layout Selector (the window takes each layout, and each theme, while the
-                    pointer is on its card; a click keeps it); a click opens a menu with the side window, the layouts, Save
-                    Current Layout and Reset Layout. The menu and the selector are on the root grid.
+                    Layout: resting on it or a click opens the Layout Selector (the window takes each layout, and each theme, while the
+                    pointer is on its card; a click keeps it), with the side windows and Save Current Layout in its footer (5.4D: the
+                    click's menu is retired). The selector is on the root grid.
                 -->
                 <Button x:Name="LayoutButton" Padding="9,6" Margin="6,0,0,6" Click="LayoutButton_Click" PreviewKeyDown="LayoutButton_PreviewKeyDown"
                         AutomationProperties.Name="Layout"
-                        ToolTip="Layout: rest the pointer here for the Layout Selector (layouts and themes, shown live while the pointer is on one; click one to keep it). Click for the side window, the layouts, Save Current Layout and Reset Layout.">
+                        ToolTip="Layout: rest the pointer here or click for the Layout Selector: the layouts and themes, shown live while the pointer is on one (click one to keep it; ★ marks the layout HandPeg opens in), the side windows and Save Current Layout. Reset Layout is in the Views menu.">
                     <Path Data="{StaticResource LayoutIcon}" Width="18" Height="18" Stretch="Uniform" Stroke="{DynamicResource TextBrush}" StrokeThickness="1.4"
                           StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
                 </Button>
@@ -1126,7 +1218,7 @@
                         ToolTip="Project: save the current source, cuts and settings as a project, or open a saved one." />
                 <!--
                     Settings; and, while the pointer rests on it, a small flyout under it with autosave, the batch
-                    queue and the Social Squisher.
+                    queue, the Social Squisher and the Game Presets.
                 -->
                 <Grid Margin="6,0,0,6" x:Name="SettingsHost">
                     <Popup x:Name="SettingsFlyout"
@@ -1146,11 +1238,14 @@
                                         ToolTip="Show the batch queue. The number is how many jobs are waiting." />
                                 <Button Content="Social Squisher" Click="FlyoutSquisher_Click" AutomationProperties.Name="Social Squisher"
                                         ToolTip="Opens the startup dialog with the Social Sharing Squisher: drop a video on a preset to squeeze it under that size." />
+                                <!-- 5.4D (Q12 b): reachable even on an empty timeline (also in the clip and track right-click menus). -->
+                                <Button Content="Save, Import or Export Game Presets..." Click="FlyoutGamePresets_Click" AutomationProperties.Name="Game Presets"
+                                        ToolTip="Game Presets: save the layout, Cutouts and look set now as a preset, or move one to or from an .hpstyle file." />
                             </StackPanel>
                         </local:ButtonChrome>
                     </Popup>
                     <Button x:Name="SettingsButton" Content="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="15" Padding="10,6"
-                            Click="OpenSettings_Click" ToolTip="Settings: dependencies, tool paths, update sources and automation. Rest the pointer here for Autosave, the Queue and the Social Squisher."
+                            Click="OpenSettings_Click" ToolTip="Settings: dependencies, tool paths, update sources and automation. Rest the pointer here for Autosave, the Queue, the Social Squisher and the Game Presets."
                             AutomationProperties.Name="Settings" />
                     <!-- Badge: yt-dlp or FFmpeg is missing or has a newer release -->
                     <Ellipse Width="11" Height="11" Fill="#FF8C00" Stroke="{DynamicResource WindowBackgroundBrush}" StrokeThickness="1.5"
@@ -1315,489 +1410,8 @@
                 <views:UnifiedTimelinePane x:Name="UnifiedTimeline" />
             </Border>
         <!-- The preset bar above the tabs, as Settings may have it: a pane of its own, with no band under it (5.3-Stage2: the dock's seams part the panes). -->
-        <ContentControl x:Name="PresetBarPane" Content="{Binding}" ContentTemplate="{StaticResource PresetBar}" Focusable="False" Margin="0" />
+        <ContentControl x:Name="PresetBarPane" Content="{Binding}" ContentTemplate="{StaticResource PresetBarFrame}" Focusable="False" Margin="0" />
         <TabControl x:Name="SettingsTabs" Padding="16,8">
-            <TabItem Header="Summary">
-                <!--
-                    Not built with the window (5.3-Stage2): made when the tab is first shown, or once the window is idle
-                    (RealizeTabContent, which finds SummaryCards and puts the cards in their saved order). Its own resources
-                    (InfoRowTemplate, SummaryBlock) are found by DynamicResource: made with the template, they are not there
-                    while the window's XAML is read.
-                -->
-                <TabItem.Tag>
-                <DataTemplate>
-                <DockPanel>
-                <Grid Grid.IsSharedSizeScope="True">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="20" />
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="12" />
-                        <ColumnDefinition Width="*" />
-                    </Grid.ColumnDefinitions>
-                    <Grid.Resources>
-                        <DataTemplate x:Key="InfoRowTemplate">
-                            <Grid Margin="0,2">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto" SharedSizeGroup="InfoLabel" />
-                                    <ColumnDefinition Width="*" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="{Binding Label}" Foreground="{DynamicResource MutedTextBrush}" Margin="0,0,16,0" />
-                                <TextBlock Grid.Column="1" Text="{Binding Value}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Value}" />
-                            </Grid>
-                        </DataTemplate>
-                    </Grid.Resources>
-
-                    <!--
-                        Left: what the output is, and under it the three things that can be swapped whole, each in
-                        a block of its own: the encoding preset, the Game Preset and the project. A block is a
-                        list to choose from, and under the list what can be done with it.
-                    -->
-                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
-                    <StackPanel x:Name="SummaryCards" VerticalAlignment="Top" Width="300" local:ReorderBehavior.IsEnabled="True">
-                        <StackPanel.Resources>
-                            <Style x:Key="SummaryBlock" TargetType="Border">
-                                <Setter Property="Background" Value="{DynamicResource CardBrush}" />
-                                <Setter Property="CornerRadius" Value="{DynamicResource CardCornerRadius}" />
-                                <Setter Property="Padding" Value="12,9,12,10" />
-                                <Setter Property="Margin" Value="0,0,0,8" />
-                            </Style>
-                        </StackPanel.Resources>
-
-                        <Border Style="{DynamicResource SummaryBlock}" Tag="Output">
-                            <StackPanel>
-                                <DockPanel local:ReorderBehavior.IsGrip="True" Tag="Output" Background="Transparent" Cursor="SizeNS" Margin="0,0,0,6" MouseRightButtonUp="SummaryCardHeader_MouseRightButtonUp"
-                                           ToolTip="Drag this card by its title to put it elsewhere in the column. Right-click for more.">
-                                    <TextBlock DockPanel.Dock="Right" Text="&#xE76F;" FontFamily="Segoe MDL2 Assets" FontSize="11" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
-                                    <TextBlock Text="Output" FontWeight="SemiBold" />
-                                </DockPanel>
-                                <!-- The format stays available during a stream copy: only the container changes. -->
-                                <DockPanel>
-                                    <TextBlock Text="Format:" VerticalAlignment="Center" Margin="0,0,10,0" />
-                                    <ComboBox HorizontalAlignment="Stretch" ItemsSource="{Binding Containers}" SelectedItem="{Binding Container}" AutomationProperties.Name="Format" />
-                                </DockPanel>
-                                <CheckBox Content="Web Optimized" IsChecked="{Binding WebOptimized}" Margin="0,6,0,0"
-                                          ToolTip="Puts the index at the front of an .mp4, .mov or .m4v file, so that it starts playing in a browser before it has downloaded." />
-                                <CheckBox Content="Vertical Video" IsChecked="{Binding UseVerticalResolution}" Margin="0,2,0,0"
-                                          ToolTip="One click from a wide video to a tall one: the frame is turned on its side, the picture sits across its middle, and a blurred copy of it fills the rest. Zoom and place it on the Canvas, or with its clip selected on the timeline." />
-                                <!-- Copy passes the picture through: said here, in yellow, when that leaves clips or filters out -->
-                                <TextBlock Text="{Binding CopyBypassWarning}" Foreground="{DynamicResource WarningTextBrush}" FontWeight="SemiBold" TextWrapping="Wrap"
-                                           AutomationProperties.AutomationId="Copy Warning">
-                                    <TextBlock.Style>
-                                        <Style TargetType="TextBlock">
-                                            <Setter Property="Margin" Value="0,8,0,0" />
-                                            <Style.Triggers>
-                                                <DataTrigger Binding="{Binding CopyBypassWarning}" Value="">
-                                                    <Setter Property="Visibility" Value="Collapsed" />
-                                                </DataTrigger>
-                                            </Style.Triggers>
-                                        </Style>
-                                    </TextBlock.Style>
-                                </TextBlock>
-                            </StackPanel>
-                        </Border>
-
-                        <!-- Encoding presets: size, filters, video and audio settings -->
-                        <Border Style="{DynamicResource SummaryBlock}" Tag="EncodingPreset">
-                            <StackPanel>
-                                <DockPanel local:ReorderBehavior.IsGrip="True" Tag="EncodingPreset" Background="Transparent" Cursor="SizeNS" Margin="0,0,0,6" MouseRightButtonUp="SummaryCardHeader_MouseRightButtonUp"
-                                           ToolTip="Drag this card by its title to put it elsewhere in the column. Right-click for more.">
-                                    <TextBlock DockPanel.Dock="Right" Text="&#xE76F;" FontFamily="Segoe MDL2 Assets" FontSize="11" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
-                                    <TextBlock Text="Encoding Preset" FontWeight="SemiBold" />
-                                </DockPanel>
-                                <ComboBox HorizontalAlignment="Stretch" ItemsSource="{Binding Presets}" SelectedItem="{Binding SelectedPreset}" AutomationProperties.Name="Encoding Presets"
-                                          ToolTip="Applies the preset's size, filters, layout, video, audio and caption settings." />
-                                <Button Content="Import / Export / Save..." Padding="12,4" Margin="0,6,0,0" HorizontalAlignment="Left" Click="ManagePresets_Click"
-                                        AutomationProperties.Name="Manage Encoding Presets"
-                                        ToolTip="Opens the encoding preset dialog: save the settings as they are now to the list under a name, bring a preset in from a file, or save one to a file." />
-                            </StackPanel>
-                        </Border>
-
-                        <!-- Game Presets: a layout for the video clips (their place, look and Cutouts), with the color, blur and subtitle settings that go with them (its Tag, the saved place in the column, keeps its old name) -->
-                        <Border Style="{DynamicResource SummaryBlock}" Tag="StylePreset">
-                            <StackPanel>
-                                <DockPanel local:ReorderBehavior.IsGrip="True" Tag="StylePreset" Background="Transparent" Cursor="SizeNS" Margin="0,0,0,6" MouseRightButtonUp="SummaryCardHeader_MouseRightButtonUp"
-                                           ToolTip="Drag this card by its title to put it elsewhere in the column. Right-click for more.">
-                                    <TextBlock DockPanel.Dock="Right" Text="&#xE76F;" FontFamily="Segoe MDL2 Assets" FontSize="11" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
-                                    <TextBlock Text="Game Preset" FontWeight="SemiBold" />
-                                </DockPanel>
-                                <ComboBox HorizontalAlignment="Stretch" ItemsSource="{Binding StylePresets}" SelectedItem="{Binding SelectedStylePreset}" DropDownOpened="StylePresets_DropDownOpened"
-                                          AutomationProperties.Name="Game Presets"
-                                          ToolTip="The Game Presets in the Styles folder. Choosing one applies all of it: the video clips' layout, Cutouts with their masks, color, blur and subtitle settings. A double-click on a slider goes back to its values." />
-                                <Button Content="Import / Export / Save..." Padding="12,4" Margin="0,6,0,0" HorizontalAlignment="Left" Click="ManageStyles_Click"
-                                        AutomationProperties.Name="Manage Game Presets"
-                                        ToolTip="Opens the Game Preset dialog: load a .hpstyle file (you choose which of its parts to take), or save the layout, Cutouts, color, blur and subtitle settings as one." />
-                            </StackPanel>
-                        </Border>
-
-                        <!-- The project that is open, and the way to another -->
-                        <Border Style="{DynamicResource SummaryBlock}" Tag="SwapProject">
-                            <StackPanel>
-                                <DockPanel local:ReorderBehavior.IsGrip="True" Tag="SwapProject" Background="Transparent" Cursor="SizeNS" Margin="0,0,0,6" MouseRightButtonUp="SummaryCardHeader_MouseRightButtonUp"
-                                           ToolTip="Drag this card by its title to put it elsewhere in the column. Right-click for more.">
-                                    <TextBlock DockPanel.Dock="Right" Text="&#xE76F;" FontFamily="Segoe MDL2 Assets" FontSize="11" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
-                                    <TextBlock Text="Swap Project" FontWeight="SemiBold" />
-                                </DockPanel>
-                                <ComboBox HorizontalAlignment="Stretch" ItemsSource="{Binding RecentProjects}" SelectedItem="{Binding SelectedProject}" DropDownOpened="RecentProjects_DropDownOpened"
-                                          SelectionChanged="RecentProjects_SelectionChanged" AutomationProperties.Name="Swap Project"
-                                          ToolTip="The saved projects, the most recently saved first. Choosing one opens it in place of what is open now, without restarting." />
-                            </StackPanel>
-                        </Border>
-                    </StackPanel>
-                    </ScrollViewer>
-
-                    <!-- Right: what the source is, and what the output will be -->
-                    <Border Grid.Column="2" Background="{DynamicResource CardBrush}" CornerRadius="{DynamicResource CardCornerRadius}" Padding="14,10">
-                        <DockPanel>
-                            <TextBlock DockPanel.Dock="Top" Text="Source Information" FontWeight="SemiBold" Margin="0,0,0,6" />
-                            <ScrollViewer VerticalScrollBarVisibility="Auto">
-                                <ItemsControl ItemsSource="{Binding SourceInfoRows}" ItemTemplate="{DynamicResource InfoRowTemplate}" />
-                            </ScrollViewer>
-                        </DockPanel>
-                    </Border>
-
-                    <Border Grid.Column="4" Background="{DynamicResource CardBrush}" CornerRadius="{DynamicResource CardCornerRadius}" Padding="14,10">
-                        <DockPanel>
-                            <TextBlock DockPanel.Dock="Top" Text="Projected Output" FontWeight="SemiBold" Margin="0,0,0,6" />
-                            <ScrollViewer VerticalScrollBarVisibility="Auto">
-                                <ItemsControl ItemsSource="{Binding OutputInfoRows}" ItemTemplate="{DynamicResource InfoRowTemplate}" />
-                            </ScrollViewer>
-                        </DockPanel>
-                    </Border>
-                </Grid>
-                </DockPanel>
-                </DataTemplate>
-                </TabItem.Tag>
-            </TabItem>
-
-            <TabItem Header="Video">
-                <!--
-                    Not built with the window: what is in a template is only made when it is asked for, which is
-                    when the tab is first opened or, failing that, once the window is up and idle (RealizeTab).
-                -->
-                <TabItem.Tag>
-                <DataTemplate>
-                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                <!--
-                    The encoder settings, and beside them the output's size and crop: side by side while the pane is wide
-                    enough, one over the other when it is not (ReflowPanel), so nothing is cut off in a narrow pane. The
-                    label column (VideoLabel) and the rows of the two groups of fields are shared, so the wide tab looks as
-                    it always has: every row's control starts on one line, and the right group's rows line up with the left's.
-                -->
-                <local:ReflowPanel Spacing="20" RowSpacing="12" Grid.IsSharedSizeScope="True">
-                    <StackPanel VerticalAlignment="Top">
-                        <!-- What to encode with; beside it, or under it in a narrow pane, the speed step and what only some encoders have. -->
-                        <local:ReflowPanel Spacing="40" RowSpacing="0">
-                            <Grid VerticalAlignment="Top">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto" SharedSizeGroup="VideoLabel" />
-                                    <ColumnDefinition Width="*" />
-                                </Grid.ColumnDefinitions>
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto" SharedSizeGroup="VideoRow0" />
-                                    <RowDefinition Height="Auto" SharedSizeGroup="VideoRow1" />
-                                    <RowDefinition Height="Auto" SharedSizeGroup="VideoRow2" />
-                                    <RowDefinition Height="Auto" SharedSizeGroup="VideoRow3" />
-                                </Grid.RowDefinitions>
-                                <TextBlock Text="Video Encoder:" Style="{StaticResource FieldLabel}" />
-                                <!-- 280 wide where there is room (the column's width, which the boxes under it take too), narrower only in a narrow pane. -->
-                                <local:SoftMinWidth Grid.Column="1" Value="280" HorizontalAlignment="Left">
-                                    <ComboBox ItemsSource="{Binding VideoEncoders}" SelectedItem="{Binding VideoEncoder}" AutomationProperties.Name="Video Encoder" HorizontalAlignment="Stretch" MinWidth="0" />
-                                </local:SoftMinWidth>
-
-                                <TextBlock Grid.Row="1" Text="Framerate (FPS):" Style="{StaticResource FieldLabel}" />
-                                <WrapPanel Grid.Row="1" Grid.Column="1" IsEnabled="{Binding IsVideoReencoded}">
-                                    <ComboBox ItemsSource="{Binding Framerates}" SelectedItem="{Binding Framerate}" Margin="0,0,8,0" AutomationProperties.Name="Framerate" />
-                                    <TextBox Width="90" Margin="0,4" ToolTip="Custom frame rate, for example 360 or 119.88"
-                                             IsEnabled="{Binding IsCustomFramerate}"
-                                             Visibility="{Binding IsCustomFramerate, Converter={StaticResource BoolToVisibility}}"
-                                             Text="{Binding CustomFramerate, UpdateSourceTrigger=PropertyChanged}" />
-                                </WrapPanel>
-
-                                <TextBlock Grid.Row="2" Text="Colorspace:" Style="{StaticResource FieldLabel}" />
-                                <local:SoftMinWidth Grid.Row="2" Grid.Column="1" Value="200" HorizontalAlignment="Left">
-                                    <ComboBox ItemsSource="{Binding Colorspaces}" AutomationProperties.Name="Colorspace" HorizontalAlignment="Stretch" MinWidth="0"
-                                              SelectedItem="{Binding Colorspace}" IsEnabled="{Binding IsVideoReencoded}"
-                                              ToolTip="HDR to SDR converts PQ or HLG video to standard BT.709. Only use it on HDR sources." />
-                                </local:SoftMinWidth>
-
-                                <TextBlock Grid.Row="3" Text="Rate Control:" Style="{StaticResource FieldLabel}" />
-                                <!-- The one rate control box: its list is the selected encoder's own, and what is chosen is stored as one of the same three modes whichever encoder it was chosen for. -->
-                                <local:SoftMinWidth Grid.Row="3" Grid.Column="1" Value="200" HorizontalAlignment="Left">
-                                    <ComboBox ItemsSource="{Binding RateControlChoices}" HorizontalAlignment="Stretch" MinWidth="0"
-                                              SelectedItem="{Binding RateControlChoice}" IsEnabled="{Binding HasRateControl}" AutomationProperties.Name="Rate Control"
-                                              ToolTip="How the data is spent, under the selected encoder's names. The first holds the picture at the Constant Quality value: CRF (x264, x265, SVT-AV1, VP9), CQ (NVENC), CQP (AMF and QuickSync, a fixed quantizer) or ICQ (QuickSync, a quality aimed for). CBR holds the Target Bitrate; VBR averages it and lets busy scenes take more." />
-                                </local:SoftMinWidth>
-                            </Grid>
-
-                            <!--
-                                The speed step, whose list is the selected encoder's own, and the options that only some
-                                encoders have. Tune is x264's and x265's, or, while an NVENC encoder is selected, NVIDIA's.
-                            -->
-                            <!-- Its labels share the left group's column: one over the other in a narrow pane, every box starts on one line. -->
-                            <Grid VerticalAlignment="Top" MinWidth="220">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto" SharedSizeGroup="VideoLabel" />
-                                    <ColumnDefinition Width="*" />
-                                </Grid.ColumnDefinitions>
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto" SharedSizeGroup="VideoRow0" />
-                                    <RowDefinition Height="Auto" SharedSizeGroup="VideoRow1" />
-                                    <RowDefinition Height="Auto" SharedSizeGroup="VideoRow2" />
-                                    <RowDefinition Height="Auto" SharedSizeGroup="VideoRow3" />
-                                </Grid.RowDefinitions>
-                                <TextBlock Text="Encoder Preset:" Style="{StaticResource FieldLabel}" />
-                                <ComboBox Grid.Column="1" ItemsSource="{Binding EncoderPresets}" SelectedItem="{Binding EncoderPreset}"
-                                          IsEnabled="{Binding HasEncoderPresets}" AutomationProperties.Name="Encoder Preset"
-                                          ToolTip="Speed against quality. The steps offered are the selected encoder's own: ultrafast to veryslow for x264 and x265, veryfast to veryslow for QuickSync, Speed, Balanced and Quality for AMF, p1 (fastest) to p7 (highest quality) for NVENC.">
-                                    <ComboBox.ItemTemplate>
-                                        <DataTemplate>
-                                            <TextBlock Text="{Binding Converter={StaticResource EncoderPresetLabel}}" />
-                                        </DataTemplate>
-                                    </ComboBox.ItemTemplate>
-                                </ComboBox>
-
-                                <TextBlock Grid.Row="1" Text="Tune:" Style="{StaticResource FieldLabel}" />
-                                <ComboBox Grid.Row="1" Grid.Column="1" ItemsSource="{Binding Tunes}" SelectedItem="{Binding Tune}"
-                                          IsEnabled="{Binding AreSoftwareEncoderOptionsEnabled}"
-                                          Visibility="{Binding IsNvencEncoder, Converter={StaticResource InverseBoolToVisibility}}" />
-                                <ComboBox Grid.Row="1" Grid.Column="1" ItemsSource="{Binding NvencTunes}" SelectedItem="{Binding NvencTune}" AutomationProperties.Name="NVENC Tuning"
-                                          Visibility="{Binding IsNvencEncoder, Converter={StaticResource BoolToVisibility}}"
-                                          ToolTip="What the encoder aims for (-tune). High Quality suits files; the low latency ones are for streaming. Lossless keeps every pixel and ignores Rate Control: the files are very large." />
-
-                                <TextBlock Grid.Row="2" Text="Profile:" Style="{StaticResource FieldLabel}" />
-                                <ComboBox Grid.Row="2" Grid.Column="1" ItemsSource="{Binding Profiles}" SelectedItem="{Binding Profile}"
-                                          IsEnabled="{Binding AreSoftwareEncoderOptionsEnabled}" />
-
-                                <TextBlock Grid.Row="3" Text="Level:" Style="{StaticResource FieldLabel}" />
-                                <ComboBox Grid.Row="3" Grid.Column="1" ItemsSource="{Binding Levels}" SelectedItem="{Binding Level}"
-                                          IsEnabled="{Binding AreSoftwareEncoderOptionsEnabled}" />
-                            </Grid>
-                        </local:ReflowPanel>
-
-                        <!-- Quality or bitrate; the file size that bitrate gives, tied to it, after it. Wraps in a narrow pane. -->
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto" SharedSizeGroup="VideoLabel" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <!-- Level with the first line of what it names (the slider, or the bitrate box), however many lines that wraps to. -->
-                            <TextBlock Text="Constant Quality:" Style="{StaticResource FieldLabel}" VerticalAlignment="Top" Margin="0,8,12,0"
-                                       Visibility="{Binding IsConstantQuality, Converter={StaticResource BoolToVisibility}}" />
-                            <TextBlock Text="Target Bitrate (kbps):" Style="{StaticResource FieldLabel}" VerticalAlignment="Top" Margin="0,8,12,0"
-                                       Visibility="{Binding IsBitrateMode, Converter={StaticResource BoolToVisibility}}" />
-                            <WrapPanel Grid.Column="1" IsEnabled="{Binding HasRateControl}">
-                                <Grid Margin="0,4,24,4" Visibility="{Binding IsConstantQuality, Converter={StaticResource BoolToVisibility}}">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <local:SoftMinWidth Value="240" VerticalAlignment="Center">
-                                        <Slider Minimum="0" Maximum="51" VerticalAlignment="Center" Value="{Binding Crf}" AutomationProperties.Name="Constant Quality" local:NumericInput.Default="22" />
-                                    </local:SoftMinWidth>
-                                    <TextBox Grid.Column="1" Style="{StaticResource ValueBox}" Width="46" Text="{Binding Crf, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Constant Quality Value"
-                                             local:NumericInput.Default="22" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="0" local:NumericInput.Maximum="51" />
-                                </Grid>
-                                <TextBox Width="110" Margin="0,4,24,4" AutomationProperties.Name="Target Bitrate" local:NumericInput.Default="5000" local:NumericInput.DragStep="25" local:NumericInput.Minimum="50" local:NumericInput.Maximum="500000" local:NumericInput.Decimals="0"
-                                         Visibility="{Binding IsBitrateMode, Converter={StaticResource BoolToVisibility}}"
-                                         Text="{Binding TargetBitrate, UpdateSourceTrigger=PropertyChanged}"
-                                         ToolTip="Video bitrate in kbps. Changing it updates Target File Size, and the other way round." />
-                                <!-- The label and its box wrap apart only when even the two of them do not fit. -->
-                                <WrapPanel Margin="0,0,12,0">
-                                    <TextBlock Text="Target File Size (MB):" Style="{StaticResource FieldLabel}" Margin="0,0,8,0" />
-                                    <TextBox Width="90" Margin="0,4" AutomationProperties.Name="Target File Size" local:NumericInput.Default="" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="0.1" local:NumericInput.Maximum="100000" local:NumericInput.Decimals="1"
-                                             Text="{Binding TargetFileSize, UpdateSourceTrigger=PropertyChanged}"
-                                             ToolTip="Type a size and the bitrate is worked out from the length of the output and the audio bitrate. Typing here switches Constant Quality to a bitrate mode." />
-                                </WrapPanel>
-                                <TextBlock Text="{Binding TargetSizeHint}" Foreground="{DynamicResource WarningTextBrush}" VerticalAlignment="Center"
-                                           MaxWidth="170" TextWrapping="Wrap" />
-                            </WrapPanel>
-                        </Grid>
-
-                        <!--
-                            What only some encoders have, in one row of the same panel: each control is there while an
-                            encoder that has it is selected, and the row takes no room when none of them is.
-                        -->
-                        <WrapPanel Margin="0,2,0,0" IsEnabled="{Binding IsVideoReencoded}">
-                            <Grid Margin="0,0,24,0" Visibility="{Binding IsNvencEncoder, Converter={StaticResource BoolToVisibility}}">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="*" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="Multipass:" Style="{StaticResource FieldLabel}" />
-                                <local:SoftMinWidth Grid.Column="1" Value="190">
-                                    <ComboBox ItemsSource="{Binding NvencMultipasses}" SelectedItem="{Binding NvencMultipass}" AutomationProperties.Name="NVENC Multipass" HorizontalAlignment="Stretch" MinWidth="0"
-                                              ToolTip="NVENC: a first look at each frame before it is encoded (-multipass), at a quarter of the resolution or all of it. Spends the bitrate better, at some cost in speed." />
-                                </local:SoftMinWidth>
-                            </Grid>
-                            <Grid Margin="0,0,24,0" Visibility="{Binding IsAmfEncoder, Converter={StaticResource BoolToVisibility}}">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="*" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="Usage:" Style="{StaticResource FieldLabel}" />
-                                <local:SoftMinWidth Grid.Column="1" Value="250">
-                                    <ComboBox ItemsSource="{Binding AmfUsages}" SelectedItem="{Binding AmfUsage}" AutomationProperties.Name="AMF Usage" HorizontalAlignment="Stretch" MinWidth="0"
-                                              ToolTip="AMF: what the encoder is set up for (-usage). Transcoding suits files; High Quality spends more time on each frame and needs a recent FFmpeg and driver; the low latency ones and Webcam are for streaming." />
-                                </local:SoftMinWidth>
-                            </Grid>
-                            <StackPanel Orientation="Horizontal" Margin="0,0,24,0" Visibility="{Binding HasLookahead, Converter={StaticResource BoolToVisibility}}">
-                                <TextBlock Text="Lookahead (frames):" Style="{StaticResource FieldLabel}" />
-                                <TextBox Style="{StaticResource ValueBox}" Width="46" Text="{Binding Lookahead, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Lookahead"
-                                         local:NumericInput.Default="0" local:NumericInput.DragStep="1" local:NumericInput.Decimals="0" local:NumericInput.Minimum="0" local:NumericInput.Maximum="100"
-                                         ToolTip="How many frames ahead the rate control looks; 0 turns it off. NVENC looks up to 32 ahead (-rc-lookahead) and a larger number is taken as 32; QuickSync up to 100 (-look_ahead_depth), with VBR and ICQ." />
-                            </StackPanel>
-                            <CheckBox Content="Spatial AQ" IsChecked="{Binding NvencSpatialAq}" Margin="0,4,24,4" VerticalAlignment="Center"
-                                      Visibility="{Binding IsNvencEncoder, Converter={StaticResource BoolToVisibility}}"
-                                      ToolTip="NVENC: spends more of the bitrate on flat areas, where blocking shows first (-spatial-aq 1)." />
-                            <CheckBox Content="Temporal AQ" IsChecked="{Binding NvencTemporalAq}" IsEnabled="{Binding CanNvencTemporalAq}" Margin="0,4,24,4" VerticalAlignment="Center"
-                                      Visibility="{Binding IsNvencEncoder, Converter={StaticResource BoolToVisibility}}" ToolTipService.ShowOnDisabled="True"
-                                      ToolTip="NVENC: spends more of the bitrate on what stays still from frame to frame (-temporal-aq 1). Greyed out when this graphics card cannot do it for the selected encoder." />
-                            <CheckBox Content="10-bit" IsChecked="{Binding TenBit}" IsEnabled="{Binding CanTenBit}" Margin="0,4,0,4" VerticalAlignment="Center"
-                                      Visibility="{Binding HasTenBit, Converter={StaticResource BoolToVisibility}}" ToolTipService.ShowOnDisabled="True"
-                                      ToolTip="Encodes in 10 bits instead of 8, which shows less banding in gradients (-pix_fmt p010le for a hardware encoder, yuv420p10le for a software one). Greyed out when this graphics card cannot do it for the selected encoder: neither AMF nor QuickSync has 10-bit H.264." />
-                        </WrapPanel>
-
-                        <!-- Free-form encoder options, and beside them (where the right group's labels start) hardware decoding. -->
-                        <local:ReflowPanel Spacing="40" RowSpacing="2">
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto" SharedSizeGroup="VideoLabel" />
-                                    <ColumnDefinition Width="*" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="Extra Options:" Style="{StaticResource FieldLabel}" />
-                                <local:SoftMinWidth Grid.Column="1" Value="280">
-                                    <TextBox Margin="0,4" FontFamily="Consolas" IsEnabled="{Binding IsVideoReencoded}" AutomationProperties.Name="Extra Video Options"
-                                             Text="{Binding ExtraVideoArguments, UpdateSourceTrigger=PropertyChanged}"
-                                             ToolTip="Added after the encoder's own options, for example -g 1 -keyint_min 1 or -profile:v 0." />
-                                </local:SoftMinWidth>
-                            </Grid>
-                            <CheckBox VerticalAlignment="Center" MinWidth="150" IsChecked="{Binding HardwareDecoding}" IsEnabled="{Binding IsVideoReencoded}"
-                                      AutomationProperties.Name="Enable Hardware Decoding (-hwaccel auto)"
-                                      ToolTip="Let the GPU decode the source. Speeds up most encodes; turn it off if an encode fails to start.">
-                                <TextBlock Text="Enable Hardware Decoding (-hwaccel auto)" TextWrapping="Wrap" />
-                            </CheckBox>
-                        </local:ReflowPanel>
-
-                        <!-- What was detected. -->
-                        <WrapPanel Margin="0,4,0,0">
-                            <TextBlock Text="{Binding HardwareEncoderStatusText}" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,24,0" />
-                            <TextBlock Text="{Binding HdrStatusText}" Foreground="{DynamicResource WarningTextBrush}" TextWrapping="Wrap" />
-                        </WrapPanel>
-                    </StackPanel>
-
-                    <!-- The output's size and crop, and the chapters: beside the encoder settings, or under them in a narrow pane. -->
-                    <StackPanel VerticalAlignment="Top" MinWidth="250">
-                    <!-- Output size and crop: what used to be the Dimensions tab -->
-                    <GroupBox Header="Resolution &amp; Cropping" IsEnabled="{Binding IsVideoReencoded}">
-                        <WrapPanel>
-                            <StackPanel Margin="0,0,18,4">
-                            <ComboBox Margin="0,0,0,4" ItemsSource="{Binding ResolutionPresets}" SelectedItem="{Binding ResolutionPreset}"
-                                      AutomationProperties.Name="Resolution Preset"
-                                      ToolTip="Common sizes. Choosing one fills in Width and Height, on their side when Use Vertical Resolution is ticked. Custom is whatever is typed below." />
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                </Grid.RowDefinitions>
-                                <TextBlock Text="Width:" Style="{StaticResource FieldLabel}" />
-                                <TextBox Grid.Column="1" Width="96" HorizontalAlignment="Left" Margin="0,3" AutomationProperties.Name="Output Width"
-                                         local:NumericInput.Default="" local:NumericInput.DragStep="2" local:NumericInput.Minimum="16" local:NumericInput.Maximum="16384"
-                                         Text="{Binding OutputWidth, UpdateSourceTrigger=PropertyChanged}" ToolTip="{Binding SourceSizeText}" />
-                                <TextBlock Grid.Row="1" Text="Height:" Style="{StaticResource FieldLabel}" />
-                                <TextBox Grid.Row="1" Grid.Column="1" Width="96" HorizontalAlignment="Left" Margin="0,3" AutomationProperties.Name="Output Height"
-                                         local:NumericInput.Default="" local:NumericInput.DragStep="2" local:NumericInput.Minimum="16" local:NumericInput.Maximum="16384"
-                                         Text="{Binding OutputHeight, UpdateSourceTrigger=PropertyChanged}" ToolTip="{Binding SourceSizeText}" />
-                                <StackPanel Grid.Row="2" Grid.ColumnSpan="2">
-                                    <CheckBox Content="Keep Aspect Ratio" IsChecked="{Binding KeepAspectRatio}" Margin="0,4,0,2"
-                                              ToolTip="Fill in the other dimension automatically from the shape of the Sequence's own size (the first video put on it), turned on its side with Use Vertical Resolution." />
-                                    <CheckBox Content="Use Vertical Resolution" IsChecked="{Binding UseVerticalResolution}" Margin="0,2"
-                                              ToolTip="Turns the shape of the output on its side: 16:9 becomes 9:16, and Width and Height swap. Every clip keeps its middle and its width; fit or fill a clip to the new shape from its menu (Transform), or give it a blur fill." />
-                                </StackPanel>
-                                <WrapPanel Grid.Row="3" Grid.ColumnSpan="2">
-                                    <TextBlock Text="Pixel Aspect:" Style="{StaticResource FieldLabel}" Margin="0,0,8,0" />
-                                    <ComboBox MinWidth="118" Margin="0,0,6,0" ItemsSource="{Binding PixelAspectRatios}" SelectedItem="{Binding PixelAspectRatio}" />
-                                    <TextBox Width="56" Margin="0,4" ToolTip="Custom ratio, for example 8:9"
-                                             Visibility="{Binding IsCustomPixelAspectRatio, Converter={StaticResource BoolToVisibility}}"
-                                             Text="{Binding CustomPixelAspectRatio, UpdateSourceTrigger=PropertyChanged}" />
-                                </WrapPanel>
-                            </Grid>
-                            </StackPanel>
-
-                            <!-- Crop: the four boxes sit where their edges are -->
-                            <StackPanel Margin="0,0,0,4">
-                                <Grid HorizontalAlignment="Center">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                    </Grid.RowDefinitions>
-                                    <TextBox Grid.Column="1" Width="60" Margin="0,2" HorizontalContentAlignment="Center"
-                                             Text="{Binding CropTop, UpdateSourceTrigger=PropertyChanged}" ToolTip="Percent of the source cut from the top. Being relative, the same crop fits a source of any resolution." AutomationProperties.Name="Crop Top"
-                                             local:NumericInput.Default="0" local:NumericInput.DragStep="0.1" local:NumericInput.Decimals="1" local:NumericInput.Minimum="0" local:NumericInput.Maximum="95" />
-                                    <TextBox Grid.Row="1" Width="60" Margin="0,2" HorizontalContentAlignment="Center"
-                                             Text="{Binding CropLeft, UpdateSourceTrigger=PropertyChanged}" ToolTip="Percent of the source cut from the left. Being relative, the same crop fits a source of any resolution." AutomationProperties.Name="Crop Left"
-                                             local:NumericInput.Default="0" local:NumericInput.DragStep="0.1" local:NumericInput.Decimals="1" local:NumericInput.Minimum="0" local:NumericInput.Maximum="95" />
-                                    <Border Grid.Row="1" Grid.Column="1" Margin="6,2" MinWidth="60" BorderBrush="{DynamicResource ControlBorderBrush}"
-                                            BorderThickness="1" CornerRadius="3">
-                                        <TextBlock Text="Crop %" Foreground="{DynamicResource MutedTextBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                    </Border>
-                                    <TextBox Grid.Row="1" Grid.Column="2" Width="60" Margin="0,2" HorizontalContentAlignment="Center"
-                                             Text="{Binding CropRight, UpdateSourceTrigger=PropertyChanged}" ToolTip="Percent of the source cut from the right. Being relative, the same crop fits a source of any resolution." AutomationProperties.Name="Crop Right"
-                                             local:NumericInput.Default="0" local:NumericInput.DragStep="0.1" local:NumericInput.Decimals="1" local:NumericInput.Minimum="0" local:NumericInput.Maximum="95" />
-                                    <TextBox Grid.Row="2" Grid.Column="1" Width="60" Margin="0,2" HorizontalContentAlignment="Center"
-                                             Text="{Binding CropBottom, UpdateSourceTrigger=PropertyChanged}" ToolTip="Percent of the source cut from the bottom. Being relative, the same crop fits a source of any resolution." AutomationProperties.Name="Crop Bottom"
-                                             local:NumericInput.Default="0" local:NumericInput.DragStep="0.1" local:NumericInput.Decimals="1" local:NumericInput.Minimum="0" local:NumericInput.Maximum="95" />
-                                </Grid>
-                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
-                                    <Button Content="Reset Crop" Padding="10,5" Command="{Binding ResetCropCommand}" />
-                                    <ToggleButton Content="Interactive Crop" Padding="10,5" Margin="6,0,0,0" IsChecked="{Binding IsInteractiveCropActive}"
-                                                  ToolTip="Drag a rectangle over the video to set the crop. Double-click inside it to centre it." />
-                                </StackPanel>
-                            </StackPanel>
-                        </WrapPanel>
-                    </GroupBox>
-
-                    <!-- Chapters: carried over, at the cuts, at the markers. In the Export tab with the rest of this tab while it is hidden. -->
-                    <GroupBox Header="Chapters" Margin="0,10,0,0">
-                        <StackPanel>
-                            <CheckBox Content="Create chapter markers" IsChecked="{Binding ChapterMarkers}"
-                                      ToolTip="Carries the source's chapters over. Only for uncut encodes: once sections are removed, the source's chapter times no longer fit." />
-                            <CheckBox Content="Generate Chapters at Cut Points" IsChecked="{Binding ChaptersAtCuts}"
-                                      ToolTip="Gives the output one chapter per kept segment, so a player can jump from cut to cut." />
-                            <CheckBox Content="Generate Chapters at Markers" IsChecked="{Binding ChaptersAtMarkers}"
-                                      local:KeyTip.Text="Gives the output a chapter at each marker (Add Marker, {key:marker.add|on the playback bar}, puts one at the playhead), named after it. Markers in removed stretches are left out; with Chapters at Cut Points as well, both kinds are there." />
-                            <!-- 4.2B-2: the chapters as a YouTube description lists them, and what downloads do with SponsorBlock. -->
-                            <WrapPanel Margin="0,6,0,0">
-                                <Button Content="Copy YouTube Timestamps" Command="{Binding CopyYouTubeTimestampsCommand}" Margin="0,2,12,2" Padding="10,3"
-                                        AutomationProperties.Name="Copy YouTube Timestamps"
-                                        ToolTip="Copies '00:00 Intro', '01:24 Gameplay'... for a YouTube description: every marker at its time in the output, after the cuts (clip speeds included), and SponsorBlock chapters when they are kept. Always starts at 00:00." />
-                                <StackPanel Orientation="Horizontal" Margin="0,2,0,2">
-                                    <TextBlock Text="SponsorBlock:" Style="{StaticResource FieldLabel}" />
-                                    <ComboBox Margin="0" MinWidth="150" ItemsSource="{Binding SponsorBlockModes}" DisplayMemberPath="Value" SelectedValuePath="Key"
-                                              SelectedValue="{Binding SponsorBlockMode}" AutomationProperties.Name="SponsorBlock Segments"
-                                              ToolTip="What the next download does with the SponsorBlock categories ticked in Settings (Downloads): cut them out of the file, keep them as named chapters (listed by Copy YouTube Timestamps), or leave SponsorBlock alone. With none ticked, cutting or keeping ticks sponsor, self-promotion and interaction reminders." />
-                                </StackPanel>
-                            </WrapPanel>
-                        </StackPanel>
-                    </GroupBox>
-                    </StackPanel>
-                </local:ReflowPanel>
-                </ScrollViewer>
-                </DataTemplate>
-                </TabItem.Tag>
-            </TabItem>
             <!-- Everything that is done to the picture as a whole: the standard filters, the look, and the color grading. -->
             <TabItem Header="Filters" x:Name="AdvancedTab">
                 <!--
@@ -1859,10 +1473,9 @@
                 <DockPanel x:Name="AudioPanel" Background="Transparent" AllowDrop="True" LastChildFill="False"
                            ToolTipService.ShowDuration="6000">
                     <!--
-                        Applies to every track at once, and sets the codec of a mixed track. One line: the codec on
-                        the left, the buttons on the right, and between them the checkboxes while there is room for
-                        them. When there is not, they are not wrapped onto a second line (where they ran into the
-                        rows below): they fold into one button that opens them as a small menu.
+                        The tab's own controls in one line: how far Auto-Duck turns a sound down on the left (folded into one button that opens
+                        it as a small menu when there is no room for it), the buttons on the right. (5.4B: the codec, bitrate, rate, channels,
+                        mix and normalize that were here too are the Export tab's, in its Audio & Output card: one home each.)
                     -->
                     <Grid DockPanel.Dock="Top">
                         <Grid.ColumnDefinitions>
@@ -1870,24 +1483,9 @@
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="All tracks:" Style="{StaticResource FieldLabel}" />
-                            <ComboBox Margin="0" ItemsSource="{Binding AudioEncoders}" SelectedItem="{Binding AudioEncoder}"
-                                      ToolTip="Sets every track below that follows the default to this codec (a track given a codec or bitrate of its own keeps it; a dropped track stays dropped). Also the codec of the mixed track when mixing." />
-                            <ComboBox Margin="8,0,0,0" MinWidth="90" ItemsSource="{Binding AudioBitrates}" SelectedItem="{Binding AudioBitrate}"
-                                      IsEnabled="{Binding IsAudioReencoded}" />
-                            <ComboBox Margin="8,0,0,0" MinWidth="70" ItemsSource="{Binding AudioSampleRates}" DisplayMemberPath="Value" SelectedValuePath="Key" SelectedValue="{Binding AudioSampleRate}"
-                                      AutomationProperties.Name="Audio Sample Rate" ToolTip="The sample rate every encoded track is written at (the same box as the Export tab's). Auto keeps each track's own." />
-                            <ComboBox Margin="8,0,0,0" MinWidth="70" ItemsSource="{Binding AudioChannelChoices}" DisplayMemberPath="Value" SelectedValuePath="Key" SelectedValue="{Binding AudioChannels}"
-                                      AutomationProperties.Name="Audio Channels" ToolTip="The channels of every encoded track (the same box as the Export tab's)." />
-                        </StackPanel>
-                        <Grid Grid.Column="1" x:Name="AudioOptionsHost" ClipToBounds="True" Margin="24,0,10,0" SizeChanged="AudioOptionsHost_SizeChanged">
+                        <Grid Grid.Column="1" x:Name="AudioOptionsHost" ClipToBounds="True" Margin="0,0,10,0" SizeChanged="AudioOptionsHost_SizeChanged">
                             <StackPanel x:Name="AudioOptionsInline" Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
-                                <CheckBox Content="Mix Selected Tracks" IsChecked="{Binding MergeAudioTracks}" Margin="0"
-                                          ToolTip="Merges / mixes the selected tracks into a single track: every track that is not set to Ignore / Drop goes into one output track (amix). The mix is always encoded. On to start with." />
-                                <CheckBox Content="Normalize audio" IsChecked="{Binding NormalizeAudio}" Margin="20,0,0,0"
-                                          ToolTip="Evens out the loudness to the EBU R128 standard: loudnorm (I=-16, TP=-1.5, LRA=11), applied to re-encoded and mixed tracks. Copied tracks are left as they are." />
-                                <StackPanel Orientation="Horizontal" Margin="20,0,0,0"
+                                <StackPanel Orientation="Horizontal"
                                             ToolTip="How far a sound set to Auto-Duck is turned down while a sound marked Voice is speaking. Right-click a track to set it to Auto-Duck, or to mark it as the voice.">
                                     <TextBlock Text="Duck by (dB):" Style="{StaticResource FieldLabel}" Margin="0,0,6,0" />
                                     <TextBox Style="{StaticResource ValueBox}" Width="46" Text="{Binding DuckAmountDb, StringFormat={}{0:0}}" AutomationProperties.Name="Duck Amount"
@@ -1896,17 +1494,13 @@
                             </StackPanel>
                             <ToggleButton x:Name="AudioOptionsButton" Content="&#xE9E9;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="11,6" HorizontalAlignment="Left"
                                           Visibility="Collapsed" AutomationProperties.Name="Audio Options"
-                                          ToolTip="Audio options: mix selected tracks, normalize audio, and how far Auto-Duck turns a sound down." />
+                                          ToolTip="Audio options: how far Auto-Duck turns a sound down." />
                             <Popup x:Name="AudioOptionsPopup" PlacementTarget="{Binding ElementName=AudioOptionsButton}" Placement="Bottom" VerticalOffset="4" StaysOpen="False"
                                    AllowsTransparency="True" IsOpen="{Binding IsChecked, ElementName=AudioOptionsButton, Mode=TwoWay}"
                                    Opened="BinPopup_Opened" Closed="BinPopup_Closed">
                                 <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="12,10">
                                     <StackPanel TextElement.Foreground="{DynamicResource TextBrush}">
-                                        <CheckBox Content="Mix Selected Tracks" IsChecked="{Binding MergeAudioTracks}" Margin="0,2"
-                                                  ToolTip="Merges / mixes the selected tracks into a single track: every track that is not set to Ignore / Drop goes into one output track (amix). The mix is always encoded. On to start with." />
-                                        <CheckBox Content="Normalize audio" IsChecked="{Binding NormalizeAudio}" Margin="0,2"
-                                                  ToolTip="Evens out the loudness to the EBU R128 standard: loudnorm (I=-16, TP=-1.5, LRA=11), applied to re-encoded and mixed tracks. Copied tracks are left as they are." />
-                                        <StackPanel Orientation="Horizontal" Margin="0,6,0,0"
+                                        <StackPanel Orientation="Horizontal"
                                                     ToolTip="How far a sound set to Auto-Duck is turned down while a sound marked Voice is speaking. Right-click a track to set it to Auto-Duck, or to mark it as the voice.">
                                             <TextBlock Text="Duck by (dB):" Style="{StaticResource FieldLabel}" Margin="0,0,6,0" />
                                             <TextBox Style="{StaticResource ValueBox}" Width="46" Text="{Binding DuckAmountDb, StringFormat={}{0:0}}" AutomationProperties.Name="Duck Amount (Menu)"
@@ -2042,9 +1636,11 @@
                 </TabItem.Tag>
             </TabItem>
             <!--
-                Export (Pass 4.1B; shown by default; the last tab before Command Preview, Pass 4.1C): the Video and Audio tabs' contents (the chapters are on Video), each shown here
-                while its own tab is hidden (one content, moved: MainWindow.Export.cs), and under them the output: Save As,
-                Browse, Add to Queue and Start Encode (DestinationBar itself, moved here while this tab is shown).
+                Export (Pass 4.1B; 5.4B the three columns): every export setting once, in three inspector cards (CLAUDE.md 10.3) side by side
+                while the pane is wide and one over the other when it is not (ReflowExportColumns): Preset & Format, Quality, Bitrate &
+                Resolution (with the rare options in a folded Advanced drawer), Audio & Output (the Live Encoded Preview, the Projected Output
+                and DestinationBar itself, moved here while this tab is shown). Under them the source's details, and the Audio tab's content
+                while that tab is hidden (one content, moved: MainWindow.Export.cs). The Video tab of before is these columns.
             -->
             <TabItem Header="Export" x:Name="ExportTab">
                 <!--
@@ -2054,90 +1650,447 @@
                 <TabItem.Tag>
                 <DataTemplate>
                 <DockPanel x:Name="ExportPanel">
-                    <Border DockPanel.Dock="Bottom" x:Name="ExportBarSlot" Margin="0,4,0,0" />
-                    <!-- The sound's encoding, always here (4.1.1), whether the Audio tab (the sound's settings) is shown or not -->
-                    <GroupBox DockPanel.Dock="Bottom" x:Name="ExportAudioGroup" Header="Audio Export" Margin="0,6,0,0">
-                        <WrapPanel>
-                            <StackPanel Orientation="Horizontal" Margin="0,2,16,2">
-                                <TextBlock Text="Codec:" Style="{StaticResource FieldLabel}" />
-                                <ComboBox Margin="0" ItemsSource="{Binding AudioEncoders}" SelectedItem="{Binding AudioEncoder}" AutomationProperties.Name="Export Audio Codec"
-                                          ToolTip="The codec of every track that follows the default (a track given one of its own keeps it). Also the codec of the mixed track when mixing." />
-                                <ComboBox Margin="8,0,0,0" MinWidth="90" ItemsSource="{Binding AudioBitrates}" SelectedItem="{Binding AudioBitrate}" IsEnabled="{Binding IsAudioReencoded}"
-                                          AutomationProperties.Name="Export Audio Bitrate" ToolTip="The bitrate of every re-encoded track that follows the default, and of the mix." />
+                    <!-- A label/value row of the Projected Output and the Source Information, found by DynamicResource (made with this template). -->
+                    <DockPanel.Resources>
+                        <DataTemplate x:Key="InfoRowTemplate">
+                            <Grid Margin="0,2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" SharedSizeGroup="InfoLabel" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="{Binding Label}" Foreground="{DynamicResource MutedTextBrush}" Margin="0,0,16,0" />
+                                <TextBlock Grid.Column="1" Text="{Binding Value}" TextWrapping="Wrap" ToolTip="{Binding Value}" />
+                            </Grid>
+                        </DataTemplate>
+                    </DockPanel.Resources>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
+                    <StackPanel>
+                    <!-- The three columns: placed by ReflowExportColumns (three star columns while each card has 300 px, else one over the other). -->
+                    <Grid x:Name="ExportColumns" AutomationProperties.Name="Export Columns">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <!-- ===== Column 1: Preset & Format ===== -->
+                        <Border Style="{StaticResource ExportCard}" AutomationProperties.Name="Preset and Format">
+                            <StackPanel Grid.IsSharedSizeScope="True">
+                                <TextBlock Text="Preset &amp; Format" Style="{StaticResource ExportCardTitle}" />
+                                <!-- The Export Presets selector, here while it is not a pane of its own above the tabs (Settings: Preset Bar). -->
+                                <ContentControl Content="{Binding}" ContentTemplate="{StaticResource PresetBar}" Focusable="False" Margin="0,0,0,4"
+                                                Visibility="{Binding ShowPresetBarInExport, Converter={StaticResource BoolToVisibility}}" />
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" SharedSizeGroup="ExportLabel1" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Text="Format:" Style="{StaticResource FieldLabel}" />
+                                    <!-- The format stays available during a stream copy: only the container changes. -->
+                                    <ComboBox Grid.Column="1" Margin="0,4" ItemsSource="{Binding Containers}" SelectedItem="{Binding Container}" AutomationProperties.Name="Format"
+                                              ToolTip="The file's container: mp4, mkv, webm, mov, an animated GIF or WebP, or the sound alone (FLAC lossless, WAV 16-bit PCM, MP3): an Audio Only file draws no picture, and the picture's settings fold away." />
+                                    <!-- An Audio Only file (5.4C: FLAC, WAV, MP3) has no picture: its video parts fold away (IsVideoExport). -->
+                                    <TextBlock Grid.Row="1" Text="Video Codec:" Style="{StaticResource FieldLabel}" Visibility="{Binding IsVideoExport, Converter={StaticResource BoolToVisibility}}" />
+                                    <ComboBox Grid.Row="1" Grid.Column="1" Margin="0,4" ItemsSource="{Binding VideoEncoders}" SelectedItem="{Binding VideoEncoder}" AutomationProperties.Name="Video Encoder"
+                                              Visibility="{Binding IsVideoExport, Converter={StaticResource BoolToVisibility}}"
+                                              ToolTip="What the picture is encoded with: H.264, HEVC or AV1 in software (x264, x265, SVT-AV1) or on this PC's graphics card (listed once it was checked), VP9, the editing codecs (ProRes, DNxHR), or Copy (the file's own picture, packet for packet)." />
+                                </Grid>
+                                <WrapPanel Margin="0,4" Visibility="{Binding IsVideoExport, Converter={StaticResource BoolToVisibility}}">
+                                    <CheckBox Content="Web Optimized" IsChecked="{Binding WebOptimized}" Margin="0,0,16,0" VerticalAlignment="Center" AutomationProperties.Name="Web Optimized"
+                                              ToolTip="Puts the index at the front of an .mp4, .mov or .m4v file, so that it starts playing in a browser before it has downloaded (-movflags +faststart). On to start with." />
+                                    <CheckBox Content="10-bit" IsChecked="{Binding TenBit}" IsEnabled="{Binding CanTenBit}" VerticalAlignment="Center" AutomationProperties.Name="10-bit"
+                                              Visibility="{Binding HasTenBit, Converter={StaticResource BoolToVisibility}}" ToolTipService.ShowOnDisabled="True"
+                                              ToolTip="Encodes in 10 bits instead of 8, which shows less banding in gradients (-pix_fmt p010le for a hardware encoder, yuv420p10le for a software one). With HEVC or AV1 it also keeps an HDR project HDR. Greyed out when this graphics card cannot do it for the selected encoder: neither AMF nor QuickSync has 10-bit H.264." />
+                                </WrapPanel>
+                                <!-- The picture's notes, folded away with it for an Audio Only file (5.4C). -->
+                                <StackPanel Visibility="{Binding IsVideoExport, Converter={StaticResource BoolToVisibility}}">
+                                    <!-- Copy passes the picture through: said here, in yellow, when that leaves clips or filters out -->
+                                    <TextBlock Text="{Binding CopyBypassWarning}" Foreground="{DynamicResource WarningTextBrush}" FontWeight="SemiBold" TextWrapping="Wrap"
+                                               AutomationProperties.AutomationId="Copy Warning">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Margin" Value="0,4" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding CopyBypassWarning}" Value="">
+                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                    <!-- How an HDR project is written: kept HDR (10-bit HEVC or AV1, 5.4B) or tone-mapped to BT.709 SDR, and why -->
+                                    <TextBlock Text="{Binding ProjectColorNote}" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap"
+                                               AutomationProperties.AutomationId="Project Colour Note">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Margin" Value="0,4" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding ProjectColorNote}" Value="">
+                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                    <TextBlock Text="{Binding HdrStatusText}" Foreground="{DynamicResource WarningTextBrush}" TextWrapping="Wrap" Margin="0,4" />
+                                    <!-- The hardware encoders found (a vendor whose card is not here is not named: EncoderProber.ProblemsForCardsHere) -->
+                                    <TextBlock Text="{Binding HardwareEncoderStatusText}" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,4" />
+                                </StackPanel>
                             </StackPanel>
-                            <StackPanel Orientation="Horizontal" Margin="0,2,16,2">
-                                <TextBlock Text="Sample Rate:" Style="{StaticResource FieldLabel}" />
-                                <ComboBox Margin="0" MinWidth="120" ItemsSource="{Binding AudioSampleRates}" DisplayMemberPath="Value" SelectedValuePath="Key" SelectedValue="{Binding AudioSampleRate}"
-                                          AutomationProperties.Name="Export Audio Sample Rate"
-                                          ToolTip="The sample rate every encoded track is written at (-ar). Auto keeps each track's own, and makes mixed sound and silence at 48 kHz. Copied tracks are left as they are. Saved with the project and in presets." />
-                                <TextBlock Text="Channels:" Style="{StaticResource FieldLabel}" Margin="8,0,8,0" />
-                                <ComboBox Margin="0" MinWidth="100" ItemsSource="{Binding AudioChannelChoices}" DisplayMemberPath="Value" SelectedValuePath="Key" SelectedValue="{Binding AudioChannels}"
-                                          AutomationProperties.Name="Export Audio Channels"
-                                          ToolTip="The channels of every encoded track (-ac). Stereo folds anything wider down to two and leaves stereo and mono tracks as they are; Mono makes one channel; Match Source keeps the source's. Copied tracks are left as they are." />
+                        </Border>
+
+                        <!-- ===== Column 2: Quality, Bitrate & Resolution ===== -->
+                        <Border Grid.Column="1" Style="{StaticResource ExportCard}" AutomationProperties.Name="Quality, Bitrate and Resolution">
+                            <StackPanel Grid.IsSharedSizeScope="True">
+                                <TextBlock Text="Quality, Bitrate &amp; Resolution" Style="{StaticResource ExportCardTitle}" />
+                                <!-- An Audio Only file (5.4C) has no picture to size, rate or encode: this card's parts fold away, a line says why. -->
+                                <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,4" AutomationProperties.AutomationId="Audio Only Note"
+                                           Visibility="{Binding IsAudioOnlyExport, Converter={StaticResource BoolToVisibility}}"
+                                           Text="An Audio Only file holds the Sequence's sound alone: no picture is drawn, so there is no video quality, bitrate or size to set. The sound's codec, rate, channels and loudness are in Audio &amp; Output." />
+                                <StackPanel Visibility="{Binding IsVideoExport, Converter={StaticResource BoolToVisibility}}">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" SharedSizeGroup="ExportLabel2" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <TextBlock Text="Rate Control:" Style="{StaticResource FieldLabel}" />
+                                        <!-- The one rate control box: its list is the selected encoder's own, and what is chosen is stored as one of the same three modes whichever encoder it was chosen for. -->
+                                        <ComboBox Grid.Column="1" Margin="0,4" ItemsSource="{Binding RateControlChoices}" SelectedItem="{Binding RateControlChoice}" IsEnabled="{Binding HasRateControl}"
+                                                  AutomationProperties.Name="Rate Control"
+                                                  ToolTip="How the data is spent, under the selected encoder's names. VBR (the default) averages the Target Bitrate and lets busy scenes take more; CBR holds it. The constant quality holds the picture at the Constant Quality value: CRF (x264, x265, SVT-AV1, VP9), CQ (NVENC), CQP (AMF and QuickSync, a fixed quantizer) or ICQ (QuickSync, a quality aimed for)." />
+
+                                        <!-- Quality or bitrate: one row, whichever the rate control spends by. -->
+                                        <TextBlock Grid.Row="1" Text="Constant Quality:" Style="{StaticResource FieldLabel}"
+                                                   Visibility="{Binding IsConstantQuality, Converter={StaticResource BoolToVisibility}}" />
+                                        <Grid Grid.Row="1" Grid.Column="1" Margin="0,4" IsEnabled="{Binding HasRateControl}"
+                                              Visibility="{Binding IsConstantQuality, Converter={StaticResource BoolToVisibility}}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <Slider Minimum="0" Maximum="51" VerticalAlignment="Center" Value="{Binding Crf}" AutomationProperties.Name="Constant Quality" local:NumericInput.Default="22" />
+                                            <TextBox Grid.Column="1" Style="{StaticResource ValueBox}" Width="46" Margin="8,0,0,0" Text="{Binding Crf, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Constant Quality Value"
+                                                     local:NumericInput.Default="22" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="0" local:NumericInput.Maximum="51" />
+                                        </Grid>
+                                        <TextBlock Grid.Row="1" Text="Target Bitrate (kbps):" Style="{StaticResource FieldLabel}"
+                                                   Visibility="{Binding IsBitrateMode, Converter={StaticResource BoolToVisibility}}" />
+                                        <TextBox Grid.Row="1" Grid.Column="1" Margin="0,4" IsEnabled="{Binding HasRateControl}" AutomationProperties.Name="Target Bitrate"
+                                                 local:NumericInput.Default="" local:NumericInput.DragStep="25" local:NumericInput.Minimum="50" local:NumericInput.Maximum="500000" local:NumericInput.Decimals="0"
+                                                 Visibility="{Binding IsBitrateMode, Converter={StaticResource BoolToVisibility}}"
+                                                 Text="{Binding TargetBitrate, UpdateSourceTrigger=PropertyChanged}"
+                                                 ToolTip="Video bitrate in kbps. Empty: an automatic bitrate from the output's size and frame rate (shown under the box). Changing it updates Target File Size, and the other way round." />
+
+                                        <TextBlock Grid.Row="2" Text="Target File Size (MB):" Style="{StaticResource FieldLabel}" />
+                                        <TextBox Grid.Row="2" Grid.Column="1" Margin="0,4" IsEnabled="{Binding HasRateControl}" AutomationProperties.Name="Target File Size"
+                                                 local:NumericInput.Default="" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="0.1" local:NumericInput.Maximum="100000" local:NumericInput.Decimals="1"
+                                                 Text="{Binding TargetFileSize, UpdateSourceTrigger=PropertyChanged}"
+                                                 ToolTip="Type a size and the bitrate is worked out from the length of the output and the audio bitrate. Typing here switches Constant Quality to a bitrate mode. Otherwise it shows the size the bitrate gives." />
+
+                                        <TextBlock Grid.Row="3" Text="Encoder Preset:" Style="{StaticResource FieldLabel}" />
+                                        <ComboBox Grid.Row="3" Grid.Column="1" Margin="0,4" ItemsSource="{Binding EncoderPresets}" SelectedItem="{Binding EncoderPreset}"
+                                                  IsEnabled="{Binding HasEncoderPresets}" AutomationProperties.Name="Encoder Preset"
+                                                  ToolTip="Speed against quality, starting at the slowest and best (veryslow for x264 and x265, p7 for NVENC, High Quality for AMF, veryslow for QuickSync; Media Foundation has no steps and is asked for its slowest). The steps offered are the selected encoder's own: ultrafast to veryslow for x264 and x265, veryfast to veryslow for QuickSync, Speed, Balanced, Quality and High Quality for AMF, p1 (fastest) to p7 (highest quality) for NVENC.">
+                                            <ComboBox.ItemTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding Converter={StaticResource EncoderPresetLabel}}" />
+                                                </DataTemplate>
+                                            </ComboBox.ItemTemplate>
+                                        </ComboBox>
+
+                                        <TextBlock Grid.Row="4" Text="Framerate (FPS):" Style="{StaticResource FieldLabel}" />
+                                        <DockPanel Grid.Row="4" Grid.Column="1" Margin="0,4" IsEnabled="{Binding IsVideoReencoded}">
+                                            <TextBox DockPanel.Dock="Right" Width="70" Margin="8,0,0,0" ToolTip="Custom frame rate, for example 360 or 119.88"
+                                                     IsEnabled="{Binding IsCustomFramerate}"
+                                                     Visibility="{Binding IsCustomFramerate, Converter={StaticResource BoolToVisibility}}"
+                                                     Text="{Binding CustomFramerate, UpdateSourceTrigger=PropertyChanged}" />
+                                            <ComboBox ItemsSource="{Binding Framerates}" SelectedItem="{Binding Framerate}" AutomationProperties.Name="Framerate" />
+                                        </DockPanel>
+                                    </Grid>
+                                    <!-- The automatic bitrate (empty Target Bitrate), and why a typed size cannot be met. -->
+                                    <TextBlock Text="{Binding AutoBitrateText}" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" FontSize="11">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Margin" Value="0,0,0,4" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding AutoBitrateText}" Value="">
+                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                    <TextBlock Text="{Binding TargetSizeHint}" Foreground="{DynamicResource WarningTextBrush}" TextWrapping="Wrap" />
+
+                                    <!-- The output's size (the Video tab's Resolution of before; per-clip crop is on a clip's menu, Crop). -->
+                                    <Grid Margin="0,4,0,0" IsEnabled="{Binding IsVideoReencoded}">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" SharedSizeGroup="ExportLabel2" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <TextBlock Text="Resolution:" Style="{StaticResource FieldLabel}" />
+                                        <ComboBox Grid.Column="1" Margin="0,4" ItemsSource="{Binding ResolutionPresets}" SelectedItem="{Binding ResolutionPreset}"
+                                                  AutomationProperties.Name="Resolution Preset"
+                                                  ToolTip="Common sizes. Choosing one fills in Width and Height, on their side when Use Vertical Resolution is ticked. Match Project Settings is the Sequence's own size; Custom is whatever is typed below." />
+                                        <TextBlock Grid.Row="1" Text="Width x Height:" Style="{StaticResource FieldLabel}" />
+                                        <!-- Two boxes of 76 where there is room; narrower together, never cut off, in a narrow column (three cards from 924 px). -->
+                                        <Grid Grid.Row="1" Grid.Column="1" Margin="0,4">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" MaxWidth="76" />
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" MaxWidth="76" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBox MinWidth="40" AutomationProperties.Name="Output Width"
+                                                     local:NumericInput.Default="" local:NumericInput.DragStep="2" local:NumericInput.Minimum="16" local:NumericInput.Maximum="16384"
+                                                     Text="{Binding OutputWidth, UpdateSourceTrigger=PropertyChanged}" ToolTip="{Binding SourceSizeText}" />
+                                            <TextBlock Grid.Column="1" Text="&#x00D7;" Style="{StaticResource FieldLabel}" Margin="6,0,6,0" />
+                                            <TextBox Grid.Column="2" MinWidth="40" AutomationProperties.Name="Output Height"
+                                                     local:NumericInput.Default="" local:NumericInput.DragStep="2" local:NumericInput.Minimum="16" local:NumericInput.Maximum="16384"
+                                                     Text="{Binding OutputHeight, UpdateSourceTrigger=PropertyChanged}" ToolTip="{Binding SourceSizeText}" />
+                                        </Grid>
+                                        <WrapPanel Grid.Row="2" Grid.ColumnSpan="2" Margin="0,4">
+                                            <CheckBox Content="Keep Aspect Ratio" IsChecked="{Binding KeepAspectRatio}" Margin="0,0,16,0"
+                                                      ToolTip="Fill in the other dimension automatically from the shape of the Sequence's own size (the first video put on it), turned on its side with Use Vertical Resolution." />
+                                            <CheckBox Content="Use Vertical Resolution" IsChecked="{Binding UseVerticalResolution}"
+                                                      ToolTip="Turns the shape of the output on its side: 16:9 becomes 9:16, and Width and Height swap. Every clip keeps its middle and its width; fit or fill a clip to the new shape from its menu (Transform), or give it a blur fill." />
+                                        </WrapPanel>
+                                        <TextBlock Grid.Row="3" Text="Colorspace:" Style="{StaticResource FieldLabel}" />
+                                        <ComboBox Grid.Row="3" Grid.Column="1" Margin="0,4" ItemsSource="{Binding Colorspaces}" AutomationProperties.Name="Colorspace"
+                                                  SelectedItem="{Binding Colorspace}"
+                                                  ToolTip="Match Project Settings writes the project's colour: SDR as BT.709; an HDR project stays HDR with 10-bit HEVC or AV1 (else it is tone-mapped, and the note in Preset &amp; Format says why). HDR to SDR always tone-maps PQ or HLG video to BT.709." />
+                                    </Grid>
+
+                                    <!-- What only some encoders have, and what is rarely changed: folded away until asked for (CLAUDE.md 10.3's Advanced drawer). -->
+                                    <Expander Header="Advanced Codec &amp; Chapter Options" IsExpanded="False" Margin="0,8,0,0" AutomationProperties.Name="Advanced Codec and Chapter Options"
+                                              ToolTip="The encoder's own options (tune, profile, level, multipass, lookahead, AQ), the pixel aspect, extra encoder options, the chapters and SponsorBlock.">
+                                        <!-- The encoder's options grey out for a stream copy; the chapters and SponsorBlock below do not (a copy keeps them too). -->
+                                        <StackPanel Margin="0,6,0,0">
+                                            <Grid IsEnabled="{Binding IsVideoReencoded}">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto" SharedSizeGroup="ExportLabel2" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                </Grid.RowDefinitions>
+                                                <!-- Tune is x264's and x265's, or, while an NVENC encoder is selected, NVIDIA's. -->
+                                                <TextBlock Text="Tune:" Style="{StaticResource FieldLabel}" />
+                                                <ComboBox Grid.Column="1" Margin="0,4" ItemsSource="{Binding Tunes}" SelectedItem="{Binding Tune}" AutomationProperties.Name="Tune"
+                                                          IsEnabled="{Binding AreSoftwareEncoderOptionsEnabled}"
+                                                          Visibility="{Binding IsNvencEncoder, Converter={StaticResource InverseBoolToVisibility}}" />
+                                                <ComboBox Grid.Column="1" Margin="0,4" ItemsSource="{Binding NvencTunes}" SelectedItem="{Binding NvencTune}" AutomationProperties.Name="NVENC Tuning"
+                                                          Visibility="{Binding IsNvencEncoder, Converter={StaticResource BoolToVisibility}}"
+                                                          ToolTip="What the encoder aims for (-tune). High Quality suits files; the low latency ones are for streaming. Lossless keeps every pixel and ignores Rate Control: the files are very large." />
+                                                <TextBlock Grid.Row="1" Text="Profile:" Style="{StaticResource FieldLabel}" />
+                                                <ComboBox Grid.Row="1" Grid.Column="1" Margin="0,4" ItemsSource="{Binding Profiles}" SelectedItem="{Binding Profile}" AutomationProperties.Name="Profile"
+                                                          IsEnabled="{Binding AreSoftwareEncoderOptionsEnabled}" />
+                                                <TextBlock Grid.Row="2" Text="Level:" Style="{StaticResource FieldLabel}" />
+                                                <ComboBox Grid.Row="2" Grid.Column="1" Margin="0,4" ItemsSource="{Binding Levels}" SelectedItem="{Binding Level}" AutomationProperties.Name="Level"
+                                                          IsEnabled="{Binding AreSoftwareEncoderOptionsEnabled}" />
+                                                <TextBlock Grid.Row="3" Text="Multipass:" Style="{StaticResource FieldLabel}" Visibility="{Binding IsNvencEncoder, Converter={StaticResource BoolToVisibility}}" />
+                                                <ComboBox Grid.Row="3" Grid.Column="1" Margin="0,4" ItemsSource="{Binding NvencMultipasses}" SelectedItem="{Binding NvencMultipass}" AutomationProperties.Name="NVENC Multipass"
+                                                          Visibility="{Binding IsNvencEncoder, Converter={StaticResource BoolToVisibility}}"
+                                                          ToolTip="NVENC: a first look at each frame before it is encoded (-multipass), at a quarter of the resolution or all of it. Spends the bitrate better, at some cost in speed." />
+                                                <TextBlock Grid.Row="4" Text="Usage:" Style="{StaticResource FieldLabel}" Visibility="{Binding IsAmfEncoder, Converter={StaticResource BoolToVisibility}}" />
+                                                <ComboBox Grid.Row="4" Grid.Column="1" Margin="0,4" ItemsSource="{Binding AmfUsages}" SelectedItem="{Binding AmfUsage}" AutomationProperties.Name="AMF Usage"
+                                                          Visibility="{Binding IsAmfEncoder, Converter={StaticResource BoolToVisibility}}"
+                                                          ToolTip="AMF: what the encoder is set up for (-usage). Transcoding suits files; High Quality spends more time on each frame and needs a recent FFmpeg and driver; the low latency ones and Webcam are for streaming." />
+                                                <TextBlock Grid.Row="5" Text="Pixel Aspect:" Style="{StaticResource FieldLabel}" />
+                                                <DockPanel Grid.Row="5" Grid.Column="1" Margin="0,4">
+                                                    <TextBox DockPanel.Dock="Right" Width="56" Margin="8,0,0,0" ToolTip="Custom ratio, for example 8:9"
+                                                             Visibility="{Binding IsCustomPixelAspectRatio, Converter={StaticResource BoolToVisibility}}"
+                                                             Text="{Binding CustomPixelAspectRatio, UpdateSourceTrigger=PropertyChanged}" />
+                                                    <ComboBox ItemsSource="{Binding PixelAspectRatios}" SelectedItem="{Binding PixelAspectRatio}" AutomationProperties.Name="Pixel Aspect" />
+                                                </DockPanel>
+                                                <TextBlock Grid.Row="6" Text="Extra Options:" Style="{StaticResource FieldLabel}" />
+                                                <TextBox Grid.Row="6" Grid.Column="1" Margin="0,4" FontFamily="Consolas" AutomationProperties.Name="Extra Video Options"
+                                                         Text="{Binding ExtraVideoArguments, UpdateSourceTrigger=PropertyChanged}"
+                                                         ToolTip="Added after the encoder's own options, for example -g 1 -keyint_min 1 or -profile:v 0." />
+                                            </Grid>
+                                            <WrapPanel Margin="0,4" IsEnabled="{Binding IsVideoReencoded}">
+                                                <StackPanel Orientation="Horizontal" Margin="0,0,16,0" Visibility="{Binding HasLookahead, Converter={StaticResource BoolToVisibility}}">
+                                                    <TextBlock Text="Lookahead (frames):" Style="{StaticResource FieldLabel}" />
+                                                    <TextBox Style="{StaticResource ValueBox}" Width="46" Text="{Binding Lookahead, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Lookahead"
+                                                             local:NumericInput.Default="0" local:NumericInput.DragStep="1" local:NumericInput.Decimals="0" local:NumericInput.Minimum="0" local:NumericInput.Maximum="100"
+                                                             ToolTip="How many frames ahead the rate control looks; 0 turns it off. NVENC looks up to 32 ahead (-rc-lookahead) and a larger number is taken as 32; QuickSync up to 100 (-look_ahead_depth), with VBR and ICQ." />
+                                                </StackPanel>
+                                                <CheckBox Content="Spatial AQ" IsChecked="{Binding NvencSpatialAq}" Margin="0,4,16,4" VerticalAlignment="Center"
+                                                          Visibility="{Binding IsNvencEncoder, Converter={StaticResource BoolToVisibility}}"
+                                                          ToolTip="NVENC: spends more of the bitrate on flat areas, where blocking shows first (-spatial-aq 1)." />
+                                                <CheckBox Content="Temporal AQ" IsChecked="{Binding NvencTemporalAq}" IsEnabled="{Binding CanNvencTemporalAq}" Margin="0,4,16,4" VerticalAlignment="Center"
+                                                          Visibility="{Binding IsNvencEncoder, Converter={StaticResource BoolToVisibility}}" ToolTipService.ShowOnDisabled="True"
+                                                          ToolTip="NVENC: spends more of the bitrate on what stays still from frame to frame (-temporal-aq 1). Greyed out when this graphics card cannot do it for the selected encoder." />
+                                            </WrapPanel>
+                                            <!-- Chapters: carried over, at the cuts, at the markers (5.4B: from the retired Video tab). -->
+                                            <TextBlock Text="Chapters" FontWeight="SemiBold" Margin="0,8,0,4" />
+                                            <CheckBox Content="Create chapter markers" IsChecked="{Binding ChapterMarkers}" Margin="0,4"
+                                                      ToolTip="Carries the source's chapters over. Only for uncut encodes: once sections are removed, the source's chapter times no longer fit." />
+                                            <CheckBox Content="Generate Chapters at Cut Points" IsChecked="{Binding ChaptersAtCuts}" Margin="0,4"
+                                                      ToolTip="Gives the output one chapter per kept segment, so a player can jump from cut to cut." />
+                                            <CheckBox Content="Generate Chapters at Markers" IsChecked="{Binding ChaptersAtMarkers}" Margin="0,4"
+                                                      local:KeyTip.Text="Gives the output a chapter at each marker (Add Marker, {key:marker.add|on the playback bar}, puts one at the playhead), named after it. Markers in removed stretches are left out; with Chapters at Cut Points as well, both kinds are there." />
+                                            <!-- 4.2B-2: the chapters as a YouTube description lists them, and what downloads do with SponsorBlock. -->
+                                            <WrapPanel Margin="0,4">
+                                                <Button Content="Copy YouTube Timestamps" Command="{Binding CopyYouTubeTimestampsCommand}" Margin="0,2,12,2" Padding="10,3"
+                                                        AutomationProperties.Name="Copy YouTube Timestamps"
+                                                        ToolTip="Copies '00:00 Intro', '01:24 Gameplay'... for a YouTube description: every marker at its time in the output, after the cuts (clip speeds included), and SponsorBlock chapters when they are kept. Always starts at 00:00." />
+                                                <StackPanel Orientation="Horizontal" Margin="0,2,0,2">
+                                                    <TextBlock Text="SponsorBlock:" Style="{StaticResource FieldLabel}" />
+                                                    <ComboBox Margin="0" MinWidth="150" ItemsSource="{Binding SponsorBlockModes}" DisplayMemberPath="Value" SelectedValuePath="Key"
+                                                              SelectedValue="{Binding SponsorBlockMode}" AutomationProperties.Name="SponsorBlock Segments"
+                                                              ToolTip="What the next download does with the SponsorBlock categories ticked in Settings (Downloads): cut them out of the file, keep them as named chapters (listed by Copy YouTube Timestamps), or leave SponsorBlock alone. With none ticked, cutting or keeping ticks sponsor, self-promotion and interaction reminders." />
+                                                </StackPanel>
+                                            </WrapPanel>
+                                        </StackPanel>
+                                    </Expander>
+                                </StackPanel>
                             </StackPanel>
-                            <CheckBox Content="Mix Selected Tracks" IsChecked="{Binding MergeAudioTracks}" Margin="0,2,16,2" VerticalAlignment="Center" AutomationProperties.Name="Export Mix Selected Tracks"
-                                      ToolTip="Merges / mixes the selected tracks into a single track: every track that is not set to Ignore / Drop goes into one output track (amix). The mix is always encoded." />
-                            <CheckBox Content="Normalize audio" IsChecked="{Binding NormalizeAudio}" Margin="0,2,16,2" VerticalAlignment="Center" AutomationProperties.Name="Export Normalize Audio"
-                                      ToolTip="Evens out the loudness to the EBU R128 standard: loudnorm (I=-16, TP=-1.5, LRA=11), applied to re-encoded and mixed tracks. Copied tracks are left as they are." />
-                        </WrapPanel>
-                    </GroupBox>
-                    <!--
-                        The source's own subtitle tracks (the Subtitles tab's until 4.4; the captions are on the timeline): each
-                        carried over into the output, burned into the picture or left out. Shown while the source has any.
-                    -->
-                    <GroupBox DockPanel.Dock="Bottom" x:Name="ExportSubtitlesGroup" Header="Source Subtitle Tracks" Margin="0,6,0,0">
-                        <GroupBox.Style>
-                            <Style TargetType="GroupBox" BasedOn="{StaticResource {x:Type GroupBox}}">
-                                <Style.Triggers>
-                                    <DataTrigger Binding="{Binding SubtitleTracks.Count}" Value="0">
-                                        <Setter Property="Visibility" Value="Collapsed" />
-                                    </DataTrigger>
-                                </Style.Triggers>
-                            </Style>
-                        </GroupBox.Style>
-                        <StackPanel>
-                            <ScrollViewer MaxHeight="130" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
-                                <!-- Each track's name, and what to do with it beside it; under it in a narrow pane. -->
-                                <ItemsControl ItemsSource="{Binding SubtitleTracks}" Focusable="False" AutomationProperties.Name="Source Subtitle Tracks">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <local:ReflowPanel Spacing="8" RowSpacing="2">
-                                                <TextBlock Text="{Binding Description}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MinWidth="120" local:ReflowPanel.Fill="True" />
-                                                <local:SoftMinWidth Value="230" HorizontalAlignment="Left">
-                                                    <ComboBox Margin="0,2" ItemsSource="{Binding Actions}" SelectedItem="{Binding Action}" HorizontalAlignment="Stretch" MinWidth="0"
-                                                              AutomationProperties.Name="{Binding Description}" ToolTip="What the output does with this subtitle track: carry it over, burn it into the picture, or leave it out." />
-                                                </local:SoftMinWidth>
-                                            </local:ReflowPanel>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                            </ScrollViewer>
-                            <TextBlock Text="{Binding SubtitleTracksHint}" Foreground="{DynamicResource MutedTextBrush}" Margin="0,4,0,0" TextWrapping="Wrap" />
-                        </StackPanel>
-                    </GroupBox>
-                    <!--
-                        Easy Social Export | Advanced Export (4.2B-2, AppSettings.UseEasySocialExport): the 1-click cards
-                        (MainViewModel.SocialExportTargets, made in MainWindow.Export.cs) or the Video and Audio sections
-                        with every setting. A card only sets those settings; Advanced shows them as it left them.
-                    -->
-                    <StackPanel DockPanel.Dock="Top" x:Name="ExportModeBar" Orientation="Horizontal" Margin="0,0,0,6" AutomationProperties.Name="Export Mode">
-                        <RadioButton x:Name="EasyExportButton" Style="{StaticResource ExportSectionButton}" GroupName="ExportMode" Content="Easy Social Export"
-                                     Checked="ExportMode_Checked" AutomationProperties.Name="Easy Social Export"
-                                     ToolTip="One click per platform: each card sets the size, frame rate, encoder, quality or file size, and sound for it." />
-                        <RadioButton x:Name="AdvancedExportButton" Style="{StaticResource ExportSectionButton}" GroupName="ExportMode" Content="Advanced Export"
-                                     Checked="ExportMode_Checked" AutomationProperties.Name="Advanced Export"
-                                     ToolTip="Every encoder, picture, sound and chapter setting, as the cards (or you) left them." />
-                    </StackPanel>
-                    <StackPanel DockPanel.Dock="Top" x:Name="ExportSections" Orientation="Horizontal" Margin="0,0,0,6" AutomationProperties.Name="Export Sections" />
-                    <Grid>
-                        <ScrollViewer x:Name="EasyExportPanel" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                            <WrapPanel x:Name="EasyExportCards" AutomationProperties.Name="Easy Social Export Cards" />
-                        </ScrollViewer>
-                        <Border x:Name="ExportSectionHost">
-                            <TextBlock x:Name="ExportNoSections" TextWrapping="Wrap" Foreground="{DynamicResource MutedTextBrush}" Margin="4,8"
-                                       Text="The Video and Audio settings each have a tab of their own now (Tabs and Panes). Hide one there to see it here again." />
+                        </Border>
+
+                        <!-- ===== Column 3: Audio & Output ===== -->
+                        <Border Grid.Column="2" Style="{StaticResource ExportCard}" AutomationProperties.Name="Audio and Output">
+                            <StackPanel Grid.IsSharedSizeScope="True">
+                                <TextBlock Text="Audio &amp; Output" Style="{StaticResource ExportCardTitle}" />
+                                <!-- The sound's encoding: its one home (5.4B: the Audio tab's copy of this row is gone). -->
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" SharedSizeGroup="ExportLabel3" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Text="Audio Codec:" Style="{StaticResource FieldLabel}" />
+                                    <DockPanel Grid.Column="1" Margin="0,4">
+                                        <ComboBox DockPanel.Dock="Right" Margin="8,0,0,0" MinWidth="78" ItemsSource="{Binding AudioBitrates}" SelectedItem="{Binding AudioBitrate}" IsEnabled="{Binding IsAudioReencoded}"
+                                                  AutomationProperties.Name="Export Audio Bitrate" ToolTip="The bitrate of every re-encoded track that follows the default, and of the mix (FLAC and PCM, lossless, take none)." />
+                                        <ComboBox ItemsSource="{Binding AudioEncoders}" SelectedItem="{Binding AudioEncoder}" AutomationProperties.Name="Export Audio Codec"
+                                                  ToolTip="The codec of every track that follows the default (a track given one of its own keeps it), and of the mixed track when mixing: AAC, Opus, MP3, AC-3, FLAC (lossless) or PCM, or Copy." />
+                                    </DockPanel>
+                                    <TextBlock Grid.Row="1" Text="Sample Rate:" Style="{StaticResource FieldLabel}" />
+                                    <ComboBox Grid.Row="1" Grid.Column="1" Margin="0,4" ItemsSource="{Binding AudioSampleRates}" DisplayMemberPath="Value" SelectedValuePath="Key" SelectedValue="{Binding AudioSampleRate}"
+                                              AutomationProperties.Name="Export Audio Sample Rate"
+                                              ToolTip="The sample rate every encoded track is written at (-ar). Match Project Settings writes the project's sample rate (48 kHz unless its Project Settings say otherwise). Copied tracks are left as they are. Saved with the project and in presets." />
+                                    <TextBlock Grid.Row="2" Text="Channels:" Style="{StaticResource FieldLabel}" />
+                                    <ComboBox Grid.Row="2" Grid.Column="1" Margin="0,4" ItemsSource="{Binding AudioChannelChoices}" DisplayMemberPath="Value" SelectedValuePath="Key" SelectedValue="{Binding AudioChannels}"
+                                              AutomationProperties.Name="Export Audio Channels"
+                                              ToolTip="The channels of every encoded track (-ac). Stereo folds anything wider down to two and leaves stereo and mono tracks as they are; Mono makes one channel; Match Source keeps the source's. Copied tracks are left as they are." />
+                                </Grid>
+                                <CheckBox Content="Track Mix: mix the tracks into one" IsChecked="{Binding MergeAudioTracks}" Margin="0,4" AutomationProperties.Name="Export Mix Selected Tracks"
+                                          ToolTip="On: every track that is not set to Ignore / Drop is mixed into one output track (the mix is always encoded). Off: per-track stems, each stream place an audio track of its own in the file. On to start with." />
+                                <DockPanel Margin="0,4">
+                                    <ComboBox DockPanel.Dock="Right" MinWidth="120" Margin="8,0,0,0" ItemsSource="{Binding LoudnessTargets}" DisplayMemberPath="Value" SelectedValuePath="Key"
+                                              SelectedValue="{Binding LoudnessTarget}" IsEnabled="{Binding NormalizeAudio}" AutomationProperties.Name="Normalize Target"
+                                              ToolTip="The integrated loudness Normalize aims at: -16 LUFS (the default, the web's) or -14 LUFS (what the streaming platforms play at), with the peaks held under -1.5 dBTP." />
+                                    <CheckBox Content="Normalize audio" IsChecked="{Binding NormalizeAudio}" VerticalAlignment="Center" AutomationProperties.Name="Export Normalize Audio"
+                                              ToolTip="Evens out the loudness to the target beside it (EBU R128 measuring, the peaks held under -1.5 dBTP), applied to re-encoded and mixed tracks. Copied tracks are left as they are." />
+                                </DockPanel>
+
+                                <!--
+                                    The source's own subtitle tracks (the Subtitles tab's until 4.4; the captions are on the timeline): each carried over
+                                    into the output, burned into the picture or left out. Shown while the source has any.
+                                -->
+                                <StackPanel Margin="0,4" AutomationProperties.Name="Source Subtitle Tracks Card">
+                                    <StackPanel.Style>
+                                        <Style TargetType="StackPanel">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding SubtitleTracks.Count}" Value="0">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </StackPanel.Style>
+                                    <TextBlock Text="Source Subtitle Tracks" FontWeight="SemiBold" Margin="0,4,0,4" />
+                                    <ItemsControl ItemsSource="{Binding SubtitleTracks}" Focusable="False" AutomationProperties.Name="Source Subtitle Tracks">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <local:ReflowPanel Spacing="8" RowSpacing="2">
+                                                    <TextBlock Text="{Binding Description}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MinWidth="120" local:ReflowPanel.Fill="True" />
+                                                    <local:SoftMinWidth Value="200" HorizontalAlignment="Left">
+                                                        <ComboBox Margin="0,2" ItemsSource="{Binding Actions}" SelectedItem="{Binding Action}" HorizontalAlignment="Stretch" MinWidth="0"
+                                                                  AutomationProperties.Name="{Binding Description}" ToolTip="What the output does with this subtitle track: carry it over, burn it into the picture, or leave it out." />
+                                                    </local:SoftMinWidth>
+                                                </local:ReflowPanel>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                    <TextBlock Text="{Binding SubtitleTracksHint}" Foreground="{DynamicResource MutedTextBrush}" Margin="0,4,0,0" TextWrapping="Wrap" />
+                                </StackPanel>
+
+                                <!-- The Live Encoded Preview (5.4B, the encode loopback: MainWindow.LoopbackPreview.cs; renamed and given the eye in 5.4D, as on the player bar): the player shows what the encoder would leave. -->
+                                <ToggleButton IsChecked="{Binding IsExportQualityPreview}" AutomationProperties.Name="Live Encoded Preview" HorizontalAlignment="Left" Margin="0,8,0,4" Padding="10,5"
+                                              IsEnabled="{Binding IsVideoExport}" ToolTipService.ShowOnDisabled="True"
+                                              ToolTip="The player shows each frame as the export's encoder would leave it (a fast approximation while it plays, the export's settings when it is paused): side by side with the original, encoded, or the difference x10. Never saved: off at every start. Off for an Audio Only file (FLAC, WAV, MP3), which has no picture.">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="&#xE890;" FontFamily="Segoe MDL2 Assets" FontSize="14" VerticalAlignment="Center" />
+                                        <TextBlock Text="Live Encoded Preview" Margin="8,0,0,0" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </ToggleButton>
+                                <TextBlock Text="{Binding ExportQualityPreviewStatus}" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" FontSize="11">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Margin" Value="0,0,0,4" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding ExportQualityPreviewStatus}" Value="">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+
+                                <!-- What the file will be: size, rate, colour, codecs, length and the estimated file size (built by UpdateProjectedOutput). -->
+                                <TextBlock Text="Projected Output" FontWeight="SemiBold" Margin="0,8,0,4" />
+                                <ItemsControl ItemsSource="{Binding OutputInfoRows}" ItemTemplate="{DynamicResource InfoRowTemplate}" AutomationProperties.Name="Projected Output" Focusable="False" />
+
+                                <!-- Save As, Browse, Start Encode and Add to Queue: DestinationBar itself, moved in while this tab is shown (PlaceDestinationBar). -->
+                                <Border x:Name="ExportBarSlot" Margin="0,8,0,0" />
+                            </StackPanel>
                         </Border>
                     </Grid>
+
+                    <!-- What the source is (5.4A: from the retired Summary tab), folded away until asked for. -->
+                    <Expander Header="Source Details" IsExpanded="False" Margin="0,10,0,0" AutomationProperties.Name="Source Details"
+                              ToolTip="The source file's streams: its format, size, codecs, rates and tracks.">
+                        <Border Style="{StaticResource ExportCard}" Margin="0,6,0,0" Grid.IsSharedSizeScope="True">
+                            <ItemsControl ItemsSource="{Binding SourceInfoRows}" ItemTemplate="{DynamicResource InfoRowTemplate}" AutomationProperties.Name="Source Information" Focusable="False" />
+                        </Border>
+                    </Expander>
+
+                    <!-- The Audio tab's content while that tab is hidden (MainWindow.Export.cs: one content, moved), with its button while there were more. -->
+                    <StackPanel x:Name="ExportSections" Orientation="Horizontal" Margin="0,10,0,6" AutomationProperties.Name="Export Sections" />
+                    <Border x:Name="ExportSectionHost" />
+                    </StackPanel>
+                    </ScrollViewer>
                 </DockPanel>
                 </DataTemplate>
                 </TabItem.Tag>
@@ -2185,21 +2138,20 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- Destination -->
+        <!--
+            Destination: where the output goes, and the buttons that make it. One row at the bottom of the window; in the Export tab's
+            Audio & Output card (5.4B), narrower, the path over the buttons (ReflowPanel).
+        -->
         <Border Grid.ColumnSpan="2" x:Name="DestinationBar" Style="{StaticResource Panel}" Margin="0,1,0,0">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <TextBlock Text="Save As:" Style="{StaticResource FieldLabel}" />
-                <TextBox Grid.Column="1" VerticalContentAlignment="Center" AutomationProperties.Name="Destination Path"
-                         Text="{Binding DestinationPath, UpdateSourceTrigger=PropertyChanged}" />
-                <Button Grid.Column="2" Content="Browse..." Margin="6,0,0,0" Click="BrowseDestination_Click" />
-                <StackPanel Grid.Column="4" Orientation="Horizontal">
+            <local:ReflowPanel Spacing="6" RowSpacing="6">
+                <DockPanel MinWidth="260" local:ReflowPanel.Fill="True">
+                    <TextBlock DockPanel.Dock="Left" Text="Save As:" Style="{StaticResource FieldLabel}" />
+                    <Button DockPanel.Dock="Right" Content="Browse..." Margin="6,0,0,0" Click="BrowseDestination_Click" />
+                    <TextBox VerticalContentAlignment="Center" AutomationProperties.Name="Destination Path"
+                             Text="{Binding DestinationPath, UpdateSourceTrigger=PropertyChanged}" />
+                </DockPanel>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+                    <Button Content="Start Encode" FontWeight="SemiBold" Command="{Binding StartEncodeCommand}" />
                     <Button Content="Add to Queue" Margin="6,0,0,0" Command="{Binding AddToQueueCommand}"
                             ToolTip="Queue the command in the Command Preview box to run later. While editing a queued job, this adds a second job." />
                     <!-- Only while a queued job is loaded for editing -->
@@ -2207,9 +2159,7 @@
                             Visibility="{Binding IsEditingQueuedJob, Converter={StaticResource BoolToVisibility}}"
                             ToolTip="Replace the queued job being edited with the current settings." />
                 </StackPanel>
-                <Button Grid.Column="3" Content="Start Encode" Margin="6,0,0,0" FontWeight="SemiBold"
-                        Command="{Binding StartEncodeCommand}" />
-            </Grid>
+            </local:ReflowPanel>
         </Border>
 
         <!-- Status bar -->

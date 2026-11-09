@@ -1,0 +1,16 @@
+# Alt+Up / Alt+Down and the clip menu: onto the next track where it is free, else a new track; a track per source, one step of Undo, the selection kept.
+ok: Alt+Up on X
+ok: the track above is free for it: onto that track, no new one
+ok: Alt+Up on Y
+ok: the track above holds a clip in its way: a new track directly above its own
+ok: the menu's Move to New Track Above on X and Z together
+ok: a new track for each track they came from, each just above its own
+ok: the two clips stay selected
+ok: one Undo puts both back
+ok: Alt+Down on a clip alone on the bottom track: refused, said in the status bar
+ok: Alt+Up on that clip, the track above full where it lies
+ok: alone on its track, it goes onto a new track past the next track up (its old track goes): it moves one level
+ok: nothing selected, nothing to move (the key is left to the focused control)
+ok: the keys: Alt+Up and Alt+Down, changing the project (refused while a drag is held)
+ok: read as the Alt chords of the arrows
+ok: no preset gives one chord to two actions

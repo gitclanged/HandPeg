@@ -1,0 +1,38 @@
+# Each project tab keeps its 3D Exploded View and camera: in its header, restored at once with no transition, its still as it was shown.
+ok: a new header is flat, at the view's start pose (30, 16, 1.85, 0.16), with no layout
+ok: a header in the 3D view at (-42.5, 22.25, 2.6, 0.31) with Standard Editing's layout and the Media Browser's Filmstrip reads back as it was (record equality)
+ok: the camera is its turn, distance and spacing (the 3D camera has no pan)
+ok: a header written by 5.4A to 5.4C reads flat, at the view's start pose, with no layout and no Media Browser view (the tab takes the window as it is)
+ok: a duplicate takes the window's part (TakeWindowStateOf: the 3D view, its camera, the layout and the Media Browser's view) and nothing else
+ok: none of it is in the project file (ProjectState): orbiting or a splitter is no change to the project
+ok: a tab put behind before its 3D view was restored (a held Ctrl+Tab, an engine not started yet: it is the tab waiting) keeps its header's view and camera
+ok: its duplicate made meanwhile takes the camera it came back with
+ok: the view up: the engine's target pose (55, -20, 3.1, 0.22), whatever waits
+ok: neither up nor waiting: flat (its last camera kept, unused)
+ok: SetExplodedInstant(true, (-42.5, 22.25, 2.6, 0.31)): on and drawing in 3D, the camera drawn where it is going ((-42.5, 22.25, 2.6, 0.31)), no transition under way
+ok: SetExplodedInstant(false): off and flat at once (no way out), the camera's own pose kept for the tab
+ok: a pose beyond the camera's limits is held to them: (85, -85, 8, 0.16) (the turns short of edge on, the distance at most 8, a spacing that is not a number the view's start)
+ok: with no pose, the view's start
+ok: where SetExploded (the toggle) starts its 240 ms way in from the flat picture: a transition under way, the camera drawn flat
+ok: a still as it is shown, short side 540: a 1600 x 900 player (a vertical canvas in it): 960 x 540, the player's shape, not the canvas's (got 960 x 540)
+ok: a still as it is shown, short side 540: a 700 x 1000 player: 540 x 772 (got 540 x 772)
+ok: a still as it is shown, short side 540: a 300 x 200 player: its own size (never larger than the player) (got 300 x 200)
+ok: a still as it is shown, short side 540: a player too small to draw on: the canvas's shape, 540 x 960 (got 540 x 960)
+ok: a still as it is shown, short side 540: an 8000 x 100 player: 4000 x 50 (the long side at most 4096) (got 4000 x 50)
+ok: CaptureThumbnailAsync(..., asShown): in the 3D view the still is drawn with the camera where it is going, in the player's shape; otherwise the canvas's, flat as before
+ok: a thumbnail's request carries what it is drawn as (5.4D review: one record exchanged at once, read only from it): a save's thumbnail taken by the pump is never drawn as a tab's 3D still asks, nor that still flat
+ok: the player's frames and the still lay the stack out alike (WriteStack); the still neither steps the camera nor is kept for picking
+ok: StopPlayingForTabs no longer closes the 3D view: it ends a drag or a lift only
+ok: PutActiveBehind captures the tab's window first (before it stops, and before an empty tab returns, which leaves the view too)
+ok: the wait for a tab's player or engine is let go only as the tab goes behind (5.4D review), which is at once and never refused (5.4D-TabPerf: nothing awaited)
+ok: its still is captured as it is shown (the 3D picture), kept fresh ahead, never made the project's thumbnail, and the view is left at once right before the engine lets go
+ok: CaptureWindowStateForTab: the selector closed and its preview put back before the layout is taken; nothing of a tab in front that could not be brought back (5.4D review: its header keeps its window); the layout, the Media Browser's view, the 3D view and the engine's target pose
+ok: never in TakeHeaderForTab (the header's project part only)
+ok: RestoreTabView restores the 3D view before the player opens
+ok: a tab brought back in the 3D view waits for its view to be restored (5.4D review): put behind again before then, it keeps its header's 3D view; in front with nothing to show, it is flat
+ok: RestoreExplodedForTab: only with a picture to show, waiting once for an engine not started yet (5.4D review) or a player not shown yet, the Live Encoded Preview turned off first (the tab's 3D view wins)
+ok: the engine started late (Law 2's first video, after a fault or Reload Player): the tab in front waiting for it goes into its 3D view before its player opens (5.4D review)
+ok: SetExplodedView(on, instant, pose): a tab's way in sets its pose at once (no ResetCamera); turned on by hand the camera still starts where it always does; the instant way out hides the layer at once
+ok: ShowExplodedLayer never hides a tab's still (the overlay children it dims skip it)
+ok: closing the tab in front leaves the 3D view at once (the last tab emptied, or the next one brought forward)
+ok: a duplicate takes its original's window, from its header behind or from the window in front

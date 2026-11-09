@@ -1,0 +1,29 @@
+# Audio Only (5.4C): FLAC, WAV and MP3 of the Sequence's sound alone, rendered by the engine, one track, no frame piped, no compositor.
+ok: the same Sequence as an .mp4: two sound tracks, the game's copied as it is (the case an Audio Only file must not follow)
+   .flac: ffmpeg -hide_banner -y -f f32le -ar 48000 -ch_layout stereo -i {sound:1} -map 0:a:0 -map_chapters -1 -c:a flac -sample_fmt s16 D:/out/a.flac
+ok: .flac is Audio Only: FFmpeg encodes the engine's one render (flac), one raw float input, no frames
+ok: .flac: no pipe:0, no rawvideo, no picture mapped, no colour tags, no -movflags, and never a -vf, -af or -filter_complex
+ok: .flac: 16 bits asked for outright (-sample_fmt s16), no bitrate (lossless)
+   .wav: ffmpeg -hide_banner -y -f f32le -ar 48000 -ch_layout stereo -i {sound:1} -map 0:a:0 -map_chapters -1 -c:a pcm_s16le D:/out/a.wav
+ok: .wav is Audio Only: FFmpeg encodes the engine's one render (pcm_s16le), one raw float input, no frames
+ok: .wav: no pipe:0, no rawvideo, no picture mapped, no colour tags, no -movflags, and never a -vf, -af or -filter_complex
+ok: .wav: 16-bit PCM by its codec, no bitrate
+   .mp3: ffmpeg -hide_banner -y -f f32le -ar 48000 -ch_layout stereo -i {sound:1} -map 0:a:0 -map_chapters -1 -c:a libmp3lame -b:a 128k D:/out/a.mp3
+ok: .mp3 is Audio Only: FFmpeg encodes the engine's one render (libmp3lame), one raw float input, no frames
+ok: .mp3: no pipe:0, no rawvideo, no picture mapped, no colour tags, no -movflags, and never a -vf, -af or -filter_complex
+ok: .mp3: LAME at the bitrate chosen (128k)
+ok: two stream places with Merge off, one copied as it is: one rendered FLAC track, both places on its bus, nothing copied (the two-argument plan sees the .flac too)
+ok: Mono on the Audio tab: one mono track
+ok: the podcast's MP3 is normalized to -16 LUFS by the engine (its linear gain: no filter is written)
+ok: a Sequence with nothing to hear is refused in words (the Sequence has nothing to hear)
+ok: Podcast / Voice (MP3, -16 LUFS) picked: mp3, LAME at 128k, mixed, normalized to -16 LUFS; the export is Audio Only
+ok: Projected Output says it is audio only
+ok: choosing WAV sets 16-bit PCM; the containers end with flac, wav, mp3 (the Save dialog's filter in the same order)
+ok: the Copy encoder left selected never makes a .wav a stream copy
+ok: the Export Quality Preview stays off for an Audio Only file (there is no picture to encode)
+ok: back to mp4: a video export again
+ok: RunExportAsync routes an Audio Only file to GpuExport.RunAudioOnlyAsync before anything else (the queue runs through it too)
+ok: RunAudioOnlyAsync renders the sound and runs FFmpeg: no compositor started, no scene prepared, no subtitles burned
+ok: the Export tab folds the Video Codec row, Web Optimized and 10-bit, the HDR notes and card 2's quality, bitrate and size for an Audio Only file (a line says why), and greys out the Export Quality Preview
+ok: a real FLAC and WAV of a tone's Sequence: as long as the Sequence (2.5 s, 120,000 samples) and the engine's own render to within 16-bit rounding
+ok: Normalize at -16 LUFS for real: a FLAC measured at -16 LUFS within 0.1 LU (the engine's gain), the podcast MP3 (128k) as long as the Sequence (within LAME's padding) and within 0.75 LU of it (what the codec loses)

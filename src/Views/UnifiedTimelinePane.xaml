@@ -303,7 +303,7 @@
                             <Button Content="Import Subtitles..." Tag="ImportSubtitles" Click="AddLayerItem_Click"
                                     ToolTip="An .srt or .ass file as the captions." />
                             <Button Content="Edit Captions..." Tag="EditCaptions" Click="AddLayerItem_Click"
-                                    ToolTip="The Subtitle Editor: what the captions say, and when." />
+                                    ToolTip="The Subtitle Studio: what the captions say, and when." />
                             <Button Content="Caption Style..." Tag="CaptionStyle" Click="AddLayerItem_Click"
                                     ToolTip="How the captions look: their font, colors, outline and place." />
                         </StackPanel>
@@ -463,7 +463,7 @@
                                 AutomationProperties.Name="Remove Dead Air..." local:KeyTip.Action="edit.deadAir" local:KeyTip.Text="Remove Dead Air{keys}: finds the silences (or the gaps between captions) of the selected clip's sound (otherwise the sound marked as the voice, else the video clip at the playhead's) and marks or folds them out." />
                         <Button Padding="9,4" Margin="6,0,3,0" VerticalAlignment="Center" local:OverflowStrip.Priority="40" Tag="CutoutStudio" Click="Tool_Click" IsEnabled="{Binding IsVideoReencoded}"
                                 AutomationProperties.Name="Cutout Studio" ToolTip="Trace a game's HUD by hand on a still of the video, zoomed in to the very pixels, name the Cutouts, and add them to the clip or save them as a Game Preset to drop videos on.">
-                            <!-- Scissors cutting along a dashed line in the accent (5.2): the Studio stands out beside the Game Presets list. -->
+                            <!-- Scissors cutting along a dashed line in the accent (5.2): the Studio stands out on the row of tools. -->
                             <StackPanel Orientation="Horizontal">
                                 <Grid Width="18" Height="15" VerticalAlignment="Center">
                                     <Path Stretch="None" StrokeThickness="1.3" StrokeDashArray="1.4 1.2" Stroke="{DynamicResource AccentBrush}" Data="M 10.5,7.5 L 18,7.5" />
@@ -474,9 +474,8 @@
                                 <TextBlock Text="Cutout Studio" Margin="6,0,0,0" VerticalAlignment="Center" />
                             </StackPanel>
                         </Button>
-                        <ComboBox Width="150" Margin="3,0" VerticalAlignment="Center" local:OverflowStrip.Priority="38" ItemsSource="{Binding StylePresets}" SelectedItem="{Binding SelectedStylePreset}"
-                                  DropDownOpened="GamePresets_DropDownOpened" IsEnabled="{Binding IsVideoReencoded}" AutomationProperties.Name="Game Presets"
-                                  ToolTip="The Game Presets in the Styles folder. Choosing one applies it to the selected video clips (else every video clip): its Cutouts, its layout, its colour and blur." />
+                        <!-- No Game Presets box here (5.4C, the user's de-clutter): a clip's right-click menu applies one (Game Presets & Cutout
+                             Studio, which also saves, imports and exports them), a track's header sets its Track Preset. -->
                         <!--
                             Quick FX, the Creator Hotbar (5.2.1; one button since 5.3-Stage2, the user's de-clutter): resting the pointer
                             on it, or a click (or Down), opens its five slots over it (QuickFxPopup, made after the first frame with
@@ -522,7 +521,7 @@
             <Border DockPanel.Dock="Bottom" Margin="0,4,0,0" Padding="10,5" CornerRadius="4" Background="{DynamicResource InsetBrush}"
                     Visibility="{Binding ShowsCopyNote, Converter={StaticResource BoolToVisibility}}">
                 <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource MutedTextBrush}"
-                           Text="The video is copied as it is (Video tab: Copy), so effects, filters, fades and the other files' clips are not rendered: the clips of the file most of the Sequence shows are joined end to end, each from the I-frame at or before its start. Choose a video encoder to edit with every track." />
+                           Text="The video is copied as it is (Export tab: Copy), so effects, filters, fades and the other files' clips are not rendered: the clips of the file most of the Sequence shows are joined end to end, each from the I-frame at or before its start. Choose a video encoder to edit with every track." />
             </Border>
 
             <!--

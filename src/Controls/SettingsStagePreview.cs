@@ -598,13 +598,13 @@ public sealed class SettingsStagePreview : FrameworkElement
             -1 => GpuAdapters.BackgroundAdapter is { } card ? $"Auto: {card.Name}" : "Automatic",
             var index => Named(index),
         };
-        var export = _settings.HardwareDecodeAdapter < 0 ? "Automatic (FFmpeg's choice)" : Named(_settings.HardwareDecodeAdapter);
+        var export = _settings.HardwareDecodeAdapter < 0 ? "Auto: the Compositor GPU" : Named(_settings.HardwareDecodeAdapter);
 
         var half = (width - 10) / 2;
         Card(drawing, new Rect(0, y, half, 54), "Compositor (player and shaders)", compositor);
         Card(drawing, new Rect(half + 10, y, half, 54), "Timeline clips decode on", decode);
         Card(drawing, new Rect(0, y + 62, half, 54), "Background work on", background);
-        Card(drawing, new Rect(half + 10, y + 62, half, 54), "Exports decode on", export);
+        Card(drawing, new Rect(half + 10, y + 62, half, 54), "Exports render on", export);
         var encoder = _settings.DefaultVideoEncoder.Length == 0 ? "the built-in default (Copy)" : _settings.DefaultVideoEncoder;
         Text(drawing, $"A new export encodes with {encoder}", 0, y + 126, 11, MutedBrush, width: width);
 

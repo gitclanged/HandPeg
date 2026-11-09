@@ -11,15 +11,16 @@ namespace HandPegApp;
 // Every settings tab and every pane but the player and the header can be shown or hidden (AppSettings.HiddenTabs and
 // the panes' own settings), from the Views menu's Tabs and Panes list or the same list on any tab's right-click menu.
 //
-// The Export tab holds what Video and Audio hold while their own tabs are hidden (Video starts so; the chapters are on it),
-// and under them the output: DestinationBar itself, moved into the tab while it is shown and back to the bottom of the
-// window while it is not, so Save As and Start Encode are always somewhere and never twice. Each section's content is
-// made once (from its tab's template, when first wanted) and moved between its own tab and the Export tab: the names
-// the window finds in it (RealizeTabContent) stay the same.
+// The Export tab (5.4B) is three inspector cards, every export setting once: Preset & Format, Quality, Bitrate & Resolution, Audio &
+// Output (ReflowExportColumns stands them side by side or one over the other). The Video tab of before is those cards; the Easy |
+// Advanced switch and its cards are Export Presets. Under the cards, what the Audio tab holds while it is hidden, and in the third
+// card the output: DestinationBar itself, moved into the tab while it is shown and back to the bottom of the window while it is not,
+// so Save As and Start Encode are always somewhere and never twice. The Audio tab's content is made once (from its template, when
+// first wanted) and moved between its own tab and the Export tab: the names the window finds in it (RealizeTabContent) stay the same.
 public partial class MainWindow
 {
-    /// <summary>The tabs whose contents the Export tab holds while they are hidden, in its order, with the word its button shows.</summary>
-    private static readonly (string Id, string Label)[] SectionTabs = [("Tab:Video", "Video"), ("Tab:Audio", "Audio")];
+    /// <summary>The tabs whose contents the Export tab holds while they are hidden, in its order, with the word its button shows (5.4B: the Audio tab alone).</summary>
+    private static readonly (string Id, string Label)[] SectionTabs = [("Tab:Audio", "Audio")];
 
     private const string ExportId = "Tab:Export";
 
@@ -37,11 +38,8 @@ public partial class MainWindow
     private DockPanel? ExportPanel;
     private Border? ExportBarSlot;
     private StackPanel? ExportSections;
-    private RadioButton EasyExportButton = null!, AdvancedExportButton = null!;
-    private ScrollViewer EasyExportPanel = null!;
-    private WrapPanel EasyExportCards = null!;
     private Border ExportSectionHost = null!;
-    private TextBlock ExportNoSections = null!;
+    private Grid ExportColumns = null!;
 
     private static bool IsSection(string id) => SectionTabs.Any(s => s.Id == id);
 
@@ -134,8 +132,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The Export tab's buttons for the sections it holds (none for a single one, nor in Easy Social Export). They are the tab's:
-    /// until it is made (5.3-Stage2) there is nowhere to put them, and ExportContent makes them with it.
+    /// The Export tab's buttons for the sections it holds (none for a single one). They are the tab's: until it is made (5.3-Stage2)
+    /// there is nowhere to put them, and ExportContent makes them with it.
     /// </summary>
     private void FillExportSectionButtons(List<(string Id, string Label)> inExport)
     {
@@ -156,152 +154,57 @@ public partial class MainWindow
             sections.Children.Add(button);
         }
 
-        // A single section needs no button to choose it; Easy Social Export shows none.
-        sections.Visibility = inExport.Count > 1 && !EasyExport ? Visibility.Visible : Visibility.Collapsed;
+        // A single section needs no button to choose it.
+        sections.Visibility = inExport.Count > 1 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     /// <summary>
-    /// The Export tab's middle: Easy Social Export's cards, or the chosen section's content, or the hint that each section
-    /// has a tab of its own. While the cards are shown no section is made or moved in (nothing made that is not on screen).
+    /// Under the Export tab's cards: the chosen section's content while its own tab is hidden, else nothing (nothing made that is
+    /// not on screen; the section stays in its own tab).
     /// </summary>
     private void FillExportSection()
     {
         if (ExportTab.Visibility != Visibility.Visible)
             return;
 
-        ApplyExportMode();
-        if (EasyExport)
-            return;
-
+        // Every section in its own tab (PlaceSections has put it there): nothing under the cards.
         if (SectionTabs.All(s => TabOf(s.Id).Visibility == Visibility.Visible))
-            ExportSectionHost.Child = ExportNoSections;
+        {
+            ExportSectionHost.Visibility = Visibility.Collapsed;
+        }
         else
+        {
+            ExportSectionHost.Visibility = Visibility.Visible;
             Put(_exportSection, ExportSectionHost);
-    }
-
-    // ----- Easy Social Export | Advanced Export (Pass 4.2B-2) -----
-
-    private static bool EasyExport => AppSettings.Current.UseEasySocialExport;
-
-    private bool _applyingExportMode;
-
-    /// <summary>The switch, the cards or the sections, as AppSettings.UseEasySocialExport says.</summary>
-    private void ApplyExportMode()
-    {
-        var easy = EasyExport;
-        _applyingExportMode = true;
-        try
-        {
-            (EasyExportButton.IsChecked, AdvancedExportButton.IsChecked) = (easy, !easy);
         }
-        finally
+    }
+
+    // ----- The three columns (5.4B) -----
+
+    /// <summary>The least width of a card side by side with the others, and the gap between two.</summary>
+    internal const double ExportCardMinWidth = 300, ExportCardGap = 12;
+
+    /// <summary>How many columns the Export tab's cards stand in at a width: three while each has its least width, else one (one over the other).</summary>
+    internal static int ExportColumnCount(double width) => width >= 3 * ExportCardMinWidth + 2 * ExportCardGap ? 3 : 1;
+
+    /// <summary>
+    /// Stands the three cards side by side (three equal columns, a gap between) or one over the other (the full width, a gap under each),
+    /// as the tab is wide (<see cref="ExportColumnCount"/>). Called as the columns' grid is sized: only the places change, not its width.
+    /// </summary>
+    private void ReflowExportColumns(double width)
+    {
+        var columns = ExportColumnCount(width);
+        var cards = ExportColumns.Children.OfType<FrameworkElement>().ToList();
+        for (var i = 0; i < ExportColumns.ColumnDefinitions.Count; i++)
+            ExportColumns.ColumnDefinitions[i].Width = i < columns ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
+        for (var i = 0; i < cards.Count; i++)
         {
-            _applyingExportMode = false;
-        }
-
-        EasyExportPanel.Visibility = easy ? Visibility.Visible : Visibility.Collapsed;
-        ExportSectionHost.Visibility = easy ? Visibility.Collapsed : Visibility.Visible;
-        if (easy)
-            MakeSocialCards();
-        if (ExportSections is { } sections)
-            sections.Visibility = !easy && sections.Children.Count > 1 ? Visibility.Visible : Visibility.Collapsed;
-    }
-
-    private void ExportMode_Checked(object sender, RoutedEventArgs e)
-    {
-        var easy = ReferenceEquals(sender, EasyExportButton);
-        if (_applyingExportMode || easy == EasyExport)
-            return;
-
-        _viewModel.SetViewSetting(s => s.UseEasySocialExport = easy);
-        FillExportSection();
-    }
-
-    // The cards, made once (their words are the view model's); the chosen one marked again after each click.
-    private readonly List<(SocialExportTarget Target, FrameworkElement Card, List<(int SizeMb, Button Button)> Sizes)> _socialCards = [];
-
-    private void MakeSocialCards()
-    {
-        if (_socialCards.Count == 0)
-        {
-            foreach (var target in _viewModel.SocialExportTargets)
-            {
-                var sizes = new List<(int, Button)>();
-                FrameworkElement card;
-                if (target.SizesMb.Count == 0)
-                {
-                    var button = new Button { Content = SocialCardFace(target, null) };
-                    button.SetResourceReference(StyleProperty, "LayoutCard");
-                    button.Click += (_, _) => ChooseSocialExport(target, 0);
-                    AutomationProperties.SetName(button, target.Title);
-                    card = button;
-                }
-                else
-                {
-                    // A card of several sizes: each size is its own one-click button.
-                    var row = new WrapPanel { Margin = new Thickness(26, 6, 0, 0) };
-                    foreach (var size in target.SizesMb)
-                    {
-                        var button = new Button { Content = $"< {size} MB", Padding = new Thickness(10, 3, 10, 3), Margin = new Thickness(0, 0, 6, 0) };
-                        button.Click += (_, _) => ChooseSocialExport(target, size);
-                        AutomationProperties.SetName(button, $"{target.Title} under {size} MB");
-                        button.ToolTip = $"Aims the file under {size} MB: an average bitrate worked out from the output's length and the sound's.";
-                        row.Children.Add(button);
-                        sizes.Add((size, button));
-                    }
-
-                    var box = new Border { BorderThickness = new Thickness(1.5), Padding = new Thickness(6, 6, 6, 5), Margin = new Thickness(4), Child = SocialCardFace(target, row) };
-                    box.SetResourceReference(Border.BackgroundProperty, "ControlBrush");
-                    box.SetResourceReference(Border.CornerRadiusProperty, "CardCornerRadius");
-                    card = box;
-                }
-
-                card.Width = 260;
-                card.ToolTip = target.Detail;
-                EasyExportCards.Children.Add(card);
-                _socialCards.Add((target, card, sizes));
-            }
-        }
-
-        MarkSocialChoice();
-    }
-
-    /// <summary>A card's face: the glyph, the title and what it does (and, for a card of sizes, their buttons under them).</summary>
-    private static FrameworkElement SocialCardFace(SocialExportTarget target, FrameworkElement? below)
-    {
-        var glyph = new TextBlock { Text = target.Glyph, FontFamily = new System.Windows.Media.FontFamily("Segoe MDL2 Assets"), FontSize = 18, Width = 26, Margin = new Thickness(0, 1, 0, 0) };
-        glyph.SetResourceReference(TextBlock.ForegroundProperty, "AccentBrush");
-        var title = new TextBlock { Text = target.Title, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap };
-        var detail = new TextBlock { Text = target.Detail, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0) };
-        detail.SetResourceReference(TextBlock.ForegroundProperty, "MutedTextBrush");
-        var words = new StackPanel { Children = { title, detail } };
-        DockPanel.SetDock(glyph, Dock.Left);
-        var face = new DockPanel { Children = { glyph, words }, HorizontalAlignment = HorizontalAlignment.Stretch };
-        if (below is null)
-            return face;
-
-        return new StackPanel { Children = { face, below } };
-    }
-
-    private void ChooseSocialExport(SocialExportTarget target, int sizeMb)
-    {
-        _viewModel.ApplySocialExport(target, sizeMb);
-        MarkSocialChoice();
-    }
-
-    /// <summary>The card chosen last, outlined as the layout in use is (LayoutCard's "active"); a card of sizes, its size in bold.</summary>
-    private void MarkSocialChoice()
-    {
-        var choice = _viewModel.SocialExportChoice;
-        foreach (var (target, card, sizes) in _socialCards)
-        {
-            var chosen = choice?.Id == target.Id;
-            if (card is Button button)
-                button.Tag = chosen ? "active" : null;
-            else if (card is Border box)
-                box.SetResourceReference(Border.BorderBrushProperty, chosen ? "SelectedBorderBrush" : "ControlBorderBrush");
-            foreach (var (size, sizeButton) in sizes)
-                sizeButton.FontWeight = chosen && choice?.SizeMb == size ? FontWeights.SemiBold : FontWeights.Normal;
+            var side = columns > 1;
+            Grid.SetColumn(cards[i], side ? i : 0);
+            Grid.SetRow(cards[i], side ? 0 : i);
+            cards[i].Margin = side
+                ? new Thickness(i == 0 ? 0 : ExportCardGap / 2, 0, i == cards.Count - 1 ? 0 : ExportCardGap / 2, 0)
+                : new Thickness(0, 0, 0, i == cards.Count - 1 ? 0 : ExportCardGap);
         }
     }
 
@@ -313,6 +216,12 @@ public partial class MainWindow
     private FrameworkElement ExportContent()
     {
         var content = RealizeTabContent(ExportTab);
+        ExportColumns.SizeChanged += (_, e) =>
+        {
+            if (e.WidthChanged && ExportColumnCount(e.NewSize.Width) != ExportColumnCount(e.PreviousSize.Width))
+                ReflowExportColumns(e.NewSize.Width);
+        };
+        ReflowExportColumns(0);
         FillExportSectionButtons(SectionTabs.Where(s => TabOf(s.Id).Visibility != Visibility.Visible).ToList());
         PlaceDestinationBar();
         FillExportSection();
@@ -366,9 +275,8 @@ public partial class MainWindow
         t.Tab.Header as string ?? t.Id, () => TabWanted(t.Id), on => SetTabShown(t.Id, on),
         t.Id switch
         {
-            ExportId => "The Export tab: the video settings and the chapters, and the audio settings (those whose own tab is hidden), the source's subtitles, with Save As, Add to Queue and Start Encode.",
-            "Tab:Video" => "The Video tab of its own: how the picture is encoded, and the chapters. Hidden, what it holds is in the Export tab.",
-            "Tab:Audio" => "The Audio tab of its own: how the sound is encoded and mixed, ducking, the master mix and the voiceover (the sounds themselves are on the timeline). Hidden, what it holds is in the Export tab.",
+            ExportId => "The Export tab: the Export Presets, the format, the video and audio settings and the chapters in three cards, the Live Encoded Preview, the Projected Output, with Save As, Add to Queue and Start Encode.",
+            "Tab:Audio" => "The Audio tab of its own: ducking, the master mix and the voiceover (the sounds themselves are on the timeline; how they are encoded is the Export tab's). Hidden, what it holds is in the Export tab.",
             "Tab:Command Preview" => "The FFmpeg command, to read or edit (the same as the setting in Settings).",
             _ => $"The {t.Tab.Header} tab.",
         }));
@@ -390,9 +298,9 @@ public partial class MainWindow
                 on => _viewModel.SetViewSetting(s => s.ShowAdvancedPlayback = on, nameof(MainViewModel.ShowAdvancedPlayback), nameof(MainViewModel.ShowSimplePlayback)),
                 "The playback controls under the player: play, the edit points, the speed and volume."),
             new("Preset Bar", () => _viewModel.ShowPresetBarAtTop,
-                on => _viewModel.SetViewSetting(s => s.PresetBarLocation = on ? AppSettings.PresetBarAtTop : AppSettings.PresetBarInSummary,
-                    nameof(MainViewModel.ShowPresetBarAtTop), nameof(MainViewModel.ShowPresetBarInSummary)),
-                "The preset bar as a pane of its own. Hidden, it is on the Summary tab."),
+                on => _viewModel.SetViewSetting(s => s.PresetBarLocation = on ? AppSettings.PresetBarAtTop : AppSettings.PresetBarInExport,
+                    nameof(MainViewModel.ShowPresetBarAtTop), nameof(MainViewModel.ShowPresetBarInExport)),
+                "The Export Presets selector as a pane of its own. Hidden, it is in the Export tab's first card."),
             new("Canvas", () => _viewModel.IsArrangeActive, on => _viewModel.IsArrangeActive = on,
                 "The Canvas beside the video: the output frame with its clips and the caption box. Drag to move, drag a corner handle to resize, double-click to center.",
                 () => _viewModel.CanEditLayout),
@@ -406,6 +314,7 @@ public partial class MainWindow
                 "The Sequence's master meter and fader, upright: each side's peak and RMS, the loudness in LUFS with the -14 and -16 targets, the true peak, and the master gain (the Audio tab has the same meter across)."),
             new("Status Bar", () => AppSettings.Current.ShowStatusBar, SetStatusBarShown,
                 "The bar along the bottom of the window. Hidden, the status and the progress of background work are in the title bar."),
+            .. StudioToggles(),
         ];
     }
 
@@ -417,7 +326,7 @@ public partial class MainWindow
             list.Children.Clear();
             foreach (var toggle in toggles)
             {
-                var box = new CheckBox { Content = toggle.Name, IsChecked = toggle.IsOn(), Margin = new Thickness(0, 2, 0, 2), ToolTip = toggle.About, IsEnabled = toggle.Enabled?.Invoke() ?? true };
+                var box = new CheckBox { Content = toggle.Name, IsChecked = toggle.IsOn(), Margin = new Thickness(0, 2, 16, 2), ToolTip = toggle.About, IsEnabled = toggle.Enabled?.Invoke() ?? true };
                 var kind = list.Name == nameof(ViewsTabList) ? " Tab" : toggle.Name.EndsWith("Pane", StringComparison.Ordinal) || toggle.Name.EndsWith("Bar", StringComparison.Ordinal)
                     || toggle.Name == ScrubberTitle ? "" : " Pane";
                 AutomationProperties.SetName(box, toggle.Name + kind);

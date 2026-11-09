@@ -17,6 +17,7 @@ public sealed class EncoderPresetLabelConverter : IValueConverter
         "speed" => "Speed",
         "balanced" => "Balanced",
         "quality" => "Quality",
+        "high_quality" => "High Quality (Slowest)",
         _ => value,
     };
 

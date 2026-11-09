@@ -1,0 +1,15 @@
+# HandPeg always opens on the Timeline: the group holding it shows it, whatever tab the arrangement was saved on; nothing else changes.
+ok: Standard Editing saved on Tab:Export: its group shows the Timeline again
+ok: and the arrangement keeps its shape and version
+ok: a second time changes nothing (true only when something changed)
+ok: Standard Editing saved on Tab:Audio: its group shows the Timeline again
+ok: and the arrangement keeps its shape and version
+ok: a second time changes nothing (true only when something changed)
+ok: Standard Editing saved on Tab:Filters: its group shows the Timeline again
+ok: and the arrangement keeps its shape and version
+ok: a second time changes nothing (true only when something changed)
+ok: Assembly & Media: the Timeline's own group already shows it, and the tabs beside it stay on Export (only its own group is touched)
+ok: in the open side window, its group shows the Timeline
+ok: in the arrangement the side window closed on, it is left as the user made it
+ok: InitializeDocking loads the arrangement (the Default layout's, StartupLayoutJson) with showFirst: TimelinePaneId, in its one Load
+ok: RestoreLayoutBeforePreview loads it as it was (no showFirst)

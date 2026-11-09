@@ -46,6 +46,9 @@ public sealed class PlaybackControlSet : ObservableObject
             new("SafeMargins", "Safe Margins", "Viewer", "Outlines the action-safe (90%) and title-safe (80%) areas of the frame over the picture."),
             new("EditOnVideo", "Edit Clips on Video Preview", "Viewer", "Move, resize and turn the selected clip on the player itself."),
             new("Exploded3D", "3D Exploded View", "Viewer", "Turns the player into a 3D view of the layer stack: orbit it, spread the layers apart, drag them in their planes and along the stack (the GPU preview engine)."),
+            // 5.4D: shown by default, right after the 3D view (list version 3 shows it once on bars saved before it), so an
+            // editor can switch it on while cutting. Only the button is shown: the preview itself is never saved and starts off.
+            new("ExportQualityPreview", "Live Encoded Preview", "Viewer", "Shows the picture as the export's encoder would leave it, live: the encoded frame, a split wipe against the source, or the difference x10 (an approximation by this PC's hardware encoder)."),
             new("ExportFrame", "Export Frame", "Viewer", "Saves the frame as it is shown, as a PNG beside the output."),
             new("RenderPreview", "Render Preview", "Viewer", "Encodes a few seconds as the export will look, and plays them."),
             new("Reload", "Reload Player", "Viewer", "For when the player has stopped answering."),
@@ -76,14 +79,14 @@ public sealed class PlaybackControlSet : ObservableObject
     // What the bar starts with. (5.3-Stage2: the Live Preview switch is gone; a saved list naming it shows the rest, as Load
     // ignores a name it does not know.)
     private static readonly string[] Defaults =
-        ["PrevIFrame", "StepBack", "StepForward", "NextIFrame", "RenderPreview", "Reload", "Volume", "Speed", "AddMarker", "EditOnVideo", "Exploded3D"];
+        ["PrevIFrame", "StepBack", "StepForward", "NextIFrame", "RenderPreview", "Reload", "Volume", "Speed", "AddMarker", "EditOnVideo", "Exploded3D", "ExportQualityPreview"];
 
-    // The saved list's version (its last name, "@2"), and the controls each version brought: a list saved before a control
-    // existed shows it once (5.0-Verify, the user's Q4: the 3D Exploded View on bars saved before 5.0); after that, the
-    // user's choice is kept.
-    private const int Version = 2;
+    // The saved list's version (its last name, "@3"), and the controls each version brought: a list saved before a control
+    // existed shows it once (5.0-Verify, the user's Q4: the 3D Exploded View on bars saved before 5.0; 5.4D: the Live
+    // Encoded Preview on bars saved before 5.4); after that, the user's choice is kept.
+    private const int Version = 3;
     private const string VersionMark = "@";
-    private static readonly (string Id, int Since)[] Later = [("Exploded3D", 2)];
+    private static readonly (string Id, int Since)[] Later = [("Exploded3D", 2), ("ExportQualityPreview", 3)];
 
     /// <summary>Shows the controls named in a saved list; null for the defaults.</summary>
     public void Load(string? saved)

@@ -252,6 +252,21 @@ public sealed class TimelineClip
     /// <summary>How long the file is, in its own seconds; 0 for a still (an image, text), which lasts as long as it is made to.</summary>
     public double SourceDuration { get; set; }
 
+    /// <summary>
+    /// How long its file's picture lasts, in its own seconds, where that is shorter than <see cref="SourceDuration"/> (5.4A: a
+    /// container whose sound is padded past its last frame, the clip of it placed to end with the picture); 0 when not known or
+    /// no shorter, the container's length being the picture's. Left out of the file while 0.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public double PictureDuration { get; set; }
+
+    /// <summary>
+    /// How long a clip of the whole file lasts at speed 1 (5.4A): its picture's length (<see cref="PictureDuration"/>) where that is
+    /// known and shorter, else <see cref="SourceDuration"/>. What a whole-file test compares a clip's length with.
+    /// </summary>
+    [JsonIgnore]
+    public double WholeDuration => PictureDuration > 0 && SourceDuration > 0 ? Math.Min(PictureDuration, SourceDuration) : SourceDuration;
+
     /// <summary>Where it ends in the file.</summary>
     [JsonIgnore]
     public double MediaEnd => MediaOffset + Duration * Speed;
@@ -345,7 +360,7 @@ public sealed class TimelineClip
     internal bool SameValues(TimelineClip other) =>
         Id == other.Id && ContentKind == other.ContentKind && SourcePath == other.SourcePath && VideoStreamIndex == other.VideoStreamIndex
         && AudioStreamIndex == other.AudioStreamIndex && Start == other.Start && End == other.End && MediaOffset == other.MediaOffset
-        && Speed == other.Speed && SourceDuration == other.SourceDuration && AudioLinked == other.AudioLinked
+        && Speed == other.Speed && SourceDuration == other.SourceDuration && PictureDuration == other.PictureDuration && AudioLinked == other.AudioLinked
         && AudioSlipSeconds == other.AudioSlipSeconds && AudioLeadInSeconds == other.AudioLeadInSeconds && AudioTailOutSeconds == other.AudioTailOutSeconds
         && FadeInSeconds == other.FadeInSeconds && FadeOutSeconds == other.FadeOutSeconds && FadeInStyle == other.FadeInStyle
         && FadeOutStyle == other.FadeOutStyle && TransitionIn == other.TransitionIn && GainDb == other.GainDb && IsHidden == other.IsHidden
@@ -365,6 +380,7 @@ public sealed class TimelineClip
         MediaOffset = from.MediaOffset;
         Speed = from.Speed;
         SourceDuration = from.SourceDuration;
+        PictureDuration = from.PictureDuration;
         AudioLinked = from.AudioLinked;
         AudioSlipSeconds = from.AudioSlipSeconds;
         AudioLeadInSeconds = from.AudioLeadInSeconds;
@@ -516,6 +532,50 @@ public sealed class TimelineDocument
 
     public FrameRate FrameRate { get; set; } = FrameRate.Fps60;
 
+    /// <summary>
+    /// The project's colour space (5.4A, Project Settings): set from the first video's transfer characteristic, or chosen in the
+    /// New Project studio; BT.709 SDR, the default, is left out of the file. Export's "Match Project Settings" tone-maps an
+    /// HDR project to BT.709 SDR, the only output the pipeline writes.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public ProjectColorSpace ColorSpace { get; set; }
+
+    /// <summary>The project's pixel aspect (5.4A): square, the default, is left out of the file.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public ProjectPixelAspect PixelAspect { get; set; }
+
+    /// <summary>The sample rate a project has unless it is given another, in hertz: 48 kHz, the user's standing choice.</summary>
+    public const int DefaultSampleRate = 48000;
+
+    /// <summary>
+    /// The project's sample rate in hertz (5.4A): every render is mixed at it under "Match Project Settings". Only 44100, 48000
+    /// and 96000 are taken; anything else reads as <see cref="DefaultSampleRate"/>, which a project file leaves out (as a fresh
+    /// document's value).
+    /// </summary>
+    public int SampleRate
+    {
+        get => _sampleRate;
+        set => _sampleRate = value is 44100 or 48000 or 96000 ? value : DefaultSampleRate;
+    }
+
+    private int _sampleRate = DefaultSampleRate;
+
+    /// <summary>
+    /// The frame was chosen on purpose (5.4A, the New Project studio): the first file opened onto the empty Sequence keeps the
+    /// natural size, the vertical choice and the colour space instead of taking its own. Left out of the file while false.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool ExplicitFrame { get; set; }
+
+    /// <summary>The frame rate was chosen on purpose (5.4A): the first file opened onto the empty Sequence keeps it. Left out of the file while false.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool ExplicitFrameRate { get; set; }
+
+    /// <summary>The project's settings in one read-only view (5.4A); never written to a file.</summary>
+    [JsonIgnore]
+    public ProjectSettings ProjectSettings =>
+        new(NaturalWidth, NaturalHeight, UseVerticalResolution, FrameRate, ColorSpace, PixelAspect, SampleRate);
+
     /// <summary>Every edge lands on a frame of <see cref="FrameRate"/> (an edit can ask to be left free).</summary>
     public bool QuantizeToFrames { get; set; } = true;
 
@@ -557,6 +617,46 @@ public sealed class TimelineDocument
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<RestoredFold>? RestoredFolds { get; set; }
+
+    /// <summary>
+    /// Project Media (5.4C): every file the project's bin holds, each once, in the order it came in. A file a clip plays is one of
+    /// them (<see cref="PoolsPlacedFiles"/>), and stays after its last clip is deleted, until it is taken out of the bin; files picked
+    /// in the New Project studio or dropped onto the Media Browser are here before any clip plays them. Changed only through a
+    /// transaction (<see cref="ITimelineTransaction.AddToMediaPool"/>), so Undo and a rollback put it back; empty, and then left out of
+    /// the file.
+    /// </summary>
+    public List<string> MediaPool { get; set; } = [];
+
+    /// <summary>
+    /// Whether a clip placed on the Sequence puts its file into <see cref="MediaPool"/> (5.4C). The view model sets it on every document
+    /// it makes the timeline; a document made on its own (a golden test's, a project read for its thumbnail) leaves its pool alone.
+    /// Not saved.
+    /// </summary>
+    [JsonIgnore]
+    public bool PoolsPlacedFiles { get; set; }
+
+    /// <summary>A path as Project Media compares it: trimmed, its quotes taken off (compared without case).</summary>
+    public static string PoolPath(string? path) => (path ?? "").Trim().Trim('"');
+
+    /// <summary>
+    /// The file a clip puts into Project Media (5.4C): a video's, a sound's or a picture's own file; null for a clip with none (text,
+    /// an adjustment) or one read from the web.
+    /// </summary>
+    public static string? PoolFileOf(TimelineClip clip)
+    {
+        if (!clip.PlaysFile && clip.ContentKind != LayerKind.Image)
+            return null;
+
+        var path = PoolPath(clip.SourcePath is { Length: > 0 } source ? source : clip.State.ImagePath);
+        return path.Length == 0 || path.Contains("://", StringComparison.Ordinal) ? null : path;
+    }
+
+    /// <summary>Whether Project Media holds a file (compared as <see cref="PoolPath"/>, without case).</summary>
+    public bool PoolHolds(string path)
+    {
+        var wanted = PoolPath(path);
+        return MediaPool.Exists(p => string.Equals(PoolPath(p), wanted, StringComparison.OrdinalIgnoreCase));
+    }
 
     /// <summary>The video tracks, bottom first: track 1 is the first.</summary>
     [JsonIgnore]
@@ -634,6 +734,11 @@ public sealed class TimelineDocument
             NaturalWidth = NaturalWidth,
             NaturalHeight = NaturalHeight,
             FrameRate = FrameRate,
+            ColorSpace = ColorSpace,
+            PixelAspect = PixelAspect,
+            SampleRate = SampleRate,
+            ExplicitFrame = ExplicitFrame,
+            ExplicitFrameRate = ExplicitFrameRate,
             QuantizeToFrames = QuantizeToFrames,
             SequenceEffects = deep ? [.. SequenceEffects.Select(e => System.Text.Json.JsonSerializer.Deserialize<EffectState>(System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(e, TimelineTransaction.CopyOptions), TimelineTransaction.CopyOptions)!)] : [.. SequenceEffects],
             SequenceEffectsBypassed = SequenceEffectsBypassed,
@@ -641,6 +746,8 @@ public sealed class TimelineDocument
             Markers = [.. Markers],
             Folds = Folds is null ? null : [.. Folds],
             RestoredFolds = RestoredFolds is null ? null : [.. RestoredFolds],
+            MediaPool = [.. MediaPool],
+            PoolsPlacedFiles = PoolsPlacedFiles,
         };
         foreach (var track in Tracks)
         {

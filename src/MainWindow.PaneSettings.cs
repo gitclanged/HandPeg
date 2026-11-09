@@ -64,8 +64,14 @@ public partial class MainWindow
             case "Media":
                 Toggle("Hover Previews", settings.GenerateHoverPreviews, on => Save(s => s.GenerateHoverPreviews = on, nameof(MainViewModel.ShowHoverPreviews)),
                     "Pictures of a video's inside, made in the background, shown as the pointer moves across a tile.");
-                Choice("Tile Size", [("List", 0.0), ("Small Tiles", 30.0), ("Medium Tiles", 55.0), ("Large Tiles", 85.0)], NearestTileSize(settings.BrowserTileSize),
-                    size => MediaBrowser.TileSize = size, "How large the files are shown (as the size slider in the pane's title row).");
+                // The view (5.4C, as the pane's View box), and the tiles' size for the Grid (only there: the List and Filmstrip views have rows).
+                Choice("View", [("Grid", Views.MediaBrowserView.Grid), ("List", Views.MediaBrowserView.List), ("Filmstrip", Views.MediaBrowserView.Filmstrip)],
+                    MediaBrowser.ViewMode, view => MediaBrowser.ViewMode = view,
+                    "How the files are shown (as the View box in the pane's title row): tiles, a table of their details, or a preview and sub-clip cutter beside the list.");
+                Choice("Tile Size", [("Small Tiles", 30.0), ("Medium Tiles", 55.0), ("Large Tiles", 85.0)], NearestTileSize(settings.BrowserTileSize),
+                    size => MediaBrowser.TileSize = size, "How large the Grid view's tiles are.");
+                if (items[^1] is MenuItem tileSize)
+                    tileSize.IsEnabled = MediaBrowser.ViewMode == Views.MediaBrowserView.Grid;
                 Choice("Indexer Delay", [("10 Seconds", 10), ("40 Seconds", 40), ("2 Minutes", 120), ("5 Minutes", 300)], settings.BrowserIndexDelaySeconds,
                     seconds => Save(s => s.BrowserIndexDelaySeconds = seconds),
                     "How long the media pane rests before it makes previews of the folder's files in the background.");
@@ -117,8 +123,8 @@ public partial class MainWindow
         return item;
     }
 
-    /// <summary>The tile size preset nearest a slider value, for the menu's check mark.</summary>
-    private static double NearestTileSize(double size) => new[] { 0.0, 30, 55, 85 }.MinBy(s => Math.Abs(s - size));
+    /// <summary>The tile size preset nearest a tile size (0 to 100), for the menu's check mark.</summary>
+    private static double NearestTileSize(double size) => new[] { 30.0, 55, 85 }.MinBy(s => Math.Abs(s - size));
 
     // ----- The Timeline Settings menu (5.3) -----
     // One menu for the Timeline's own settings, opened from its tab's right-click and from the gear beside Snap on its row of tools
@@ -131,7 +137,7 @@ public partial class MainWindow
     internal enum TimelineSetting
     {
         EffectLanes, BuiltInMaskLanes, KeyframeDiamonds, Filmstrips, Waveforms, BeatGrid, IFrameLines, GainLines,
-        Snapping, SnapToBeats, SnapToIFrames, FollowPlayhead, TimesAsFrames,
+        Snapping, SnapToBeats, SnapToIFrames, FollowPlayhead, MomentumScrolling, TimesAsFrames,
         CreatorHotbar, UndoRedoButtons, Scrubber, TrackHeight,
         RippleAllTracks, DroppedClipsJoinTrack, ShowLinkedAudio,
     }
@@ -186,6 +192,9 @@ public partial class MainWindow
             new(TimelineSetting.FollowPlayhead, "Follow Playhead During Playback",
                 "While playing, the Timeline turns the page as the playhead reaches its edge, so what is playing stays in sight. Off: the view stays where you put it.",
                 nameof(AppSettings.TimelineFollowsPlayhead)),
+            new(TimelineSetting.MomentumScrolling, "Enable Momentum Scrolling on Timeline & Filmstrips",
+                "A quick flick or a fast turn of the wheel coasts on and slows to a stop; a slow drag, or a pause of 40 ms before letting go, never coasts, and any press stops it. The same switch as Settings > Timeline & Player.",
+                nameof(AppSettings.EnableMomentumScrolling)),
             new(TimelineSetting.TimesAsFrames, "Show Sub-Second Time in Frames (HH:MM:SS:FF)",
                 "Times read hours, minutes, seconds and the frame into the second (on by default). Off: milliseconds, HH:MM:SS.mmm. The same choice as Settings > Timeline & Player, Sub-second Time Format.",
                 nameof(AppSettings.ShowTimesAsFrames)),
@@ -327,6 +336,7 @@ public partial class MainWindow
             TimelineSetting.SnapToBeats => (_viewModel.SnapToBeats, on => _viewModel.SnapToBeats = on),
             TimelineSetting.SnapToIFrames => (_viewModel.SnapToIFrames, on => _viewModel.SnapToIFrames = on),
             TimelineSetting.FollowPlayhead => (settings.TimelineFollowsPlayhead, on => Save(s => s.TimelineFollowsPlayhead = on)),
+            TimelineSetting.MomentumScrolling => (settings.EnableMomentumScrolling, on => Save(s => s.EnableMomentumScrolling = on)),
             TimelineSetting.TimesAsFrames => (settings.ShowTimesAsFrames, on => _viewModel.SetTimesAsFrames(on)),
             TimelineSetting.CreatorHotbar => (settings.ShowCreatorHotbar, on => SaveHotbar(s => s.ShowCreatorHotbar = on)),
             TimelineSetting.UndoRedoButtons => (settings.ShowTimelineUndoRedo, on => SaveHotbar(s => s.ShowTimelineUndoRedo = on)),

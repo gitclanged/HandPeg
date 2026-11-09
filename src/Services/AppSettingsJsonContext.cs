@@ -20,4 +20,7 @@ namespace HandPegApp.Services;
 [JsonSerializable(typeof(EncoderProber.SavedResult))]
 [JsonSerializable(typeof(DockLayoutState))]
 [JsonSerializable(typeof(DockNode))]
+// The side windows (5.4C: AppSettings.SideWindows, read with the arrangement before the first frame).
+[JsonSerializable(typeof(List<SideWindowState>))]
+[JsonSerializable(typeof(SideWindowState))]
 internal sealed partial class AppSettingsJsonContext : JsonSerializerContext;

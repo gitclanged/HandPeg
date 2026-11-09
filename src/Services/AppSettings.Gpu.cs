@@ -21,8 +21,10 @@ public sealed partial class AppSettings
     public int DecodeGpuAdapter { get; set; } = -1;
 
     /// <summary>
-    /// Hardware Encode Export GPU: the card an export decodes (and encodes) on. The same setting as
-    /// <see cref="HardwareDecodeAdapter"/>, which keeps its saved name: this is only the role's name for it.
+    /// Export GPU: the card an export and a Render Preview are composited on, their clips decoded there too (5.4C,
+    /// GpuExport.ExportAdapter); -1 (Auto), or a card that is gone, is the <see cref="CompositorGpuAdapter"/>. Frames reach the encoder
+    /// through system memory, so this need not be the card whose hardware encoder is chosen (that one is picked by the encoder's name).
+    /// The same setting as <see cref="HardwareDecodeAdapter"/>, which keeps its saved name: this is only the role's name for it.
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public int ExportGpuAdapter
@@ -37,13 +39,23 @@ public sealed partial class AppSettings
     // GPU Preview Engine (SettingsWindow.GpuEngine.cs).
 
     /// <summary>
-    /// Instant Seek's frame cache in video memory, MB: 0 Auto (an eighth of the compositor card's own memory, at most
-    /// 3 GB, or half of what is free on it; a card that shares the computer's memory, an eighth of that, 1.5 to 2.5 GB:
-    /// Compositor.MemoryTier, 5.2-Arm64AndNpu), -1 off (every frame decoded when shown). Windows' own budget for the
-    /// process always caps it. Read when the player's compositor starts, and put into effect in the running one when
-    /// Settings is saved (<see cref="CompositorClient.FrameCacheBudget"/>).
+    /// The most Instant Seek's frame cache may hold, MB (Settings' "Maximum Frame Cache (GB)", 5.4D-TabPerf, the user's U3). The cache
+    /// is adaptive: it starts at about 2 GB (less on unified memory with little of it, 512 MB on WARP or a small card) and grows a
+    /// gigabyte at a time when a project needs more, up to this; a tab put behind or a project closed brings it back to its start.
+    /// 0 Auto: the hardware's ceiling (a card with more than 4 GB of its own, half of what is free on it, at most 12 GB, a margin
+    /// always left, an eighth of the card at most 3 GB while a game uses it; unified memory or a card of 4 GB or less, at most 4 GB,
+    /// and an eighth of the computer's memory below 32 GB: Compositor.MemoryTier). N: the lower of N and that ceiling. -1 off (every
+    /// frame decoded when shown). Windows' own budget for the process and its commit always cap it. Read when the player's compositor
+    /// starts, and put into effect in the running one when Settings is saved (<see cref="CompositorClient.FrameCacheBudget"/>).
     /// </summary>
     public int GpuFrameCacheMb { get; set; }
+
+    /// <summary>
+    /// How much memory the project tabs kept live in the editor (5.4D-TabPerf: each tab brought to the front once keeps its
+    /// Sequence, history, still and pictures, so a switch is a swap) may hold together, MB, before the tab used least recently goes
+    /// back to its file on disk. The two tabs used last always stay.
+    /// </summary>
+    public int HydratedTabBudgetMb { get; set; } = 1024;
 
     /// <summary>
     /// Decode threads of the compositor (0 Auto: two, as most cards decode two streams at full speed at once; at most 4).

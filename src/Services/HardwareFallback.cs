@@ -29,15 +29,22 @@ public static partial class HardwareFallback
     [GeneratedRegex(@"-rc cqp -qp_i (?<q>\d+) -qp_p \d+")]
     private static partial Regex AmfQualityRegex();
 
-    // Media Foundation's (5.0): its quality (100 the best) as a CRF again, and its own switches, which no software encoder knows.
+    // Media Foundation's (5.0): its quality (100 the best) as a CRF again, and its own switches, which no software encoder knows
+    // (its slowest step, -compression_level 100, among them since 5.4C).
     [GeneratedRegex(@"-rate_control quality -quality (?<q>\d+)")]
     private static partial Regex MfQualityRegex();
 
-    [GeneratedRegex(@" -(?:rate_control \w+|hw_encoding \d|scenario \w+)\b")]
+    [GeneratedRegex(@" -(?:rate_control \w+|hw_encoding \d|scenario \w+|compression_level \d+)\b")]
     private static partial Regex MfTuningRegex();
 
-    [GeneratedRegex(@" -(?:preset|quality) (?:p[1-7]|speed|balanced|quality|veryfast|faster|fast|medium|slow|slower|veryslow)\b")]
+    // AMF's high_quality is named before its quality (5.4C: high_quality, AMF's slowest step, was left in the software retry).
+    [GeneratedRegex(@" -(?:preset|quality) (?:p[1-7]|speed|balanced|high_quality|quality|veryfast|faster|fast|medium|slow|slower|veryslow)\b")]
     private static partial Regex VendorPresetRegex();
+
+    // A vendor's fastest step (5.4D, a speed-first preset: Fast Proxy): NVENC's p1, AMF's speed, QuickSync's veryfast, Media Foundation's
+    // -compression_level 0. Its software retry is the fastest too (ultrafast), every other step's the slowest (veryslow).
+    [GeneratedRegex(@" -(?:(?:preset|quality) (?:p1|speed|veryfast)|compression_level 0)(?=\s|$)")]
+    private static partial Regex FastestStepRegex();
 
     [GeneratedRegex(@" -rc (?:vbr_peak|vbr|cbr)\b")]
     private static partial Regex VendorRateModeRegex();
@@ -68,6 +75,9 @@ public static partial class HardwareFallback
 
         hardware = $"{match.Groups["codec"].Value}_{match.Groups["vendor"].Value}";
         software = SoftwareFor(match.Groups["codec"].Value);
+
+        // Read before the vendor's own switches go (5.4D): a speed-first encode stays one.
+        var fastest = HadFastestStep(command);
 
         // Only the failed vendor's own arguments are touched.
         rewritten = match.Groups["vendor"].Value switch
@@ -105,8 +115,9 @@ public static partial class HardwareFallback
         // The vendor's own speed step (NVENC's p4, AMF's "balanced") means nothing to a software encoder.
         rewritten = VendorPresetRegex().Replace(rewritten, "");
 
-        // x264 and x265 take a preset; SVT-AV1 has its own numbering and is left at its default.
-        var replacement = software == "libsvtav1" ? $"-c:v {software}" : $"-c:v {software} -preset medium";
+        // x264 and x265 take a preset, their slowest (5.4C: the slowest step everywhere), or their fastest for a vendor's fastest step
+        // (5.4D: Fast Proxy); SVT-AV1 has its own numbering and is left at its default.
+        var replacement = software == "libsvtav1" ? $"-c:v {software}" : $"-c:v {software} -preset {SoftwareStepFor(fastest)}";
         rewritten = HardwareEncoderRegex().Replace(rewritten, replacement, 1);
 
         // If the GPU is the problem, do not ask it to decode either.
@@ -118,6 +129,16 @@ public static partial class HardwareFallback
     private static string CrfFromMfQuality(string quality) =>
         Math.Clamp((int)Math.Round(51 - int.Parse(quality, System.Globalization.CultureInfo.InvariantCulture) * 0.51), 0, 51)
             .ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// Whether a hardware encoder's command carries its vendor's fastest step (5.4D): NVENC's p1, AMF's speed, QuickSync's veryfast or
+    /// Media Foundation's -compression_level 0, from a speed-first preset or picked by hand. Its software retry is at the fastest step
+    /// too, both here (<see cref="TryRewrite"/>) and on the Export tab (MainViewModel.PlaceSoftwareRetry): one rule for both.
+    /// </summary>
+    public static bool HadFastestStep(string command) => FastestStepRegex().IsMatch(command);
+
+    /// <summary>The step x264 and x265 retry at: ultrafast for a vendor's fastest step (5.4D), else veryslow (CLAUDE.md 8).</summary>
+    internal static string SoftwareStepFor(bool fastest) => fastest ? "ultrafast" : "veryslow";
 
     private static string SoftwareFor(string codec) => codec switch
     {

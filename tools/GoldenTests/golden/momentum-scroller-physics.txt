@@ -1,0 +1,28 @@
+# The momentum engine with its own clock: a flick coasts on as v0 * d^t, the same at any frame rate; a slow or rested release, a press, a tick against the coast, or momentum off never coast.
+ok: the velocity of samples: 30 DIP in 10 ms is 3000 DIP/s; one sample, or under a millisecond between them, is 0; faster than 8000 DIP/s is held to 8000
+ok: only the last 60 ms count: a fast move 100 ms before letting go, then 30 DIP in the last 60 ms, is 500 DIP/s
+ok: a 300 DIP drag over 60 ms let go at once coasts at 5000 DIP/s, decaying at d = 0.998 a millisecond
+ok: after 100 ms it has covered 453.13 DIP, ticked at 500 Hz and at 60 Hz alike (v0 / k * (1 - d^100))
+ok: after 500 ms 1579.6 DIP, the same at both rates
+ok: its speed after 100 ms is v0 * d^100 = 0.8186 of v0
+ok: it stops once slower than 20 DIP/s: after 2758 ms of its own time
+ok: having covered 2488 DIP in all, short of v0 / k = 2497 DIP
+ok: a tick after it stopped covers nothing
+ok: a frame 200 ms late advances the coast by 50 ms of its own time (237.9 DIP), never the whole gap
+ok: a release at exactly 250 DIP/s coasts (the threshold is 250 or more)
+ok: a release at 249 DIP/s gives 0 and does not coast: a slow positioning drag stops dead
+ok: let go 39.9 ms after the last move it coasts at 5000 DIP/s; let go 40 ms after it, 0: a pause before lifting never coasts
+ok: a flick then 45 ms of tremors under half a DIP, let go: no coast (they are no move, the rest counts from the last real one)
+ok: 10000 DIP/s, then 300 DIP/s for the last 100 ms: it coasts at 300 DIP/s, the speed of the last 60 ms
+ok: a press while coasting stops it at once: nothing more is covered
+ok: and that press let go without moving is no flick
+ok: a notch of 120 applies 120 and does not coast; a second 15 ms later applies 120 and starts a coast at 8000 DIP/s (held to the most), d = 0.99
+ok: a third notch 10 ms into the coast applies 43.89: the 120 less the 76.11 the coast already covered
+ok: a notch the other way while coasting stops the coast and applies nothing
+ok: the next notch that way is a fresh stream: applied whole, no coast from one tick
+ok: two notches 40 ms apart: each applied whole, and no coast (a fresh stream each)
+ok: a third 20 ms after the second: the stream of two is fast, and coasts
+ok: a wheel coast at 8000 DIP/s runs out after 598 ms, 794 DIP on (the short tail of d = 0.99)
+ok: with momentum off a flick gives 0 and notches are applied as they are: nothing coasts
+ok: new MomentumScroller() follows AppSettings.EnableMomentumScrolling (true in a new install): it coasts while on, not once it is switched off
+ok: the guards: 250 DIP/s, a 40 ms rest, velocity over 60 ms (CLAUDE.md 10.2)

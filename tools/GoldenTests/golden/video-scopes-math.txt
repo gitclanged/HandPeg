@@ -1,0 +1,15 @@
+# The Video Scopes' maths: the Histogram, the Luma Waveform and the RGB Parade counted on synthetic frames with BT.709 luma, and drawn.
+ok: BT.709's luma weights: 0.2126, 0.7152, 0.0722
+ok: luma of white, black, red, green, blue, mid grey: 255, 0, 54, 182, 18, 128 (rounded, white stays 255)
+ok: the whole-number luma is the weighted sum rounded, across a sweep of colours
+ok: the Histogram of a 256 x 4 grey ramp: four pixels at every level of red, green, blue and luma
+ok: its Luma Waveform at 256 columns: column x holds its four pixels at level x
+ok: at 128 columns each column takes two of the frame's: eight pixels at levels 2c and 2c+1
+ok: a flat red 10 x 10: red all at 255, green and blue at 0, the luma at 54
+ok: its RGB Parade at 5 columns: 20 pixels a column, red at 255, green and blue at 0
+ok: a frame shorter than its size says counts what there is, and an empty one nothing
+ok: level 255 is the top row; a dot's brightness grows with its share of the column, full when all of it
+ok: a frame narrower than the scope spreads each column over the scope's (a 9:16 frame leaves none empty); a wider one shares them out
+ok: the Luma Waveform of flat grey 128: 384 x 256, a bright line on row 127, the ground elsewhere, the graticule at 0
+ok: its Histogram: 256 x 256, level 128 a full white bar (the channels over the luma), its neighbour empty
+ok: the RGB Parade of flat red: 400 wide, the red third lit red at the top, the green third lit green at the bottom

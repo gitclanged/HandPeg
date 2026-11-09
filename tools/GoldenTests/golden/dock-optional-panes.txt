@@ -1,0 +1,19 @@
+# The studios as optional panes: never added by a load, opened with their mates, closed, kept in a saved arrangement, shown by the Shorts layout.
+ok: four studios, their ids and titles: SubtitleStudio=Subtitle Studio, VoiceoverStudio=Voiceover Studio, RenderQueue=Render Queue, VideoScopes=Video Scopes
+ok: each is optional, always shown while held, with its title in its own row; homed with Effects/Keyframes/Canvas, Meter/Effects, Export/Timeline and Audio/Timeline
+ok: a load of Standard Editing adds none of them and makes none of them (Law 1: nothing is built for a studio not shown)
+ok: Open Subtitle Studio (twice): once, a tab beside Effects, Keyframes, Layout
+ok: Open Voiceover Studio (twice): once, a tab beside Tab:Audio, UnifiedTimeline
+ok: Open Render Queue (twice): once, a tab beside Tab:Export, UnifiedTimeline
+ok: Open Video Scopes (twice): once, a tab beside Meter
+ok: Close takes Subtitle Studio out again
+ok: Close takes Voiceover Studio out again
+ok: Close takes Render Queue out again
+ok: Close takes Video Scopes out again
+ok: the defaults (Reset) leave it out
+ok: a saved arrangement holding the Render Queue loads with it where it was, and with no other studio
+ok: taking up the Shorts layout holds the Subtitle Studio as a tab behind the effects (not made while behind them) and closes the Render Queue it leaves out
+ok: brought to the front of its group, it is shown (made once, when first shown)
+ok: the dock puts the Master Meter in with the effects (its Standard Editing mates), the studio among them, the group beside the player
+ok: the timeline is first and shown in the bottom group
+ok: taking up Standard Editing closes it again

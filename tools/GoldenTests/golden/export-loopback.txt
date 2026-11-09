@@ -1,0 +1,26 @@
+# The Export Quality Preview's encode loopback (5.4B): settings, the off path, the compare pass, a real hardware round trip, its lifetime.
+ok: h264_nvenc, CBR 8000 kbps, p7, 59.94 fps: H.264, rate control 0 (CBR), 8000 kbps, quality-vs-speed 100, the export's rate
+ok: libx264, constant quality CRF 23, veryslow: H.264 in Media Foundation's quality mode at 55 (MediaFoundationEncoder.QualityFromCrf), quality-vs-speed 100
+ok: hevc_amf, VBR (the average bitrate mode) 12000 kbps, balanced: HEVC, rate control 2 (unconstrained VBR), quality-vs-speed 50
+ok: av1_qsv, fast, an unknown rate: AV1, quality-vs-speed 33, 30 fps assumed
+ok: libsvtav1 at 50 kbps, ultrafast: AV1, the bitrate kept at least 100 kbps, quality-vs-speed 0
+ok: VP9, a stream copy and ProRes have no loopback, and each says why in words
+ok: CodecOf reads the FFmpeg encoder names (h264_mf, hevc_qsv, libx265; a GIF none); QualityVsSpeedOf: slow 83, an unknown preset 50
+ok: the playback bar offers the Live Encoded Preview under Viewer, shown by default right after the 3D Exploded View; the defaults' list is saved at version 3
+ok: a bar saved before 5.4D (@2) shows it once, saved at @3 with it; one saved at @3 without it keeps it hidden (the user's choice)
+ok: chosen, it is shown and saved by its name
+ok: no option is named LivePreview (golden live-preview-gone)
+ok: the letterbox the compare pass shares with the player: a 1920 x 1080 canvas fitted into 1000 x 1000 at (0, 218.75), zoomed 2x and panned a quarter
+ok: the loupe's view over the compare: a 640 x 360 picture at 4x about the point (25.6, 14.4) lies at (-37.4, 7.4), 2560 x 1440, the point in the middle of a 130-pixel view
+ok: and it stands 12 pixels in from the picture's edges: its corner between (12, 12) and (498, 218) on a 640 x 360 picture
+ok: the worker finds the loupe's point and draws its view before it takes the output, and lays it on after the compare under the keyed mutex; the view's planes are point sampled (a negative Params.w)
+ok: three letterboxed frames without the flag: the loopback says Off and no texture is made between the second and the third (nothing of it exists)
+ok: the encoded view with the codec bypassed is the plain frame within 4/255 (its own 4:2:0 conversion), and the state is Running
+ok: the heatmap of a picture against itself is black (every pixel within 1/255)
+ok: the split wipe at 0.5: both halves are the encoded view (the source and the bypassed encoding agree) and columns 319-320 are the divider, in every row
+ok: the loupe is laid over the compare in the far corner (498, 218, 130 a side): the picture round it is the compare as it was, within 1/255
+ok: its middle shows the compare picture at the point it looks at (canvas pixel 25, 14), magnified
+ok: over the heatmap (black: the codec bypassed) the loupe's view is black too, framed in amber: it magnifies the compare picture, not the layer drawn again
+ok: a real H.264 hardware encode and decode where this PC has one (PSNR 28-60 dB at 8000 kbps CBR, a heatmap neither black nor bright, the paused frame encoded once), else the plain picture with NoEncoder or NoDecoder
+ok: playing, the encoder keeps up well enough to show its pictures: at least 15 of 60 frames come back and it stays Running (this PC's numbers on the console)
+ok: the flag on: Running; in the 3D view: Unavailable (the flat picture only); the flag gone: Off on the next frame, and nothing made after

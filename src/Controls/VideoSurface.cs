@@ -97,7 +97,29 @@ public sealed partial class VideoSurface : HwndHost
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool GetWindowRect(IntPtr window, out NativeRect rect);
 
-    private const int WmNcHitTest = 0x0084, HtTransparent = -1;
+    private const int WmNcHitTest = 0x0084, HtTransparent = -1, WmMouseMove = 0x0200, WmMouseLeave = 0x02A3, TmeLeave = 0x2;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TrackMouse
+    {
+        public int Size, Flags;
+        public IntPtr Window;
+        public int HoverTime;
+    }
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool TrackMouseEvent(ref TrackMouse track);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetCursorPos(out NativePoint point);
+
+    [LibraryImport("user32.dll")]
+    private static partial IntPtr WindowFromPoint(NativePoint point);
+
+    // Whether a leave is asked for on the surface's window, until it comes (TrackMouseEvent: once per entry).
+    private bool _trackingLeave;
 
     private Window? _owner;
     private Window? _overlayWindow;
@@ -113,6 +135,12 @@ public sealed partial class VideoSurface : HwndHost
         IsVisibleChanged += (_, _) => PlaceOverlay();
     }
 
+    /// <summary>
+    /// Whether the pointer passes through the native window to the WPF content under it (5.4C: a side window's Live Video Preview, whose
+    /// picture is double-clicked for full screen). The player's own surface keeps the pointer.
+    /// </summary>
+    public bool PassesPointer { get; init; }
+
     /// <summary>What is shown on top of the video. Set once, in XAML, as this layer's content.</summary>
     public UIElement? Overlay { get; set; }
 
@@ -127,6 +155,13 @@ public sealed partial class VideoSurface : HwndHost
     /// no event for, and its wheel's own modifier keys), before WPF's input sees them.
     /// </summary>
     public event HwndSourceHook? OverlayMessageHook;
+
+    /// <summary>
+    /// The pointer over the player (5.4D, the Live Encoded Preview's Magnifier): where it is, in this element's DIPs, whether over the
+    /// bare picture (the native window) or over the layer above it (the wipe's handle, the clips' boxes); null once it has left both.
+    /// Raised only while something listens: nothing is asked of Windows (no leave tracking) without a handler.
+    /// </summary>
+    public event Action<Point?>? PointerMoved;
 
     /// <summary>The native window the player draws into; zero until it has been created.</summary>
     public IntPtr SurfaceHandle { get; private set; }
@@ -173,6 +208,13 @@ public sealed partial class VideoSurface : HwndHost
     /// </summary>
     protected override IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
+        // A surface that is only a picture (5.4C: a Live Video Preview's mirror) lets the pointer through to what lies under it.
+        if (msg == WmNcHitTest && PassesPointer)
+        {
+            handled = true;
+            return new IntPtr(HtTransparent);
+        }
+
         if (msg == WmNcHitTest && InsideResizeBand(_owner) is { } inside)
         {
             var value = lParam.ToInt64();
@@ -184,14 +226,58 @@ public sealed partial class VideoSurface : HwndHost
             }
         }
 
+        // (A leave asked for is used up, listened to or not: the next move asks again.)
+        if (msg == WmMouseLeave)
+            _trackingLeave = false;
+        if (msg is WmMouseMove or WmMouseLeave && PointerMoved is not null)
+            TellPointer(hwnd, msg, lParam);
+
         return base.WndProc(hwnd, msg, wParam, lParam, ref handled);
+    }
+
+    /// <summary>
+    /// A move or a leave of either window (the native one, or the layer over it, which lies at the same place in the same pixels) told
+    /// as <see cref="PointerMoved"/>: a move as its point in DIPs (asking Windows for the leave that ends it); a leave only once the
+    /// pointer is off the player altogether, as a move from the picture onto the layer's handle leaves one window for the other.
+    /// </summary>
+    private void TellPointer(IntPtr window, int msg, IntPtr lParam)
+    {
+        if (msg == WmMouseMove)
+        {
+            // (WPF asks for the layer's own leave, as it raises MouseLeave from it.)
+            if (!_trackingLeave && window == SurfaceHandle)
+            {
+                var track = new TrackMouse { Size = Marshal.SizeOf<TrackMouse>(), Flags = TmeLeave, Window = window };
+                _trackingLeave = TrackMouseEvent(ref track);
+            }
+
+            var value = lParam.ToInt64();
+            var (x, y) = unchecked(((int)(short)(value & 0xFFFF), (int)(short)((value >> 16) & 0xFFFF)));
+            var dpi = VisualTreeHelper.GetDpi(this);
+            PointerMoved?.Invoke(new Point(x / dpi.DpiScaleX, y / dpi.DpiScaleY));
+            return;
+        }
+
+        if (!PointerOverPlayer())
+            PointerMoved?.Invoke(null);
+    }
+
+    // Whether the pointer is still over the player: the window under it (as Windows hit-tests it: the layer's see-through pixels are the
+    // native window's, a side window or a popup over the player is not the player) is either of the two.
+    private bool PointerOverPlayer()
+    {
+        if (SurfaceHandle == IntPtr.Zero || !GetCursorPos(out var at))
+            return false;
+        var under = WindowFromPoint(at);
+        return under != IntPtr.Zero && (under == SurfaceHandle
+            || (_overlayWindow is { } overlay && under == new WindowInteropHelper(overlay).Handle));
     }
 
     /// <summary>
     /// The part of a window that draws its own frame (WindowChrome) inside its resize band, on the screen in real pixels: while it is
     /// restored and can be resized, the whole window (its client area: it has no frame outside it) less the band Windows sizes it from,
     /// its ResizeBorderThickness at its monitor's scale, counted as MainWindow.FrameHitTest counts it. Null when it has no such band
-    /// (maximized or minimized, not to be resized, Windows' own frame as the side window has, or no handle yet).
+    /// (maximized or minimized, not to be resized, no WindowChrome, or no handle yet; 5.4C: the side windows draw their own frame too).
     /// </summary>
     private static Int32Rect? InsideResizeBand(Window? owner)
     {
@@ -277,8 +363,13 @@ public sealed partial class VideoSurface : HwndHost
         KeepUnderSideWindow();
     }
 
-    private IntPtr OverlayMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled) =>
-        OverlayMessageHook is { } hook ? hook(hwnd, msg, wParam, lParam, ref handled) : IntPtr.Zero;
+    private IntPtr OverlayMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        // The layer lies over the native window in the same pixels: its moves are the player's too (5.4D, the Magnifier over the wipe's handle).
+        if (msg is WmMouseMove or WmMouseLeave && PointerMoved is not null)
+            TellPointer(hwnd, msg, lParam);
+        return OverlayMessageHook is { } hook ? hook(hwnd, msg, wParam, lParam, ref handled) : IntPtr.Zero;
+    }
 
     private void Owner_Moved(object? sender, EventArgs e) => PlaceOverlay();
 
@@ -312,24 +403,26 @@ public sealed partial class VideoSurface : HwndHost
     }
 
     /// <summary>
-    /// The second window and the side window are both owned by the main window (while the player is in the main
-    /// window), and between two windows with one owner the one shown or raised last is on top: shown again (after any
-    /// rearrangement of the panes), this one would cover the side window wherever that is. It is put back directly
-    /// under the side window each time.
+    /// The second window and the side windows are all owned by the main window (while the player is in the main window), and
+    /// between two windows with one owner the one shown or raised last is on top: shown again (after any rearrangement of the
+    /// panes), this one would cover the side windows wherever they are. It is put back directly under the lowest visible side
+    /// window each time (5.4C: any number of them; the lowest by the screen's order, Docking.WindowOrder), so it covers none.
     /// </summary>
     private void KeepUnderSideWindow()
     {
         if (_overlayWindow is not { } overlay || _owner is not { } owner)
             return;
 
+        var sides = new List<IntPtr>();
         foreach (Window other in owner.OwnedWindows)
         {
             if (other is Docking.SideWindow { IsVisible: true } side && new WindowInteropHelper(side).Handle is var sideHandle && sideHandle != IntPtr.Zero)
-            {
-                SetWindowPos(new WindowInteropHelper(overlay).Handle, sideHandle, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate);
-                return;
-            }
+                sides.Add(sideHandle);
         }
+
+        var lowest = sides.Count switch { 0 => IntPtr.Zero, 1 => sides[0], _ => Docking.WindowOrder.Lowest(sides) };
+        if (lowest != IntPtr.Zero)
+            SetWindowPos(new WindowInteropHelper(overlay).Handle, lowest, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate);
     }
 
     /// <summary>

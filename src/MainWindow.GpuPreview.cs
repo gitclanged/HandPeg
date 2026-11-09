@@ -91,6 +91,10 @@ public partial class MainWindow
 
         _gpu = engine;
         _gpuStartedAt = Environment.TickCount64;
+
+        // The side windows' Live Video Previews mirror this engine's picture (5.4C), at the shape it tells.
+        engine.MirrorAspectChanged += aspect => Dispatcher.BeginInvoke(() => TakeMirrorAspect(engine, aspect));
+        ReattachMirrors();
         EngineNotice.Visibility = Visibility.Collapsed;
         if (warp is not null)
             _viewModel.StatusText = "The GPU preview draws on the processor (WARP), slowly. Reload Player tries the graphics card again.";
@@ -124,7 +128,7 @@ public partial class MainWindow
         engine.SetView(_playerZoom, _playerPanX, _playerPanY);
         if (!_gpuPointerHooked)
         {
-            VideoView.SizeChanged += (_, _) => _gpu?.Invalidate();
+            VideoView.SizeChanged += (_, _) => _gpu?.InvalidateView();
 
             // The moment under the pointer on a timeline (the Timeline's rows and its ruler, the Sequence Overview Scrubber): Instant Seek
             // decodes it before a click.
@@ -146,7 +150,11 @@ public partial class MainWindow
         var (start, paused) = _pendingMedia is { } media ? (media.StartMs, media.Paused) : ((long)_viewModel.PositionMs, true);
         _pendingMedia = null;
         if (_viewModel.HasSource)
+        {
+            // A project tab brought back in the 3D view before there was an engine (5.4D review): into it first, as RestoreTabView does.
+            RestoreExplodedOnEngine();
             GpuOpen(start, paused);
+        }
     }
 
     /// <summary>The engine's worker failed too often in a row and its supervisor gave up: the engine goes, and the player stops where the playhead is.</summary>
@@ -159,6 +167,7 @@ public partial class MainWindow
         CrashReporter.Note("player", "the GPU preview stopped (its worker failed too often)");
         _gpu = null;
         engine.Dispose();
+        ForgetMirrors();
         _viewModel.IsPlaying = false;
         FollowPlayerByFrame(false);
         _shuttle = 0;
@@ -505,5 +514,83 @@ public partial class MainWindow
         var engine = _gpu;
         _gpu = null;
         engine?.Dispose();
+        ForgetMirrors();
+    }
+
+    // ----- Side windows' Live Video Previews (5.4C): mirrors of the player's picture -----
+
+    // The native window each Live Video Preview's mirror is attached to on the engine running now, and the shape the engine last told.
+    private readonly Dictionary<Docking.SideWindow, IntPtr> _mirrored = [];
+    private double _mirrorAspect = 16.0 / 9.0;
+
+    private const string MirrorIdleNote = "The Live Video Preview shows the player's picture here once a project or a video is open.";
+
+    /// <summary>
+    /// Every Live Video Preview open mirrors the player (GpuPreviewEngine.AttachMirror, its surface's native window), and nothing else
+    /// does: a side window closed or made a Pane Docker lets its mirror go. Each is fitted at the canvas's shape and says when there is
+    /// nothing to show. Asked whenever a side window opens, closes or changes mode, a preview's surface is made, or the engine changes.
+    /// </summary>
+    private void SyncMirrors()
+    {
+        var open = _dock.SideWindows;
+        foreach (var (window, handle) in _mirrored.ToList())
+        {
+            if (open.Contains(window) && window.PreviewHandle == handle)
+                continue;
+            _gpu?.DetachMirror(handle);
+            _mirrored.Remove(window);
+        }
+
+        foreach (var window in open.Where(w => w.Mode == Docking.SideWindowMode.LiveVideoPreview))
+        {
+            window.SetPreviewAspect(_mirrorAspect);
+            if (_gpu is { } engine && window.PreviewHandle is var handle && handle != IntPtr.Zero && !_mirrored.ContainsKey(window))
+            {
+                engine.AttachMirror(handle);
+                _mirrored[window] = handle;
+            }
+        }
+
+        UpdateMirrorNotes();
+    }
+
+    /// <summary>A new engine (started, or started again): every Live Video Preview is attached to it afresh.</summary>
+    private void ReattachMirrors()
+    {
+        _mirrored.Clear();
+        SyncMirrors();
+    }
+
+    /// <summary>The engine has gone (its mirrors with it): the previews say there is nothing to show until the next one starts.</summary>
+    private void ForgetMirrors()
+    {
+        _mirrored.Clear();
+        UpdateMirrorNotes();
+    }
+
+    /// <summary>The shape the engine's mirrors show changed (the canvas's, as the player lays it): every preview is fitted to it.</summary>
+    private void TakeMirrorAspect(GpuPreviewEngine engine, double aspect)
+    {
+        if (!ReferenceEquals(_gpu, engine))
+            return;
+        _mirrorAspect = aspect;
+        foreach (var window in _dock.SideWindows.Where(w => w.Mode == Docking.SideWindowMode.LiveVideoPreview))
+            window.SetPreviewAspect(aspect);
+    }
+
+    /// <summary>
+    /// Each Live Video Preview's note: nothing to mirror with no engine running (the note in place of the picture); the player hidden
+    /// (behind a tab, or no room: it draws nothing new) its last picture kept, said in the title bar.
+    /// </summary>
+    private void UpdateMirrorNotes()
+    {
+        if (_dock is null)
+            return;
+        var playerHidden = !VideoView.IsVisible || VideoView.ActualWidth < 8 || VideoView.ActualHeight < 8;
+        foreach (var window in _dock.SideWindows.Where(w => w.Mode == Docking.SideWindowMode.LiveVideoPreview))
+        {
+            window.ShowPreviewNote(_gpu is null ? MirrorIdleNote : null);
+            window.SetStatus(_gpu is not null && playerHidden ? "The player is hidden: its last picture" : null);
+        }
     }
 }

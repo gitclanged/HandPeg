@@ -296,6 +296,36 @@ internal sealed unsafe class GpuDevice : IDisposable
         return new GpuTexture(texture, srv, rtv, width, height, format);
     }
 
+    // IDXGIDevice3 (dxgi1_3.h): Trim is its first method of its own, after IUnknown's 3, IDXGIObject's 4, IDXGIDevice's 5,
+    // IDXGIDevice1's 2 and IDXGIDevice2's 3.
+    private static readonly Guid DxgiDevice3 = new("6007896c-3244-4afd-bf18-a6d3beda5023");
+    private const int TrimSlot = 17;
+
+    /// <summary>
+    /// Gives the driver's own memory back (5.4D-TabPerf, the worker's trim): the context's state cleared (every render binds its own
+    /// again, BindCommon and each pass), the queued work flushed, and IDXGIDevice3::Trim, which lets go of the allocations the driver kept
+    /// for reuse after textures were released. Call between frames, on the thread that draws. False where Windows has no Trim (it then
+    /// only clears and flushes).
+    /// </summary>
+    public bool Trim()
+    {
+        var context = Context;
+        context.ClearState();
+        context.Flush();
+        var device3 = Com.Query(_device, DxgiDevice3);
+        if (device3 == 0)
+            return false;
+        try
+        {
+            ((delegate* unmanaged<nint, void>)Com.Table(device3)[TrimSlot])(device3);
+            return true;
+        }
+        finally
+        {
+            Com.Release(ref device3);
+        }
+    }
+
     /// <summary>A staging texture to read a picture back (tests, the benchmark): never on the preview's path.</summary>
     public nint CreateStaging(int width, int height, uint format, bool read = true)
     {
@@ -410,6 +440,31 @@ internal sealed unsafe class TexturePool(GpuDevice gpu) : IDisposable
 
     /// <summary>How many frames have ended (a texture given back is marked with the frame it was last used in).</summary>
     public long Frame => _frame;
+
+    /// <summary>
+    /// Releases every texture not rented now, returning the bytes they held (5.4D-TabPerf, the worker's trim: between frames nothing is
+    /// rented, so the pool is emptied; what the next frame needs is made again). <see cref="ReleaseUnusedSince"/> with
+    /// <see cref="Frame"/> + 1 does the same; with 0 it releases nothing.
+    /// </summary>
+    public long ReleaseFree()
+    {
+        long released = 0;
+        foreach (var (texture, _) in _free)
+        {
+            released += BytesOf(texture);
+            texture.Dispose();
+        }
+
+        _free.Clear();
+        return released;
+    }
+
+    /// <summary>How many textures are free (not rented).</summary>
+    public int FreeCount => _free.Count;
+
+    // A pool texture's size: RGBA16F (the working textures) is 8 bytes a pixel; anything else is taken as 4.
+    private static long BytesOf(GpuTexture texture) =>
+        (long)texture.Width * texture.Height * (texture.Format == DxgiFormat.R16G16B16A16Float ? 8 : 4);
 
     /// <summary>Releases every free texture last used before frame <paramref name="frame"/> (the 3D view's, once it has gone).</summary>
     public void ReleaseUnusedSince(long frame)

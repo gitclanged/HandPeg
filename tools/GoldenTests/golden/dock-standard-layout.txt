@@ -1,19 +1,19 @@
 # Standard Editing's Canvas is a tab beside the effects and keyframes; version 3 is brought up to it, anything the user made is left alone.
-   standard (version 4): V(H(V([Player];[Playback]);[Effects,Keyframes,Layout,Meter];V([Header];[Media]));[Timeline];[Presets];[Tab:Audio,Tab:Command Preview,Tab:Export,Tab:Filters,Tab:Summary,Tab:Video,UnifiedTimeline])
+   standard (version 4): V(H(V([Player];[Playback]);[Effects,Keyframes,Layout,Meter];V([Header];[Media]));[Timeline];[Presets];[Tab:Audio,Tab:Command Preview,Tab:Export,Tab:Filters,UnifiedTimeline])
 ok: Standard Editing's middle column is one group: Effects, Keyframes, Canvas (Layout), Master Meter, Effects shown
 ok: and no part holds the Canvas alone
 ok: it is an arrangement of version 4, the current one
 ok: the timeline is still the first tab of the settings tabs' group, and shown
-   version 3: V(H(V([Player];[Playback]);V([Layout];[Effects,Keyframes,Meter]);V([Header];[Media]));[Timeline];[Presets];[Tab:Audio,Tab:Command Preview,Tab:Export,Tab:Filters,Tab:Summary,Tab:Video,UnifiedTimeline])
-   4.4 (version 2): V(H(V([Player];[Playback]);V([Layout];[Effects,Keyframes]);V([Header];[Media]));[Timeline];[Presets];H([UnifiedTimeline];[Tab:Audio,Tab:Command Preview,Tab:Export,Tab:Filters,Tab:Summary,Tab:Video]))
+   version 3: V(H(V([Player];[Playback]);V([Layout];[Effects,Keyframes,Meter]);V([Header];[Media]));[Timeline];[Presets];[Tab:Audio,Tab:Command Preview,Tab:Export,Tab:Filters,UnifiedTimeline])
+   4.4 (version 2): V(H(V([Player];[Playback]);V([Layout];[Effects,Keyframes]);V([Header];[Media]));[Timeline];[Presets];H([UnifiedTimeline];[Tab:Audio,Tab:Command Preview,Tab:Export,Tab:Filters]))
 ok: StandardLayoutV3 keeps the Canvas over the effects in a column of its own (what step 3 to 4 recognises)
 ok: StandardLayoutBeside (the 2 to 3 fingerprint) is still 4.4's: the Canvas alone, no Master Meter, the timeline in a group of its own
 ok: today's Standard Editing is not version 3's shape
-   version 3, upgraded: V(H(V([Player];[Playback]);[Effects,Keyframes,Layout,Meter];V([Header];[Media]));[Timeline];[Presets];[Tab:Audio,Tab:Command Preview,Tab:Export,Tab:Filters,Tab:Summary,Tab:Video,UnifiedTimeline])
+   version 3, upgraded: V(H(V([Player];[Playback]);[Effects,Keyframes,Layout,Meter];V([Header];[Media]));[Timeline];[Presets];[Tab:Audio,Tab:Command Preview,Tab:Export,Tab:Filters,UnifiedTimeline])
 ok: a version 3 Standard Editing is brought up to version 4, today's shape
 ok: the Canvas goes in after the keyframes, and the tab shown (Keyframes) stays shown
 ok: the group takes the column's place, and so its share of the room (30 of 100)
-   4.4, upgraded: V(H(V([Player];[Playback]);[Effects,Keyframes,Layout];V([Header];[Media]));[Timeline];[Presets];[Tab:Audio,Tab:Command Preview,Tab:Export,Tab:Filters,Tab:Summary,Tab:Video,UnifiedTimeline])
+   4.4, upgraded: V(H(V([Player];[Playback]);[Effects,Keyframes,Layout];V([Header];[Media]));[Timeline];[Presets];[Tab:Audio,Tab:Command Preview,Tab:Export,Tab:Filters,UnifiedTimeline])
 ok: 4.4's Standard Editing goes 2 to 3 to 4: today's shape but for the Master Meter (put in afterwards by DockManager.PlaceAsDefault)
 ok: its timeline is the tabs' first (2 to 3) and its Canvas a tab after the keyframes (3 to 4)
 ok: the user's own arrangement (the Canvas beside the player) is only marked version 4: nothing moves

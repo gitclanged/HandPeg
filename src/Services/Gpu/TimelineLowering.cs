@@ -12,9 +12,9 @@ namespace HandPegApp.Services.Gpu;
 // clip on every track is a layer made the one way (MakeLayer): placed, timed, cropped and looked as its own, read from its
 // own file (SourcePath) at its own moment (MediaOffset, on the file's own clock: MediaStarts, SeekIndexes), its sound cut at
 // the same origin and heard from its own stream. A Cutout is a clip of its file like any other, on its parent's clock. A
-// video whose blur fill is on (BlurFill true) has a blurred copy of its whole picture covering the frame under its track's
-// pictures and its Sub-Lanes' (its twin, under its whole family: FamilyOf), drawn as the sequence's blurred background used to
-// be; the scene plan leaves a twin out while the
+// video whose blur fill is on (BlurFill true) has a blurred copy of its whole picture covering the frame at the very bottom of
+// the stack, under every picture of every track (its twin; 5.4A, the user's standing rule: an upper track's Background Blur never
+// covers a lower track), drawn as the sequence's blurred background used to be; the scene plan leaves a twin out while the
 // clip over it hides every pixel of it. A project of the old shape never reaches this (it is converted as it is opened,
 // LegacyMainVideo; the golden tests' fixtures the same way): the legacy kinds MainVideo and Video are never made here.
 //
@@ -27,9 +27,13 @@ namespace HandPegApp.Services.Gpu;
 /// A timeline as <see cref="TimelineLowering"/> lowers it (<see cref="TimelineLowering.Lowering"/>): what the picture, the sound
 /// and a measurement need to know of it. Shared with everything built from the same document: read it, never change it.
 /// </summary>
-/// <param name="SequenceSeconds">How long the sequence is: the canvas's length (the document's TotalDuration).</param>
+/// <param name="SequenceSeconds">
+/// How long the sequence is: the canvas's length, to its last picture (<see cref="SequenceSpans.ProgramSeconds"/>, 5.4A: an audio tail
+/// past the last picture adds no black frames; a standalone sound placed past it still does).
+/// </param>
 /// <param name="Stack">
-/// The pictures as layers, bottom first, a track's in the order of its clips, the blur twins under their track's family (its Sub-Lanes too).
+/// The pictures as layers, bottom first: every blur twin first (5.4A: under every picture, in the order of their tracks), then each
+/// track's pictures in the order of its clips.
 /// Every layer carries the id of the clip it was made from (<see cref="Layer.ClipId"/>; a twin, its video's).
 /// </param>
 /// <param name="LayerAudio">
@@ -96,10 +100,10 @@ public static partial class TimelineLowering
     /// <summary>A timeline as the picture and the sound are made from it (see <see cref="Lower"/>). Shared by everything built from one document: read, never changed.</summary>
     private sealed class Lowered
     {
-        /// <summary>How long the sequence is: the canvas's length.</summary>
+        /// <summary>How long the sequence is: the canvas's length, to its last picture (<see cref="SequenceSpans.ProgramSeconds"/>).</summary>
         public required double SequenceSeconds { get; init; }
 
-        /// <summary>The blurred copies laid under the videos from files whose blur fill is on (4.4), each under its track's pictures.</summary>
+        /// <summary>The blurred copies laid under the videos from files whose blur fill is on (4.4), all of them under every picture (5.4A).</summary>
         public required IReadOnlySet<Layer> BlurTwins { get; init; }
 
         /// <summary>The pictures in stacking order, bottom first, the twins among them. Prepared for their crossfades.</summary>
@@ -139,7 +143,10 @@ public static partial class TimelineLowering
 
     private static Lowered LowerAfresh(TimelineDocument document)
     {
+        // The whole timeline's length tells a video that repeats "to the end" (its rounds reach it); the canvas runs to the last
+        // picture (5.4A: no black frames for an audio tail past it).
         var length = document.TotalDuration;
+        var program = SequenceSpans.ProgramSeconds(document);
 
         // Each clip's look, made once: its own State, or its track's look with what is the clip's own taken from its State.
         var looks = new Dictionary<TimelineClip, LayerState>(ReferenceEqualityComparer.Instance);
@@ -153,7 +160,7 @@ public static partial class TimelineLowering
         // (One delegate for every clip that may start a repeating video, not one made for each.)
         Func<TimelineClip, TimelineTrackModel, LayerState> lookOf = LookOf;
 
-        // The tracks by id, for each track's family (FamilyOf) and its header's switch (IsHiddenWithParents) at one look-up a
+        // The tracks by id, for each track's header's switch (IsHiddenWithParents) at one look-up a
         // step, where looking along the tracks for every clip made a document of many tracks slow to lower after every edit.
         var tracksById = new Dictionary<Guid, TimelineTrackModel>(document.Tracks.Count);
         foreach (var track in document.Tracks)
@@ -250,49 +257,31 @@ public static partial class TimelineLowering
         PairLayerCrossfades(pictures);
 
         // A video from a file whose blur fill is on (4.4; 5.2-AuditB: any clip's, the former main video's too): a blurred copy
-        // of its whole picture covering the frame, while it can be seen, under its whole family: its track's pictures and those
-        // of the Sub-Lanes made to go with that track (5.2.0's re-cut, the user's P0: a Cutout lane under its clip's track, as a
-        // converted 5.1 project keeps it, was under the twin too, which hid it; 5.1 drew the blurred background under everything).
-        // A family's twins go in the order of its tracks and their clips, under the first of its tracks: at a moment a track
-        // shows one clip, whose twin is then under it and its Cutouts, and while two of its clips crossfade their fills crossfade
-        // under both (as the blurred background lay under the main video's crossfades). Captions put under a track stay above
-        // that family's twins, as they were above the blurred background.
-        var familyTwins = new Dictionary<Guid, List<Layer>>();
-        var familyFirst = new Dictionary<Guid, int>();
-        var families = new Guid[tracksAt.Count];
-        for (var at = 0; at < tracksAt.Count; at++)
+        // of its whole picture covering the frame, while it can be seen. Every twin goes at the very bottom of the stack (5.4A,
+        // the user's standing rule: Z = 0, behind every picture track; a twin under its own family only covered the tracks below
+        // that family, so an upper track's Background Blur hid Track 1's video). The twins go in the order of their tracks and
+        // their clips, bottom first: while two clips crossfade their fills crossfade under both, and while an upper track's
+        // blurred clip plays over a lower one's, its fill is the one seen. Captions put under a track stay above every twin, as
+        // they were above the blurred background.
+        var twinList = new List<Layer>();
+        foreach (var (track, _, _) in tracksAt)
         {
-            var track = tracksAt[at].Track;
-            var family = families[at] = FamilyOf(track, tracksById).Id;
-            familyFirst.TryAdd(family, at);
             foreach (var clip in track.Clips)
             {
                 if (layers.TryGetValue(clip, out var layer) && layer is { IsVideoFile: true, IsHidden: false } && (layer.Opacity > 0 || layer.AnimatesOpacity)
                     && LookOf(clip, track).BlurFill == true)
                 {
-                    if (!familyTwins.TryGetValue(family, out var list))
-                        familyTwins[family] = list = [];
-                    list.Add(BlurTwinOf(layer, document));
+                    twinList.Add(BlurTwinOf(layer, document));
                 }
             }
         }
 
-        var twins = new HashSet<Layer>(ReferenceEqualityComparer.Instance);
-        var stack = new List<Layer>(pictures.Count + 4);
+        var twins = new HashSet<Layer>(twinList, ReferenceEqualityComparer.Instance);
+        var stack = new List<Layer>(pictures.Count + twinList.Count);
+        stack.AddRange(twinList);
         var stackCaptionsAt = -1;
-        for (var at = 0; at < tracksAt.Count; at++)
+        foreach (var (_, from, to) in tracksAt)
         {
-            var (_, from, to) = tracksAt[at];
-            var family = families[at];
-            if (familyFirst[family] == at && familyTwins.TryGetValue(family, out var underFamily))
-            {
-                foreach (var twin in underFamily)
-                {
-                    stack.Add(twin);
-                    twins.Add(twin);
-                }
-            }
-
             if (captionsAt >= 0 && stackCaptionsAt < 0 && captionsAt == from && to > from)
                 stackCaptionsAt = stack.Count;
             for (var n = from; n < to; n++)
@@ -316,13 +305,13 @@ public static partial class TimelineLowering
 
         return new Lowered
         {
-            SequenceSeconds = length,
+            SequenceSeconds = program,
             BlurTwins = twins,
             Stack = stack,
             CaptionsAt = stackCaptionsAt,
             LayerAudio = sounds,
             SequenceEffects = document.SequenceEffectsBypassed ? [] : [.. document.SequenceEffects.Select(EffectInstance.FromState)],
-            Shared = new SequenceLowering(length, stack, sounds),
+            Shared = new SequenceLowering(program, stack, sounds),
         };
     }
 
@@ -339,15 +328,6 @@ public static partial class TimelineLowering
     {
         var at = track;
         for (var depth = 0; depth < 64 && at.ParentTrackId is { } parent && document.Tracks.FirstOrDefault(t => t.Id == parent) is { } over; depth++)
-            at = over;
-        return at;
-    }
-
-    /// <summary>The same with the document's tracks by id (the first of each id, as the walk along them finds it).</summary>
-    private static TimelineTrackModel FamilyOf(TimelineTrackModel track, Dictionary<Guid, TimelineTrackModel> tracksById)
-    {
-        var at = track;
-        for (var depth = 0; depth < 64 && at.ParentTrackId is { } parent && tracksById.TryGetValue(parent, out var over); depth++)
             at = over;
         return at;
     }
@@ -784,10 +764,10 @@ internal sealed class GpuSceneLowering
     /// <summary>How long a frame of the sequence lasts, in seconds (the shutter's measure, 5.1-GpuFx): the document's frame rate.</summary>
     public double FrameSeconds { get; init; } = 1 / 30.0;
 
-    /// <summary>The blurred copies of the videos whose blur fill is on, each under its track's pictures.</summary>
+    /// <summary>The blurred copies of the videos whose blur fill is on, all of them under every picture (5.4A).</summary>
     public required IReadOnlySet<Layer> BlurTwins { get; init; }
 
-    /// <summary>The pictures bottom first, a track's in the order of its clips, its twins under them.</summary>
+    /// <summary>The pictures bottom first: the twins first (5.4A), then a track's in the order of its clips.</summary>
     public required IReadOnlyList<Layer> Stack { get; init; }
 
     /// <summary>Where the captions are among <see cref="Stack"/> (5.1-Polish): under the layer at this index and those above; -1 over everything.</summary>

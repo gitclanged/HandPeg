@@ -10,11 +10,15 @@ namespace HandPegApp.ViewModels;
 /// <summary>
 /// The timeline as Undo keeps it (4.3C): the document (every track and clip, the markers, the Sequence Output's effects),
 /// how each output audio track is made, the blur fill's switch for files opened, the recycle bin, the subtitles, the caption
-/// box, and (4.4) the sequence's own look: its colour grade, sharpening and blur fill. Nothing else, and no pictures.
+/// box, and (4.4) the sequence's own look: its colour grade, sharpening and blur fill. Nothing else, and no pictures. A Project
+/// Settings step alone (5.4A) also carries the frame as the view model holds it (<see cref="ProjectSettingsFrame"/>; null, and not
+/// written, in every other step).
 /// </summary>
 public sealed record TimelineSnapshot(
     Models.Timeline.TimelineDocument Document, List<AudioOutputEdit> Audio, bool BackgroundHidden = false, List<DeletedClip>? Bin = null,
-    SubtitleTrackData? Subtitles = null, LayerState? CaptionLayer = null, CaptionStyle? CaptionStyle = null, SequenceLook? Look = null);
+    SubtitleTrackData? Subtitles = null, LayerState? CaptionLayer = null, CaptionStyle? CaptionStyle = null, SequenceLook? Look = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    ProjectSettingsFrame? Frame = null);
 
 /// <summary>
 /// An undo step as Undo keeps it, and (4.4-BugHunt) as a project carries it: a <see cref="TimelineSnapshot"/> as UTF-8 JSON
@@ -307,15 +311,10 @@ public partial class MainViewModel
             return;
         }
 
-        // The Subtitle Editor holds the cues it shows: a step that changes them waits until it is closed.
-        if (IsSubtitleEditorOpen && !SameJson(target.Subtitles, CaptureSubtitles()))
-        {
-            StatusText = $"Close the Subtitle Editor first: {what} changes the subtitles.";
-            return;
-        }
-
         CrashReporter.Note(category, NoteOf(what));
-        var now = Pack(CaptureSnapshot());
+
+        // A Project Settings step (5.4A) keeps the frame as it is now on the other history too, so the step back puts it back.
+        var now = Pack(target.Frame is null ? CaptureSnapshot() : CaptureSnapshot() with { Frame = CaptureProjectFrame() });
         using (BeginRestore())
         {
             try
@@ -369,7 +368,14 @@ public partial class MainViewModel
 
         // One rebuild of the command for the whole step, not one for every clip that is put back.
         using var whole = DeferCommand();
+
+        // A Project Settings step's frame (5.4A): turned before the clips' views are made again, so they are made for the frame
+        // they were kept on, and its boxes set again once the document's natural size is back (MainViewModel.ProjectSettings.cs).
+        if (snapshot.Frame is { } frame)
+            RestoreProjectFrame(frame);
         InstallDocument(snapshot.Document);
+        if (snapshot.Frame is { } boxes)
+            RestoreProjectFrame(boxes);
         SetBin(snapshot.Bin);
         _backgroundRow.IsHidden = snapshot.BackgroundHidden;
         foreach (var output in snapshot.Audio)
@@ -435,7 +441,7 @@ public partial class MainViewModel
     {
         _undo.Clear();
         _redo.Clear();
-        (_lastLookEdit, _lastFieldEdit, _visitStep, _subtitleVisitStep) = (null, null, null, null);
+        (_lastLookEdit, _lastFieldEdit, _visitStep) = (null, null, null);
     }
 
     /// <summary>
@@ -518,7 +524,8 @@ public partial class MainViewModel
 
     /// <summary>
     /// Points a step read back at files that have moved: its clips' (on the timeline and in the bin, with what went with
-    /// them; their looks' too) and its captions' source. The step is a copy of its own, just read, so it is changed in place.
+    /// them; their looks' too), Project Media's (5.4C) and its captions' source. The step is a copy of its own, just read, so it is
+    /// changed in place.
     /// Whether anything moved.
     /// </summary>
     private static bool MoveFiles(TimelineSnapshot step, Func<string, string> moved)
@@ -541,6 +548,10 @@ public partial class MainViewModel
             if (clip.State is { ImagePath.Length: > 0 } look)
                 look.ImagePath = Move(look.ImagePath);
         }
+
+        var pool = step.Document.MediaPool;
+        for (var i = 0; i < pool.Count; i++)
+            pool[i] = Move(pool[i]);
 
         if (step.Subtitles is { Source: { Path.Length: > 0 } source } subtitles)
             subtitles.Source = source with { Path = Move(source.Path) };

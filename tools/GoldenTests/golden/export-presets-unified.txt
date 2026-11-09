@@ -1,0 +1,50 @@
+# One Export Presets system: the built-ins in two groups, then My Presets; a pick sets the export only; old built-ins migrate.
+   Platform & Social: TikTok (PC Web) | TikTok (iOS) | TikTok (Android) | YouTube Shorts | YouTube 1080p60 | YouTube 1440p60 (VP9 Trick) | YouTube 4K60 | Instagram Reels | Discord (10 MB) | Discord (50 MB) | Discord (500 MB) | X / Twitter | Reddit
+   Studio & Archive: Match Project — Master Quality (H.264) | Match Project — Master Quality (HEVC) | Match Project — Master Quality (AV1) | Lossless Stream Copy | Animated GIF | Animated WebP | Mezzanine Archive (ProRes 422 HQ) | Audio Only (FLAC) | Audio Only (WAV) | Podcast / Voice (MP3, -16 LUFS) | Apple ProRes 422 Proxy | DNxHR LB (Low Bandwidth) | H.264 ALL-I Intra-Frame | Fast Proxy | Small File 720p
+ok: the built-ins come in two groups, Platform & Social then Studio & Archive; a user's preset is My Presets
+ok: every preset the roadmap names is there (the three Audio Only ones since 5.4C, D-Q5)
+ok: each built-in has its own name, a group and its one line for the selector
+ok: the 28 built-ins are exactly the catalog's own names, each on the list this test holds (nothing else gets in)
+ok: the Audio Only presets are in Studio & Archive: FLAC (flac), WAV (pcm_s16le), and the podcast's MP3 at 128k, mixed into one and normalized to -16 LUFS
+ok: no built-in names a speed step: each encoder starts at its slowest, best one
+ok: Fast Proxy (H.264) and Small File 720p (HEVC) look for a hardware encoder first, Small File at the slowest step and Fast Proxy (5.4D) at the fastest, the only speed-first built-in (a flag, not a step); the ALL-I intermediate stays on x264 (its fastdecode tune is x264's)
+ok: TikTok by upload client (D-Q3): PC Web H.264 16 Mbps at the project's rate (60 at most), iOS HEVC on hardware else H.264 12 Mbps 60, Android H.264 10 Mbps 60
+ok: every built-in written as .mp4 carries Web Optimized
+ok: Master Quality H.264, HEVC and AV1 want their codec on a hardware encoder first (5.4C), the software one kept as the fallback; HEVC and AV1 are 10-bit (an HDR project then stays HDR), at the encoder's best step
+ok: each old built-in name is renamed to a built-in that exists (Remux / Cut Only -> Lossless Stream Copy, TikTok (Vertical) -> TikTok (PC Web)...)
+ok: a user's preset is written without the new members while they are unset, and without HardwareDecoding
+ok: an old presets.json (with HardwareDecoding) reads as before
+   presets.json after the migration: YouTube 4K | Reddit (Custom) | My Own
+ok: the 11 untouched old built-ins go, the changed YouTube 4K stays as the user's, a user's "Reddit" becomes "Reddit (Custom)", nothing stored is a built-in
+ok: and a second read changes nothing
+ok: an old built-in as a 5.3 presets.json holds it (HardwareDecoding and all) is taken out
+ok: an old built-in saved over with the user's own sound (Normalize Audio, export fields as before) stays theirs; a changed Fast Proxy becomes "Fast Proxy (Custom)"
+ok: a reference to a preset renamed "(Custom)" follows it, never landing on the built-in Fast Proxy; one to the kept High Quality H.264 stays
+ok: a Smart Rule and the default preset naming an old built-in take its new name, unless the user still has a preset of the old name
+ok: a built-in's name is never a user's: "(Custom)", then "(Custom 2)"
+ok: the view model's list starts with the built-ins, and the selector's view groups it
+ok: picking YouTube 1080p60 leaves the filters, the look and the fades as they were (export fields only, D-Q2)
+ok: and sets its export: x264 (no hardware H.264 here) at veryslow, VBR at the automatic bitrate, mp4, Web Optimized, 1080p on the short side, the project's rate, AAC 256k
+ok: TikTok (PC Web) on a 16:9 Sequence at 119.88 fps: turned 9:16 at 1080 x 1920, 16 Mbps, the rate capped at 60
+ok: Discord (10 MB): aimed under 9.4 MB, 30 fps, AAC 96k, the short side at most 720
+ok: Master Quality (H.264): the project's size and rate, constant quality 18, the chat's target size let go
+ok: on a 16:9 Sequence, Master Quality or YouTube 1080p60 picked after TikTok is 1920 x 1080: the turn TikTok left is not kept
+ok: a vertical project keeps its 9:16 frame under Master Quality (H.264), then YouTube 1080p60 and Master Quality (HEVC): a preset naming no shape never turns it
+ok: Master Quality (H.264) with NVENC here: h264_nvenc at p7 (-preset p7), constant quality 18 as its CQ
+ok: Master Quality (HEVC) with AMF HEVC here: hevc_amf at high_quality (-quality high_quality)
+ok: Master Quality (AV1) with no AV1 hardware encoder here: SVT-AV1, the software fallback
+ok: Small File 720p takes the HEVC hardware encoder too, at its slowest step
+ok: on a Snapdragon (Media Foundation only): h264_mf at -compression_level 100, its one -quality the constant-quality level (-c:v h264_mf -rate_control quality -quality 65 -compression_level 100 -hw_encoding 1 -pix_fmt nv12)
+ok: Master Quality (HEVC) picked before the probe answered: x265 at first, then hevc_nvenc at p7 when the probe lists it
+ok: a second probe keeps it (the wish is used once)
+ok: an encoder picked by hand in between stands: the probe does not take it over
+ok: a preset applied after the probe answered is not resolved again by a later probe (only the race is)
+ok: ApplyPreset(EncodingPreset, bool withLayout) is still there for a project's restore and a Smart Rule
+ok: and applies its filters and fades with the export (and, now, the container and Web Optimized)
+ok: the settings saved as a preset carry the container, Web Optimized and the loudness target, as the user's own
+ok: a .hppreset file round trip keeps the format; one naming a built-in (and claiming its group) is imported as "YouTube Shorts (Custom)", the user's own, and applied
+ok: saving under a built-in's name keeps the built-in and saves "Reddit (Custom)"
+ok: saving a tweak under the built-in's name again replaces "Reddit (Custom)", never adds "Reddit (Custom 2)"
+ok: a "(Custom)" that came from elsewhere (the import above) is kept: a save from the built-in goes beside it as "(Custom 2)"
+ok: a user's preset with Keep Aspect Ratio off and only Width 1280 keeps both: 1280 x 720, not 2276 x 1280
+ok: presets.json holds the user's presets only, never a built-in

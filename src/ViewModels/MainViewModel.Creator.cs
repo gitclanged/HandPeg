@@ -20,7 +20,7 @@ public partial class MainViewModel
     private const int MaxIFrameMarks = 1500;
 
     // ----- Frame size -----
-    // The frame is whatever Resolution & Cropping (Video tab) describes, in any shape: the GPU compositor composes every
+    // The frame is whatever the Export tab's Resolution describes, in any shape: the GPU compositor composes every
     // clip onto it, and the Arrange canvas draws it. Left blank, it is the Sequence's own size (5.2-AuditB: its natural size,
     // given as the first file's picture landed on it; no clip's crop changes it afterwards).
 
@@ -39,6 +39,8 @@ public partial class MainViewModel
         // While a preset or project is being applied the sizes arrive as they were saved, already the right way round.
         if (!_syncingDimensions)
         {
+            // Turned by hand: that is the Sequence's own turn now, which a preset that names no shape keeps (5.4D).
+            _turnBeforePreset = null;
             var (width, height) = (OutputWidth, OutputHeight);
 
             // Blank boxes mean "the Sequence's size"; spelled out, so that there is something to turn over.
@@ -314,7 +316,7 @@ public partial class MainViewModel
     private void ResetBlurSettings() => (BlurRadius, BlurPasses, BackgroundDim, BackgroundZoom) = (DefaultBlurRadius, DefaultBlurPasses, DefaultBackgroundDim, 1);
 
     /// <summary>Cutouts of videos (a minimap, an ammo counter), videos, images (a logo), words: every clip's view.</summary>
-    public ObservableCollection<Layer> Layers { get; } = [];
+    public ViewList Layers { get; } = [];
 
     /// <summary>
     /// Adds a region of a video (5.2-AuditB: a Cutout of the video clip the Crop boxes stand for, a child of it on its clock,
@@ -468,8 +470,19 @@ public partial class MainViewModel
 
         var name = target.Clips.Count == 0 ? "the empty track" : track.Name;
         var hadPreset = NodeOf(Document.TrackOf(model));
-        if (!Edit($"move {clip.Name} to another track", edit => edit.MoveClip(model, target, start, allowCrossfadeOverlap: false)))
+        // Its stream sounds and Cutouts on its old track's lanes go onto lanes under the track it lands on (5.4A: they stayed in the old
+        // track's stack, drawn and heard with it, unless the clip was alone there).
+        var source = Document.TrackOf(model);
+        if (!Edit($"move {clip.Name} to another track", edit =>
+        {
+            var followed = source is null ? new List<TimelineTrackModel>() : PictureLanesOf(source);
+            edit.MoveClip(model, target, start, allowCrossfadeOverlap: false);
+            if (source is not null && Document.TrackOf(model) is { } landed && IsTopPicture(landed))
+                Relane(edit, model, source, landed, followed, new Dictionary<Guid, TimelineTrackModel>());
+        }))
+        {
             return false;
+        }
 
         StatusText = $"{clip.Name} moved to {name}, at {TimeSpan.FromSeconds(model.Start):h\\:mm\\:ss\\.ff}. Ctrl+Z puts it back.";
         InheritTemplate(clip, track, start, hadPreset);
@@ -569,7 +582,8 @@ public partial class MainViewModel
     /// <summary>As <see cref="AddVideoLayerAsync"/>, and returns the clip once its file has been looked at; null when it could not be added.</summary>
     /// <param name="playOnce">Plays once through even when placed at the very start (videos dropped together, one after another).</param>
     /// <param name="follows">Goes on <paramref name="onTrack"/>'s track whatever Settings say: it follows the clip before it in one drop.</param>
-    public async Task<Layer?> AddVideoClipAsync(string path, double startSeconds, Layer? onTrack, bool playOnce = false, bool follows = false)
+    /// <param name="sourceRange">Only this part of the file (5.4C, a sub-clip from the Media Browser's cutter), in seconds of its MediaOffset clock.</param>
+    public async Task<Layer?> AddVideoClipAsync(string path, double startSeconds, Layer? onTrack, bool playOnce = false, bool follows = false, (double In, double Out)? sourceRange = null)
     {
         // The block goes onto the timeline now, marked as loading: nothing is waited for before the drop is answered. What
         // the file is (its size, its length, whether it has sound) is found out afterwards; until then it is a few seconds
@@ -616,14 +630,46 @@ public partial class MainViewModel
 
         // Wherever it goes, sized to the frame (fitted, or filling it as Settings say) in its middle once its shape is known (4.4).
         (int X, int Y, int Width, int Height)? box = FrameWidth > 0 && FrameHeight > 0 ? (0, 0, FrameWidth, FrameHeight) : null;
-        if (!await CompleteVideoLayerAsync(element, playOnce || start > 0 || onTrack is not null, box, fill: AppSettings.Current.NewClipsFill))
-            return null;
+        // A sub-clip (5.4C) always plays once: at 0 s it would otherwise take the whole file's loop rounds, and only the first be cut.
+        var add = new LoadingAdd(playOnce || start > 0 || onTrack is not null || sourceRange is not null, box, AppSettings.Current.NewClipsFill, sourceRange);
+        return await FinishVideoAddAsync(element, add) ? element : null;
+    }
 
-        // A clip of the Clip Library starts and ends where it was saved (5.2C); two pictures side by side on one canvas are offered, never
-        // done unasked.
-        FitToLibraryEntry(element);
+    /// <summary>
+    /// A video clip just placed, still loading, filled in once its file has been looked at (<see cref="CompleteVideoLayerAsync"/>) and
+    /// finished as its add asked (<paramref name="add"/>). Counted as an add under way meanwhile (<see cref="HasPendingAdds"/>), and kept by
+    /// its tab if the tab goes behind first (5.4D-TabPerf review, P2): it is then finished the same way as the tab comes back (ViewFor).
+    /// </summary>
+    private async Task<bool> FinishVideoAddAsync(Layer element, LoadingAdd add)
+    {
+        var (clipId, generation) = (element.ClipId, _projectGeneration);
+        _loadingAdds[clipId] = add;
+        bool filled;
+        using (BeginAdd())
+        {
+            try
+            {
+                filled = await CompleteVideoLayerAsync(element, add.PlayOnce, add.FitInto, fill: add.Fill);
+            }
+            finally
+            {
+                // Its tab gone behind meanwhile took it (DetachForTab), and the map is another project's now.
+                if (generation == _projectGeneration)
+                    _loadingAdds.Remove(clipId);
+            }
+        }
+
+        if (!filled)
+            return false;
+
+        // A sub-clip plays only its part of the file (5.4C); a clip of the Clip Library starts and ends where it was saved (5.2C); two
+        // pictures side by side on one canvas are offered, never done unasked.
+        if (add.SourceRange is { } range)
+            FitToSourceRange(element, range.In, range.Out);
+        else
+            FitToLibraryEntry(element);
         OfferSideBySide(element);
-        return element;
+        return true;
     }
 
     /// <summary>
@@ -715,7 +761,7 @@ public partial class MainViewModel
     {
         var path = element.ImagePath;
         var wanted = ToTheEnd(element.StartTime);
-        var clipId = element.ClipId;
+        var (clipId, generation) = (element.ClipId, _projectGeneration);
         MediaInfo? info = null;
         try
         {
@@ -729,6 +775,11 @@ public partial class MainViewModel
         {
             // Not readable: dealt with below, as a file that is not a video.
         }
+
+        // Its tab gone behind while it was being looked at (5.4D-TabPerf review, P1): nothing is filled in or edited here, whichever
+        // tab is in front (a duplicate shares its clip ids). Its tab finishes it as it comes back (ViewFor).
+        if (generation != _projectGeneration)
+            return false;
 
         // Undone, or removed, while it was being looked at: there is nothing left to fill in. Undone and done again, the clip
         // is back with a view of its own, which is the one filled in.
@@ -757,7 +808,12 @@ public partial class MainViewModel
             // What the file is, which is not an edit: its length and its sound.
             (clip.SourceDuration, clip.AudioStreamIndex) = (Math.Max(info.DurationSeconds, 0), info.Audio.Count > 0 ? 0 : -1);
             // Placed at a moment, it plays once through (a file's length, however short); at the start, to the end, round and round.
-            var file = Math.Max(info.DurationSeconds, 0);
+            // Its length is its picture's (5.4A): a container's sound padded past the last frame adds no frozen or black tail.
+            var file = VideoSeconds(info, Math.Max(info.DurationSeconds, 0));
+            // The whole-file tests' picture length (5.4A); a clip brought back keeps what it was saved with (a project from before
+            // 5.4A ended at the container's end, and is still the whole file).
+            if (!keepLength)
+                clip.PictureDuration = PictureDurationOf(file, clip.SourceDuration);
             var end = keepLength ? clip.End : playOnce || file <= 0.05 ? clip.Start + (file > 0.05 ? file : PictureSeconds) : Math.Max(wanted, clip.Start + file);
             Edit("fill in a video clip", edit => LayOut(edit, clip, end), undoable: false);
             UnpackStreams(element, info, undoable: false);
@@ -783,12 +839,15 @@ public partial class MainViewModel
     /// A video clip dropped with a stand-in length, given its own: to <paramref name="end"/>, or to its file's end, and
     /// past that (a clip running to the end of the timeline) as rounds of its file from its first frame, silent after the
     /// first (4.2.0's loop). One that would run over a clip of its track goes onto a track of its own just above, first:
-    /// nothing is laid over a clip already on the timeline.
+    /// nothing is laid over a clip already on the timeline. Every round is as long as the file's picture
+    /// (<see cref="TimelineClip.WholeDuration"/>, 5.4A), not its container: sound padded past the last frame shows no frozen or
+    /// black tail at a seam, nor at the end.
     /// </summary>
     private void LayOut(ITimelineTransaction edit, TimelineClip clip, double end)
     {
         var track = Document.TrackOf(clip)!;
-        var first = clip.SourceDuration > 0.05 ? Math.Min(end, clip.Start + (clip.SourceDuration - clip.MediaOffset) / clip.Speed) : end;
+        var whole = clip.WholeDuration;
+        var first = whole > 0.05 ? Math.Min(end, clip.Start + (whole - clip.MediaOffset) / clip.Speed) : end;
         if (!track.ClipsIntersecting(clip.Start + 1e-6, end - 1e-6).ToArray().All(c => ReferenceEquals(c, clip)))
         {
             edit.MoveClip(clip, track, clip.Start, insertTrackAtIndex: Document.Tracks.IndexOf(track) + 1, allowCrossfadeOverlap: false);
@@ -796,11 +855,11 @@ public partial class MainViewModel
         }
 
         edit.TrimClipEnd(clip, first);
-        for (var at = clip.End; clip.SourceDuration > 0.05 && end - at >= TimelineDocument.MinimumClipSeconds;)
+        for (var at = clip.End; whole > 0.05 && end - at >= TimelineDocument.MinimumClipSeconds;)
         {
             var round = CopyOfClip(clip);
             (round.Id, round.MediaOffset, round.IsMuted, round.FadeInSeconds, round.TransitionIn) = (Guid.NewGuid(), 0, true, 0, 0);
-            (round.Start, round.End) = (at, Math.Min(end, at + clip.SourceDuration / clip.Speed));
+            (round.Start, round.End) = (at, Math.Min(end, at + whole / clip.Speed));
             edit.PlaceClip(track, round, allowCrossfadeOverlap: false);
             at = round.End;
         }
@@ -812,10 +871,21 @@ public partial class MainViewModel
     /// </summary>
     /// <param name="isVoice">Whether the sound is a voice (a voiceover): the sounds set to Auto-Duck make room for it.</param>
     /// <param name="name">What the clip is called, when that is not its file's name.</param>
-    public async Task<bool> AddAudioLayerAsync(string path, double startSeconds = 0, bool isVoice = false, string? name = null)
+    /// <param name="sourceRange">Only this part of the file (5.4C, a sub-clip from the Media Browser's cutter), in seconds of the file.</param>
+    public async Task<bool> AddAudioLayerAsync(string path, double startSeconds = 0, bool isVoice = false, string? name = null, (double In, double Out)? sourceRange = null)
     {
-        // Its block waits on this probe, so it is urgent (4.3E): it never queues behind the media browser's work.
-        var info = await MediaProbe.ProbeAsync(path, _shutdown.Token, urgent: true);
+        // Its block waits on this probe, so it is urgent (4.3E): it never queues behind the media browser's work. An add under way
+        // meanwhile (the tabs do not change); one whose tab went behind all the same is placed nowhere (5.4D-TabPerf review, P1).
+        var generation = _projectGeneration;
+        MediaInfo? info;
+        using (BeginAdd())
+            info = await MediaProbe.ProbeAsync(path, _shutdown.Token, urgent: true);
+        if (generation != _projectGeneration)
+        {
+            StatusText = $"{Path.GetFileName(path)} was not added: its project tab went behind first.";
+            return false;
+        }
+
         if (info is not { Audio.Count: > 0 })
         {
             StatusText = $"No sound that can be read in: {path}";
@@ -843,6 +913,8 @@ public partial class MainViewModel
         (element.IsVoice, element.Name) = (isVoice, name ?? element.Name);
         if (!PlaceLayer(element, start, end, isVoice ? "add a voiceover" : "add an audio clip"))
             return false;
+        if (sourceRange is { } range)
+            FitToSourceRange(element, range.In, range.Out);
 
         _ = LoadLayerPicturesAsync(element);
         if (isVoice)
@@ -1040,7 +1112,8 @@ public partial class MainViewModel
     {
         get
         {
-            if (VideoEncoder.Family != EncoderFamily.Copy || IsAnimatedOutput)
+            // An Audio Only export (5.4C) copies no picture: nothing to warn of.
+            if (VideoEncoder.Family != EncoderFamily.Copy || IsAnimatedOutput || IsAudioOnlyExport)
                 return "";
 
             var copy = SequenceSpans.CopyCutOf(Document);
@@ -1205,21 +1278,47 @@ public partial class MainViewModel
 
     private static readonly string[] SoftwarePresets = ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"];
     private static readonly string[] QsvPresets = ["veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"];
-    private static readonly string[] AmfPresets = ["speed", "balanced", "quality"];
+    private static readonly string[] AmfPresets = ["speed", "balanced", "quality", "high_quality"];
     // NVENC's current names: p1 the fastest, p7 the best, p4 the middle.
     private static readonly string[] NvencPresets = ["p1", "p2", "p3", "p4", "p5", "p6", "p7"];
 
     /// <summary>
-    /// The step a hardware encoder starts at: its slowest and best (5.1-DogfoodPolish, the user's directive: NVENC's p7, AMF's quality, and
-    /// QSV's veryslow, which is its target usage 1); null for an encoder that has no such default.
+    /// The step a hardware encoder starts at: its slowest and best (5.1-DogfoodPolish, the user's directive: NVENC's p7, AMF's high_quality
+    /// (5.4B: slower than quality, in the FFmpeg HandPeg ships), and QSV's veryslow, which is its target usage 1); null for an encoder that
+    /// has no such default.
     /// </summary>
     public static string? BestStepOf(EncoderFamily family) => family switch
     {
         EncoderFamily.Qsv => "veryslow",
-        EncoderFamily.Amf => "quality",
+        EncoderFamily.Amf => "high_quality",
         EncoderFamily.Nvenc => "p7",
         _ => null,
     };
+
+    /// <summary>
+    /// The step an encoder starts at (5.4B, CLAUDE.md 8: the highest quality): a hardware one's best (<see cref="BestStepOf(EncoderFamily)"/>),
+    /// veryslow for x264 and x265; null for one with no steps here (Media Foundation, SVT-AV1, VP9, the editing codecs, Copy). A
+    /// software encoder that keeps a step chosen by hand keeps it (UpdateEncoderPresets).
+    /// </summary>
+    public static string? BestStepOf(EncoderOption encoder) =>
+        encoder.Name is "libx264" or "libx265" ? "veryslow" : BestStepOf(encoder.Family);
+
+    /// <summary>
+    /// The fastest step of a hardware family (5.4D, Q2 b: a speed-first preset, Fast Proxy, the one exception to CLAUDE.md 8's slowest
+    /// step): NVENC's p1, QuickSync's veryfast, AMF's speed; null for one with no steps here (Media Foundation's fastest is its
+    /// -compression_level 0, MediaFoundationEncoder.FastestStepArgument).
+    /// </summary>
+    public static string? FastestStepOf(EncoderFamily family) => family switch
+    {
+        EncoderFamily.Qsv => "veryfast",
+        EncoderFamily.Amf => "speed",
+        EncoderFamily.Nvenc => "p1",
+        _ => null,
+    };
+
+    /// <summary>The fastest step of an encoder (5.4D): a hardware family's (<see cref="FastestStepOf(EncoderFamily)"/>), ultrafast for x264 and x265.</summary>
+    public static string? FastestStepOf(EncoderOption encoder) =>
+        encoder.Name is "libx264" or "libx265" ? "ultrafast" : FastestStepOf(encoder.Family);
 
     /// <summary>The preset steps of the selected encoder; empty for encoders that have none here.</summary>
     public ObservableCollection<string> EncoderPresets { get; } = [.. SoftwarePresets];
@@ -1262,10 +1361,10 @@ public partial class MainViewModel
                 EncoderPresets.Add(preset);
 
             // Another kind of encoder: a hardware one starts at its best step, whatever the last one's was (QSV has a "medium" too).
-            // Software keeps its choice when it has it, else the middle step.
+            // Software keeps its choice when it has it, else its best (5.4B: veryslow).
             EncoderPreset = BestStepOf(VideoEncoder.Family) is { } best ? best
                 : presets.Contains(previous) ? previous
-                : presets.Contains("medium") ? "medium"
+                : BestStepOf(VideoEncoder) is { } own && presets.Contains(own) ? own
                 : presets.Length > 0 ? presets[presets.Length / 2]
                 : previous;
         }
@@ -1365,7 +1464,7 @@ public partial class MainViewModel
 
         // On the GPU compositor, as the export is (the user's call, 5.0-Verify Q5; the only renderer since 5.2-Audit): the same
         // frames, the sound engine's sound.
-        await GpuExport.RunPreviewAsync(CompileExportState(), path, ranges[0].Start, ranges[0].End, settings.PreviewResolutionPercent, captionsPath, progress, cancellationToken);
+        await GpuExport.RunPreviewAsync(SdrPreviewOf(CompileExportState()), path, ranges[0].Start, ranges[0].End, settings.PreviewResolutionPercent, captionsPath, progress, cancellationToken);
         CrashReporter.Note("preview", "rendered on the GPU compositor");
         PreviewRendered?.Invoke(path);
         return $"Preview rendered: {seconds} s from {TimeDisplay.Format(start)} at {settings.PreviewResolutionPercent}% size.";
@@ -1594,8 +1693,9 @@ public partial class MainViewModel
                     hint = $"Too small for this length: the video is held at {LowestVideoKbps} kbps, so the file will be larger.";
                 TargetBitrate = ((int)Math.Max(kbps, LowestVideoKbps)).ToString(CultureInfo.InvariantCulture);
             }
-            else if (int.TryParse(TargetBitrate, out var bitrate) && bitrate > 0)
+            else if (EffectiveBitrateKbps is > 0 and var bitrate)
             {
+                // The bitrate typed, or the automatic one (5.4B): the size it gives, as a guide that a size typed takes over from.
                 TargetFileSize = ((bitrate + audioKbps) * duration / 8192).ToString("0.#", CultureInfo.InvariantCulture);
             }
         }
@@ -1710,7 +1810,7 @@ public partial class MainViewModel
         OnPropertyChanged(nameof(IsMediaBrowserVisible));
         OnPropertyChanged(nameof(ShowTimelineOptionsBelow));
         OnPropertyChanged(nameof(ShowPresetBarAtTop));
-        OnPropertyChanged(nameof(ShowPresetBarInSummary));
+        OnPropertyChanged(nameof(ShowPresetBarInExport));
         OnPropertyChanged(nameof(TimelineAreaHeight));
         OnPropertyChanged(nameof(AudioTrackRowHeight));
         OnPropertyChanged(nameof(ShowWaveforms));
@@ -1879,10 +1979,10 @@ public partial class MainViewModel
     /// <param name="throughCuts">The export reads the cuts list (a Copy export of one file's clips end to end): its clock is the list's.</param>
     private void WriteChaptersFile(bool throughCuts = false)
     {
-        // Each chapter runs to the start of the next, the last to the end of the output.
+        // Each chapter runs to the start of the next, the last to the end of the output (5.4A: its last picture's, not an audio tail's).
         var lines = new List<string> { ";FFMETADATA1" };
         var chapters = BuildChapters(throughCuts);
-        var total = throughCuts ? GetOutputDuration() : SequenceSeconds;
+        var total = throughCuts ? GetOutputDuration() : SequenceSpans.ProgramSeconds(Document);
         for (var i = 0; i < chapters.Count; i++)
         {
             var end = i + 1 < chapters.Count ? chapters[i + 1].Start : Math.Max(total, chapters[i].Start + 0.001);

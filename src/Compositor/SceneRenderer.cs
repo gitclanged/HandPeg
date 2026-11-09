@@ -61,6 +61,23 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
 
     private bool _playing;
 
+    /// <summary>
+    /// Where the player puts the canvas in an output of this size (<see cref="FrameSceneHeader.FlagLetterbox"/>): fitted and centred, then
+    /// zoomed about the middle and moved by the pan. The picture's top left on the output, and output pixels per canvas pixel. The flat
+    /// path and the Export Quality Preview's compare pass (5.4B) place it alike.
+    /// </summary>
+    internal static (float OffsetX, float OffsetY, float Scale) Letterbox(in FrameSceneHeader header, int outputWidth, int outputHeight)
+    {
+        var canvasWidth = Math.Max(header.CanvasWidth, 1);
+        var canvasHeight = Math.Max(header.CanvasHeight, 1);
+        var fit = Math.Min((float)outputWidth / canvasWidth, (float)outputHeight / canvasHeight);
+        var zoom = Math.Clamp(header.ViewScale > 0 ? header.ViewScale : 1, 0.05f, 64f);
+        var (pictureWidth, pictureHeight) = (canvasWidth * fit, canvasHeight * fit);
+        var scale = fit * zoom;
+        return (outputWidth / 2f + header.ViewPanX * pictureWidth * zoom - canvasWidth * scale / 2,
+            outputHeight / 2f + header.ViewPanY * pictureHeight * zoom - canvasHeight * scale / 2, scale);
+    }
+
     private void RenderLayers(in FrameSceneHeader header, ReadOnlySpan<GpuLayerDescriptor> layers, nint outputRtv, int outputWidth, int outputHeight, bool raw)
     {
         // The 3D exploded layer stack (5.0D) has a path of its own (SceneRenderer.Exploded.cs); the flat one follows unchanged.
@@ -79,13 +96,8 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         _letterbox = (header.Flags & FrameSceneHeader.FlagLetterbox) != 0;
         if (_letterbox)
         {
-            // As the player shows it: fitted and centred, then zoomed about the middle and moved by the pan.
-            var fit = Math.Min((float)outputWidth / canvasWidth, (float)outputHeight / canvasHeight);
-            var zoom = Math.Clamp(header.ViewScale > 0 ? header.ViewScale : 1, 0.05f, 64f);
-            var (pictureWidth, pictureHeight) = (canvasWidth * fit, canvasHeight * fit);
-            _scaleX = _scaleY = fit * zoom;
-            _offsetX = outputWidth / 2f + header.ViewPanX * pictureWidth * zoom - canvasWidth * _scaleX / 2;
-            _offsetY = outputHeight / 2f + header.ViewPanY * pictureHeight * zoom - canvasHeight * _scaleY / 2;
+            (_offsetX, _offsetY, _scaleX) = Letterbox(header, outputWidth, outputHeight);
+            _scaleY = _scaleX;
         }
         else
         {
@@ -135,8 +147,8 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         }
 
         // The magnifier loupe over the picture, while an edge is tuned (the player only).
-        if (header.LoupeClipKey != 0 && _letterbox && !raw)
-            DrawLoupe(header, layers);
+        if (header.LoupeClipKey != 0 && _letterbox && !raw && PrepareLoupe(header, layers, outputWidth, outputHeight))
+            CompositeLoupe(_canvas.Rtv, outputWidth, outputHeight);
 
         // The canvas to the output.
         var constants = default(PassConstants);
@@ -546,7 +558,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
     }
 
     /// <summary>The YUV to RGB rows for a frame's matrix and range (limited: Y 16-235, C 16-240 in 8-bit terms).</summary>
-    private static void SetYuv(ref PassConstants constants, int matrix, bool fullRange)
+    internal static void SetYuv(ref PassConstants constants, int matrix, bool fullRange)
     {
         var (kr, kb) = matrix switch
         {
@@ -1137,6 +1149,41 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         Draw("PSRgbToNv12Chroma", picture, chroma.Rtv, chroma.Width, chroma.Height, ref constants, blend: false);
     }
 
+    /// <summary>
+    /// An HDR export's finished frame as P010's two planes (FlagReadbackP010, 5.4B): R16 and R16G16 render targets, BT.2020 non-constant
+    /// luminance in limited range, each sample's 10 bits in the top of its 16. <paramref name="picture"/> is the 16-bit float frame.
+    /// </summary>
+    public void ToP010(GpuTexture picture, GpuTexture luma, GpuTexture chroma)
+    {
+        var constants = default(PassConstants);
+        constants.WholeUv();
+        Draw("PSRgbToP010", picture, luma.Rtv, luma.Width, luma.Height, ref constants, blend: false);
+        Draw("PSRgbToP010Chroma", picture, chroma.Rtv, chroma.Width, chroma.Height, ref constants, blend: false);
+    }
+
+    /// <summary>
+    /// The Export Quality Preview's compare (5.4B, Shaders/Loopback.hlsl): the source's NV12 planes (<paramref name="sourceLuma"/>,
+    /// <paramref name="sourceChroma"/>) against the decoded ones (two views), drawn over the whole output with the picture at
+    /// <paramref name="picture"/> (output pixels) and black round it. <paramref name="mode"/> 0 the encoded picture, 1 a split wipe at
+    /// <paramref name="wipe"/> (0..1 of the picture's width), 2 the difference x <paramref name="gain"/>.
+    /// </summary>
+    public void DrawLoopbackCompare(nint sourceLuma, nint sourceChroma, nint decodedLuma, nint decodedChroma, nint target, int width, int height,
+        (float X, float Y, float W, float H) picture, int mode, float wipe, float gain, float dividerHalfWidth)
+    {
+        _gpu.BindCommon();
+        var constants = default(PassConstants);
+        constants.WholeUv();
+        constants.Sizes(width, height, width, height);
+        SetYuv(ref constants, 1, fullRange: false);
+        constants.Params = new Vector4(mode, wipe, gain, dividerHalfWidth);
+        constants.Params2 = new Vector4(picture.X, picture.Y, picture.W, picture.H);
+        var planes = stackalloc nint[2] { decodedLuma, decodedChroma };
+        _gpu.Context.PSSetShaderResources(3, 2, planes);
+        Submit("VSFull", "PSLoopbackCompare", sourceLuma, sourceChroma, 0, target, width, height, ref constants, blend: false, vertices: 3, clipToFrame: false);
+        var none = stackalloc nint[2];
+        _gpu.Context.PSSetShaderResources(3, 2, none);
+    }
+
     /// <summary>A placed quad (VSQuad) onto the canvas, kept within the frame (letterboxed: never over the bars).</summary>
     private void Quad(string shader, GpuTexture input, nint target, ref PassConstants constants, bool blend, nint aux = 0)
     {
@@ -1175,6 +1222,39 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         var none = stackalloc nint[3];
         context.PSSetShaderResources(0, 3, none);
         context.OMSetRenderTargets(0);
+    }
+
+    /// <summary>
+    /// Lets go of the textures kept between frames that the next frame makes again when it wants them (the worker's trim, 5.4D-TabPerf
+    /// follow-up): the canvas copy a blend mode reads, the 3D view's picture and plane (their budget step kept, so the 3D picture drawn
+    /// again is the same), and the loupe's scan, view, point and staging (the point it follows kept). With <paramref name="history"/> (a
+    /// trim the client asked for: a tab put behind, Settings' Clear) also what carries one frame into the next: the Motion Blur's flows,
+    /// the Explosion's noise, and Matte Smooth's alpha histories; the idle trim keeps them, so the paused picture it draws again is the
+    /// one shown. The canvas itself stays: every flat frame draws into it. Between frames only (the worker's own thread).
+    /// </summary>
+    public void ReleaseIdleTextures(bool history)
+    {
+        _canvasCopy?.Dispose();
+        _canvasCopy = null;
+        ReleaseExplodedTextures();
+        DisposeLoupe();
+        if (!history)
+            return;
+        DisposeFx();
+        foreach (var kept in _histories.Values)
+            kept.Dispose();
+        _histories.Clear();
+    }
+
+    /// <summary>
+    /// What <see cref="ReleaseIdleTextures"/> lets go of, held now (the goldens): the textures it always releases, and those it releases
+    /// only with history (flows, the noise, alpha histories).
+    /// </summary>
+    internal (int Textures, int History) IdleTexturesForTests()
+    {
+        var textures = (_canvasCopy is null ? 0 : 1) + (_view3D is null ? 0 : 1) + (_planeTarget is null ? 0 : 1)
+            + (_loupeScan is null ? 0 : 1) + (_loupeView is null ? 0 : 1) + (_loupeFound is null ? 0 : 1) + _loupeStaging.Count(s => s != 0);
+        return (textures, _flows.Count + (_noise3D == 0 ? 0 : 1) + _histories.Count);
     }
 
     public void Dispose()

@@ -152,6 +152,27 @@ public partial class MainViewModel
     }
 
     /// <summary>A clip back as a new clip starts: sized to the frame in its middle, not turned, nothing cropped. This clip alone. One step of Undo.</summary>
+    /// <summary>A clip's crop taken off (its menu's Crop, Reset Crop; 5.4B): one step of Undo.</summary>
+    public void ResetClipCrop(Layer clip)
+    {
+        if (ClipOf(clip) is null || (clip.CropLeft, clip.CropTop, clip.CropRight, clip.CropBottom) == (0, 0, 0, 0))
+            return;
+
+        Checkpoint($"reset the crop of {clip.Name}");
+        (clip.CropLeft, clip.CropTop, clip.CropRight, clip.CropBottom) = (0, 0, 0, 0);
+    }
+
+    /// <summary>
+    /// Interactive Crop on a clip (its menu's Crop; 5.4B, the Video tab's toggle before): the clip selected, so the Crop boxes and the
+    /// player's rectangle stand for it (CropTarget), and the drawing mode switched on; or off again.
+    /// </summary>
+    public void CropInteractively(Layer clip, bool on)
+    {
+        if (on && clip.IsFile && Layers.Contains(clip))
+            KeyLayer = clip;
+        IsInteractiveCropActive = on;
+    }
+
     public void ResetClipTransform(Layer clip)
     {
         if (ClipOf(clip) is null)

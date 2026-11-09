@@ -1,0 +1,9 @@
+# The Video Scopes pane: one capture for a burst of changes, none while playing (Updates when paused), another scope drawn from the last frame.
+ok: made, it captures nothing (Law 1)
+ok: shown and paused: one capture, drawn as the Luma Waveform (384 x 256)
+ok: another scope is drawn from the last frame, without a capture
+ok: three moves of the playhead in a burst: one capture
+ok: while playing: no capture, the last picture kept and "Updates when paused" said
+ok: paused again: captured once more, the note gone
+ok: out of the window (a dock rebuild, a tab behind): nothing is captured
+ok: back in: captured once

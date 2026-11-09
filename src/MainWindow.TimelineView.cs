@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using HandPegApp.Models;
 
@@ -14,7 +15,8 @@ namespace HandPegApp;
 // all of that and follows the sequence as it grows; zoomed, a second keeps its width, and the ruler, the scroll bar under
 // the tracks, Shift + wheel or a middle-button drag move along. Ctrl + wheel over the tracks, or the wheel over the ruler,
 // zoom about the pointer; the buttons and the slider about the playhead. The Sequence Overview Scrubber follows when "Sync
-// Sequence Overview Scrubber Stretch" is on in the Views menu.
+// Sequence Overview Scrubber Stretch" is on in the Views menu. A flick or a fast wheel coasts on (5.4C, MomentumScroller): a press
+// on the surface, the ruler or the scroll bar, the playhead turning the page, or a zoom stops it.
 public partial class MainWindow
 {
     /// <summary>The least the time bars can show across, in seconds: a few frames each wide enough to grab.</summary>
@@ -231,9 +233,19 @@ public partial class MainWindow
         var (at, span) = (_viewModel.PositionMs / 1000, ViewSpan);
         if (at > _viewStart + span || at < _viewStart)
         {
+            // The page turns: a coast along the view stops, so the two never pull the view between them (5.4C).
+            StopTimelineMomentum();
             _viewStart = at - span * 0.05;
             ApplyTimelineView(announce: false);
         }
+    }
+
+    /// <summary>Stops any coast of the timeline's view where it is: the surface's (its rows too) and the rulers' (5.4C).</summary>
+    private void StopTimelineMomentum()
+    {
+        UnifiedTimeline.Surface.StopMomentum();
+        foreach (var ruler in _rulers)
+            ruler.StopMomentum();
     }
 
     // ----- The ruler, the scroll bar and the zoom slider -----
@@ -263,6 +275,59 @@ public partial class MainWindow
         bar.Scroll += TimelineScroll_Scroll;
         _zoomSliders.Add(zoom);
         zoom.ValueChanged += TimelineZoomSlider_ValueChanged;
+
+        // Touch-to-stop across the pane (5.4C): each stops its own coast on a press; a press on the one stops the other's, and a press on
+        // the scroll bar stops both (handled presses too: the bar's thumb and buttons answer theirs).
+        ruler.PreviewMouseDown += (_, _) => UnifiedTimeline.Surface.StopMomentum();
+        UnifiedTimeline.Surface.PreviewMouseDown += (_, _) => ruler.StopMomentum();
+        bar.AddHandler(PreviewMouseDownEvent, new MouseButtonEventHandler((_, _) => StopTimelineMomentum()), handledEventsToo: true);
+        HookTimelineSidewaysWheel();
+    }
+
+    // ----- The sideways wheel over the timeline (5.4C) -----
+
+    private bool _sidewaysWheelHooked;
+
+    /// <summary>
+    /// A touchpad's two-finger sideways scroll (or a tilting wheel) moves the timeline's view along, with momentum: WPF raises nothing for
+    /// WM_MOUSEHWHEEL, so a hook of its own on the main window reads it (never TitleBarHook or FrameHook, whose answers are pinned), added
+    /// once the window's handle is made, and only while the pointer is over the timeline's tracks or ruler does it take the message.
+    /// </summary>
+    private void HookTimelineSidewaysWheel()
+    {
+        if (_sidewaysWheelHooked)
+            return;
+
+        _sidewaysWheelHooked = true;
+        SourceInitialized += (_, _) => HwndSource.FromHwnd(new WindowInteropHelper(this).Handle)?.AddHook(TimelineSidewaysWheel);
+    }
+
+    private IntPtr TimelineSidewaysWheel(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg != WmMouseHWheel || TimelineUnderPointer() is not { } surface)
+            return IntPtr.Zero;
+
+        // Positive is to the right: later. Answered TRUE, or Windows sends it on as clicks of an old tilt wheel.
+        surface.PanWheelAt((short)((wParam.ToInt64() >> 16) & 0xFFFF), MomentumScroller.Now());
+        handled = true;
+        return new IntPtr(1);
+    }
+
+    // The timeline's surface while the pointer is over it or its ruler (and it is shown); null otherwise.
+    private UnifiedTimelineControl? TimelineUnderPointer()
+    {
+        var surface = UnifiedTimeline.Surface;
+        if (!surface.IsVisible)
+            return null;
+        if (surface.IsMouseOver)
+            return surface;
+        foreach (var ruler in _rulers)
+        {
+            if (ruler.IsMouseOver)
+                return surface;
+        }
+
+        return null;
     }
 
     private void TimelineScroll_Scroll(object sender, ScrollEventArgs e)
@@ -270,6 +335,7 @@ public partial class MainWindow
         if (_showingView || _viewFit || sender is not ScrollBar bar)
             return;
 
+        StopTimelineMomentum();
         _viewStart = bar.Value;
         ApplyTimelineView(announce: false);
     }
