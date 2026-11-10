@@ -1,0 +1,6 @@
+# The tabs likely next (5.4.2A): the videos at a tab's playhead, top track first, each one's file, stream and moment, hidden ones left out.
+ok: at 3 s: the top video first, each at its own moment of its file, speed counted (second.mkv #1 at 3; first.mkv #0 at 8)
+ok: at 6 s: a clip ends where the next begins, which is the one shown (first.mkv #0 at 0; first.mkv #0 at 11)
+ok: at most as many as asked: the top one
+ok: past every clip: none
+ok: half a second past each playhead is decoded ahead

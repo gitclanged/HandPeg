@@ -17,16 +17,17 @@ public partial class MainWindow
 {
     // ----- The paused still over the player -----
     // The player is a native window, which nothing of WPF's draws over but the window kept over it (PlayerOverlay): the still lies there,
-    // under everything else of it, until the engine has presented a scene drawn since the tab came back (its exact frames, or after a
-    // moment whatever it has), or two and a half seconds at most. A bounded watch of a few frames, only after a switch.
+    // under everything else of it, until the engine has presented a scene made since the tab came back (5.4.2A: GpuPreviewEngine.MarkScene,
+    // never a scene of the tab put behind still on its way; its exact frames, or after a moment whatever it has), or two and a half seconds
+    // at most. A bounded watch of a few frames, only after a switch.
 
     private Image? _tabStill;
     private DispatcherTimer? _stillTimer;
-    private long _stillSince, _stillScene;
+    private long _stillSince, _stillMark;
     private int _stillSeen;
 
-    /// <summary>How long the still waits for the engine's exact frames before any presented frame will do, and how long it stays at most, ms.</summary>
-    private const long StillExactWaitMs = 700, StillLongestMs = 2500;
+    /// <summary>How long the still waits for the engine's exact frames before any frame of the tab will do, and how long it stays at most, ms.</summary>
+    private const long StillExactWaitMs = 600, StillLongestMs = 2500;
 
     /// <summary>A BGRA8 picture as a frozen bitmap (its alpha meaningless: Bgr32).</summary>
     private static BitmapSource StillOf(byte[] bgra, int width, int height)
@@ -64,21 +65,21 @@ public partial class MainWindow
         _tabStill.Visibility = Visibility.Collapsed;
     }
 
-    /// <summary>The still stays until the engine has presented a scene since now (see the section above).</summary>
+    /// <summary>The still stays until the engine has presented a scene made since now (see the section above).</summary>
     private void WatchForFirstFrame()
     {
         if (_tabStill is not { Visibility: Visibility.Visible })
             return;
 
-        (_stillScene, _stillSince, _stillSeen) = (_gpu?.PresentedScene ?? 0, Environment.TickCount64, 0);
+        (_stillMark, _stillSince, _stillSeen) = (_gpu?.MarkScene() ?? 0, Environment.TickCount64, 0);
         if (_stillTimer is null)
         {
-            // A frame's time apart (5.4.1-M3): the still goes within two frames of the engine's first, not a tenth of a second after it.
+            // Looked at a frame's time apart (5.4.1-M3): the still goes within two frames of the engine's first of the tab.
             _stillTimer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(16) };
             _stillTimer.Tick += (_, _) =>
             {
                 var waited = Environment.TickCount64 - _stillSince;
-                var drawn = _gpu is { } engine && engine.PresentedScene > _stillScene && (engine.PresentedExact || waited > StillExactWaitMs);
+                var drawn = _gpu is { } engine && engine.PresentedSince(_stillMark) && (engine.PresentedExact || waited > StillExactWaitMs);
 
                 // Seen on two turns running, so the viewport has presented it too.
                 _stillSeen = drawn ? _stillSeen + 1 : 0;
@@ -95,13 +96,14 @@ public partial class MainWindow
     // fingerprints, what was made of its file) and the window's (its still, overview sheet, selection, player zoom and pan, the Timeline's
     // open stacks). It comes back by a swap of references (AttachHydrated). Its cache file is written after the switch from a frozen copy
     // (QueueTabWrite), each tab's disk work after the last (ProjectTabs.Enqueue), so a crash, a close or the memory valve finds it there.
-    // The valve (LetGoForMemory) lets the least recently used go back to its file when too many are kept or memory runs short.
+    // The valve (LetGoForMemory) lets the least recently used go back to its file only when the computer's free memory runs short (5.4.2A:
+    // all tabs warm, however many).
 
     /// <summary>How long closing HandPeg, a save from memory or a close waits for a tab's cache file still being written, ms.</summary>
     private const int IoWaitMs = 5000;
 
-    /// <summary>The most tabs kept live in memory (beyond it the least recently used goes back to its file).</summary>
-    internal const int MostLiveTabs = 16;
+    /// <summary>The computer's free memory (AvailPhys) under which the valve lets tabs kept live go back to their files (5.4.2A: 2.5 GB).</summary>
+    internal const long AvailableFloorBytes = Compositor.CompositorWorker.AvailableFloorBytes;
 
     /// <summary>How often the memory valve looks again while tabs are kept live, ms.</summary>
     private const int ValveTickMs = 30_000;
@@ -296,7 +298,9 @@ public partial class MainWindow
         TakeHeaderForTab(tab);
         var sheetMark = _viewModel.UndoMark;
         var (still, stillMark) = (_liveStill, _liveStillMark);
-        var preview = still is null && OverviewSheet is { Count: > 0 } overview ? overview.Cell(overview.IndexAt(_viewModel.PositionMs / 1000)) : null;
+        // Its overview's picture at the playhead as well when its still is the 3D one (5.4.2A): that is never written to its cache file (below),
+        // so a tab left in 3D that goes cold (the valve, or a restart) still has a picture for its hover card.
+        var preview = (still is null || stillMark.Shown3D) && OverviewSheet is { Count: > 0 } overview ? overview.Cell(overview.IndexAt(_viewModel.PositionMs / 1000)) : null;
         var rows = KeepRows();
         var live = new TabViewContext(_viewModel.DetachForTab(tab.Title))
         {
@@ -656,15 +660,15 @@ public partial class MainWindow
         !_viewModel.IsPlaying && _gpu is not { IsPlaying: true } && !_switchingTab && !TimelineDragHeld && !_viewModel.IsRecording;
 
     /// <summary>
-    /// Which tab kept live the memory valve lets go back to its cache file now (pure, 5.4D-TabPerf: the goldens' tab-perf-valve), or null:
-    /// when more than <see cref="MostLiveTabs"/> are kept, when what they hold passes <paramref name="budgetBytes"/>
-    /// (AppSettings.HydratedTabBudgetMb), or when Windows says memory is short (<paramref name="memoryShort"/>), the least recently in front
-    /// of them, never one of the two used last (the tab in front and the one before it) nor one that must stay (its file not written).
+    /// Which tab kept live the memory valve lets go back to its cache file now (pure, 5.4D-TabPerf: the goldens' tab-perf-valve), or null.
+    /// 5.4.2A, all tabs warm (the user's rule): every open tab stays in memory, however many, until the computer's free memory (AvailPhys)
+    /// falls under <see cref="AvailableFloorBytes"/> (<paramref name="memoryShort"/>); then the least recently in front of them goes, never
+    /// one of the two used last (the tab in front and the one before it) nor one that must stay (its file not written).
     /// </summary>
     internal static string? TabToLetGo(IReadOnlyList<ProjectTabHeader> tabs, IReadOnlyDictionary<string, long> keptBytes, IReadOnlySet<string> mustStay,
-        long budgetBytes, bool memoryShort)
+        bool memoryShort)
     {
-        if (keptBytes.Count == 0 || !(keptBytes.Count > MostLiveTabs || keptBytes.Values.Sum() > budgetBytes || memoryShort))
+        if (keptBytes.Count == 0 || !memoryShort)
             return null;
 
         var recent = tabs.OrderByDescending(t => t.LastActive).Take(2).Select(t => t.Id).ToHashSet(StringComparer.Ordinal);
@@ -684,12 +688,10 @@ public partial class MainWindow
 
         try
         {
-            var info = GC.GetGCMemoryInfo();
-            var memoryShort = info.HighMemoryLoadThresholdBytes > 0 && info.MemoryLoadBytes >= info.HighMemoryLoadThresholdBytes;
-            var budget = (long)Math.Max(AppSettings.Current.HydratedTabBudgetMb, 0) << 20;
+            var memoryShort = Compositor.SystemCommit.TryRead(out _, out _, out var available) && available < AvailableFloorBytes;
             var kept = _hydrated.ToDictionary(p => p.Key, p => p.Value.ApproxBytes, StringComparer.Ordinal);
             var staying = _hydrated.Where(p => p.Value.MustStay).Select(p => p.Key).ToHashSet(StringComparer.Ordinal);
-            if (TabToLetGo(_tabs.Tabs, kept, staying, budget, memoryShort) is not { } id || _tabs.Find(id) is not { } tab)
+            if (TabToLetGo(_tabs.Tabs, kept, staying, memoryShort) is not { } id || _tabs.Find(id) is not { } tab)
                 return;
 
             _letGoing = true;
@@ -715,8 +717,7 @@ public partial class MainWindow
             _hydrated.Remove(id);
             _tabs.SetStill(tab, live.Still);
             KeptTabsChanged();
-            AppLog.Write(memoryShort ? "Project tabs: a tab kept in memory was let go to its cache file (memory is short)."
-                : "Project tabs: a tab kept in memory was let go to its cache file (too many kept).");
+            AppLog.Write("Project tabs: a tab kept in memory was let go to its cache file (the computer's free memory is short).");
             CompactWhenQuiet("a project tab let go to its cache file");
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)

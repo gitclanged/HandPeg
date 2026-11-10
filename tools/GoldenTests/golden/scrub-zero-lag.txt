@@ -1,0 +1,15 @@
+# A drag of the playhead moves its lines and the player on every pointer move; the playhead's value follows at most once per 16 ms and exactly as the drag is let go.
+ok: nothing held or waiting before a drag; a frame then sets nothing
+ok: 101 moves over 200 ms set the playhead's value 13 times, never closer than 16 ms (closest 16 ms)
+ok: the first move is set at its own frame, and each setting is the latest moment the pointer had reached
+ok: let go: the playhead's value is the very last moment (1000 ms) at once
+ok: after it, a frame or a second release sets nothing
+ok: a click let go at once sets the playhead once, where it was pressed
+ok: a ruler's press and drag scrub (ScrubPlayheadTo), its end sets the playhead's value (EndScrub)
+ok: the ruler tells the end of its seek when let go and when its capture is taken away
+ok: the overview scrubber's value reaches the playhead only when told (its binding is Explicit)
+ok: the overview scrubber's drag scrubs the same way and ends with EndScrub
+ok: the player's clock and Follow Playhead leave a held scrub alone (a ruler's too)
+ok: the engine is sent on the raw move, once: a scrub's value never seeks it again
+ok: the Timeline's, the rulers' and the key lanes' playheads slide on the raw move
+ok: the frame loop is hooked only while a scrub has something to set

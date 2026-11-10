@@ -356,18 +356,21 @@ public static unsafe partial class CompositorWorker
     }
 
     /// <summary>
-    /// Whether a trim empties the frame cache (the TabPerf follow-up, the user's X1): one the client <paramref name="asked"/> for (a tab put
-    /// behind, Settings' Clear) does, but on a big card (FrameCache.BigCard: discrete, more than 4 GB of its own), where the frames are video
-    /// memory nothing else wants and the tab brought back finds them (DecoderPool's parked sources); on unified memory and a small card
-    /// they are the computer's memory, which the user minds most. The idle trim never does: a seek on coming back stays instant.
+    /// Whether a trim empties the frame cache. 5.4.2A, all tabs warm (the user's rule): a tab put behind (a trim the client <paramref name="asked"/>
+    /// for) keeps its frames, so the tab brought back finds its playhead's frames at once, unless the computer's free memory (AvailPhys) is
+    /// under the tabs' floor (<paramref name="memoryShort"/>) and the frames are the computer's memory (unified memory or a small card; a big
+    /// card, FrameCache.BigCard, keeps them: video memory nothing else wants, held to Windows' budget for it anyway). The idle trim never does.
     /// </summary>
-    internal static bool TrimEmptiesCache(bool asked, bool bigCard) => asked && !bigCard;
+    internal static bool TrimEmptiesCache(bool asked, bool bigCard, bool memoryShort) => asked && !bigCard && memoryShort;
+
+    /// <summary>The free memory (AvailPhys) under which a tab put behind empties the cache: the tabs' own floor (MainWindow.AvailableFloorBytes).</summary>
+    internal const long AvailableFloorBytes = 2560L << 20;
 
     /// <summary>
     /// Gives back what the worker holds beyond the frames in its cache, between frames on its own thread (a tab put behind: the client's
     /// <see cref="ControlBlock.TrimRequests"/>, <paramref name="asked"/>; or standing idle): the sources the client let go of retired now
     /// (their decoders disposed; their frames parked on a big card, else forgotten), the frames themselves when the trim empties the cache
-    /// (<see cref="TrimEmptiesCache"/>: asked for, and not a big card), the cache's free list and the frames retired while drawn, the pool's
+    /// (<see cref="TrimEmptiesCache"/>: asked for, not a big card, and free memory short), the cache's free list and the frames retired while drawn, the pool's
     /// free working textures, the renderer's textures kept between frames (SceneRenderer.ReleaseIdleTextures: with what carries one frame
     /// into the next only when asked, so the idle trim's redraw is the picture shown), and the readback's staging and planes and an HDR
     /// export's picture (each made again by the next frame that wants one): a few milliseconds. Then its memory is published. The rest,
@@ -376,7 +379,7 @@ public static unsafe partial class CompositorWorker
     private static void TrimMemory(ref ControlBlock control, GpuDevice gpu, DecoderPool decoders, SceneRenderer renderer, bool asked)
     {
         decoders.SyncSources();
-        if (TrimEmptiesCache(asked, decoders.Cache.BigCard))
+        if (TrimEmptiesCache(asked, decoders.Cache.BigCard, SystemCommit.TryRead(out _, out _, out var available) && available < AvailableFloorBytes))
             decoders.Cache.Clear();
         decoders.Cache.DropFree();
         gpu.Textures.ReleaseFree();

@@ -214,10 +214,12 @@ public partial class MainWindow
         }
     }
 
-    private void PlaceRulerPlayhead(TimelineRuler ruler)
+    // The ruler's playhead at the playhead, or at a scrub's moment (seconds) ahead of it (5.4.2B, MainWindow.Scrub.cs).
+    private void PlaceRulerPlayhead(TimelineRuler ruler, double? seconds = null)
     {
         var span = ViewSpan;
-        ruler.PlayheadX = span > 0 && _viewModel.DurationMs > 0 ? (_viewModel.PositionMs / 1000 - _viewStart) / span * ruler.ActualWidth : double.NaN;
+        var at = seconds ?? _viewModel.PositionMs / 1000;
+        ruler.PlayheadX = span > 0 && _viewModel.DurationMs > 0 ? (at - _viewStart) / span * ruler.ActualWidth : double.NaN;
     }
 
     /// <summary>
@@ -227,7 +229,7 @@ public partial class MainWindow
     /// </summary>
     private void FollowPlayhead()
     {
-        if (_viewFit || !_viewModel.IsPlaying || _isScrubbing || !Services.AppSettings.Current.TimelineFollowsPlayhead)
+        if (_viewFit || !_viewModel.IsPlaying || IsScrubHeld ||!Services.AppSettings.Current.TimelineFollowsPlayhead)
             return;
 
         var (at, span) = (_viewModel.PositionMs / 1000, ViewSpan);
@@ -257,11 +259,8 @@ public partial class MainWindow
     private void RegisterTimelineChrome(TimelineRuler ruler, ScrollBar bar, Slider zoom)
     {
         _rulers.Add(ruler);
-        ruler.SeekRequested += seconds =>
-        {
-            if (_viewModel.DurationMs > 0)
-                _viewModel.PositionMs = Math.Clamp(seconds * 1000, 0, _viewModel.DurationMs);
-        };
+        ruler.SeekRequested += seconds => ScrubPlayheadTo(seconds * 1000);
+        ruler.SeekEnded += EndScrub;
         ruler.ZoomRequested += (factor, x) => ZoomTimeline(factor, ruler.ActualWidth > 0 ? x / ruler.ActualWidth : 0.5);
         ruler.PanRequested += pixels => PanTimeline(ruler.ActualWidth > 0 ? pixels / ruler.ActualWidth * ViewSpan : 0);
         ruler.MarkerMenuRequested += index =>

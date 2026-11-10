@@ -13,8 +13,9 @@ namespace HandPegApp;
 // The window draws its own title bar (WindowChrome, MainWindow.xaml): HandPeg's name, and the caption buttons, the
 // Maximize button answering Windows as its own (HTMAXBUTTON), so Windows 11's Snap Layouts open from it. The status text
 // sits dimmed in the middle of the title bar, the work under way is a dim fill across the title bar's whole height as far
-// as it has got, and resting on the status opens the work flyout as the transport row's progress chip does. Nothing here
-// polls: the work summary's one timer drives it.
+// as it has got, and resting on the status opens the work flyout; a newer HandPeg is offered at its right end. The title bar
+// is their one home (5.4.2A, the user's call: 5.4.1-M5 had put a second progress chip and the update notice on the transport
+// row). Nothing here polls: the work summary's one timer drives it.
 public partial class MainWindow
 {
     /// <summary>The title bar and the status bar as the settings have them; before the first frame (Cold-Start rule 1), and on every change.</summary>

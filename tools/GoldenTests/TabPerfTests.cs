@@ -62,7 +62,8 @@ public static class TabPerfTests
         yield return Case("tab-perf-hot-swap", "# A project tab kept live in memory: put behind and brought back by a swap of references, exactly as it was, and as the cold path opens it.", HotSwap);
         yield return Case("tab-perf-late-work", "# Work started for a tab and still under way as it goes behind is cancelled: a late continuation never lands in the next tab.", LateWork);
         yield return Case("tab-perf-io-order", "# Each project tab's disk work runs in order on the thread pool: write, delete, write keeps the last; a read sees the write before it.", IoOrder);
-        yield return Case("tab-perf-valve", "# The memory valve lets the least recently used live tab go to its cache file: over 16, over the budget or with memory short; never the two used last.", Valve);
+        yield return Case("tab-perf-valve", "# The memory valve keeps every open tab warm (5.4.2A) and lets the least recently used go to its cache file only when free memory is under 2.5 GB; never the two used last.", Valve);
+        yield return Case("tab-perf-preroll", "# The tabs likely next (5.4.2A): the videos at a tab's playhead, top track first, each one's file, stream and moment, hidden ones left out.", PreRoll);
         yield return Case("tab-perf-switch-wiring", "# A switch between live tabs awaits nothing, reads no cache file and makes no fingerprint; the tab put behind is written after it.", SwitchWiring);
         yield return Case("tab-perf-vm-field-audit", "# Every MainViewModel instance field is classified as the project's (a tab keeps it) or the application's: a new one fails until it is.", FieldAudit);
         yield return Case("tab-perf-kept-views", "# A tab kept live keeps its clips' views: none made anew as it comes back, never another tab's, the views list filled in one change.", KeptViews);
@@ -369,20 +370,45 @@ public static class TabPerfTests
         Dictionary<string, long> Kept(int count, long each) => tabs.Take(count).ToDictionary(t => t.Id, _ => each, StringComparer.Ordinal);
         var none = new HashSet<string>(StringComparer.Ordinal);
 
-        expect(MainWindow.TabToLetGo(tabs, Kept(5, 20 * Mb), none, 1024 * Mb, false) is null, "five tabs of 20 MB under a 1 GB budget: none let go");
-        expect(MainWindow.TabToLetGo(tabs, new Dictionary<string, long>(), none, 0, true) is null, "nothing kept: nothing to let go");
-        expect(MainWindow.TabToLetGo(tabs, Kept(5, 300 * Mb), none, 1024 * Mb, false) == "t1", "five of 300 MB, over the budget: the least recently used (t1) goes");
-        expect(MainWindow.TabToLetGo(tabs, Kept(5, 20 * Mb), none, 1024 * Mb, memoryShort: true) == "t1", "under the budget but Windows says memory is short: t1 goes");
-        expect(MainWindow.TabToLetGo(tabs, Kept(17, 1 * Mb), none, 1024 * Mb, false) == "t1" && MainWindow.MostLiveTabs == 16, "seventeen kept (more than 16): t1 goes");
-        expect(MainWindow.TabToLetGo(tabs, Kept(5, 300 * Mb), new HashSet<string>(["t1", "t2"], StringComparer.Ordinal), 1024 * Mb, false) == "t3",
+        expect(MainWindow.TabToLetGo(tabs, Kept(5, 300 * Mb), none, false) is null, "five tabs of 300 MB, free memory above the floor: none let go (all tabs warm)");
+        expect(MainWindow.TabToLetGo(tabs, Kept(18, 200 * Mb), none, false) is null, "eighteen kept (no count cap any more): none let go");
+        expect(MainWindow.TabToLetGo(tabs, new Dictionary<string, long>(), none, true) is null, "nothing kept: nothing to let go");
+        expect(MainWindow.TabToLetGo(tabs, Kept(5, 20 * Mb), none, memoryShort: true) == "t1", "free memory under the floor: the least recently used (t1) goes");
+        expect(MainWindow.TabToLetGo(tabs, Kept(5, 300 * Mb), new HashSet<string>(["t1", "t2"], StringComparer.Ordinal), true) == "t3",
             "a tab whose cache file could not be written must stay (its work is only in memory): the next least recently used goes");
 
         // The two used last (the tab in front, t20, and the one before it, t19) are never let go, kept or not.
         var recent = new Dictionary<string, long>(StringComparer.Ordinal) { ["t19"] = 900 * Mb, ["t20"] = 900 * Mb };
-        expect(MainWindow.TabToLetGo(tabs, recent, none, 0, true) is null, "the two used last are never let go, whatever the budget or the memory");
+        expect(MainWindow.TabToLetGo(tabs, recent, none, true) is null, "the two used last are never let go, whatever the memory");
         recent["t18"] = 1;
-        expect(MainWindow.TabToLetGo(tabs, recent, none, 1024 * Mb, false) == "t18", "with a third over the budget, the third goes");
-        expect(new AppSettings().HydratedTabBudgetMb == 1024, "the budget (AppSettings.HydratedTabBudgetMb) is 1 GB as HandPeg comes");
+        expect(MainWindow.TabToLetGo(tabs, recent, none, true) == "t18", "with a third kept and memory short, the third goes");
+        expect(MainWindow.AvailableFloorBytes == 2560L << 20, "the floor is 2.5 GB of free memory (AvailPhys)");
+    }
+
+    // ----- tab-perf-preroll -----
+
+    private static void PreRoll(Action<bool, string> expect)
+    {
+        static TimelineClip Clip(string path, double start, double end, double offset = 0, double speed = 1, int stream = 0) =>
+            new() { SourcePath = path, Start = start, End = end, MediaOffset = offset, Speed = speed, VideoStreamIndex = stream, ContentKind = LayerKind.VideoFile };
+
+        var document = new TimelineDocument();
+        document.Tracks.Add(new TimelineTrackModel { Clips = [Clip(First, 0, 10, offset: 5)] });
+        document.Tracks.Add(new TimelineTrackModel { Clips = [Clip(Second, 2, 6, offset: 1, speed: 2, stream: 1), Clip(First, 6, 9)] });
+        document.Tracks.Add(new TimelineTrackModel { IsHidden = true, Clips = [Clip("D:/media/hidden.mkv", 0, 10)] });
+        document.Tracks.Add(new TimelineTrackModel { Clips = [new TimelineClip { ContentKind = LayerKind.Text, Start = 0, End = 10 }, Clip("D:/media/off.mkv", 0, 10)] });
+        document.Tracks[3].Clips[1].IsHidden = true;
+
+        static string Shown(List<(string Path, int Stream, double MediaSeconds)> frames) =>
+            string.Join("; ", frames.Select(f => string.Create(CultureInfo.InvariantCulture, $"{Path.GetFileName(f.Path)} #{f.Stream} at {f.MediaSeconds:0.###}")));
+
+        var at3 = MainWindow.VideoFramesAt(document, 3, 4);
+        expect(Shown(at3) == "second.mkv #1 at 3; first.mkv #0 at 8", $"at 3 s: the top video first, each at its own moment of its file, speed counted ({Shown(at3)})");
+        var at6 = MainWindow.VideoFramesAt(document, 6, 4);
+        expect(Shown(at6) == "first.mkv #0 at 0; first.mkv #0 at 11", $"at 6 s: a clip ends where the next begins, which is the one shown ({Shown(at6)})");
+        expect(MainWindow.VideoFramesAt(document, 3, 1).Count == 1, "at most as many as asked: the top one");
+        expect(MainWindow.VideoFramesAt(document, 12, 4).Count == 0, "past every clip: none");
+        expect(GpuPreviewEngine.TabPreRollSeconds == 0.5, "half a second past each playhead is decoded ahead");
     }
 
     // ----- tab-perf-switch-wiring -----

@@ -203,9 +203,9 @@ public static class LayoutTests
             "the title bar's middle (TitleStatus) starts collapsed: nothing there until the user does something, something loads or work begins (5.3-Stage3)");
         expect(Named(main, "StatusBar") is null && Attr(Named(main, "DestinationBar"), "Margin") == "0,1,0,0",
             "no 10 px band above the destination bar, and no status bar (retired in 5.4.1-M5)");
-        expect(Named(main, "WorkChip")?.Ancestors().Any(e => Attr(e, X + "Name") == "TransportRow") == true
-               && Named(main, "UpdateNotice")?.Ancestors().Any(e => Attr(e, X + "Name") == "TransportRow") == true,
-            "the progress chip and the update notice are on the transport row (5.4.1-M5)");
+        expect(Named(main, "WorkChip") is null && Named(main, "UpdateNotice")?.Ancestors().Any(e => Attr(e, X + "Name") == "TitleRight") == true
+               && Attr(Named(main, "WorkFlyout"), "PlacementTarget") == "{Binding ElementName=TitleStatus}",
+            "the status, the work under way and the update notice live in the title bar alone (5.4.2A: no progress chip on the transport row)");
         expect(Attr(Named(main, "PresetBarPane"), "Margin") == "0", "no band under the Preset Bar either (its Margin 0, from 0,0,0,10): the dock's seams part the panes");
         Seams(expect, text, app);
 

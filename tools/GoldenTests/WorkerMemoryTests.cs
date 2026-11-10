@@ -229,17 +229,17 @@ public static class WorkerMemoryTests
         Expect(problems, "the list's entries", string.Join("|", shown), "Auto (up to 11.0 GB here)|Off|1 GB|2 GB|2.5 GB|4 GB|8 GB|12 GB|16 GB");
         Expect(problems, "Auto's entry without a running player", SettingsWindow.FrameCacheChoices(0, 0)[0].Display, "Auto");
 
-        // The big card's rule (the TabPerf follow-up, the user's X1): the budget the maximum from the start, and its frames kept across a
-        // tab put behind; everything else as above, its cache emptied by a tab put behind.
+        // The big card's rule (the TabPerf follow-up, the user's X1): the budget the maximum from the start. 5.4.2A, all tabs warm: every
+        // machine keeps its frames across a tab put behind while free memory is above the floor.
         text.Append("the big card's rule (discrete, more than 4 GB of its own): where Auto's budget starts, and a tab put behind:\n");
         foreach (var m in machines)
         {
             var big = MemoryTier.IsBigCard(m.Warp, m.Unified, m.Dedicated);
             var start = MemoryTier.Budget(big, m.Baseline, 0, MemoryTier.Maximum(0, m.Ceiling));
-            var empties = CompositorWorker.TrimEmptiesCache(asked: true, big);
+            var empties = CompositorWorker.TrimEmptiesCache(asked: true, big, memoryShort: false);
             Line(text, $"  {m.Machine}: {(big ? "a big card" : "not a big card")}, starts at {Size(start)}; a tab put behind {(empties ? "empties the cache" : "keeps its frames")}");
             Expect(problems, $"where {m.Machine} starts", start, big ? m.Ceiling : m.Baseline);
-            Expect(problems, $"a tab put behind on {m.Machine} empties the cache", empties, !big);
+            Expect(problems, $"a tab put behind on {m.Machine} empties the cache", empties, false);
         }
 
         var capped = MemoryTier.Budget(true, 2 * Gb, 0, MemoryTier.Maximum(4 * Gb, 11 * Gb));
@@ -249,11 +249,11 @@ public static class WorkerMemoryTests
         Expect(problems, "a small card's budget after two steps", MemoryTier.Budget(false, 2 * Gb, 2, 4 * Gb), 4 * Gb);
 
         text.Append("a trim empties the frame cache when:\n");
-        foreach (var (asked, big) in new[] { (true, false), (true, true), (false, false), (false, true) })
+        foreach (var (asked, big, shortOf) in new[] { (true, false, false), (true, false, true), (true, true, true), (false, false, true), (false, true, false) })
         {
-            var empties = CompositorWorker.TrimEmptiesCache(asked, big);
-            Line(text, $"  {(asked ? "asked for (a tab put behind)" : "idle")}, {(big ? "a big card" : "unified memory or a small card")}: {(empties ? "emptied" : "frames kept")}");
-            Expect(problems, $"a trim {(asked ? "asked for" : "idle")} on {(big ? "a big card" : "a small one")}", empties, asked && !big);
+            var empties = CompositorWorker.TrimEmptiesCache(asked, big, shortOf);
+            Line(text, $"  {(asked ? "asked for (a tab put behind)" : "idle")}, {(big ? "a big card" : "unified memory or a small card")}, free memory {(shortOf ? "under 2.5 GB" : "above 2.5 GB")}: {(empties ? "emptied" : "frames kept")}");
+            Expect(problems, $"a trim {(asked ? "asked for" : "idle")} on {(big ? "a big card" : "a small one")}{(shortOf ? ", memory short" : "")}", empties, asked && !big && shortOf);
         }
     }
 

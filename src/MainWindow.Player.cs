@@ -271,8 +271,8 @@ public partial class MainWindow
 
     private void OnPlayerTimeChanged(long timeMs)
     {
-        // Don't fight the user for the thumb while they are dragging it.
-        if (_isScrubbing)
+        // Don't fight the user for the playhead while they are dragging it (the overview's thumb, a ruler).
+        if (IsScrubHeld)
             return;
 
         // Paused on a moment the user sent it to (a seek, a frame or key step, a click on the timeline), the playhead
@@ -299,9 +299,14 @@ public partial class MainWindow
         }
     }
 
+    /// <summary>
+    /// The scrubber's value moved. Its binding to the playhead waits to be told (UpdateSourceTrigger=Explicit, 5.4.2B): a click beside its
+    /// playhead or a key sets the playhead here at once (FollowPlayheadInPlayer then sends the player there); a drag of its playhead scrubs
+    /// (ScrubPlayheadTo: the lines and the player now, the playhead's value once per frame).
+    /// </summary>
     private void TimelineSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
-        if (_updatingFromPlayer || _gpu is null)
+        if (_updatingFromPlayer)
             return;
 
         // Not a move of the playhead (4.1.1): the value pushed down by a timeline that became shorter (the slider
@@ -309,8 +314,13 @@ public partial class MainWindow
         // millisecond (a position given back in other units).
         if (e.NewValue == TimelineSlider.Maximum && e.OldValue > TimelineSlider.Maximum)
             return;
-        if (!_isScrubbing && Math.Abs(e.NewValue - e.OldValue) < 1)
+        if (!_isScrubbing)
+        {
+            // The playhead's own value come back (its binding), or a step of less than a millisecond: nothing to tell.
+            if (Math.Abs(e.NewValue - _viewModel.PositionMs) >= 1)
+                _viewModel.PositionMs = e.NewValue;
             return;
+        }
 
         // Magnetism: while dragging, a thumb that comes close enough to an I-frame is pulled onto it.
         // The drag continues from wherever the thumb is, so it sticks until the pointer has moved clear.
@@ -330,10 +340,9 @@ public partial class MainWindow
             }
         }
 
-        // The engine answers every position of a drag, exactly (Instant Seek): nothing to pace. Already sent there by the playhead itself
-        // (FollowPlayheadInPlayer): not sent again, so a drag's heading is not reset by a second seek to the same moment.
-        if (!PlayerAt((long)e.NewValue))
-            PlayerSeek((long)e.NewValue);
+        // The engine answers every position of a drag, exactly (Instant Seek): nothing to pace. Already there: not sent again, so a drag's
+        // heading is not reset by a second seek to the same moment (ScrubPlayheadTo).
+        ScrubPlayheadTo(e.NewValue);
     }
 
     /// <summary>
@@ -348,9 +357,14 @@ public partial class MainWindow
             return;
 
         // A tab's paused still (MainWindow.ProjectTabs.cs) is of the moment the tab came back at: gone the moment the playhead moves, so it
-        // never stands over a scrub (the switch's own move of the playhead, restoring the tab's, keeps it until the first frame).
-        if (!_switchingTab)
+        // never stands over a scrub. The switch's own move of the playhead, restoring the tab's (5.4.2A: also a tab read from its file, whose
+        // view is restored after the switch), keeps it until the engine's first frame of the tab (WatchForFirstFrame).
+        if (!_switchingTab && !_restoringTabView)
             HideTabStill();
+
+        // A scrub's value, set once per frame: the player was sent there as the pointer moved (MainWindow.Scrub.cs).
+        if (_scrubFlushing)
+            return;
         var ms = (long)_viewModel.PositionMs;
         if (!PlayerAt(ms))
             PlayerSeek(ms);
@@ -396,6 +410,7 @@ public partial class MainWindow
     private void TimelineSlider_DragCompleted(object sender, DragCompletedEventArgs e)
     {
         _isScrubbing = false;
+        EndScrub();
 
         // Let go (and a click on the timeline is a press let go at once): the exact frame, straight away.
         PlayerSeek((long)TimelineSlider.Value);

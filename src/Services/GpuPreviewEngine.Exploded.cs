@@ -421,7 +421,7 @@ public sealed partial class GpuPreviewEngine
     {
         if (!_drawingExploded)
         {
-            // Out of the 3D view a while: the flat picture once more, so that the worker lets go of the 3D view's textures (up
+            // Out of the 3D view half a second (5.4.2A): the flat picture once more, so that the worker lets go of the 3D view's textures (up
             // to some hundreds of MB its Instant Seek cache would otherwise make room for) while the player stays paused too.
             if (_flatSince != 0 && Stopwatch.GetElapsedTime(_flatSince).TotalSeconds > SceneRenderer.ExplodedTexturesPatience + 0.5)
             {

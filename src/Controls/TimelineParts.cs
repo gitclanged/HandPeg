@@ -574,6 +574,9 @@ public sealed class TimelineRuler : TimelineBar
     /// <summary>The ruler was pressed or dragged on: the playhead goes to this moment, in seconds.</summary>
     public event Action<double>? SeekRequested;
 
+    /// <summary>The press or drag that seeks was let go, or its capture taken away (5.4.2B: the host sets the playhead's value it held back).</summary>
+    public event Action? SeekEnded;
+
     /// <summary>The wheel was turned over it: zoom by a factor about a point (pixels from its left).</summary>
     public event Action<double, double>? ZoomRequested;
 
@@ -756,6 +759,7 @@ public sealed class TimelineRuler : TimelineBar
 
         _seeking = false;
         ReleaseMouseCapture();
+        SeekEnded?.Invoke();
         e.Handled = true;
     }
 
@@ -913,7 +917,10 @@ public sealed class TimelineRuler : TimelineBar
         // A middle-button drag taken away mid-way is no flick: nothing coasts from it.
         if (_panFrom is not null)
             StopMomentum();
+        var wasSeeking = _seeking;
         (_seeking, _panFrom) = (false, null);
+        if (wasSeeking)
+            SeekEnded?.Invoke();
 
         // A seek's drag let go outside the ruler: nothing of it is under the pointer.
         if (!IsMouseOver)

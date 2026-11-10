@@ -51,13 +51,6 @@ public sealed partial class AppSettings
     public int GpuFrameCacheMb { get; set; }
 
     /// <summary>
-    /// How much memory the project tabs kept live in the editor (5.4D-TabPerf: each tab brought to the front once keeps its
-    /// Sequence, history, still and pictures, so a switch is a swap) may hold together, MB, before the tab used least recently goes
-    /// back to its file on disk. The two tabs used last always stay.
-    /// </summary>
-    public int HydratedTabBudgetMb { get; set; } = 1024;
-
-    /// <summary>
     /// Decode threads of the compositor (0 Auto: two, as most cards decode two streams at full speed at once; at most 4).
     /// Read when the player's compositor starts: a change applies after a restart.
     /// </summary>

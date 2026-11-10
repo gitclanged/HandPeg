@@ -52,6 +52,13 @@ public sealed partial class GpuPreviewEngine : IDisposable
     private sealed record PrewarmedFile(int Source, long PathHash, long Until);
     private PrewarmedFile? _prewarm;
 
+    // The project tabs' pre-roll (PrewarmTabs): the frames at their playheads, and until when (Stopwatch ticks) they are asked for.
+    private sealed record PrewarmedTabs(GpuSeekHint[] Hints, long Until);
+    private PrewarmedTabs? _tabPrewarm;
+
+    /// <summary>How far past a tab's playhead its pre-roll decodes, seconds of the file (5.4.2A: half a second, the worker's HoverRoll at most).</summary>
+    public const double TabPreRollSeconds = 0.5;
+
     /// <summary>How long a file opened ahead of a drop is kept asked for, seconds (no drop came: let go).</summary>
     private const double PrewarmSeconds = 10;
 
@@ -238,6 +245,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
         _audio.SetProgram(AudioProgram.Empty);
         ForgetEnergies();
         Volatile.Write(ref _prewarm, null);
+        Volatile.Write(ref _tabPrewarm, null);
         Volatile.Write(ref _pointer, double.NaN);
         Volatile.Write(ref _pointerMoved, Stopwatch.GetTimestamp());
         Invalidate();
@@ -285,6 +293,27 @@ public sealed partial class GpuPreviewEngine : IDisposable
 
     /// <summary>Whether the newest scene presented showed every video's exact frame (not a stand-in from the cache).</summary>
     public bool PresentedExact => Volatile.Read(ref _client.Memory.Control.PresentedExact) != 0;
+
+    // Scene marks (5.4.2A): the newest asked for (UI thread), the one the pump's turn read before it read the plan and the playhead (pump
+    // thread), and the newest a published scene was made after, with that scene's number (written by the pump, the number first).
+    private long _sceneMark, _turnMark, _markPublished, _markedScene;
+
+    /// <summary>
+    /// A mark of now (UI thread), after a change the player has to show before anything stands in for it (a project tab brought back: its
+    /// Sequence, playhead and view set): <see cref="PresentedSince"/> says when a scene made after it has been presented. Draws again.
+    /// </summary>
+    public long MarkScene()
+    {
+        var mark = Interlocked.Increment(ref _sceneMark);
+        Invalidate();
+        return mark;
+    }
+
+    /// <summary>
+    /// Whether the worker has presented a scene the pump made after <paramref name="mark"/> (<see cref="MarkScene"/>): one of the state as it
+    /// was then or newer, never a scene of before it still on its way (the frame of the tab put behind, 5.4.2A's one-frame jump on a switch).
+    /// </summary>
+    public bool PresentedSince(long mark) => mark > 0 && Volatile.Read(ref _markPublished) >= mark && PresentedScene >= Volatile.Read(ref _markedScene);
 
     /// <summary>
     /// The captions the player shows (UI thread): line by line on the sequence clock, their style and text scale (as the
@@ -389,6 +418,34 @@ public sealed partial class GpuPreviewEngine : IDisposable
             if (!_playing)
                 _dirty.Set();
         }
+    }
+
+    /// <summary>
+    /// The project tabs likely to come to the front next (5.4.2A: the next in Ctrl+Tab's order, and the one under the pointer): the frame
+    /// at each one's playhead of every video it shows there, and <see cref="TabPreRollSeconds"/> after it, decoded by the worker after
+    /// everything else it does (never while playing), so a switch, and Space or a scrub right after it, finds them decoded and the decoders
+    /// open. Asked for <see cref="PrewarmSeconds"/> at most; an empty list lets go. UI thread (the source table is its).
+    /// </summary>
+    /// <param name="frames">Each video's file, its video stream (0 the first) and the moment of the file at its tab's playhead.</param>
+    public void PrewarmTabs(IReadOnlyList<(string Path, int Stream, double MediaSeconds)> frames)
+    {
+        var hints = new List<GpuSeekHint>(frames.Count);
+        foreach (var (path, stream, media) in frames)
+        {
+            var source = _broker.SourceFor(path, stream);
+            if (source >= 0 && double.IsFinite(media))
+            {
+                hints.Add(new GpuSeekHint
+                {
+                    SourceId = source, Kind = (int)GpuSeekHintKind.HoverRoll, PathHash = _broker.PathHashOf(source),
+                    MediaSeconds = Math.Max(media, 0), Span = (float)TabPreRollSeconds,
+                });
+            }
+        }
+
+        Volatile.Write(ref _tabPrewarm, hints.Count == 0 ? null : new PrewarmedTabs([.. hints], Stopwatch.GetTimestamp() + (long)(PrewarmSeconds * Stopwatch.Frequency)));
+        if (!_playing)
+            _dirty.Set();
     }
 
     // ----- The clock -----
@@ -535,6 +592,8 @@ public sealed partial class GpuPreviewEngine : IDisposable
                         _audio.Play();
                     }
 
+                    // The marks asked for so far, read before the plan and the playhead: the scene made of them comes after them (PresentedSince).
+                    _turnMark = Volatile.Read(ref _sceneMark);
                     var plan = Volatile.Read(ref _plan);
                     var at = _audio.Position + _refresh * Math.Max(_rate, 0);
                     if (_rate >= 0 && at >= plan.SequenceSeconds - 1e-3 || _rate < 0 && at <= 0)
@@ -588,6 +647,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
                         Thread.Sleep(1);
                     else
                         _viewport.WaitForTurn(50);
+                    _turnMark = Volatile.Read(ref _sceneMark);
                     var sequence = PublishAt(Volatile.Read(ref _plan), Volatile.Read(ref _pausedAt), playing: false);
                     if (sequence > 0)
                         _ = _client.WaitForFrame(sequence, Math.Max(12, (int)(_refresh * 1000)));
@@ -605,6 +665,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
                     return;
                 if (_playing)
                     continue;
+                _turnMark = Volatile.Read(ref _sceneMark);
                 var pausedPlan = Volatile.Read(ref _plan);
                 var pausedAt = Volatile.Read(ref _pausedAt);
                 if (woke == 0 && Interlocked.Exchange(ref _sceneDirty, 0) != 0)
@@ -671,7 +732,21 @@ public sealed partial class GpuPreviewEngine : IDisposable
             WriteLoopback(ref header);
         }
 
-        return _client.Publish();
+        var sequence = _client.Publish();
+        if (sequence > 0 && _turnMark > _markPublished)
+        {
+            Volatile.Write(ref _markedScene, sequence);
+            Volatile.Write(ref _markPublished, _turnMark);
+        }
+
+        // A mark asked for after this turn read the plan (its own redraw taken by this scene): drawn once more, so the mark is met.
+        if (sequence > 0 && Volatile.Read(ref _sceneMark) > _turnMark)
+        {
+            Volatile.Write(ref _sceneDirty, 1);
+            _dirty.Set();
+        }
+
+        return sequence;
     }
 
     // ----- Side windows' Live Video Previews (5.4C): mirrors of the player's picture -----
@@ -1016,16 +1091,29 @@ public sealed partial class GpuPreviewEngine : IDisposable
             resting = (now - Volatile.Read(ref _pointerMoved)) * 1.0 / Stopwatch.Frequency >= GpuHintWriter.HoverRest;
         }
 
-        // A file opened ahead of a drop: its first frames, after everything else the worker does (never while playing).
-        var extra = default(GpuSeekHint);
+        // A file opened ahead of a drop: its first frames; the project tabs likely next (5.4.2A): their playheads' half second. After
+        // everything else the worker does (never while playing).
+        Span<GpuSeekHint> extras = stackalloc GpuSeekHint[MostExtras];
+        var extraCount = 0;
         if (!playing && Volatile.Read(ref _prewarm) is { } file && now < file.Until)
-            extra = new GpuSeekHint { SourceId = file.Source, Kind = (int)GpuSeekHintKind.HoverRoll, PathHash = file.PathHash, Span = 0.2f };
+            extras[extraCount++] = new GpuSeekHint { SourceId = file.Source, Kind = (int)GpuSeekHintKind.HoverRoll, PathHash = file.PathHash, Span = 0.2f };
+        if (!playing && Volatile.Read(ref _tabPrewarm) is { } tabs && now < tabs.Until)
+        {
+            foreach (var hint in tabs.Hints)
+            {
+                if (extraCount < MostExtras)
+                    extras[extraCount++] = hint;
+            }
+        }
 
         // The cuts ahead as if Space were pressed: not while a scrub runs (they would move with every step of it).
         var rate = playing ? _rate : scrubbing ? 0 : _rate > 0 ? _rate : 1;
-        if (_hintWriter.Write(plan, at, rate, hints, out var count, scrubAhead, pointer, resting, extra, Volatile.Read(ref _loopFrom), Volatile.Read(ref _loopTo)))
+        if (_hintWriter.Write(plan, at, rate, hints, out var count, scrubAhead, pointer, resting, extras[..extraCount], Volatile.Read(ref _loopFrom), Volatile.Read(ref _loopTo)))
             _client.SetHints(hints[..count]);
     }
+
+    // The most hints of the caller's ahead of the rest: a drop's file, and the two tabs' videos (four each at most, PrewarmTabs' callers).
+    private const int MostExtras = 9;
 
     // Where Loop takes playback back from and to (seconds; NaN: no Loop; from infinite: the sequence's end), for the hints.
     private double _loopFrom = double.NaN, _loopTo = double.NaN;

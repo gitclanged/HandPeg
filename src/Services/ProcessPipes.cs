@@ -70,6 +70,23 @@ internal static class ProcessPipes
     }
 
     /// <summary>
+    /// <see cref="RunAsync"/> for an FFmpeg that decodes for background work (5.4.2A): it waits for one of <see cref="WorkScheduler.ToolGate"/>'s
+    /// places first, so at most two run at once.
+    /// </summary>
+    public static async Task<CommandResult> RunGatedAsync(Command command, CancellationToken cancellationToken)
+    {
+        await WorkScheduler.ToolGate.WaitAsync(cancellationToken);
+        try
+        {
+            return await RunAsync(command, cancellationToken);
+        }
+        finally
+        {
+            WorkScheduler.ToolGate.Release();
+        }
+    }
+
+    /// <summary>
     /// Runs a tool to its end and returns what it wrote, with the run disposed of as soon as it is over.
     /// Every short run whose output is read (ffprobe, the encoder tests) goes through here.
     /// </summary>

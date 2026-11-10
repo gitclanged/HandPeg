@@ -8,7 +8,8 @@ namespace HandPegApp.Views;
 // A folder being indexed (IndexFolderAsync, after the posters on screen) and the watched capture folder (AppSettings.WatchedCaptureFolder,
 // a while after start-up) have each video's Timeline work done ahead in quiet time (the Idle lane, Priority 3): the shared N-frame strip
 // (the Timeline's filmstrip and hover take it up at once, MediaBrowserFrames), the waveform peaks of each audio stream (one reading of the
-// file, Waveforms.RenderManyAsync) and the seek facts (seekindex.bin, MediaProbe). What the caches hold already is never made again.
+// file, Waveforms.BakeAsync) and the seek facts (seekindex.bin, MediaProbe). What the caches hold already is never made again. 5.4.2A: all of it
+// to the disk caches only; no picture, peaks or strip of a pre-baked file is kept in memory (the Timeline reads them back when it shows the file).
 public partial class MediaBrowserPane
 {
     /// <summary>The waveform peaks and the seek facts of one video, made at Idle where the caches do not hold them yet.</summary>
@@ -28,7 +29,7 @@ public partial class MediaBrowserPane
         var missing = Enumerable.Range(0, info.Audio.Count).Select(i => new WaveformRequest([i], 16, 16, "gray"))
             .Where(r => PreviewCache.Timeline.Find(path, r.CacheKind, ".peaks") is null).ToList();
         if (missing.Count > 0)
-            await Waveforms.RenderManyAsync(path, missing, token, WorkLane.Idle);
+            await Waveforms.BakeAsync(path, missing, token);
     }
 
     /// <summary>

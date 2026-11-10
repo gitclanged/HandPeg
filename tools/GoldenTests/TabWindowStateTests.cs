@@ -287,7 +287,7 @@ public static class TabWindowStateTests
             "the wait for a tab's player or engine is let go only as the tab goes behind (5.4D review), which is at once and never refused (5.4D-TabPerf: nothing awaited)");
         var still = Method(Read("MainWindow.TabStill.cs"), "private async Task TakeLiveStillAsync(");
         expect(InOrder(still, "var mark = new StillMark(_viewModel.UndoMark, _viewModel.PositionMs, _explodedUi);", "engine.CaptureThumbnailAsync(StillShortSide, asShown: mark.Shown3D)")
-               && InOrder(Method(tabs, "private TabViewContext DetachActive("), "var (still, stillMark) = (_liveStill, _liveStillMark);", "var preview = still is null && ", "still is not null && !stillMark.Shown3D ? still : preview")
+               && InOrder(Method(tabs, "private TabViewContext DetachActive("), "var (still, stillMark) = (_liveStill, _liveStillMark);", "var preview = (still is null || stillMark.Shown3D) && ", "still is not null && !stillMark.Shown3D ? still : preview")
                && InOrder(suspend, "var live = DetachActive(tab, out write);", "LeaveExplodedAtOnce();", "_gpu?.Suspend();"),
             "its still is captured as it is shown (the 3D picture), kept fresh ahead, never made the project's thumbnail, and the view is left at once right before the engine lets go");
 

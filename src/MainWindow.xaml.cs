@@ -51,7 +51,7 @@ public partial class MainWindow : Window
         (UpdateActionButton.Content, UpdateActionButton.IsEnabled, UpdateLaterButton.IsEnabled) = (downloaded ? "Restart to update" : "Update", true, true);
         UpdateActionButton.ToolTip = downloaded
             ? "Closes HandPeg, puts the new version in and starts it again. Without this, the update goes in the next time HandPeg is closed."
-            : "Downloads the new version (the progress shows at the bottom left), then closes HandPeg, puts it in and starts it again.";
+            : "Downloads the new version (the progress shows in the title bar), then closes HandPeg, puts it in and starts it again.";
         UpdateLaterButton.ToolTip = downloaded ? "Hide this. The update goes in when HandPeg is closed." : "Hide this. Nothing is downloaded or put in.";
         UpdateNotice.Visibility = Visibility.Visible;
     }
@@ -1177,20 +1177,13 @@ public partial class MainWindow : Window
 
     private readonly System.Windows.Threading.DispatcherTimer _workFlyoutClose = new() { Interval = TimeSpan.FromMilliseconds(260) };
 
-    // From the progress chip it opens above it; from the status in the title bar (the status bar hidden), under it.
-    private void WorkChip_MouseEnter(object sender, MouseEventArgs e)
+    // From the status in the title bar (the one home of the status and the work under way: the transport row's chip went in 5.4.2A), under it.
+    private void TitleStatus_MouseEnter(object sender, MouseEventArgs e)
     {
         _workFlyoutClose.Stop();
         PauseBackgroundToggle.IsChecked = WorkScheduler.IsPausedByUser(WorkLane.Background);
         PauseIdleToggle.IsChecked = WorkScheduler.IsPausedByUser(WorkLane.Idle);
-        var fromTitle = ReferenceEquals(sender, TitleStatus);
-        if (!WorkFlyout.IsOpen)
-        {
-            WorkFlyout.PlacementTarget = fromTitle ? TitleStatus : WorkChip;
-            WorkFlyout.Placement = fromTitle ? PlacementMode.Bottom : PlacementMode.Top;
-            WorkFlyoutPanel.Margin = fromTitle ? new Thickness(0, 4, 0, 0) : new Thickness(0, 0, 0, 4);
-        }
-
+        WorkFlyoutPanel.Margin = new Thickness(0, 4, 0, 0);
         WorkFlyout.IsOpen = true;
     }
 
@@ -1201,7 +1194,7 @@ public partial class MainWindow : Window
             _workFlyoutClose.Tick += (_, _) =>
             {
                 _workFlyoutClose.Stop();
-                if (!WorkChip.IsMouseOver && !TitleStatus.IsMouseOver && !WorkFlyoutPanel.IsMouseOver)
+                if (!TitleStatus.IsMouseOver && !WorkFlyoutPanel.IsMouseOver)
                     WorkFlyout.IsOpen = false;
             };
             _workFlyoutCloseHooked = true;

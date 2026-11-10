@@ -281,6 +281,46 @@ public static class GpuFilmstripTests
                 var frame = BitmapDecoder.Create(file, BitmapCreateOptions.IgnoreColorProfile, BitmapCacheOption.OnLoad).Frames[0];
                 if ((frame.PixelWidth, frame.PixelHeight) != (256, 144))
                     problems.Add($"the poster is {frame.PixelWidth} x {frame.PixelHeight}, not 256 x 144");
+
+                // 5.4.2A: the same poster decoded in this process by Media Foundation (MfPoster, the compositor's fallback before FFmpeg):
+                // the same size, and the same key frame (the clip's clock is drawn on every frame, so another frame is far from it). Its
+                // seek goes half way past the nearest key frame (a second at most), the earlier of two as near.
+                double[] keys = [0, 10, 20, 30];
+                foreach (var (at, wanted) in new[] { (17.5, 21.0), (15.0, 11.0), (35.0, 30.1), (-1.0, 1.0), (20.0, 21.0) })
+                {
+                    if (Math.Abs(HandPegApp.Compositor.MfPoster.SeekFor(keys, at) - wanted) > 1e-9)
+                        problems.Add(string.Create(CultureInfo.InvariantCulture, $"Media Foundation's poster seeks to {HandPegApp.Compositor.MfPoster.SeekFor(keys, at)} for {at} s, not {wanted}"));
+                }
+
+                var native = Path.Combine(folder, "poster-mf.jpg");
+                var clock = Stopwatch.StartNew();
+                if (!Task.Run(() => HandPegApp.Compositor.MfPoster.TryWriteAsync(clip, native, 17.5, 144, CancellationToken.None)).GetAwaiter().GetResult())
+                {
+                    problems.Add("Media Foundation's poster was not made");
+                }
+                else
+                {
+                    var ms = clock.Elapsed.TotalMilliseconds;
+                    using var nativeFile = File.OpenRead(native);
+                    var ours = BitmapDecoder.Create(nativeFile, BitmapCreateOptions.IgnoreColorProfile, BitmapCacheOption.OnLoad).Frames[0];
+                    if ((ours.PixelWidth, ours.PixelHeight) != (256, 144))
+                    {
+                        problems.Add($"Media Foundation's poster is {ours.PixelWidth} x {ours.PixelHeight}, not 256 x 144");
+                    }
+                    else
+                    {
+                        var (a, b) = (new byte[256 * 144 * 4], new byte[256 * 144 * 4]);
+                        new FormatConvertedBitmap(ours, System.Windows.Media.PixelFormats.Bgr32, null, 0).CopyPixels(a, 256 * 4, 0);
+                        new FormatConvertedBitmap(frame, System.Windows.Media.PixelFormats.Bgr32, null, 0).CopyPixels(b, 256 * 4, 0);
+                        var total = 0L;
+                        for (var i = 0; i < a.Length; i++)
+                            total += i % 4 == 3 ? 0 : Math.Abs(a[i] - b[i]);
+                        var away = total / (a.Length * 0.75);
+                        Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"        Media Foundation's poster: {ms:0} ms, {away:0.00}/255 from the compositor's"));
+                        if (away > 6)
+                            problems.Add(string.Create(CultureInfo.InvariantCulture, $"Media Foundation's poster is {away:0.00}/255 from the compositor's: not the same key frame"));
+                    }
+                }
             }
 
             const int Frames = 8, Height = 54;

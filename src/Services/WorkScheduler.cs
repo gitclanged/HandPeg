@@ -242,6 +242,14 @@ public static class WorkScheduler
     public static SemaphoreSlim GpuDecodeGate { get; } = new(4, 4);
 
     /// <summary>
+    /// How many FFmpeg runs that decode for background pictures and sound (a strip of thumbnails, a poster, hover previews, a waveform
+    /// FFmpeg reads) are under way at once, whatever the lanes allow (5.4.2A): two. A strip opens a decoder for each of its frames (fifteen
+    /// HEVC decoders in one FFmpeg, some hundreds of MB), and eighteen tabs' work at once had twelve FFmpegs running. Taken inside any
+    /// <see cref="GpuDecodeGate"/>, never around one (ProcessPipes.RunGatedAsync).
+    /// </summary>
+    public static SemaphoreSlim ToolGate { get; } = new(2, 2);
+
+    /// <summary>
     /// The project tab in front, by id (5.4.1-M3, ProjectTabs.Active): work asked for while another tab was in front waits, in each lane,
     /// behind the work of this one (Priority 3: the tabs behind). Null before any tab: no work told apart.
     /// </summary>

@@ -168,6 +168,8 @@ public static class Program
         // Pass 5.4.1A: Render Preview retired (A), the player resized with no stretch and the split wipe without the encoder's wait (B).
         results.AddRange(RenderPreviewRetiredTests.All());
         results.AddRange(ViewportResizeTests.All());
+        // Pass 5.4.2B: zero-lag scrubbing (the playhead's lines and the player on the raw move, its value once per frame).
+        results.AddRange(ScrubTests.All());
         // Last of all: its tour needs the WPF Application it makes, and a view model works otherwise once there is one (its command
         // and its undo steps go through the dispatcher, which nothing here pumps), so no test after it would see what it saw alone.
         results.AddRange(UiScaleTests.All());

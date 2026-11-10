@@ -123,6 +123,7 @@ public partial class MainWindow
                 RenameProjectTab(tab, name);
         };
         ProjectTabStrip.PreviewAsked += FillTabPreview;
+        ProjectTabStrip.HoverScrubbed += ScrubTabCard;
 
         _tabDirty.Tick += (_, _) =>
         {
@@ -458,6 +459,8 @@ public partial class MainWindow
             QueueTabWrite(write);
         }
 
+        // The tab Ctrl+Tab brings next made ready now (5.4.2A): its playhead's frames decoded ahead.
+        PrewarmLikelyTabs(null);
         LetGoForMemory();
     }
 
@@ -908,13 +911,27 @@ public partial class MainWindow
             SetView(tab.ViewStart, tab.ViewSpan);
         UnifiedTimeline.Surface.VerticalOffset = tab.VerticalOffset;
         var at = Math.Max(0, Math.Min(tab.PlayheadMs, Math.Max(_viewModel.DurationMs, 0)));
-        _viewModel.PositionMs = at;
 
-        // In the 3D view if it was left in it (5.4D), before the player opens: its first frame is the 3D one its still shows.
-        RestoreExplodedForTab(tab);
-        OpenInPlayer((long)at, paused: true);
+        // Its own playhead put back is no move of the user's: the still stays over it (FollowPlayheadInPlayer).
+        _restoringTabView = true;
+        try
+        {
+            _viewModel.PositionMs = at;
+
+            // In the 3D view if it was left in it (5.4D), before the player opens: its first frame is the 3D one its still shows.
+            RestoreExplodedForTab(tab);
+            OpenInPlayer((long)at, paused: true);
+        }
+        finally
+        {
+            _restoringTabView = false;
+        }
+
         WatchForFirstFrame();
     }
+
+    // A tab's view being put back (RestoreTabView): its playhead's move keeps the still.
+    private bool _restoringTabView;
 
     /// <summary>
     /// Playback, a shuttle, and a drag or a lift in the 3D view stopped: what a tab is put behind (or closed) in. The 3D view itself stays

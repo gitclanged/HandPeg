@@ -419,6 +419,8 @@ public partial class MainWindow
             if (_tabs.Find(item.Id) is not { } tab || !KeptInFile(tab))
                 return;
 
+            // The tab under the pointer is likely next (5.4.2A): its playhead's frames decoded ahead, with the next in Ctrl+Tab's order.
+            PrewarmLikelyTabs(tab);
             item.Details = ProjectTabs.DescribeFrame(tab.FrameWidth, tab.FrameHeight, tab.FrameRate);
             if (StillOfTab(tab) is { } still)
             {

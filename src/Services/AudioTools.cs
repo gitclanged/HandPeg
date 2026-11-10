@@ -66,7 +66,18 @@ public static partial class Waveforms
     /// </summary>
     /// <returns>One picture for each request, in order; null for one that could not be made.</returns>
     /// <param name="lane">The reading's lane: Background, but for what the user is waiting on.</param>
-    public static async Task<ImageSource?[]> RenderManyAsync(string mediaPath, IReadOnlyList<WaveformRequest> requests, CancellationToken cancellationToken, WorkLane lane = WorkLane.Background)
+    public static Task<ImageSource?[]> RenderManyAsync(string mediaPath, IReadOnlyList<WaveformRequest> requests, CancellationToken cancellationToken, WorkLane lane = WorkLane.Background) =>
+        ReadManyAsync(mediaPath, requests, cancellationToken, lane, draw: true);
+
+    /// <summary>
+    /// The peaks of several waveforms of one file written to the Timeline cache (.peaks) and nothing else (5.4.2A: the folder pre-bake, Priority
+    /// 3): no picture drawn and no peaks kept in memory, for a file no open Sequence shows yet. Those kept already are not read again.
+    /// </summary>
+    public static async Task BakeAsync(string mediaPath, IReadOnlyList<WaveformRequest> requests, CancellationToken cancellationToken) =>
+        await ReadManyAsync(mediaPath, requests, cancellationToken, WorkLane.Idle, draw: false);
+
+    // RenderManyAsync's reading; without draw, the peaks only written to the cache (BakeAsync), every picture null.
+    private static async Task<ImageSource?[]> ReadManyAsync(string mediaPath, IReadOnlyList<WaveformRequest> requests, CancellationToken cancellationToken, WorkLane lane, bool draw)
     {
         var pictures = new ImageSource?[requests.Count];
         if (!File.Exists(mediaPath))
@@ -76,9 +87,9 @@ public static partial class Waveforms
         var wanted = new List<int>();
         for (var i = 0; i < requests.Count; i++)
         {
-            if (requests[i].Tracks.Count == 0)
+            if (requests[i].Tracks.Count == 0 || !draw && PreviewCache.Timeline.Find(mediaPath, requests[i].CacheKind, ".peaks") is not null)
                 continue;
-            if (ReadPeaks(PreviewCache.Timeline.Find(mediaPath, requests[i].CacheKind, ".peaks")) is { } kept)
+            if (draw && ReadPeaks(PreviewCache.Timeline.Find(mediaPath, requests[i].CacheKind, ".peaks")) is { } kept)
                 pictures[i] = Picture(requests[i], new WaveformData(kept.Lows, kept.Highs, BrushOf(requests[i].Color)));
             else
                 wanted.Add(i);
@@ -87,8 +98,8 @@ public static partial class Waveforms
         if (wanted.Count == 0)
             return pictures;
 
-        // The reading itself is background work (see WorkScheduler): asked for twice, it is done once.
-        var key = $"wave|{WorkScheduler.PathKey(mediaPath)}|{string.Join(",", wanted.Select(i => requests[i].CacheKind))}";
+        // The reading itself is background work (see WorkScheduler): asked for twice, it is done once (a bake apart: it gives no pictures).
+        var key = $"wave|{WorkScheduler.PathKey(mediaPath)}|{string.Join(",", wanted.Select(i => requests[i].CacheKind))}{(draw ? "" : "|bake")}";
         return await WorkScheduler.Run(new WorkSpec($"Waveforms of {Path.GetFileName(mediaPath)}", lane) { Key = key },
             work => DecodeAsync(work.Token), cancellationToken);
 
@@ -97,6 +108,7 @@ public static partial class Waveforms
             // In this process first (Waveforms.Native.cs): each track once, in one reading of the file, on a thread that keeps out of the way.
             var distinct = wanted.SelectMany(i => requests[i].Tracks).Distinct().ToList();
             var native = distinct.Select(_ => new PeakReader()).ToArray();
+            var written = new bool[requests.Count];
             try
             {
                 var read = await Task.Factory.StartNew(() =>
@@ -142,10 +154,12 @@ public static partial class Waveforms
 
                         var (keptLows, keptHighs) = (lows, highs);
                         PreviewCache.Timeline.Write(mediaPath, request.CacheKind, ".peaks", stream => WritePeaks(stream, keptLows, keptHighs));
-                        pictures[w] = Picture(request, new WaveformData(lows, highs, BrushOf(request.Color)));
+                        written[w] = true;
+                        if (draw)
+                            pictures[w] = Picture(request, new WaveformData(lows, highs, BrushOf(request.Color)));
                     }
 
-                    if (wanted.All(w => pictures[w] is not null))
+                    if (wanted.All(w => written[w]))
                         return pictures;
                 }
             }
@@ -219,7 +233,7 @@ public static partial class Waveforms
 
             try
             {
-                var result = await ProcessPipes.RunAsync(Cli.Wrap(DependencyUpdater.FfmpegPath)
+                var result = await ProcessPipes.RunGatedAsync(Cli.Wrap(DependencyUpdater.FfmpegPath)
                     .WithArguments(["-hide_banner", "-loglevel", "error", "-i", mediaPath, "-filter_complex", graph.ToString(), "-map", "[wave]", "-f", "s16le", "-"])
                     .WithStandardOutputPipe(samples)
                     .WithValidation(CommandResultValidation.None),
@@ -235,7 +249,8 @@ public static partial class Waveforms
                         continue;
 
                     PreviewCache.Timeline.Write(mediaPath, request.CacheKind, ".peaks", stream => WritePeaks(stream, lows, highs));
-                    pictures[wanted[w]] = Picture(request, new WaveformData(lows, highs, BrushOf(request.Color)));
+                    if (draw)
+                        pictures[wanted[w]] = Picture(request, new WaveformData(lows, highs, BrushOf(request.Color)));
                 }
 
                 return pictures;

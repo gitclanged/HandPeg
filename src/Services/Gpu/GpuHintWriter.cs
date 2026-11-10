@@ -43,18 +43,21 @@ public sealed class GpuHintWriter
     /// The hints at a moment of the sequence. <paramref name="rate"/> is the playback speed (the horizon is seconds of
     /// playback; reversed, no cut is ahead); <paramref name="scrubAhead"/> where a paused scrub is heading (NaN none);
     /// <paramref name="pointer"/> the moment under the pointer over a timeline (NaN none: it left, or playback or a scrub
-    /// runs), <paramref name="pointerResting"/> whether it has rested there; <paramref name="extra"/> one more hint of the
-    /// caller's (a file opened ahead of a drop; Kind 0 none), first; <paramref name="wrapTo"/> where Loop takes playback back
+    /// runs), <paramref name="pointerResting"/> whether it has rested there; <paramref name="extras"/> more hints of the
+    /// caller's (a file opened ahead of a drop, the project tabs' pre-roll; Kind 0 none), first; <paramref name="wrapTo"/> where Loop takes playback back
     /// to (NaN: no Loop) from <paramref name="wrapFrom"/> (the sequence's end when not finite). True when they differ from those
     /// written last: hand <paramref name="into"/>[..<paramref name="count"/>] to CompositorClient.SetHints then.
     /// </summary>
     public bool Write(GpuScenePlan plan, double at, double rate, Span<GpuSeekHint> into, out int count,
-        double scrubAhead = double.NaN, double pointer = double.NaN, bool pointerResting = false, GpuSeekHint extra = default,
+        double scrubAhead = double.NaN, double pointer = double.NaN, bool pointerResting = false, ReadOnlySpan<GpuSeekHint> extras = default,
         double wrapFrom = double.NaN, double wrapTo = double.NaN)
     {
         count = 0;
-        if (extra.Kind != 0 && into.Length > 0)
-            into[count++] = extra;
+        foreach (var extra in extras)
+        {
+            if (extra.Kind != 0 && count < into.Length)
+                into[count++] = extra;
+        }
         var end = plan.SequenceSeconds;
         if (double.IsFinite(scrubAhead) && scrubAhead >= 0 && scrubAhead <= end)
             count = Frames(plan, scrubAhead, GpuSeekHintKind.ScrubAhead, into, count);

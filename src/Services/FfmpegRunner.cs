@@ -184,7 +184,7 @@ public static partial class FfmpegRunner
                     await WorkScheduler.GpuDecodeGate.WaitAsync(work.Token);
                 try
                 {
-                    var result = await ProcessPipes.RunAsync(Cli.Wrap(DependencyUpdater.FfmpegPath)
+                    var result = await ProcessPipes.RunGatedAsync(Cli.Wrap(DependencyUpdater.FfmpegPath)
                         .WithArguments(["-hide_banner", "-loglevel", "error", "-y", .. GpuAdapters.BackgroundThreadArguments,
                             .. hardware ? GpuAdapters.BackgroundDecodeArguments : [], "-skip_frame", "nokey", "-i", videoPath,
                             "-an", "-sn", "-vf", filter, "-frames:v", "1", "-q:v", "4", imagePath])
@@ -207,7 +207,8 @@ public static partial class FfmpegRunner
     /// <summary>
     /// One frame of a video as a JPEG <paramref name="height"/> pixels tall: a media browser tile's poster, before its strip
     /// is made (4.2D). The thumbnail compositor's (5.1-CleanupStudioAndFfmpegPurge: decoded on the card, the key frame nearest the
-    /// moment, GpuFilmstrips); FFmpeg only for what that cannot draw.
+    /// moment, GpuFilmstrips); else Media Foundation's in this process (5.4.2A, Compositor.MfPoster: the same key frame, no tool
+    /// started); FFmpeg only for what neither can decode.
     /// </summary>
     public static Task<bool> GeneratePosterFrameAsync(string videoPath, string imagePath, double atSeconds, int height, CancellationToken cancellationToken,
         WorkLane lane = WorkLane.Interactive) =>
@@ -215,12 +216,14 @@ public static partial class FfmpegRunner
         {
             if (await GpuFilmstrips.TryStillAsync(videoPath, imagePath, atSeconds, height, onAKeyFrame: true, work.Token))
                 return true;
+            if (await Compositor.MfPoster.TryWriteAsync(videoPath, imagePath, atSeconds, height, work.Token))
+                return true;
 
             if (!File.Exists(DependencyUpdater.FfmpegPath))
                 return false;
 
             Directory.CreateDirectory(Path.GetDirectoryName(imagePath)!);
-            var result = await ProcessPipes.RunAsync(Cli.Wrap(DependencyUpdater.FfmpegPath)
+            var result = await ProcessPipes.RunGatedAsync(Cli.Wrap(DependencyUpdater.FfmpegPath)
                 .WithArguments(["-hide_banner", "-loglevel", "error", "-y", .. GpuAdapters.BackgroundThreadArguments,
                     "-ss", Math.Max(atSeconds, 0).ToString("0.###", CultureInfo.InvariantCulture), "-i", videoPath,
                     "-an", "-sn", "-frames:v", "1", "-vf", string.Create(CultureInfo.InvariantCulture, $"scale=-2:{height}"), "-q:v", "4", imagePath])
@@ -307,7 +310,7 @@ public static partial class FfmpegRunner
         arguments.AddRange(["-filter_complex", graph.ToString(), "-an", "-sn", "-frames:v", "1", "-update", "1", "-q:v", "4", imagePath]);
 
         var said = new StringBuilder();
-        var result = await ProcessPipes.RunAsync(Cli.Wrap(DependencyUpdater.FfmpegPath).WithArguments(arguments)
+        var result = await ProcessPipes.RunGatedAsync(Cli.Wrap(DependencyUpdater.FfmpegPath).WithArguments(arguments)
             .WithStandardErrorPipe(PipeTarget.ToStringBuilder(said)).WithValidation(CommandResultValidation.None), cancellationToken);
         if (result.ExitCode == 0 && File.Exists(imagePath) && new FileInfo(imagePath).Length > 0)
             return null;

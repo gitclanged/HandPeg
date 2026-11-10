@@ -462,11 +462,19 @@
         <local:ProjectTabStrip x:Name="ProjectTabStrip" Grid.Column="1" HorizontalAlignment="Left" VerticalAlignment="Center" Visibility="Collapsed" />
         <!-- 5.4C: placed by MainWindow.PlaceTitleStatus (its left margin and width): centred while it fits, pushed right by the tabs. -->
         <Border x:Name="TitleStatus" Grid.ColumnSpan="3" HorizontalAlignment="Left" Background="Transparent" Padding="12,0" Visibility="Collapsed"
-                WindowChrome.IsHitTestVisibleInChrome="True" MouseEnter="WorkChip_MouseEnter" MouseLeave="WorkFlyout_MouseLeave"
+                WindowChrome.IsHitTestVisibleInChrome="True" MouseEnter="TitleStatus_MouseEnter" MouseLeave="WorkFlyout_MouseLeave"
                 AutomationProperties.Name="Status" AutomationProperties.AutomationId="TitleStatus">
             <TextBlock x:Name="TitleStatusText" Foreground="{DynamicResource MutedTextBrush}" FontSize="12" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
         </Border>
         <StackPanel x:Name="TitleRight" Grid.Column="2" Orientation="Horizontal">
+            <!-- A newer HandPeg (back in the title bar after 5.4.2A, the user's call): found (Update downloads it, then restarts into it) or already downloaded (Restart to update). -->
+            <StackPanel x:Name="UpdateNotice" Orientation="Horizontal" Margin="0,0,10,0" VerticalAlignment="Center" Visibility="Collapsed">
+                <TextBlock x:Name="UpdateNoticeText" VerticalAlignment="Center" FontSize="11.5" MaxWidth="220" TextTrimming="CharacterEllipsis" />
+                <Button x:Name="UpdateActionButton" Content="Update" Margin="8,0,0,0" Padding="10,1" FontSize="11.5" Click="UpdateAction_Click" AutomationProperties.Name="Update HandPeg"
+                        WindowChrome.IsHitTestVisibleInChrome="True" />
+                <Button x:Name="UpdateLaterButton" Content="Later" Margin="6,0,0,0" Padding="8,1" FontSize="11.5" Click="DismissUpdateNotice_Click"
+                        WindowChrome.IsHitTestVisibleInChrome="True" />
+            </StackPanel>
             <!-- 5.0-Core: shown for a few seconds after the GPU compositor came back from a crash or a lost device (CompositorClient.EngineRecovered). -->
             <StackPanel x:Name="EngineRecoveredBadge" Orientation="Horizontal" Margin="0,0,10,0" VerticalAlignment="Center" Opacity="0.7" Visibility="Collapsed"
                         Background="Transparent" WindowChrome.IsHitTestVisibleInChrome="True" AutomationProperties.Name="Preview engine recovered">
@@ -504,10 +512,10 @@
         <!-- Row 0 is empty since 4.2: Encoder Mode's top bar was there (HandPeg Encoder has it now). -->
 
         <!--
-            The work flyout (resting on the progress chip, or on the status in the title bar while the status bar is hidden:
-            WorkChip_MouseEnter places it): every piece of work under way, its progress and cancel, the lanes' pause switches.
+            The work flyout (resting on the status in the title bar, the one home of the status and the work under way since 5.4.2A:
+            TitleStatus_MouseEnter): every piece of work under way, its progress and cancel, the lanes' pause switches.
         -->
-        <Popup x:Name="WorkFlyout" DataContext="{x:Static services:WorkScheduler.Summary}" PlacementTarget="{Binding ElementName=WorkChip}" Placement="Top" AllowsTransparency="True" StaysOpen="True">
+        <Popup x:Name="WorkFlyout" DataContext="{x:Static services:WorkScheduler.Summary}" PlacementTarget="{Binding ElementName=TitleStatus}" Placement="Bottom" AllowsTransparency="True" StaysOpen="True">
             <local:ButtonChrome x:Name="WorkFlyoutPanel" Style="{StaticResource FlyoutChrome}" Padding="10,8" Margin="0,0,0,4" MinWidth="380" MaxWidth="520" MouseLeave="WorkFlyout_MouseLeave">
                 <StackPanel>
                     <DockPanel>
@@ -809,49 +817,6 @@
                             <TextBlock Text="Views" Margin="7,0,0,0" VerticalAlignment="Center" />
                         </StackPanel>
                     </ToggleButton>
-                    <!--
-                        The progress chip (5.4.1-M5: on the transport row since the status bar was retired): the work under way, the lead piece of it
-                        shown, and how many more. While the pointer rests on it, a flyout lists them all, each with its own progress and a cancel
-                        button, with the lanes' pause switches. See WorkScheduler.
-                    -->
-                    <Grid x:Name="WorkChip" DockPanel.Dock="Left" Margin="0,0,12,0" VerticalAlignment="Center" Background="Transparent"
-                          DataContext="{x:Static services:WorkScheduler.Summary}" AutomationProperties.Name="Work in Progress"
-                          Visibility="{Binding IsVisible, Converter={StaticResource BoolToVisibility}}"
-                          MouseEnter="WorkChip_MouseEnter" MouseLeave="WorkFlyout_MouseLeave">
-                        <StackPanel Orientation="Horizontal">
-                            <StackPanel.Style>
-                                <Style TargetType="StackPanel">
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding IsBackground}" Value="True">
-                                            <Setter Property="Opacity" Value="0.7" />
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </StackPanel.Style>
-                            <ProgressBar Width="80" Height="10" Minimum="0" Maximum="100" VerticalAlignment="Center"
-                                         Value="{Binding Percent, Mode=OneWay}" IsIndeterminate="{Binding IsIndeterminate}" />
-                            <TextBlock Text="{Binding Title}" MaxWidth="180" TextTrimming="CharacterEllipsis" Margin="8,0,0,0" VerticalAlignment="Center" />
-                            <TextBlock Text="{Binding PercentText}" Margin="6,0,0,0" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
-                            <Border Margin="6,0,0,0" Padding="6,0" CornerRadius="7" Background="{DynamicResource AccentBrush}" VerticalAlignment="Center">
-                                <Border.Style>
-                                    <Style TargetType="Border">
-                                        <Style.Triggers>
-                                            <DataTrigger Binding="{Binding MoreText}" Value="">
-                                                <Setter Property="Visibility" Value="Collapsed" />
-                                            </DataTrigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </Border.Style>
-                                <TextBlock Text="{Binding MoreText}" FontSize="11" Foreground="White" />
-                            </Border>
-                        </StackPanel>
-                    </Grid>
-                    <!-- A newer HandPeg: found (Update downloads it, then restarts into it) or already downloaded (Restart to update). -->
-                    <StackPanel x:Name="UpdateNotice" DockPanel.Dock="Left" Orientation="Horizontal" Margin="0,0,12,0" VerticalAlignment="Center" Visibility="Collapsed">
-                        <TextBlock x:Name="UpdateNoticeText" VerticalAlignment="Center" MaxWidth="220" TextTrimming="CharacterEllipsis" />
-                        <Button x:Name="UpdateActionButton" Content="Update" Margin="8,0,0,0" Padding="12,3" Click="UpdateAction_Click" AutomationProperties.Name="Update HandPeg" />
-                        <Button x:Name="UpdateLaterButton" Content="Later" Margin="6,0,0,0" Padding="10,3" Click="DismissUpdateNotice_Click" />
-                    </StackPanel>
                 </DockPanel>
                 <!--
                     The controls, each shown or not as chosen with the settings button at the right end (PlaybackControls). On one line, always: what the row has no room for is left out of it, least wanted first, and listed
@@ -1129,7 +1094,7 @@
                             <Image Source="{Binding TimelineWaveform}" Stretch="Fill" Margin="5,0" Opacity="0.75"
                                    IsHitTestVisible="False" AutomationProperties.Name="Timeline Waveform" />
                             <Slider x:Name="TimelineSlider" Style="{StaticResource TimelineSlider}" Minimum="0" Maximum="{Binding TimelineMaximum}"
-                                    Value="{Binding PositionMs}" SmallChange="1000" LargeChange="5000"
+                                    Value="{Binding PositionMs, UpdateSourceTrigger=Explicit}" SmallChange="1000" LargeChange="5000"
                                     IsMoveToPointEnabled="True" AutomationProperties.Name="Timeline"
                                     ValueChanged="TimelineSlider_ValueChanged"
                                     Thumb.DragStarted="TimelineSlider_DragStarted"

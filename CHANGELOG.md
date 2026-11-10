@@ -3,6 +3,28 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v5.4.2 — All Tabs Warm, Tab Hover Scrubbing and a Playhead That Keeps Up With the Pointer
+
+### User-Facing Highlights
+- **The playhead keeps up with the pointer.** Dragging along the Timeline's ruler or the Sequence Overview Scrubber now moves the
+  playhead line and the player on every pointer move. The time readout, the Effects pane and the other panels catch up once per
+  frame and land on the exact moment when you let go.
+- **Every open tab stays warm.** The 16-tab limit is gone: all open tabs keep their Sequence and their paused frame in memory, and
+  are let go only when Windows runs short of memory (less than 2.5 GB free).
+- **The next tab is ready before you switch.** The tab Ctrl+Tab brings next, and the tab under the pointer, have the half second past
+  their playheads decoded ahead. Pressing Space or scrubbing straight after a switch waits for nothing.
+- **No black flash on a tab switch.** A tab's paused picture stays until the player has drawn that tab's first live frame.
+- **Instant tab hover cards you can scrub.** A tab's hover card opens straight away and follows the pointer from tab to tab. Moving
+  across a tab behind scrubs its overview pictures, with a thin progress bar, at no cost to the graphics card.
+- **Status and progress live in the title bar.** Background work and its progress are in the title bar's status flyout. The update
+  notice sits at the title bar's right end.
+
+### Under the Hood & Fixes
+- Media Browser posters decode in-process through Media Foundation (about 40 ms) before FFmpeg is ever started.
+- At most two background FFmpeg decodes run at once (strips, posters, sprites and waveform fall-backs). Playback audio is not held back.
+- Folder pre-indexing writes waveforms to the disk cache only and keeps no pictures in memory.
+- The 3D Exploded View's plane textures are freed at the first flat frame after it closes.
+
 ## HandPeg v5.4.1 — Smooth Timeline Wheel, a Faster 3D View, Instant Strips on Drop and Projects That Remember Their Window
 
 ### User-Facing Highlights

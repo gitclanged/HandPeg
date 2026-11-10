@@ -1,10 +1,9 @@
-# The memory valve lets the least recently used live tab go to its cache file: over 16, over the budget or with memory short; never the two used last.
-ok: five tabs of 20 MB under a 1 GB budget: none let go
+# The memory valve keeps every open tab warm (5.4.2A) and lets the least recently used go to its cache file only when free memory is under 2.5 GB; never the two used last.
+ok: five tabs of 300 MB, free memory above the floor: none let go (all tabs warm)
+ok: eighteen kept (no count cap any more): none let go
 ok: nothing kept: nothing to let go
-ok: five of 300 MB, over the budget: the least recently used (t1) goes
-ok: under the budget but Windows says memory is short: t1 goes
-ok: seventeen kept (more than 16): t1 goes
+ok: free memory under the floor: the least recently used (t1) goes
 ok: a tab whose cache file could not be written must stay (its work is only in memory): the next least recently used goes
-ok: the two used last are never let go, whatever the budget or the memory
-ok: with a third over the budget, the third goes
-ok: the budget (AppSettings.HydratedTabBudgetMb) is 1 GB as HandPeg comes
+ok: the two used last are never let go, whatever the memory
+ok: with a third kept and memory short, the third goes
+ok: the floor is 2.5 GB of free memory (AvailPhys)

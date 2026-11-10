@@ -88,7 +88,7 @@
                 <DataTemplate>
                     <Button x:Name="Tab" Style="{StaticResource TabButton}" Click="Tab_Click" MouseUp="Tab_MouseUp" ToolTip="{Binding FrontToolTip}"
                             PreviewMouseLeftButtonDown="Tab_PreviewMouseLeftButtonDown" MouseRightButtonUp="Tab_MouseRightButtonUp"
-                            MouseEnter="Tab_MouseEnter" MouseLeave="Tab_MouseLeave"
+                            MouseEnter="Tab_MouseEnter" MouseLeave="Tab_MouseLeave" MouseMove="Tab_MouseMove"
                             AutomationProperties.Name="{Binding AutomationName}"
                             Visibility="{Binding IsShown, Converter={StaticResource Visible}}"
                             MaxWidth="{Binding TabMaxWidth, RelativeSource={RelativeSource AncestorType=local:ProjectTabStrip}}">
@@ -203,6 +203,9 @@
                                 <TextBlock Text="{Binding SavedText}" FontSize="11" Opacity="0.8" Margin="0,4,0,0" TextWrapping="Wrap" />
                             </StackPanel>
                         </Border>
+                        <!-- 5.4.2A: where the pointer is scrubbing along the tab, as a thin bar at the picture's foot (none while not scrubbing). -->
+                        <Border x:Name="HoverScrubBar" VerticalAlignment="Bottom" HorizontalAlignment="Left" Height="2" Width="{Binding ScrubWidth}"
+                                Background="{DynamicResource AccentBrush}" Visibility="{Binding IsScrubbing, Converter={StaticResource Visible}}" />
                     </Grid>
                 </Border>
             </Border>

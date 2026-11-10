@@ -94,12 +94,13 @@ internal sealed unsafe partial class SceneRenderer
     private const int LastBudgetStep = 16;
 
     /// <summary>
-    /// How many frames the plane texture is kept oversized; how long the 3D textures are kept warm once the view is flat (seconds:
-    /// a minute, so going back into 3D makes nothing anew, the user's directive; the player draws the flat picture once more
-    /// after it, GpuPreviewEngine.Exploded.cs, so a paused player lets them go too).
+    /// How many frames the plane texture is kept oversized; how long the 3D textures are kept once the view is flat (seconds: none,
+    /// 5.4.2A, the user's rule: the first flat frame lets them go, so the 3D planes never sit in video memory during 2D editing; the
+    /// player draws the flat picture once more half a second after the way out, GpuPreviewEngine.Exploded.cs, so a paused player
+    /// whose last 3D frame landed on the flat camera lets them go too).
     /// </summary>
     private const int PlaneTargetPatience = 240;
-    internal const double ExplodedTexturesPatience = 60;
+    internal const double ExplodedTexturesPatience = 0;
 
     // The outline's colours (straight RGB): neon cyan round a mask's silhouette, warm amber round the clip selected; how
     // strong the amber is round another clip of the selected one's track.
@@ -787,14 +788,14 @@ internal sealed unsafe partial class SceneRenderer
     }
 
     /// <summary>
-    /// The 3D view's textures let go once the view has been flat a while (the flat path asks at every frame it draws): its
-    /// own, and the pool's working textures nothing has used since its last frame (full-resolution planes' sizes, which the
-    /// pool would otherwise keep until 240 more frames are drawn: never, while paused).
+    /// The 3D view's textures let go at the first flat frame (the flat path asks at every frame it draws; 5.4.2A, before it a
+    /// minute after): its own, its planes kept per layer (KeptPlane), and the pool's working textures nothing has used since its
+    /// last frame (full-resolution planes' sizes, which the pool would otherwise keep until 240 more frames are drawn: never, while paused).
     /// </summary>
     private void ForgetExplodedTextures()
     {
-        if ((_planeTarget is not null || _view3D is not null)
-            && System.Diagnostics.Stopwatch.GetElapsedTime(_explodedAt).TotalSeconds > ExplodedTexturesPatience)
+        if ((_planeTarget is not null || _view3D is not null || KeptPlaneTextures() > 0)
+            && System.Diagnostics.Stopwatch.GetElapsedTime(_explodedAt).TotalSeconds >= ExplodedTexturesPatience)
         {
             DisposeExploded();
             _gpu.Textures.ReleaseUnusedSince(_explodedFrame);
