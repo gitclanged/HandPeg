@@ -1083,6 +1083,8 @@ public partial class MainViewModel
     private async Task OpenThenWriteBackAsync(ProjectState state, string doneMessage, string path, string? writtenBy)
     {
         await OpenShowingCaptionsAsync(state, doneMessage);
+        if (state.Workspace is { } workspace && !_isBackgroundWorker)
+            WorkspaceOpened?.Invoke(workspace);
         if (ConvertedFrom is { } shape && SavesConvertedProjects && !_isBackgroundWorker && path.Length > 0
             && string.Equals(path, CurrentProjectPath, StringComparison.OrdinalIgnoreCase))
         {

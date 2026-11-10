@@ -128,7 +128,11 @@ public partial class MainWindow
         engine.SetView(_playerZoom, _playerPanX, _playerPanY);
         if (!_gpuPointerHooked)
         {
+            // The player resized (5.4.1A): woken when the native window really has its new size (SizeChanged comes before the host moves
+            // it, so the size read then can be the old one), and on SizeChanged as well; the frame on screen meanwhile is centred, never
+            // stretched (GpuViewportControl).
             VideoView.SizeChanged += (_, _) => _gpu?.InvalidateView();
+            VideoView.SurfaceResized += () => _gpu?.InvalidateView();
 
             // The moment under the pointer on a timeline (the Timeline's rows and its ruler, the Sequence Overview Scrubber): Instant Seek
             // decodes it before a click.

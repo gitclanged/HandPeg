@@ -88,7 +88,7 @@ public static partial class Waveforms
             return pictures;
 
         // The reading itself is background work (see WorkScheduler): asked for twice, it is done once.
-        var key = $"wave|{mediaPath}|{string.Join(",", wanted.Select(i => requests[i].CacheKind))}";
+        var key = $"wave|{WorkScheduler.PathKey(mediaPath)}|{string.Join(",", wanted.Select(i => requests[i].CacheKind))}";
         return await WorkScheduler.Run(new WorkSpec($"Waveforms of {Path.GetFileName(mediaPath)}", lane) { Key = key },
             work => DecodeAsync(work.Token), cancellationToken);
 

@@ -27,6 +27,15 @@ public partial class MainWindow
     private Popup? _loopbackFlyout;
     private RadioButton[]? _loopbackModes;
     private Canvas? _loopbackWipeLayer;
+
+    // The player's zoom and pan undone for the wipe's layer (5.4.1A): PlayerOverlay carries the player's view matrix (ApplyPlayerView)
+    // for the boxes drawn in the picture's own coordinates, while the wipe is placed in the player's (PictureSpan already has the zoom
+    // and pan in it); without this the zoom moved the handle twice, and scaled it.
+    private readonly MatrixTransform _loopbackWipeUnzoom = new();
+
+    // The two sides named on the picture (5.4.1-M1): RAW left of the line, ENCODED right of it, never taking the pointer.
+    private Border? _loopbackRawPill, _loopbackEncodedPill;
+    private const double WipePillGap = 10, WipePillTop = 14, RawPillRoom = 56, EncodedPillRoom = 76;
     private Border? _loopbackWipeHandle;
     private DispatcherTimer? _loopbackTimer;
     private GpuPreviewEngine? _loopbackEngine;
@@ -200,7 +209,7 @@ public partial class MainWindow
         if (_loopbackToggle is not null)
             return;
 
-        // 5.4D: the eye (View), so it no longer shares Render Preview's glyph.
+        // 5.4D: the eye (View), the preview's own glyph (5.4.1A: the one canonical encode preview; Render Preview is retired).
         _loopbackToggle = new ToggleButton
         {
             Content = LoopbackGlyph,
@@ -341,11 +350,13 @@ public partial class MainWindow
         };
         _loopbackWipeHandle.MouseMove += (_, e) =>
         {
-            if (!_loopbackWipeHandle.IsMouseCaptured || _gpu is not { } engine || PlayerOverlay.ActualWidth < 1)
+            // The same span and formula as the handle's place and the worker's line (5.4.1A, GpuPreviewEngine.WipeAt / WipeLineX).
+            var (viewWidth, viewHeight) = LoopbackViewSize();
+            if (!_loopbackWipeHandle.IsMouseCaptured || _gpu is not { } engine || viewWidth < 1)
                 return;
-            var (left, width) = engine.PictureSpan(PlayerOverlay.ActualWidth, PlayerOverlay.ActualHeight);
-            if (width > 1)
-                _viewModel.ExportQualityPreviewWipe = Math.Clamp((e.GetPosition(PlayerOverlay).X - left) / width, 0, 1);
+            var span = engine.PictureSpan(viewWidth, viewHeight);
+            if (span.Width > 1 && _loopbackWipeLayer is not null)
+                _viewModel.ExportQualityPreviewWipe = GpuPreviewEngine.WipeAt(e.GetPosition(_loopbackWipeLayer).X, span);
         };
         _loopbackWipeHandle.MouseLeftButtonUp += (_, e) =>
         {
@@ -353,29 +364,81 @@ public partial class MainWindow
             e.Handled = true;
         };
 
-        _loopbackWipeLayer = new Canvas { ClipToBounds = true, Visibility = Visibility.Collapsed };
+        _loopbackWipeLayer = new Canvas { ClipToBounds = true, Visibility = Visibility.Collapsed, RenderTransform = _loopbackWipeUnzoom };
+        _loopbackRawPill = WipePill("RAW");
+        _loopbackEncodedPill = WipePill("ENCODED");
+        _loopbackWipeLayer.Children.Add(_loopbackRawPill);
+        _loopbackWipeLayer.Children.Add(_loopbackEncodedPill);
         _loopbackWipeLayer.Children.Add(_loopbackWipeHandle);
         PlayerOverlay.Children.Add(_loopbackWipeLayer);
         PlayerOverlay.SizeChanged += (_, _) => PlaceLoopbackWipe();
     }
 
-    // The handle over the line: where the wipe stands across the picture as the player shows it; only in the wipe's mode.
+    // The handle over the line: where the wipe stands across the picture as the player shows it; only in the wipe's mode. 5.4.1A: the
+    // line's place is the worker's own formula (WipeLineX over PictureSpan, which is SceneRenderer.Letterbox), and the handle's edge is
+    // rounded to a device pixel, not a DIP (1.5 pixels at 150 %), so its middle stays on the 2-pixel line.
     private void PlaceLoopbackWipe()
     {
         if (_loopbackWipeLayer is null || _loopbackWipeHandle is null)
             return;
+        var (viewWidth, viewHeight) = LoopbackViewSize();
         var shown = _viewModel.IsExportQualityPreview && _viewModel.ExportQualityPreviewMode == 1 && _loopbackSettings is not null && _gpu is not null
-            && PlayerOverlay.ActualWidth > 1 && PlayerOverlay.ActualHeight > 1;
+            && viewWidth > 1 && viewHeight > 1;
         _loopbackWipeLayer.Visibility = shown ? Visibility.Visible : Visibility.Collapsed;
         if (!shown)
             return;
 
-        var (left, width) = _gpu!.PictureSpan(PlayerOverlay.ActualWidth, PlayerOverlay.ActualHeight);
-        var x = left + Math.Clamp(_viewModel.ExportQualityPreviewWipe, 0, 1) * width;
+        var view = PlayerOverlay.RenderTransform?.Value ?? Matrix.Identity;
+        if (view.HasInverse)
+            view.Invert();
+        else
+            view = Matrix.Identity;
+        _loopbackWipeUnzoom.Matrix = view;
+
+        var x = GpuPreviewEngine.WipeLineX(_viewModel.ExportQualityPreviewWipe, _gpu!.PictureSpan(viewWidth, viewHeight));
+        var scale = VisualTreeHelper.GetDpi(PlayerOverlay).DpiScaleX;
+        scale = scale > 0 && double.IsFinite(scale) ? scale : 1;
         _loopbackWipeHandle.Height = PlayerOverlay.ActualHeight;
-        Canvas.SetLeft(_loopbackWipeHandle, Math.Round(x - _loopbackWipeHandle.Width / 2));
+        Canvas.SetLeft(_loopbackWipeHandle, Math.Round((x - _loopbackWipeHandle.Width / 2) * scale) / scale);
         Canvas.SetTop(_loopbackWipeHandle, 0);
+
+        // The pills: 10 DIPs either side of the line, 14 below the picture's top (or the player's, the picture zoomed past it); each
+        // hidden where it would not fit between the line and the picture's edge.
+        var (left, top, width, _) = _gpu.PictureRect(viewWidth, viewHeight);
+        var pillTop = Math.Round((Math.Max(top, 0) + WipePillTop) * scale) / scale;
+        if (_loopbackRawPill is { } raw)
+        {
+            raw.Visibility = x - left < RawPillRoom ? Visibility.Collapsed : Visibility.Visible;
+            raw.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            Canvas.SetLeft(raw, Math.Round((x - WipePillGap - raw.DesiredSize.Width) * scale) / scale);
+            Canvas.SetTop(raw, pillTop);
+        }
+
+        if (_loopbackEncodedPill is { } encoded)
+        {
+            encoded.Visibility = left + width - x < EncodedPillRoom ? Visibility.Collapsed : Visibility.Visible;
+            Canvas.SetLeft(encoded, Math.Round((x + WipePillGap) * scale) / scale);
+            Canvas.SetTop(encoded, pillTop);
+        }
     }
+
+    // A small dark pill naming one side of the wipe (5.4.1-M1): semi-bold caps, no hit testing.
+    private static Border WipePill(string text) => new()
+    {
+        IsHitTestVisible = false,
+        CornerRadius = new CornerRadius(9),
+        Padding = new Thickness(7, 2, 7, 2),
+        BorderThickness = new Thickness(1),
+        Background = Frozen(Color.FromArgb(0xCC, 0x18, 0x18, 0x1C)),
+        BorderBrush = Frozen(Color.FromRgb(0x38, 0x38, 0x42)),
+        Child = new TextBlock { Text = text, FontSize = 10, FontWeight = FontWeights.SemiBold, Foreground = Frozen(Color.FromRgb(0xF2, 0xF2, 0xF2)) },
+    };
+
+    // The player's size for the wipe and the Magnifier alike (5.4.1A: one element for both): the layer over the video (PlayerOverlay),
+    // whose window is the native window's pixels exactly, so its DIPs are the worker's output pixels over the display's scale, as the
+    // pointer's are (VideoSurface.PointerMoved); the surface's own layout size is those pixels before rounding (1601 DIPs at 125 % are
+    // 2001 pixels, not 2001.25), which a zoomed picture would carry to well over a pixel.
+    private (double Width, double Height) LoopbackViewSize() => (PlayerOverlay.ActualWidth, PlayerOverlay.ActualHeight);
 
     // ----- The Magnifier (5.4D, Q10 b): the loupe round the point under the pointer -----
 
@@ -413,7 +476,7 @@ public partial class MainWindow
             return;
         }
 
-        var (width, height) = (VideoView.ActualWidth, VideoView.ActualHeight);
+        var (width, height) = LoopbackViewSize();
         var fraction = GpuPreviewEngine.LoupePointOf(point.X, point.Y, width, height, engine.PictureRect(width, height));
         engine.SetLoopbackLoupe(fraction?.X, fraction?.Y);
     }

@@ -146,6 +146,9 @@ internal sealed unsafe class FrameCache : IDisposable
     private long _windowsRoom = long.MaxValue;
     private long _commitRoom = long.MaxValue;
 
+    // Unified memory only (5.4.1-M4): what the cache may hold of the computer's available memory (MemoryTier.UnifiedRoom).
+    private long _physicalRoom = long.MaxValue;
+
     // What Windows offers beyond what this process holds otherwise, as last asked; 0 until it has been asked.
     private long _freeOnCard;
     private bool _cardBusy;
@@ -285,15 +288,16 @@ internal sealed unsafe class FrameCache : IDisposable
 
     private void CheckCommit()
     {
-        if (!SystemCommit.TryRead(out var left, out var limit))
+        if (!SystemCommit.TryRead(out var left, out var limit, out var availablePhysical))
             return;
 
         lock (_gate)
         {
             var room = CommitRoom(_bytes + _freeBytes, left, limit);
-            if (Math.Abs(room - _commitRoom) < (64L << 20))
+            var physicalRoom = _unified && _scale is null ? MemoryTier.UnifiedRoom(_bytes + _freeBytes, availablePhysical, _physical) : long.MaxValue;
+            if (Math.Abs(room - _commitRoom) < (64L << 20) && Math.Abs(physicalRoom - _physicalRoom) < (64L << 20))
                 return;
-            _commitRoom = room;
+            (_commitRoom, _physicalRoom) = (room, physicalRoom);
             SetBudgetLocked();
         }
     }
@@ -320,7 +324,7 @@ internal sealed unsafe class FrameCache : IDisposable
         Volatile.Write(ref _maximum, _disabled ? MinBudget : maximum);
         var wanted = _disabled ? MinBudget : MemoryTier.Budget(BigCard, baseline, steps, maximum, _scale?.Step ?? MemoryTier.GrowStep);
         var least = _scale is { } scale ? Math.Min(scale.Baseline, MinBudget) : MinBudget;
-        return Math.Max(Math.Min(Math.Min(wanted, _windowsRoom), _commitRoom), least);
+        return Math.Max(Math.Min(Math.Min(Math.Min(wanted, _windowsRoom), _commitRoom), _physicalRoom), least);
     }
 
     /// <summary>
@@ -986,12 +990,12 @@ internal static partial class SystemCommit
     [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
     private static partial bool GlobalMemoryStatusEx(ref MemoryStatus status);
 
-    /// <summary>The commit left and its limit, bytes; false when Windows does not say.</summary>
-    public static bool TryRead(out long left, out long limit)
+    /// <summary>The commit left and its limit, and the physical memory available (AvailPhys), bytes; false when Windows does not say.</summary>
+    public static bool TryRead(out long left, out long limit, out long availablePhysical)
     {
         var status = new MemoryStatus { Length = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MemoryStatus>() };
         var read = GlobalMemoryStatusEx(ref status) && status.TotalPageFile > 0;
-        (left, limit) = read ? ((long)status.AvailablePageFile, (long)status.TotalPageFile) : (0, 0);
+        (left, limit, availablePhysical) = read ? ((long)status.AvailablePageFile, (long)status.TotalPageFile, (long)status.AvailablePhysical) : (0, 0, 0);
         return read;
     }
 

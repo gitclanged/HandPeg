@@ -260,9 +260,13 @@ public partial class MainViewModel
         CaptionStyle = style;
         OnPropertyChanged(nameof(CaptionStyleSummary));
 
-        // A preview of the captions shows the style they have now.
-        if (PreviewSubtitles)
-            _ = RefreshLiveCaptionsAsync(asked: false);
+        // The player shows the style the captions have now (5.4.1A): the style is no observable property, so the player is told
+        // here whenever it draws captions (Burn Captions on). Only the preview-only transcription is made again, once the
+        // changes stop (the words are kept; the lines are broken by the style's word count).
+        if (AutoCaptions && !_isBackgroundWorker)
+            CaptionsChanged?.Invoke();
+        if (PreviewSubtitles && !HasTextCues)
+            RefreshLiveCaptionsSoon();
     }
 
     // ----- Preview Subtitles -----
@@ -277,9 +281,9 @@ public partial class MainViewModel
     [ObservableProperty] private bool _previewSubtitles;
 
     /// <summary>
-    /// Raised on the UI thread when what the player draws of the captions or the subtitle track changed (the captions made
-    /// again, Preview Subtitles switched off, the picture track's pictures read or paired again): the GPU preview takes
-    /// <see cref="GpuCaptions"/> and <see cref="PreviewPictureSubtitles"/> again.
+    /// Raised on the UI thread when what the player draws of the captions or the subtitle track changed (the track's cues or the
+    /// caption style changed (5.4.1A), the captions made again, Preview Subtitles switched off, the picture track's pictures read or
+    /// paired again): the GPU preview takes <see cref="GpuCaptions"/> and <see cref="PreviewPictureSubtitles"/> again.
     /// </summary>
     public event Action? CaptionsChanged;
 
@@ -430,7 +434,7 @@ public partial class MainViewModel
                 : null;
         }
 
-        return await PrepareCaptionsAsync([], CaptionsFilePath, 0, cancellationToken);
+        return await PrepareCaptionsAsync(CaptionsFilePath, cancellationToken);
     }
 
     // ----- What captions listen to, and where they are on the timeline (4.4) -----
@@ -593,19 +597,15 @@ public partial class MainViewModel
     /// The pipeline: extract the audio that will be heard as a 16 kHz mono wave file, transcribe it with whisper.cpp, show
     /// its words on the timeline through the clips that play them, and write them as an ASS file in the chosen style, for
     /// the caption box, which is how the export's graph draws it. A subtitle track with words is written as it stands
-    /// instead. Returns null, or what went wrong.
+    /// instead. Returns null, or what went wrong. The whole sequence, on its own clock (5.4.1A: the stretches and the offset only
+    /// Render Preview asked for went with it).
     /// </summary>
-    /// <param name="ranges">
-    /// The stretches of the sequence the output plays, joined end to end (a Render Preview's); none for the whole sequence.
-    /// </param>
-    /// <param name="timeOffset">Added to every time of the output: for an output that keeps another clock.</param>
-    private async Task<string?> PrepareCaptionsAsync(
-        List<(double Start, double End)> ranges, string assPath, double timeOffset, CancellationToken cancellationToken)
+    private async Task<string?> PrepareCaptionsAsync(string assPath, CancellationToken cancellationToken)
     {
         // A subtitle track with words is what the captions say: nothing is listened to.
         if (HasTextCues)
         {
-            var cues = CaptionProjection.ToOutputClock(GetCueCaptions(), ranges, timeOffset);
+            var cues = CaptionProjection.ToOutputClock(GetCueCaptions(), [], 0);
             WriteCaptionFile(cues.SelectMany(l => l).ToList(), cues, assPath, 0);
             StatusText = $"Captions: {cues.Count} subtitle cue{(cues.Count == 1 ? "" : "s")} written.";
             return null;
@@ -620,7 +620,7 @@ public partial class MainViewModel
 
         // Heard in the source's time; shown through every clip that plays it, on the sequence's clock.
         var lines = CaptionProjection.ProjectLines(words, CaptionSpans(source), CaptionStyle);
-        var output = CaptionProjection.ToOutputClock(lines, ranges, timeOffset);
+        var output = CaptionProjection.ToOutputClock(lines, [], 0);
         WriteCaptionFile(output.SelectMany(l => l).ToList(), output, assPath, 0);
         StatusText = $"Captions: {output.Sum(l => l.Count)} word{(output.Sum(l => l.Count) == 1 ? "" : "s")} written.";
         return null;
@@ -757,14 +757,16 @@ public partial class MainViewModel
 
     /// <summary>
     /// The captions as the GPU preview engine draws them (5.0): line by line on the sequence clock, with the style and the
-    /// text scale the export's .ass uses (<see cref="WriteCaptionFile"/>); no lines while they are not previewed (Preview
-    /// Subtitles off).
+    /// text scale the export's .ass uses (<see cref="WriteCaptionFile"/>). 5.4.1A: shown whenever the user's Burn Captions into
+    /// Export switch (<see cref="AutoCaptions"/>) is on, as the export would draw them: the subtitle track's cues whenever it has
+    /// words; only the preview-only transcription (no track) waits for Preview Subtitles, so a stale one never outlives its track.
+    /// No lines while Burn Captions is off.
     /// </summary>
     public (IReadOnlyList<IReadOnlyList<CaptionWord>>? Lines, CaptionStyle Style, double TextScale) GpuCaptions()
     {
-        if (!PreviewSubtitles)
+        if (!AutoCaptions)
             return (null, CaptionStyle, 1);
-        var lines = HasTextCues ? GetCueCaptions() : _generatedCaptions;
+        var lines = HasTextCues ? GetCueCaptions() : PreviewSubtitles ? _generatedCaptions : [];
         return (lines.Count > 0 ? lines : null, CaptionStyle, CaptionTextScale());
     }
 

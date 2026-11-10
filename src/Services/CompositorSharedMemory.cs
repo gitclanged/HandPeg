@@ -27,9 +27,10 @@ public static class CompositorProtocol
     /// <summary>
     /// Raised only by an incompatible change; a worker of another version refuses the mapping (2: Instant Seek's hints and
     /// counters, 5.0-AudioAnd3D; 3: hints of 32 bytes with a stretch and a moment, at 3584, 5.0-Release; 4: NV12 readbacks, 5.1; 6: a layer's shutter, 5.1-GpuFx;
-    /// 7: a layer's 3D tilt, 784 bytes a layer, 5.2A).
+    /// 7: a layer's 3D tilt, 784 bytes a layer, 5.2A; 8: an output ring that can be larger than its frames, each slot's content size
+    /// at 3176, 5.4.1A).
     /// </summary>
-    public const int Version = 7;
+    public const int Version = 8;
 
     /// <summary>The bytes of a frame in NV12: its Y plane, then its interleaved UV plane, half the size each way (rounded up), rows packed.</summary>
     public static long Nv12Bytes(int width, int height) => (long)width * height + 2L * ((width + 1) / 2) * ((height + 1) / 2);
@@ -181,6 +182,11 @@ public struct ControlBlock
 
     /// <summary>The output textures' generation: a new worker makes new ones (<see cref="CompositorProtocol.OutputTexture"/>).</summary>
     [FieldOffset(52)] public int OutputGeneration;
+
+    /// <summary>
+    /// The size of the output textures (the ring), announced with their generation. Since 5.4.1A a frame can be smaller than its texture
+    /// (a resized player keeps its ring while it fits): the frame in a slot is its top-left <see cref="OutputContentSize"/>.
+    /// </summary>
     [FieldOffset(56)] public int OutputWidth;
     [FieldOffset(60)] public int OutputHeight;
 
@@ -337,7 +343,71 @@ public struct ControlBlock
     /// <summary>How many times the worker trimmed itself after standing idle (paused, 30 s with nothing asked of it).</summary>
     [FieldOffset(3172)] public int IdleTrims;
 
-    // 3176..3479: free.
+    // ----- 3176..3199: each output slot's content size (5.4.1A) -----
+    // The frame drawn into a slot (its top-left corner), written by the worker under that slot's keyed mutex before letting it go, so
+    // a reader that holds the slot always reads the size of the frame in it. 0 (a slot not drawn into yet): the whole texture.
+    [FieldOffset(3176)] public int OutputContentWidth0;
+    [FieldOffset(3180)] public int OutputContentHeight0;
+    [FieldOffset(3184)] public int OutputContentWidth1;
+    [FieldOffset(3188)] public int OutputContentHeight1;
+    [FieldOffset(3192)] public int OutputContentWidth2;
+    [FieldOffset(3196)] public int OutputContentHeight2;
+
+    /// <summary>
+    /// The size of the frame in output slot <paramref name="index"/> (read under its keyed mutex): what the worker wrote, never larger
+    /// than the ring (<see cref="OutputWidth"/> x <see cref="OutputHeight"/>), the whole ring when nothing was written (0).
+    /// </summary>
+    public readonly (int Width, int Height) OutputContentSize(int index)
+    {
+        var (width, height) = index switch
+        {
+            0 => (OutputContentWidth0, OutputContentHeight0),
+            1 => (OutputContentWidth1, OutputContentHeight1),
+            _ => (OutputContentWidth2, OutputContentHeight2),
+        };
+        return width <= 0 || height <= 0 ? (OutputWidth, OutputHeight) : (Math.Min(width, OutputWidth), Math.Min(height, OutputHeight));
+    }
+
+    /// <summary>
+    /// The worker's half of <see cref="OutputContentSize"/> and <see cref="OutputContentTag"/>: written under the slot's keyed mutex,
+    /// before it is let go, with the generation of the ring drawn into and whether the frame was read back (a capture's).
+    /// </summary>
+    public void SetOutputContentSize(int index, int width, int height, int generation, bool readback)
+    {
+        var tag = generation * 2 + (readback ? 1 : 0);
+        switch (index)
+        {
+            case 0: (OutputContentWidth0, OutputContentHeight0, OutputContentTag0) = (width, height, tag); break;
+            case 1: (OutputContentWidth1, OutputContentHeight1, OutputContentTag1) = (width, height, tag); break;
+            default: (OutputContentWidth2, OutputContentHeight2, OutputContentTag2) = (width, height, tag); break;
+        }
+    }
+
+    // ----- 3200..3211: each output slot's tag (5.4.1A) -----
+    // The generation of the ring the slot's frame was drawn into, times two, plus one for a frame read back (a capture, a thumbnail,
+    // the scopes' picture: never the player's to show). Written with the content size: a reader still on an older ring that finds
+    // another generation here knows the size is not its frame's.
+    [FieldOffset(3200)] public int OutputContentTag0;
+    [FieldOffset(3204)] public int OutputContentTag1;
+    [FieldOffset(3208)] public int OutputContentTag2;
+
+    /// <summary>What the worker wrote for output slot <paramref name="index"/> (read under its keyed mutex), unclamped; 0 x 0 if nothing.</summary>
+    public readonly (int Width, int Height) OutputContentWritten(int index) => index switch
+    {
+        0 => (OutputContentWidth0, OutputContentHeight0),
+        1 => (OutputContentWidth1, OutputContentHeight1),
+        _ => (OutputContentWidth2, OutputContentHeight2),
+    };
+
+    /// <summary>The tag of output slot <paramref name="index"/> (read under its keyed mutex): its ring's generation * 2, + 1 for a readback.</summary>
+    public readonly int OutputContentTag(int index) => index switch
+    {
+        0 => OutputContentTag0,
+        1 => OutputContentTag1,
+        _ => OutputContentTag2,
+    };
+
+    // 3212..3479: free.
 
     // 3480..: the cache's counters (diagnostics, tools\SeekBench): exact frames found, frames not there yet, presents
     // made with a stand-in, frames and bytes held, the budget in force, how long the last exact frame took after it was

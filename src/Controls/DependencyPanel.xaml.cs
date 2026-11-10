@@ -561,7 +561,7 @@ public partial class DependencyPanel : UserControl
     public static bool ConfirmUnpinned(Window? owner, bool installNow)
     {
         var message = "HandPeg installs the builds of FFmpeg and whisper.cpp that this version was tested with. "
-                      + "The newest upstream builds are untested with it: a new FFmpeg can change filter syntax, so that exports or Render Preview "
+                      + "The newest upstream builds are untested with it: a new FFmpeg can change filter syntax, so that exports "
                       + "fail, and a new whisper.cpp can bring caption instability.\n\n"
                       + (installNow
                           ? "The newest builds are installed now, and every update after that installs the newest again."

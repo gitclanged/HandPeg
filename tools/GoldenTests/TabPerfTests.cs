@@ -430,7 +430,7 @@ public static class TabPerfTests
 
     private static void SwitchWiring(Action<bool, string> expect)
     {
-        var tabs = Read("MainWindow.ProjectTabs.cs");
+        var tabs = (Read("MainWindow.ProjectTabs.cs") + Read("MainWindow.TabCache.cs") + Read("MainWindow.TabMenu.cs"));
         var switching = Method(tabs, "private async Task SwitchToTabAsync(");
         var put = switching.IndexOf("var behind = PutActiveBehind(out write);", StringComparison.Ordinal);
         var attach = switching.IndexOf("AttachHydrated(tab, live!)", StringComparison.Ordinal);
@@ -590,7 +590,7 @@ public static class TabPerfTests
         _ = vm.RenameProjectFile("D:/projects/Renamed.hproj");
         expect(!told.Contains(nameof(MainViewModel.CurrentProjectPath)), "and not when they are set to what they are");
 
-        var tabs = Read("MainWindow.ProjectTabs.cs");
+        var tabs = (Read("MainWindow.ProjectTabs.cs") + Read("MainWindow.TabCache.cs") + Read("MainWindow.TabMenu.cs"));
         var handler = Method(tabs, "private void InitializeProjectTabs(");
         expect(InOrder(handler, "nameof(MainViewModel.HasSource) or nameof(MainViewModel.LocalMediaPath) or nameof(MainViewModel.CurrentProjectPath)",
                    "or nameof(MainViewModel.NewProjectName))", "RefreshTabTitle();"),
@@ -620,11 +620,11 @@ public static class TabPerfTests
         var sources = Directory.GetFiles(Path.Combine(RepositoryRoot(), "src"), "*.cs", SearchOption.AllDirectories)
             .Select(f => (Name: Path.GetFileName(f), Text: File.ReadAllText(f).ReplaceLineEndings("\n"))).ToList();
         static int Count(string text, string part) => (text.Length - text.Replace(part, "", StringComparison.Ordinal).Length) / part.Length;
-        var tabs = sources.Single(s => s.Name == "MainWindow.ProjectTabs.cs").Text;
+        var tabs = string.Concat(sources.Where(s => s.Name is "MainWindow.ProjectTabs.cs" or "MainWindow.TabCache.cs" or "MainWindow.TabMenu.cs").Select(s => s.Text));
 
         expect(sources.Sum(s => Count(s.Text, "MemoryHygiene.IsQuiet =")) == 1 && Count(Method(tabs, "private void HookTabMemory("), "MemoryHygiene.IsQuiet =") == 1,
             "MemoryHygiene.IsQuiet is set in one place only (HookTabMemory), once (_memoryHooked)");
-        expect(sources.Where(s => s.Name != "MainWindow.ProjectTabs.cs").All(s => !HasAny(s.Text, "HookTabMemory(", "KeptTabsChanged(", "CompactWhenQuiet("))
+        expect(sources.Where(s => s.Name is not ("MainWindow.ProjectTabs.cs" or "MainWindow.TabCache.cs" or "MainWindow.TabMenu.cs")).All(s => !HasAny(s.Text, "HookTabMemory(", "KeptTabsChanged(", "CompactWhenQuiet("))
                && Count(tabs, "HookTabMemory();") == 2 && InOrder(Method(tabs, "private void KeptTabsChanged("), "HookTabMemory();")
                && InOrder(Method(tabs, "private void CompactWhenQuiet("), "HookTabMemory();", "MemoryHygiene.RequestCompactOnce(reason);"),
             "it is hooked only as tabs kept live change or a compaction is asked for, never from the window's start (Law 1: after the first frame)");
@@ -894,10 +894,10 @@ public static class TabPerfTests
         "<Presets>k__BackingField", "<Profiles>k__BackingField", "<Queue>k__BackingField", "<RateControlChoices>k__BackingField",
         "<RateControls>k__BackingField", "<RecentProjects>k__BackingField", "<ResolutionPresets>k__BackingField",
         "<SavesConvertedProjects>k__BackingField", "<SmartRules>k__BackingField", "<StylePresets>k__BackingField",
-        "<TimelineSelection>k__BackingField", "<Tunes>k__BackingField", "<VideoEncoders>k__BackingField", "<WhisperModelChoices>k__BackingField",
+        "<TimelineSelection>k__BackingField", "<Tunes>k__BackingField", "<VideoEncoders>k__BackingField", "<WhisperModelChoices>k__BackingField", "<WorkspaceForSave>k__BackingField",
         "ActionLogged", "CaptionsChanged", "ClipLibraryChanged", "ClipSelectionChanged", "EdgeTuningChanged", "LayerLoaded",
-        "LayerVisibilityChanged", "MarkersChanged", "MediaLoaded", "PreviewRendered", "PreviewStateInvalidated", "SaveRequested", "SessionCleared",
-        "TimelineChanged", "TimelineRestored", "_acceptProgressReports", "_activeStyle", "_anyKeys", "_applyingKeys", "_autosaving", "_baking",
+        "LayerVisibilityChanged", "MarkersChanged", "MediaLoaded", "PreviewStateInvalidated", "SaveRequested", "SessionCleared",
+        "TimelineChanged", "TimelineRestored", "WorkspaceOpened", "_acceptProgressReports", "_activeStyle", "_anyKeys", "_applyingKeys", "_autosaving", "_baking",
         "_beforeEdit", "_checkpointedAt", "_commandDeferrals", "_commandPending", "_commandPreviewWatched", "_commandStale", "_commandTextQueued",
         "_committing", "_compactTrackControls", "_copied", "_copiedAttributes", "_cropDragStepTaken", "_cropDragging", "_cropForAll", "_cropHeld",
         "_cropShown", "_cropTypedAt", "_deadAirMode", "_deadAirSource", "_deadAirTarget", "_defaultPresetChoice", "_dependencyStatusText",
@@ -924,7 +924,7 @@ public static class TabPerfTests
         "copyYouTubeTimestampsCommand", "discardVoiceoverCommand", "downloadWhisperModelCommand", "drawTargetCommand", "editQueueJobCommand",
         "generateCaptionsCommand", "loadSourceCommand", "moveLayerDownCommand", "moveLayerUpCommand", "pauseQueueCommand", "pauseVoiceoverCommand",
         "recordVoiceoverCommand", "refreshMicrophonesCommand", "regenerateCommandCommand", "removeDeadAirCommand", "removeLayerCommand",
-        "removeQueueJobCommand", "removeVoiceoverCommand", "renderPreviewCommand", "resetBlurSettingsCommand", "resetCaptionLayerCommand",
+        "removeQueueJobCommand", "removeVoiceoverCommand", "resetBlurSettingsCommand", "resetCaptionLayerCommand",
         "resetColorCommand", "resetCropCommand", "savePresetCommand", "saveProjectAsCommand", "saveProjectNowCommand", "startEncodeCommand",
         "startQueueCommand", "stopVoiceoverCommand", "toggleSoloCommand", "updateQueuedJobCommand",
     };

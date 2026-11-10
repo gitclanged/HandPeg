@@ -24,7 +24,9 @@ namespace HandPegGoldenTests;
 /// hooks. momentum-subtitle-scrub: a real SubtitleTimeline: a flick of the strip scrubs on, a cue's drag never coasts, the start of the
 /// strip and a position set from outside stop it. momentum-media-browser: ScrollMomentum on a bare ScrollViewer and a ListBox: a notch is
 /// 16 DIPs a wheel line, a fast stream coasts, a press and both ends stop it, nothing made until the first wheel. momentum-setting: the
-/// setting's default, its JSON, its two homes.
+/// setting's default, its JSON, its two homes. momentum-strip-wheel (5.4.1A): the Subtitle Studio's strip and the Media Browser's cutter
+/// scroll in time on the wheel, Shift + wheel and the sideways swipe (down / right: later), a fast stream coasting on the same way, and
+/// zoom about the pointer on Ctrl + wheel (a precision touchpad's pinch), stopping a coast; the window's sideways-wheel hook finds them.
 /// </summary>
 public static class MomentumTests
 {
@@ -37,6 +39,7 @@ public static class MomentumTests
         yield return Case("momentum-subtitle-scrub", "# The Subtitle Studio's strip: a flick scrubs on and slows to a stop; a cue's drag never coasts; the strip's start and a position set from outside stop it.", SubtitleScrub);
         yield return Case("momentum-media-browser", "# ScrollMomentum on a list: a notch moves its usual step, a fast wheel stream coasts on, a press and both ends stop it, and nothing is made until the first wheel.", MediaBrowser);
         yield return Case("momentum-setting", "# Enable Momentum Scrolling: on in a new install, kept in the settings file, in Settings > Timeline & Player and once in the Timeline Settings menu.", Setting);
+        yield return Case("momentum-strip-wheel", "# Subtitle Studio and cutter: the wheel, Shift + wheel and the sideways swipe scroll in time with momentum; Ctrl + wheel / pinch zooms about the pointer.", StripWheel);
     }
 
     private static GraphResult Case(string name, string title, Action<Action<bool, string>> run)
@@ -575,6 +578,139 @@ public static class MomentumTests
         var coasting = strip.IsCoasting;
         strip.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Right) { RoutedEvent = UIElement.PreviewMouseDownEvent });
         expect(coasting && !strip.IsCoasting, "any press on the strip (a right-click too) stops a coast");
+    }
+
+    private static void StripWheel(Action<bool, string> expect)
+    {
+        // ----- The Subtitle Studio's strip: 800 DIPs wide, 90 DIPs a second, a 600 s strip at 300 s -----
+        var strip = new SubtitleTimeline { DurationSeconds = 600 };
+        strip.Measure(new Size(800, 120));
+        strip.Arrange(new Rect(0, 0, 800, 120));
+        strip.PositionSeconds = 300;
+        var scrubs = new List<double>();
+        strip.Scrubbed += seconds => scrubs.Add(seconds);
+        var notch = 120 * SubtitleTimeline.WheelDipsPerDelta / 90;
+
+        var now = 10_000.0;
+        strip.WheelAt(-120, ModifierKeys.None, now, 400);
+        expect(Math.Abs(strip.PositionSeconds - (300 + notch)) < 1e-9 && scrubs.Count == 1 && scrubs[^1] == strip.PositionSeconds && !strip.IsCoasting,
+            F($"strip: a notch of the plain wheel down scrubs {notch:0.000} s later (120 DIPs at 90 DIPs a second) and says so; one notch never coasts"));
+        strip.WheelAt(-120, ModifierKeys.Shift, now += 1000, 400);
+        expect(Math.Abs(strip.PositionSeconds - (300 + 2 * notch)) < 1e-9 && scrubs.Count == 2, "strip: Shift + wheel down scrolls the same way, as on the Timeline");
+        strip.WheelAt(120, ModifierKeys.None, now += 1000, 400);
+        expect(Math.Abs(strip.PositionSeconds - (300 + notch)) < 1e-9, "strip: the wheel up scrolls back, earlier");
+        strip.SidewaysWheel(120, now += 1000);
+        expect(Math.Abs(strip.PositionSeconds - (300 + 2 * notch)) < 1e-9 && scrubs.Count == 4, "strip: a sideways swipe to the right (WM_MOUSEHWHEEL +120) scrolls later and scrubs");
+        strip.SidewaysWheel(-120, now += 1000);
+        expect(Math.Abs(strip.PositionSeconds - (300 + notch)) < 1e-9, "strip: and to the left, earlier");
+
+        // A fast stream (15 ms apart) coasts on, later, each frame a scrub.
+        now += 1000;
+        strip.WheelAt(-120, ModifierKeys.None, now, 400);
+        strip.WheelAt(-120, ModifierKeys.None, now += 15, 400);
+        strip.WheelAt(-120, ModifierKeys.None, now += 15, 400);
+        var streamed = strip.PositionSeconds;
+        var coasting = strip.IsCoasting;
+        var fromCoast = scrubs.Count;
+        for (var i = 0; i < 20; i++)
+            strip.StepCoast(now += 2);
+        var coast = scrubs.Skip(fromCoast).ToList();
+        expect(coasting && coast.Count == 20 && coast[0] > streamed && coast.Zip(coast.Skip(1)).All(p => p.Second > p.First),
+            F($"strip: three notches 15 ms apart scroll on and coast later (the drag's sign kept), {coast[^1] - streamed:0.000} s further in 40 ms"));
+
+        // Ctrl + wheel (a pinch) zooms about the playhead (5.4.1-M1, Q2 b): the position stays, nothing is told, a coast stops.
+        var held = (Position: strip.PositionSeconds, Scrubs: scrubs.Count);
+        strip.WheelAt(120, ModifierKeys.Control, now += 2, 600);
+        var heldAfterIn = (Position: strip.PositionSeconds, Scrubs: scrubs.Count);
+        expect(Math.Abs(strip.PixelsPerSecond - 108) < 1e-9 && !strip.IsCoasting && !strip.StepCoast(now += 2),
+            F($"strip: Ctrl + wheel up zooms to {strip.PixelsPerSecond:0} DIPs a second, the coast stopped"));
+        strip.WheelAt(-120, ModifierKeys.Control, now += 1000, 150);
+        expect(Math.Abs(strip.PixelsPerSecond - 90) < 1e-9 && heldAfterIn.Position == held.Position && strip.PositionSeconds == held.Position
+               && scrubs.Count == heldAfterIn.Scrubs,
+            "strip: Ctrl + wheel zooms in and out about the playhead wherever the pointer is: the playhead's moment stays, and the player is never told to seek");
+
+        // ----- The Media Browser's cutter: a 60 s file at 30 fps, 600 DIPs wide (10 DIPs a second, the whole file) -----
+        var cutter = new MediaFilmstripCutter();
+        cutter.Load(60, 30);
+        cutter.Measure(new Size(600, MediaFilmstripCutter.PreferredHeight));
+        cutter.Arrange(new Rect(0, 0, 600, MediaFilmstripCutter.PreferredHeight));
+        cutter.PositionSeconds = 20;
+        var cuts = new List<(double Seconds, bool Settled)>();
+        cutter.Scrubbed += (seconds, settled) => cuts.Add((seconds, settled));
+        var step = 120 * MediaFilmstripCutter.WheelDipsPerDelta / 10;
+
+        cutter.WheelAt(-120, ModifierKeys.None, now += 1000, 300);
+        expect(cutter.Zoom == 10 && Math.Abs(cutter.PositionSeconds - (20 + step)) < 1e-9 && cuts.Count == 1 && cuts[^1] == (cutter.PositionSeconds, true),
+            F($"cutter: a notch of the plain wheel down scrubs {step:0} s later (the plain wheel no longer zooms) and says so, settled"));
+        cutter.WheelAt(-120, ModifierKeys.Shift, now += 1000, 300);
+        expect(Math.Abs(cutter.PositionSeconds - (20 + 2 * step)) < 1e-9, "cutter: Shift + wheel down scrolls the same way");
+        cutter.WheelAt(120, ModifierKeys.None, now += 1000, 300);
+        expect(Math.Abs(cutter.PositionSeconds - (20 + step)) < 1e-9, "cutter: the wheel up scrolls back, earlier");
+        cutter.SidewaysWheel(120, now += 1000);
+        expect(Math.Abs(cutter.PositionSeconds - (20 + 2 * step)) < 1e-9, "cutter: a sideways swipe to the right scrolls later");
+        cutter.SidewaysWheel(-120, now += 1000);
+        expect(Math.Abs(cutter.PositionSeconds - (20 + step)) < 1e-9, "cutter: and to the left, earlier");
+
+        // A fast stream coasts on later, unsettled, and comes to rest at the file's end, settled.
+        cutter.PositionSeconds = 50;
+        now += 1000;
+        cutter.WheelAt(-30, ModifierKeys.None, now, 300);
+        cutter.WheelAt(-30, ModifierKeys.None, now += 15, 300);
+        cutter.WheelAt(-30, ModifierKeys.None, now += 15, 300);
+        var cutterCoasting = cutter.IsCoasting;
+        var streamedTo = cutter.PositionSeconds;
+        var fromCutterCoast = cuts.Count;
+        for (var i = 0; i < 2000 && cutter.IsCoasting; i++)
+            cutter.StepCoast(now += 2);
+        var cutterCoast = cuts.Skip(fromCutterCoast).ToList();
+        expect(cutterCoasting && cutterCoast.Count > 1 && cutterCoast[0].Seconds > streamedTo && !cutterCoast[0].Settled
+               && cutterCoast[^1] == (60, true) && !cutter.IsCoasting,
+            "cutter: three quick notches coast on later (unsettled scrubs) and come to rest at the file's end, settled");
+
+        // A tick the coast has already covered (Wheel gives 0 and coasts on) keeps the glide: no stop, no settled still asked.
+        cutter.PositionSeconds = 20;
+        now += 1000;
+        cutter.WheelAt(-120, ModifierKeys.None, now, 300);
+        cutter.WheelAt(-120, ModifierKeys.None, now += 15, 300);
+        for (var i = 0; i < 10; i++)
+            cutter.StepCoast(now += 2);
+        var coveredFrom = cuts.Count;
+        cutter.WheelAt(-120, ModifierKeys.None, now += 2, 300);
+        var keptGliding = cutter.IsCoasting && cuts.Skip(coveredFrom).All(c => !c.Settled);
+        for (var i = 0; i < 2000 && cutter.IsCoasting; i++)
+            cutter.StepCoast(now += 2);
+        expect(keptGliding, "cutter: a wheel tick in the coast's direction that the glide already covered keeps it coasting (never a stop and a settled still)");
+
+        // Held at the file's end, a fast stream (a touchpad) asks for nothing: no scrub, no coast.
+        cutter.PositionSeconds = 60;
+        var atEndFrom = cuts.Count;
+        now += 1000;
+        for (var i = 0; i < 8; i++)
+            cutter.WheelAt(-30, ModifierKeys.None, now += 15, 300);
+        expect(cuts.Count == atEndFrom && !cutter.IsCoasting && cutter.PositionSeconds == 60,
+            "cutter: a fast stream against the file's end tells nothing (no still asked again and again) and leaves no coast");
+
+        // Ctrl + wheel zooms about the pointer, and stops a coast.
+        cutter.PositionSeconds = 30;
+        cutter.WheelAt(-120, ModifierKeys.None, now += 1000, 300);
+        cutter.WheelAt(-120, ModifierKeys.None, now += 15, 300);
+        var cutterWasCoasting = cutter.IsCoasting;
+        var cutterUnder = cutter.SecondsAt(450);
+        cutter.WheelAt(120, ModifierKeys.Control, now += 2, 450);
+        expect(cutterWasCoasting && !cutter.IsCoasting && Math.Abs(cutter.Zoom - 12) < 1e-9 && Math.Abs(cutter.SecondsAt(450) - cutterUnder) < 1e-9 && cuts[^1] == (cutter.PositionSeconds, true),
+            F($"cutter: Ctrl + wheel up at x 450 stops the coast and zooms to {cutter.Zoom:0} DIPs a second about the pointer; the playhead's moment is told, settled"));
+
+        // The window's sideways-wheel hook: the Timeline first, else the strip under the pointer; side windows share it.
+        var root = RepositoryRoot();
+        var view = File.ReadAllText(Path.Combine(root, "src", "MainWindow.TimelineView.cs"));
+        var docking = File.ReadAllText(Path.Combine(root, "src", "MainWindow.Docking.cs"));
+        var hook = view[view.IndexOf("private IntPtr TimelineSidewaysWheel", StringComparison.Ordinal)..];
+        hook = hook[..hook.IndexOf("internal static ISidewaysWheel? SidewaysWheelUnderPointer", StringComparison.Ordinal)];
+        expect(hook.Contains("msg != WmMouseHWheel") && hook.IndexOf("TimelineUnderPointer()", StringComparison.Ordinal) is > 0 and var timelineFirst
+               && timelineFirst < hook.IndexOf("SidewaysWheelUnderPointer()", StringComparison.Ordinal) && hook.Contains("strip.SidewaysWheel(delta, now)")
+               && docking.Contains("AddHook(TimelineSidewaysWheel)") && typeof(ISidewaysWheel).IsAssignableFrom(typeof(SubtitleTimeline))
+               && typeof(ISidewaysWheel).IsAssignableFrom(typeof(MediaFilmstripCutter)),
+            "WM_MOUSEHWHEEL: the Timeline under the pointer first, else the first ISidewaysWheel under it (the strip and the cutter are), in the main window and every side window (MainWindow.Docking.cs)");
     }
 
     private static void MediaBrowser(Action<bool, string> expect)

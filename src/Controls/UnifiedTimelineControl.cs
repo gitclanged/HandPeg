@@ -448,7 +448,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
     /// <summary>Alt + click on a block (without dragging it): split it there (seconds).</summary>
     public event Action<TimelineRow, TimelineBlock, double>? RazorRequested;
 
-    /// <summary>Alt + the wheel over the tracks (5.1-Polish, the user's directive): every track taller (notches up, positive) or lower.</summary>
+    /// <summary>Alt + Shift + the wheel over the tracks (5.1-Polish; Alt alone since 5.4.1-M1 scrolls the rows, the user's directive): every track taller (notches up, positive) or lower.</summary>
     public event Action<int>? TrackHeightStepped;
 
     /// <summary>A row's lower edge in the headers pressed (5.1-Polish): a drag of the tracks' height begins.</summary>
@@ -1121,6 +1121,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
     {
         _momentumX?.Stop();
         _momentumY?.Stop();
+        _wheelGlide?.StopPan();
     }
 
     /// <summary>Whether the view or the rows are coasting (5.4C).</summary>

@@ -206,7 +206,7 @@ public partial class SubtitleStudioPane : UserControl, IOwnsKeys
         AddButton.IsEnabled = !_images;
         HintText.Text = _images
             ? "An image-based track: its pictures cannot be edited as text. Drag a subtitle, or one of its ends, to retime it."
-            : "Drag the strip to scrub the player; the mouse wheel zooms. Drag a subtitle to move it, or one of its ends to retime that end. The player shows the captions.";
+            : "Drag the strip to scrub the player; the wheel or a sideways swipe scrolls, Ctrl + wheel or a pinch zooms. Drag a subtitle to move it, or one of its ends to retime that end. The player shows the captions.";
         UpdateSummary();
         UpdateTime();
         Timeline.InvalidateVisual();

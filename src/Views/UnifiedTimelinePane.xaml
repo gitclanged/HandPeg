@@ -553,7 +553,7 @@
                             AutomationProperties.Name="Fit Timeline" local:KeyTip.Action="view.fit" local:KeyTip.Text="Fit{keys}: the tracks show the whole sequence, with room after its end to drop clips into." />
                     <!-- The tracks' height (5.1-Polish, the user's directive): dragged up or down, the wheel, a double-click for the usual one. -->
                     <local:TrackHeightPill Margin="5,0,0,0" VerticalAlignment="Center" Value="{Binding LayerTrackHeight}"
-                                           ToolTip="Track height: drag up for taller tracks, down for lower ones (or use the wheel here, or Alt + the wheel over the tracks, or drag a track's lower edge in its header). A double-click puts the usual height back." />
+                                           ToolTip="Track height: drag up for taller tracks, down for lower ones (or use the wheel here, or Alt + Shift + the wheel over the tracks, or drag a track's lower edge in its header). A double-click puts the usual height back." />
                 </StackPanel>
                 <local:TimelineRuler x:Name="Ruler" Background="{DynamicResource InsetBrush}" BorderBrush="{DynamicResource WellBorderBrush}" BorderThickness="{DynamicResource WellEdgeThickness}"
                                      LowerBorderBrush="{DynamicResource WellBorderLowerBrush}" Cursor="Hand" ClipToBounds="True" Margin="0,0,0,2"

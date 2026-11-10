@@ -367,9 +367,10 @@ public static class DogfoodTests
         expect(Math.Abs(Room(1, 100, 128) - 93) < 1e-9, "a large one at most 8 GB");
 
         var commit = assembly.GetType("HandPegApp.Compositor.SystemCommit") ?? throw new InvalidOperationException("no SystemCommit");
-        object?[] asked = [0L, 0L];
+        object?[] asked = [0L, 0L, 0L];
         var read = (bool)commit.GetMethod("TryRead", BindingFlags.Public | BindingFlags.Static)!.Invoke(null, asked)!;
         expect(read && (long)asked[1]! > 0 && (long)asked[0]! > 0 && (long)asked[0]! <= (long)asked[1]!, "Windows says how much is left, within its limit");
+        expect((long)asked[2]! > 0, "and how much physical memory is available (5.4.1-M4: unified memory's room)");
     }
 
     private static void EncoderSteps(Action<bool, string> expect, StringBuilder text)

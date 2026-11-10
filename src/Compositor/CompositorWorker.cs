@@ -254,7 +254,9 @@ public static unsafe partial class CompositorWorker
                 var woke = WaitHandle.WaitAny(waits, pending ? 2 : _held ? 16 : ahead || !decoders.Playing ? 100 : 4);
                 if (woke == 1)
                     return 0;
-                if (pending)
+                // Drawn again only once the paused frame came back from the encoder and was decoded, or was given up (5.4.1A: no longer
+                // a full redraw every 2 ms, each with its wait for the encoder, while a wipe or a loupe was dragged).
+                if (pending && loopback!.Poll())
                     redraw = true;
 
                 // A frame the last picture lacked was decoded (Instant Seek): the same scene again, with it.
@@ -464,14 +466,19 @@ public static unsafe partial class CompositorWorker
             WaitForExactFrames(shared, slot, decoders);
         var width = Math.Clamp(header.OutputWidth > 0 ? header.OutputWidth : header.CanvasWidth, 16, 8192);
         var height = Math.Clamp(header.OutputHeight > 0 ? header.OutputHeight : header.CanvasHeight, 16, 8192);
-        if (outputs is null || outputs.Width != width || outputs.Height != height)
+
+        // The frame is drawn at (width, height) into the top-left of the ring, which is made anew only when it no longer fits or is far
+        // too large (5.4.1A: a dock splitter's drag of the player resized it on every pixel, three shared textures and their handles each
+        // time); a frame read back stays in a ring of exactly its size.
+        var capacity = OutputCapacity(outputs?.Width ?? 0, outputs?.Height ?? 0, width, height, (header.Flags & FrameSceneHeader.FlagReadback) != 0);
+        if (outputs is null || (outputs.Width, outputs.Height) != capacity)
         {
             // A new ring is announced (its generation and size) only once a frame is drawn in it: a reader that opened it
             // before would copy a texture nothing was drawn into (a black flash on every resize).
             outputs?.Dispose();
             var generation = Math.Max(Volatile.Read(ref control.OutputGeneration), _lastGeneration) + 1;
             _lastGeneration = generation;
-            outputs = new OutputRing(gpu, shared.BaseName, generation, width, height);
+            outputs = new OutputRing(gpu, shared.BaseName, generation, capacity.Width, capacity.Height);
         }
 
         // A preview frame has the device to itself from taking its output texture to the flush after it: the decode lanes hold back
@@ -519,8 +526,8 @@ public static unsafe partial class CompositorWorker
         control.PresentedIndex = index;
         if (!outputs.Announced)
         {
-            control.OutputWidth = width;
-            control.OutputHeight = height;
+            control.OutputWidth = outputs.Width;
+            control.OutputHeight = outputs.Height;
             Volatile.Write(ref control.OutputGeneration, outputs.Generation);
             outputs.Announced = true;
         }
@@ -530,8 +537,30 @@ public static unsafe partial class CompositorWorker
     }
 
     /// <summary>
+    /// The size of the output ring for a frame of <paramref name="width"/> x <paramref name="height"/> (5.4.1A): the ring as it is
+    /// (<paramref name="ringWidth"/> x <paramref name="ringHeight"/>, 0 for none) while the frame fits in it and fills at least half its
+    /// area; else a new one. The first ring, and every ring a frame is read back from (<paramref name="exact"/>: the readback copies the
+    /// whole texture), is the frame's size exactly; a ring grown or re-fitted is rounded up to 128 pixels a side (at most 8192), and a grown
+    /// one keeps the old ring's larger side, so a drag of the player makes a few rings, not one a pixel. Pure: the golden test
+    /// player-resize-no-stretch checks it.
+    /// </summary>
+    internal static (int Width, int Height) OutputCapacity(int ringWidth, int ringHeight, int width, int height, bool exact)
+    {
+        if (exact || ringWidth <= 0 || ringHeight <= 0)
+            return (width, height);
+        if (width > ringWidth || height > ringHeight)
+            return (Math.Max(RoundUp(width), ringWidth), Math.Max(RoundUp(height), ringHeight));
+        if ((long)width * height * 2 < (long)ringWidth * ringHeight)
+            return (RoundUp(width), RoundUp(height));
+        return (ringWidth, ringHeight);
+
+        static int RoundUp(int side) => Math.Min((side + 127) / 128 * 128, 8192);
+    }
+
+    /// <summary>
     /// The scene drawn into the output texture (every frame but the Export Quality Preview's). <paramref name="refused"/>: neither of two
-    /// output textures could be taken (a reader holding them), and nothing was drawn.
+    /// output textures could be taken (a reader holding them), and nothing was drawn. The slot's content size is written while it is
+    /// held (5.4.1A: a reader that holds it reads the size of the frame in it).
     /// </summary>
     private static void RenderInto(CompositorSharedMemory shared, int slot, GpuDevice gpu, SceneRenderer renderer, DecoderPool decoders, OutputRing outputs,
         ref int index, ref (GpuTexture Texture, nint KeyedMutex) output, int width, int height, out bool refused)
@@ -562,6 +591,7 @@ public static unsafe partial class CompositorWorker
             }
 
             var acquired = Stopwatch.GetTimestamp();
+            control.SetOutputContentSize(index, width, height, outputs.Generation, (header.Flags & FrameSceneHeader.FlagReadback) != 0);
             var count = Math.Clamp(header.ActiveLayerCount, 0, CompositorProtocol.MaxLayers);
             var layers = MemoryMarshal.CreateReadOnlySpan(ref shared.Layer(slot, 0), count);
             try
@@ -645,6 +675,7 @@ public static unsafe partial class CompositorWorker
         }
 
         var acquired = Stopwatch.GetTimestamp();
+        control.SetOutputContentSize(index, width, height, outputs.Generation, (header.Flags & FrameSceneHeader.FlagReadback) != 0);
         try
         {
             loopback.Draw(header, output.Texture.Rtv, width, height);

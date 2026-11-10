@@ -471,9 +471,13 @@ internal static unsafe partial class Dxgi
 
     /// <summary>
     /// A flip-model swap chain on a window (IDXGIFactory2::CreateSwapChainForHwnd through the factory that made the
-    /// device's card), two BGRA8 buffers, a frame-latency waitable object, Alt+Enter left to the app.
+    /// device's card), two BGRA8 buffers, a frame-latency waitable object, Alt+Enter left to the app. <paramref name="scaling"/>
+    /// says what the desktop does with a buffer of another size than the window (5.4.1A): <see cref="ScalingNone"/> for the player,
+    /// whose frame the viewport lays in the middle of its buffer, never stretched across a resized window; <see cref="ScalingStretch"/>
+    /// for a side window's mirror, whose buffer is the canvas's region, fitted into a window that keeps its aspect.
+    /// (DXGI_SCALING_ASPECT_RATIO_STRETCH is refused for a swap chain on a window.)
     /// </summary>
-    public static nint CreateSwapChain(nint device, nint window, int width, int height)
+    public static nint CreateSwapChain(nint device, nint window, int width, int height, uint scaling)
     {
         var adapter = AdapterOf(device);
         if (adapter == 0)
@@ -491,7 +495,7 @@ internal static unsafe partial class Dxgi
                 SampleCount = 1,
                 BufferUsage = UsageRenderTargetOutput,
                 BufferCount = 2,
-                Scaling = ScalingStretch,
+                Scaling = scaling,
                 SwapEffect = SwapEffectFlipDiscard,
                 AlphaMode = AlphaIgnore,
                 Flags = SwapChainFlagFrameLatencyWaitable,

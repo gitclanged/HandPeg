@@ -254,7 +254,7 @@ public partial class SettingsWindow
     {
         ["General"] = "How HandPeg looks, how it starts, how it keeps itself and its tools up to date, and how it looks after a project and its crash reports.",
         ["Timeline & Player"] = "How the timeline is drawn, how it snaps and edits, the hover previews above it, and the player.",
-        ["Preview & Cache"] = "Render Preview, what is kept on disk and how much of it, proxies of heavy videos, the media browser and downloads.",
+        ["Preview & Cache"] = "What is kept on disk and how much of it, proxies of heavy videos, the media browser and downloads.",
         ["Export & Hardware"] = "The encoding a new export starts with, which graphics card does what (and the test that tunes it), and how much of the computer background work may take.",
         ["Auto-Captions"] = "The speech model that writes captions, how it listens, Remove Dead Air, and the style new captions start with.",
         ["Automation & Drop Targets"] = "Smart rules for files that are dropped or loaded, the targets of the drop overlay, and the Social Sharing Squisher's presets.",
@@ -278,7 +278,6 @@ public partial class SettingsWindow
         [("Timeline & Player", "Player")] = "Player",
         [("Timeline & Player", "Tabs and bars")] = "Window",
         [("Preview & Cache", null)] = "Player",
-        [("Preview & Cache", "Render Preview")] = "Player",
         [("Preview & Cache", "Proxies")] = "Player",
         [("Preview & Cache", "Media browser")] = "Media",
         [("Export & Hardware", null)] = "Export",

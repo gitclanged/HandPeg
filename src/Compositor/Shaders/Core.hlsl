@@ -338,7 +338,8 @@ float4 PSCopy(VsOut i) : SV_Target
 // Params4.z = 1 the canvas as it is, premultiplied (the golden tests read its alpha).
 float4 PSFinal(VsOut i) : SV_Target
 {
-    float4 c = Input.SampleLevel(PointClamp, i.Uv, 0);
+    // The canvas's drawn part (5.4.1-M2: the canvas is kept at a capacity, drawn into its top left); the whole of it at WholeUv.
+    float4 c = Input.SampleLevel(PointClamp, lerp(UvRect.xy, UvRect.zw, i.Uv), 0);
     if (Params4.z > 0.5)
         return c;
     return float4(saturate(c.rgb + Color.rgb * (1 - c.a)), 1);

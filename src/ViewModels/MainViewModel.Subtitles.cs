@@ -33,7 +33,8 @@ public partial class MainViewModel
     [ObservableProperty] private double _subtitleOffsetMs;
 
     // (5.4D, Q6 a: the modal editor's flag, IsSubtitleEditorOpen, and its one-step visit are gone. The Subtitle Studio is a dock pane
-    // since 5.4C: the main player goes on drawing the captions, and each of its gestures is a step of its own, CommitSubtitleEdits.)
+    // since 5.4C: the main player goes on drawing the captions, and each of its gestures is a step of its own, CommitSubtitleEdits.
+    // 5.4.1A: the player draws the track's words whenever Burn Captions into Export is on, GpuCaptions; no hidden latch decides it.)
 
     public bool HasSubtitleCues => SubtitleCues.Count > 0;
 
@@ -398,6 +399,11 @@ public partial class MainViewModel
         OnPropertyChanged(nameof(SubtitleTrackSummary));
         OnPropertyChanged(nameof(CaptionHint));
         TimelineChanged?.Invoke();
+
+        // The player takes the track's words again (5.4.1A): also while an operation runs (Edit Captions..., a transcription, an
+        // import during another), when the sync below waits. ScheduleGpuState's 8 ms timer joins a burst of them into one push.
+        if (!_isBackgroundWorker)
+            CaptionsChanged?.Invoke();
         if (!IsBusy)
             SyncEditorCaptions();
     }

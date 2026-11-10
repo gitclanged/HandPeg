@@ -97,7 +97,7 @@ public sealed partial class VideoSurface : HwndHost
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool GetWindowRect(IntPtr window, out NativeRect rect);
 
-    private const int WmNcHitTest = 0x0084, HtTransparent = -1, WmMouseMove = 0x0200, WmMouseLeave = 0x02A3, TmeLeave = 0x2;
+    private const int WmNcHitTest = 0x0084, HtTransparent = -1, WmMouseMove = 0x0200, WmMouseLeave = 0x02A3, TmeLeave = 0x2, WmSize = 0x0005;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct TrackMouse
@@ -169,6 +169,12 @@ public sealed partial class VideoSurface : HwndHost
     /// <summary>Raised when <see cref="SurfaceHandle"/> has been created.</summary>
     public event Action? SurfaceReady;
 
+    /// <summary>
+    /// Raised when the native window has really changed size (5.4.1A: its WM_SIZE, inside the host's move of it, after its client
+    /// rectangle changed). SizeChanged comes before the host moves the window, so a player woken by it alone can read the old size.
+    /// </summary>
+    public event Action? SurfaceResized;
+
     // The window class of the surface: Windows' own window procedure, painting black. (A "static" black rectangle is
     // painted in the window frame colour, which is grey on Windows 10 and 11: that was the grey box at launch.)
     private static readonly Lazy<string> SurfaceClass = new(() =>
@@ -231,6 +237,8 @@ public sealed partial class VideoSurface : HwndHost
             _trackingLeave = false;
         if (msg is WmMouseMove or WmMouseLeave && PointerMoved is not null)
             TellPointer(hwnd, msg, lParam);
+        if (msg == WmSize && hwnd == SurfaceHandle)
+            SurfaceResized?.Invoke();
 
         return base.WndProc(hwnd, msg, wParam, lParam, ref handled);
     }

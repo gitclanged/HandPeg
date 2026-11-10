@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.IO;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 
@@ -7,7 +8,7 @@ namespace HandPegApp.Services;
 /// <summary>Who is waiting for a piece of work, from the most to the least: each lane has its own limit of work at once.</summary>
 public enum WorkLane
 {
-    /// <summary>Exports, Render Preview, the queue and the Squisher.</summary>
+    /// <summary>Exports, the queue and the Squisher.</summary>
     Foreground,
 
     /// <summary>What the user is waiting for: loading a file, probes, captions, Dead Air.</summary>
@@ -77,6 +78,9 @@ public sealed partial class WorkItem : ObservableObject
         (Title, Lane, Key, Cancellable, Visible, SuspendWhilePlaying, Urgent, Cancellation) = (spec.Title, spec.Lane, spec.Key, spec.Cancellable, spec.Visible, spec.SuspendWhilePlaying, spec.Urgent, cancellation);
 
     internal bool SuspendWhilePlaying { get; }
+
+    // The project tab in front as it was asked for (5.4.1-M3): while another tab is in front, it waits behind that tab's work in its lane.
+    internal string? Tab { get; init; }
 
     // What a user's action waits on this moment: started at once, past its lane's limit (see WorkSpec.Urgent). Set again
     // when an urgent request finds the same work already asked for.
@@ -198,9 +202,9 @@ public sealed partial class WorkSummary : ObservableObject
 /// <summary>
 /// Every tool HandPeg runs, and every long piece of work it does, goes through here. Work is put in a lane by who
 /// is waiting for it, and each lane has a limit of work at once:
-///   - Foreground (exports, Render Preview, the queue, the Squisher): 2;
+///   - Foreground (exports, the queue, the Squisher): 2;
 ///   - Interactive (loading, probes, captions, Dead Air): 2;
-///   - Background (thumbnails, waveforms, I-frame lists, proxies): Settings, Auto = one for every six processors not reserved;
+///   - Background (thumbnails, waveforms, I-frame lists, proxies): Settings, Auto = one for every three processors not reserved, at most 8;
 ///   - Idle (indexing, purges, the encoder probe, update checks): 1.
 /// Background and Idle work waiting to start waits while the player plays and while foreground work runs (both
 /// Settings, on by default), and while the user has paused its lane in the progress flyout; work already running
@@ -237,6 +241,22 @@ public static class WorkScheduler
     /// </summary>
     public static SemaphoreSlim GpuDecodeGate { get; } = new(4, 4);
 
+    /// <summary>
+    /// The project tab in front, by id (5.4.1-M3, ProjectTabs.Active): work asked for while another tab was in front waits, in each lane,
+    /// behind the work of this one (Priority 3: the tabs behind). Null before any tab: no work told apart.
+    /// </summary>
+    public static string? FrontTab
+    {
+        get => Volatile.Read(ref _frontTab);
+        set
+        {
+            if (Interlocked.Exchange(ref _frontTab, value) != value)
+                Pump();
+        }
+    }
+
+    private static string? _frontTab;
+
     /// <summary>Starts the scheduler's interface side (the summary and its timer), and applies the settings. On the UI thread, once.</summary>
     public static void Attach(Dispatcher dispatcher)
     {
@@ -259,9 +279,33 @@ public static class WorkScheduler
         WorkLane.Foreground or WorkLane.Interactive => 2,
         WorkLane.Background => AppSettings.Current.BackgroundJobs > 0
             ? Math.Min(AppSettings.Current.BackgroundJobs, 16)
-            : Math.Max(1, (Environment.ProcessorCount - AppSettings.Current.EffectiveReservedCores) / 6),
+            : AutoBackgroundJobs(Environment.ProcessorCount, AppSettings.Current.EffectiveReservedCores),
         _ => 1,
     };
+
+    /// <summary>
+    /// Auto's background lane (5.4.1-M4, high-core scaling): one job for every three processors not reserved, at least 1 and at most
+    /// <see cref="MostAutoBackgroundJobs"/> (6 to 8 on a 12- to 16-core processor's 24 to 32 threads).
+    /// </summary>
+    public static int AutoBackgroundJobs(int processors, int reserved) => Math.Clamp((processors - reserved) / 3, 1, MostAutoBackgroundJobs);
+
+    public const int MostAutoBackgroundJobs = 8;
+
+    /// <summary>
+    /// A file's path as a work key holds it (5.4.1-M4): full and in one case, so one file asked for under two spellings (a relative
+    /// path, another case) is read once while the first is in flight.
+    /// </summary>
+    public static string PathKey(string path)
+    {
+        try
+        {
+            return Path.GetFullPath(path.Trim().Trim('"')).ToUpperInvariant();
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return path.ToUpperInvariant();
+        }
+    }
 
     /// <summary>Whether the player is playing: background work waits meanwhile (Settings), and work that asked for it is stopped where it is.</summary>
     public static bool IsPlaying
@@ -531,6 +575,7 @@ public static class WorkScheduler
             {
                 BypassPause = spec.Urgent || Current.Value is { Lane: WorkLane.Foreground or WorkLane.Interactive },
                 Context = SynchronizationContext.Current,
+                Tab = FrontTab,
             };
             done = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
             item.Task = done.Task;
@@ -593,7 +638,7 @@ public static class WorkScheduler
             item.Cancel();
     }
 
-    /// <summary>Starts whatever may start now: urgent work first, whatever the limits; then lane by lane.</summary>
+    /// <summary>Starts whatever may start now: urgent work first, whatever the limits; then lane by lane, the tab in front's first.</summary>
     private static void Pump()
     {
         lock (Gate)
@@ -607,7 +652,10 @@ public static class WorkScheduler
                 var index = (int)lane;
                 while (Running[index] < LaneLimit(lane))
                 {
-                    var next = Waiting.FirstOrDefault(i => i.Lane == lane && !UserPaused[index] && (i.BypassPause || !PausedByRule(lane)));
+                    // The tab in front's work first (5.4.1-M3); then the tabs behind's, in the order asked for.
+                    var front = FrontTab;
+                    var next = Waiting.FirstOrDefault(i => i.Lane == lane && (i.Tab is null || i.Tab == front) && !UserPaused[index] && (i.BypassPause || !PausedByRule(lane)))
+                        ?? Waiting.FirstOrDefault(i => i.Lane == lane && !UserPaused[index] && (i.BypassPause || !PausedByRule(lane)));
                     if (next is null)
                         break;
 

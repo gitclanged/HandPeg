@@ -330,9 +330,35 @@ public partial class MainWindow
             }
         }
 
-        // The engine answers every position of a drag, exactly (Instant Seek): nothing to pace.
-        PlayerSeek((long)e.NewValue);
+        // The engine answers every position of a drag, exactly (Instant Seek): nothing to pace. Already sent there by the playhead itself
+        // (FollowPlayheadInPlayer): not sent again, so a drag's heading is not reset by a second seek to the same moment.
+        if (!PlayerAt((long)e.NewValue))
+            PlayerSeek((long)e.NewValue);
     }
+
+    /// <summary>
+    /// The playhead moved by anything but the player itself (the Timeline's ruler and rows, the keys, the studios): the player goes there.
+    /// 5.4.1-M3 fix: this used to be left to the Sequence Overview Scrubber's slider, bound to the playhead, so with the scrubber hidden
+    /// (out of the window, its binding dead) the player never followed a scrub. A moment the player is already at is not sent again
+    /// (the slider, when it is shown, may have sent it first).
+    /// </summary>
+    private void FollowPlayheadInPlayer()
+    {
+        if (_updatingFromPlayer || _gpu is null)
+            return;
+
+        // A tab's paused still (MainWindow.ProjectTabs.cs) is of the moment the tab came back at: gone the moment the playhead moves, so it
+        // never stands over a scrub (the switch's own move of the playhead, restoring the tab's, keeps it until the first frame).
+        if (!_switchingTab)
+            HideTabStill();
+        var ms = (long)_viewModel.PositionMs;
+        if (!PlayerAt(ms))
+            PlayerSeek(ms);
+    }
+
+    // Whether the paused player is at a moment already (its paused clock, set at once by a seek), to the millisecond.
+    private bool PlayerAt(long positionMs) =>
+        _gpu is { IsPlaying: false } engine && Math.Abs(engine.Position * 1000 - positionMs) < 1;
 
     /// <summary>
     /// A press anywhere on the Sequence Overview Scrubber, not only on the playhead: the playhead goes to where the

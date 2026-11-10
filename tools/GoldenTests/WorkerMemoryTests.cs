@@ -88,24 +88,24 @@ public static class WorkerMemoryTests
         text.Append("each machine: where Auto starts, the most it grows to (before Windows' caps), and its steps of growth:\n");
         (string Machine, bool Warp, bool Unified, long Dedicated, long Physical, bool Busy, long Free, long Baseline, long Ceiling)[] machines =
         [
-            ("RX 7900 XTX, 24 GB, 22 GB free, 64 GB computer", false, false, 24 * Gb, 64 * Gb, false, 22 * Gb, 2 * Gb, 11 * Gb),
+            ("RX 7900 XTX, 24 GB, 22 GB free, 64 GB computer", false, false, 24 * Gb, 64 * Gb, false, 22 * Gb, 2 * Gb, 22 * Gb - 24 * Gb / 5),
             ("RX 7900 XTX, Windows not asked yet", false, false, 24 * Gb, 64 * Gb, false, 0, 2 * Gb, 3 * Gb),
             ("RX 7900 XTX, a game on it", false, false, 24 * Gb, 64 * Gb, true, 6 * Gb, 2 * Gb, 3 * Gb),
-            ("GTX 1070, 8 GB, 7 GB free, 16 GB computer", false, false, 8 * Gb, 16 * Gb, false, 7 * Gb, 2 * Gb, 7 * Gb / 2),
+            ("GTX 1070, 8 GB, 7 GB free, 16 GB computer", false, false, 8 * Gb, 16 * Gb, false, 7 * Gb, 2 * Gb, 5 * Gb),
             ("an 8 GB card, a game on it", false, false, 8 * Gb, 32 * Gb, true, 2 * Gb, 2 * Gb, 1 * Gb),
-            ("a 4 GB card, 16 GB computer", false, false, 4 * Gb, 16 * Gb, false, 3 * Gb, 1536 * Mb, 1536 * Mb),
-            ("a 4 GB card, 64 GB computer", false, false, 4 * Gb, 64 * Gb, false, 3 * Gb, 1536 * Mb, 1536 * Mb),
-            ("a 4 GB card, 3.5 GB free, 32 GB computer", false, false, 4 * Gb, 32 * Gb, false, 7 * Gb / 2, 1792 * Mb, 1792 * Mb),
+            ("a 4 GB card, 16 GB computer", false, false, 4 * Gb, 16 * Gb, false, 3 * Gb, 1 * Gb, 1 * Gb),
+            ("a 4 GB card, 64 GB computer", false, false, 4 * Gb, 64 * Gb, false, 3 * Gb, 1 * Gb, 1 * Gb),
+            ("a 4 GB card, 3.5 GB free, 32 GB computer", false, false, 4 * Gb, 32 * Gb, false, 7 * Gb / 2, 1536 * Mb, 1536 * Mb),
             ("a 4 GB card (Arc A310), a game on it, 64 GB computer", false, false, 4 * Gb, 64 * Gb, true, 1 * Gb, 512 * Mb, 512 * Mb),
             ("a 4 GB card, Windows not asked yet", false, false, 4 * Gb, 64 * Gb, false, 0, 512 * Mb, 512 * Mb),
             ("a 2 GB card, 1 GB free, 24 GB computer", false, false, 2 * Gb, 24 * Gb, false, 1 * Gb, 256 * Mb, 256 * Mb),
-            ("a 2 GB card, 1.75 GB free, 32 GB computer", false, false, 2 * Gb, 32 * Gb, false, 1792 * Mb, 768 * Mb, 768 * Mb),
+            ("a 2 GB card, 1.75 GB free, 32 GB computer", false, false, 2 * Gb, 32 * Gb, false, 1792 * Mb, 256 * Mb, 256 * Mb),
             ("a 2 GB card, a game on it", false, false, 2 * Gb, 32 * Gb, true, 512 * Mb, 256 * Mb, 256 * Mb),
             ("a 256 MB card, 16 GB computer", false, false, 256 * Mb, 16 * Gb, false, 0, 512 * Mb, 512 * Mb),
-            ("Adreno X1-85, 16 GB computer (unified)", false, true, 128 * Mb, 16 * Gb, false, 7 * Gb, 2 * Gb, 2 * Gb),
-            ("unified memory, 32 GB computer", false, true, 512 * Mb, 32 * Gb, false, 0, 2 * Gb, 4 * Gb),
-            ("unified memory, 64 GB computer", false, true, 512 * Mb, 64 * Gb, false, 0, 2 * Gb, 4 * Gb),
-            ("unified memory, 8 GB computer", false, true, 512 * Mb, 8 * Gb, false, 0, 1 * Gb, 1 * Gb),
+            ("Adreno X1-85, 16 GB computer (unified)", false, true, 128 * Mb, 16 * Gb, false, 7 * Gb, 2 * Gb, 4 * Gb),
+            ("unified memory, 32 GB computer", false, true, 512 * Mb, 32 * Gb, false, 0, 2 * Gb, 8 * Gb),
+            ("unified memory, 64 GB computer", false, true, 512 * Mb, 64 * Gb, false, 0, 2 * Gb, 32 * Gb),
+            ("unified memory, 8 GB computer", false, true, 512 * Mb, 8 * Gb, false, 0, 1 * Gb, 2 * Gb),
             ("unified memory, its size not known", false, true, 128 * Mb, 0, false, 0, 512 * Mb, 512 * Mb),
             ("WARP, 16 GB computer", true, false, 0, 16 * Gb, false, 0, 512 * Mb, 512 * Mb),
             ("WARP, 32 GB computer", true, false, 0, 32 * Gb, false, 0, 512 * Mb, 512 * Mb),
@@ -129,6 +129,25 @@ public static class WorkerMemoryTests
             Expect(problems, $"the ceiling of {m.Machine}", ceiling, m.Ceiling);
             if (MemoryTier.Grown(baseline, 0, maximum) > baseline || MemoryTier.Grown(baseline, 99, maximum) != maximum)
                 problems.Add($"{m.Machine}: the steps do not start at the baseline (or below it) and end at the maximum");
+        }
+
+        // What is always kept free (5.4.1-M4): a discrete card max(2 GB, 20%) of its own; unified memory max(5 GB, 25%) of the computer's
+        // memory up to 32 GB, max(12 GB, 30%) above, out of what is available (the cache's physical room).
+        text.Append("kept free of the cache: a discrete card's reserve, unified memory's reserve and room (held + available - reserve):\n");
+        (string What, long Actual, long Expected)[] reserves =
+        [
+            ("a 24 GB card's reserve", MemoryTier.VramReserve(24 * Gb), 24 * Gb / 5),
+            ("an 8 GB card's reserve", MemoryTier.VramReserve(8 * Gb), 2 * Gb),
+            ("16 GB unified: reserve", MemoryTier.UnifiedReserve(16 * Gb), 5 * Gb),
+            ("32 GB unified: reserve", MemoryTier.UnifiedReserve(32 * Gb), 8 * Gb),
+            ("64 GB unified: reserve", MemoryTier.UnifiedReserve(64 * Gb), 64 * Gb / 10 * 3),
+            ("16 GB unified, 1 GB held, 7 GB available: room", MemoryTier.UnifiedRoom(1 * Gb, 7 * Gb, 16 * Gb), 3 * Gb),
+            ("16 GB unified, nothing held, 4 GB available: room", MemoryTier.UnifiedRoom(0, 4 * Gb, 16 * Gb), 0),
+        ];
+        foreach (var r in reserves)
+        {
+            Line(text, $"  {r.What}: {Size(r.Actual)}");
+            Expect(problems, r.What, r.Actual, r.Expected);
         }
 
         // The user's maximum (Settings' "Maximum frame cache"): caps the ceiling, never raises it.

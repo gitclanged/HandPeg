@@ -312,8 +312,6 @@ public partial class MainWindow
                 "The selected clip's effect stack (or the Sequence Output's), in the order the effects are applied."),
             new("Master Meter", () => _viewModel.ShowMasterMeter, on => _viewModel.ShowMasterMeter = on,
                 "The Sequence's master meter and fader, upright: each side's peak and RMS, the loudness in LUFS with the -14 and -16 targets, the true peak, and the master gain (the Audio tab has the same meter across)."),
-            new("Status Bar", () => AppSettings.Current.ShowStatusBar, SetStatusBarShown,
-                "The bar along the bottom of the window. Hidden, the status and the progress of background work are in the title bar."),
             .. StudioToggles(),
         ];
     }

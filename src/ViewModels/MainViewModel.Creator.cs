@@ -1412,64 +1412,6 @@ public partial class MainViewModel
     [RelayCommand]
     private void ResetCrop() => (CropTop, CropBottom, CropLeft, CropRight) = (0, 0, 0, 0);
 
-    // ----- Render preview -----
-
-    /// <summary>Raised with the path of a freshly rendered preview clip, for the window to play.</summary>
-    public event Action<string>? PreviewRendered;
-
-    private static string PreviewFolder => SessionPaths.Previews;
-
-    /// <summary>
-    /// Renders a few seconds with the current filters, at reduced size, and hands the clip to the window. It starts at
-    /// the in point while one is set ([), otherwise at the playhead (from the start when the playhead is at the end).
-    /// </summary>
-    [RelayCommand(CanExecute = nameof(CanStartOperation))]
-    private Task RenderPreviewAsync() => RunOperationAsync("Render Preview", WorkLane.Foreground, async cancellationToken =>
-    {
-        if (!HasSource)
-            return "Load a video first.";
-
-        var settings = AppSettings.Current;
-        var seconds = Math.Clamp(settings.PreviewDurationSeconds, 1, 60);
-
-        // One stretch of the timeline: from the playhead (from earlier, when the timeline ends before a whole preview; from
-        // the start, when the playhead is at the end).
-        var length = Math.Max(SequenceSeconds, 0);
-        var start = PositionMs / 1000 >= length - 0.05 ? 0 : Math.Clamp(Math.Min(PositionMs / 1000, length - seconds), 0, length);
-        List<(double Start, double End)> ranges = [(start, start + seconds)];
-
-        Directory.CreateDirectory(PreviewFolder);
-        var path = Path.Combine(PreviewFolder, $"preview_{Guid.NewGuid():N}.mp4");
-
-        // Captions for just the stretch being previewed, timed from its start (the compositor moves them to it).
-        string? captionsPath = null;
-        if (AutoCaptions)
-        {
-            captionsPath = Path.Combine(PreviewFolder, "captions_preview.ass");
-            if (await PrepareCaptionsAsync(ranges, captionsPath, 0, cancellationToken) is { } problem)
-                return problem;
-        }
-
-        IsProgressIndeterminate = true;
-        StatusText = "Rendering preview...";
-        var expected = TimeSpan.FromSeconds(Math.Max(ranges.Sum(r => r.End - r.Start), 0.1));
-        var progress = new Progress<FfmpegProgress>(report =>
-        {
-            if (_acceptProgressReports && report.Position is { } position)
-            {
-                IsProgressIndeterminate = false;
-                ProgressValue = Math.Clamp(position / expected * 100, 0, 100);
-            }
-        });
-
-        // On the GPU compositor, as the export is (the user's call, 5.0-Verify Q5; the only renderer since 5.2-Audit): the same
-        // frames, the sound engine's sound.
-        await GpuExport.RunPreviewAsync(SdrPreviewOf(CompileExportState()), path, ranges[0].Start, ranges[0].End, settings.PreviewResolutionPercent, captionsPath, progress, cancellationToken);
-        CrashReporter.Note("preview", "rendered on the GPU compositor");
-        PreviewRendered?.Invoke(path);
-        return $"Preview rendered: {seconds} s from {TimeDisplay.Format(start)} at {settings.PreviewResolutionPercent}% size.";
-    });
-
     // ----- Interface settings -----
 
     public bool ShowCommandPreviewTab => AppSettings.Current.ShowCommandPreviewTab;

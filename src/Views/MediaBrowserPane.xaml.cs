@@ -720,6 +720,7 @@ public partial class MediaBrowserPane : UserControl
                     work.Report((double)i / videos.Count, $"{i + 1} of {videos.Count} videos");
                     if (videos[i].StripPath is null)
                         await PrepareStripAsync(videos[i], work.Token, WorkLane.Idle);
+                    await PrebakeTimelineAsync(videos[i].Path, work.Token);
                 }
             }, indexing.Token);
 

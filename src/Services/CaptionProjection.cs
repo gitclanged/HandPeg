@@ -344,7 +344,7 @@ public static class CaptionProjection
 
     /// <summary>
     /// Captions on the sequence's clock as they are on an output that plays only some stretches of it, joined end to end
-    /// (a Render Preview), moved by <paramref name="offset"/>: a word outside every stretch is left out, a caption left
+    /// (no caller asks for stretches since Render Preview was retired in 5.4.1A; an export passes none), moved by <paramref name="offset"/>: a word outside every stretch is left out, a caption left
     /// with none goes. No stretches: the whole sequence, only moved.
     /// </summary>
     public static List<List<CaptionWord>> ToOutputClock(

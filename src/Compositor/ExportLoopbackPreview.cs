@@ -14,7 +14,8 @@ namespace HandPegApp.Compositor;
 /// player's output, letterboxed as the player shows the canvas (Shaders/Loopback.hlsl: the encoded picture, a split wipe, or the
 /// difference x10).
 /// <para>Made on the first scene that asks for it, let go on the first that does not (Law 2: nothing of it exists while it is off).
-/// The wait for a decoded frame is bounded (10 ms playing, 120 ms paused) and never holds the output's keyed mutex: a frame that is
+/// The wait for a decoded frame is bounded (10 ms playing, 120 ms paused, and only in the paused scene that handed it over: 5.4.1A, a
+/// wipe or loupe dragged meanwhile takes what is back and never waits; the worker <see cref="Poll"/>s for the rest) and never holds the output's keyed mutex: a frame that is
 /// late shows the last pair that came back, never a source beside another frame's encoding. Nothing is thrown out of it but a lost
 /// device: a missing or failing transform is a state (<see cref="ControlBlock.LoopbackState"/>) and the plain picture.</para>
 /// </summary>
@@ -72,6 +73,11 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
     private float _roundTripMs;
     private bool _drained;
 
+    // Whether this scene handed a frame to the encoder (5.4.1A: only that scene waits for it in Collect), and the decoders' count when
+    // the picture was last rendered (a picture that lacked an exact video frame is rendered again only once more frames were decoded).
+    private bool _submitted;
+    private int _decodedAtRender = -1;
+
     /// <summary>Whether a scene asks for the loopback where it can be: the player's flat, letterboxed picture, no readback.</summary>
     public static bool Wants(in FrameSceneHeader header) =>
         (header.Flags & FrameSceneHeader.FlagLoopback) != 0 && (header.Flags & FrameSceneHeader.FlagLetterbox) != 0
@@ -93,24 +99,32 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
         return (Math.Min(width, 8192), Math.Min(height, 8192));
     }
 
-    /// <summary>A paused frame is still in flight: the worker looks again in 2 ms, not 100.</summary>
-    public bool Pending => _awaited >= 0 && !_playing && Find(_awaited) is var index and >= 0
+    /// <summary>
+    /// A paused frame is still awaited: the worker looks again in 2 ms, not 100, and <see cref="Poll"/>s for it. 5.4.1A: true until Poll
+    /// or <see cref="Collect"/> gives it up (<see cref="InFlight"/>), so the worker always has the turn that gives it up and draws again.
+    /// </summary>
+    public bool Pending => _awaited >= 0 && !_playing && Find(_awaited) >= 0;
+
+    // A paused frame still in flight: awaited, and handed over less than GiveUpMs ago.
+    private bool InFlight => Pending && Find(_awaited) is var index and >= 0
         && Stopwatch.GetElapsedTime(_sources[index]!.HandedAt).TotalMilliseconds < GiveUpMs;
 
     /// <summary>
     /// The frame's half before the output is taken: the scene rendered at the encoded size (only when the picture may have changed:
-    /// playing, a new content stamp, or a paused frame that lacked an exact video frame), its NV12 planes kept and handed to the
-    /// encoder. Inside the worker's drawing window (the decode lanes hold back).
+    /// playing, a new content stamp, or a paused frame that lacked an exact video frame and more frames were decoded since, 5.4.1A),
+    /// its NV12 planes kept and handed to the encoder. Inside the worker's drawing window (the decode lanes hold back).
     /// </summary>
     public void Render(ref ControlBlock control, in FrameSceneHeader header, ReadOnlySpan<GpuLayerDescriptor> layers, DecoderPool decoders)
     {
         _playing = header.IsPlaying != 0;
         _bypass = (header.LoopbackTestFlags & 1) != 0;
+        _submitted = false;
         var (width, height) = EncodedSize(header);
         _failedSize = (0, 0);
         Configure(header, width, height);
 
-        var encode = _playing || _program is null || header.LoopbackContentStamp != _encodedStamp || !_encodedExact;
+        var encode = _playing || _program is null || header.LoopbackContentStamp != _encodedStamp
+                     || (!_encodedExact && decoders.FramesDecoded != _decodedAtRender);
         if (!encode)
         {
             Publish(ref control);
@@ -128,8 +142,11 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
             var flat = header;
             flat.Flags &= ~(FrameSceneHeader.FlagLetterbox | FrameSceneHeader.FlagLoopback);
             (flat.LoupeClipKey, flat.ViewScale, flat.ViewPanX, flat.ViewPanY) = (0, 1, 0, 0);
+
+            // The count before the render: a frame a lane finishes during it (and wakes the worker for) is drawn on that wake.
+            var decoded = decoders.FramesDecoded;
             renderer.Render(flat, layers, _program!.Rtv, width, height, raw: false);
-            (_encodedStamp, _encodedExact) = (header.LoopbackContentStamp, decoders.LastFrameExact);
+            (_encodedStamp, _encodedExact, _decodedAtRender) = (header.LoopbackContentStamp, decoders.LastFrameExact, decoded);
 
             index = NextSource();
             source = _sources[index]!;
@@ -163,7 +180,11 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
                 _encoder.SetQualityVsSpeed(_playing ? Math.Min(header.LoopbackQualityVsSpeed, 33) : header.LoopbackQualityVsSpeed);
                 _encoder.Submit(SampleOf(source), forceKey: !_playing);
                 _awaited = source.Time;
-                _drained = false;
+                (_drained, _submitted) = (false, true);
+
+                // The golden test's flag 2 (5.4.1A): the submitting scene does not wait either, so the frame comes back through Poll alone.
+                if ((header.LoopbackTestFlags & 2) != 0)
+                    _submitted = false;
             }
             catch (GpuException ex) when (!ex.IsDeviceLost)
             {
@@ -178,14 +199,18 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
         Publish(ref control);
     }
 
-    /// <summary>The bounded wait for the frame handed over last: its decoded picture, paired with its own source. The output is not held.</summary>
+    /// <summary>
+    /// The bounded wait for the frame handed over last: its decoded picture, paired with its own source. The output is not held. Paused,
+    /// only the scene that handed the frame over waits (5.4.1A): any other (a wipe or loupe moved, the same picture) takes what is back
+    /// without waiting and never drains the encoder; the worker's <see cref="Poll"/> draws the frame when it comes.
+    /// </summary>
     public void Collect(ref ControlBlock control)
     {
         if (_encoder is null || _awaited < 0)
             return;
 
         var started = Stopwatch.GetTimestamp();
-        var budget = _playing ? PlayingWaitMs : PausedWaitMs;
+        var budget = _playing ? PlayingWaitMs : _submitted ? PausedWaitMs : 0;
         var spins = 0;
         try
         {
@@ -245,7 +270,7 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
                 _late++;
                 _awaited = -1;
             }
-            else if (_awaited >= 0 && !Pending)
+            else if (_awaited >= 0 && !InFlight)
             {
                 _awaited = -1;
             }
@@ -256,6 +281,58 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
         }
 
         Publish(ref control);
+    }
+
+    /// <summary>
+    /// The worker's look, between scenes, for a paused frame still in the encoder (5.4.1A; on the worker's thread, outside its drawing
+    /// window, as <see cref="Collect"/>): what the encoder has given out is decoded, never waited for. True when the picture to show
+    /// changed (a newer decoded pair) or the frame was given up: the scene is then drawn again. False otherwise, and the worker draws
+    /// nothing (before 5.4.1A it drew the whole scene every 2 ms, each with Collect's wait, while a frame was in flight).
+    /// </summary>
+    public bool Poll()
+    {
+        if (_awaited < 0)
+            return false;
+
+        var before = (_shown, _shownDecoded, _decoder?.LastTime ?? -1, _state);
+        try
+        {
+            // An encoder that holds frames back (look-ahead) gives a paused frame out only once drained: tried again here while the
+            // first try (in the submitting scene's Collect) found it not yet in the encoder; never blocks.
+            if (!_playing && !_drained && _encoder is not null && Find(_awaited) is var awaited and >= 0
+                && Stopwatch.GetElapsedTime(_sources[awaited]!.HandedAt).TotalMilliseconds >= DrainAfterMs)
+                _drained = _encoder.Drain();
+
+            while (_encoder?.TryTakeOutput() is { } bitstream and not 0)
+            {
+                try
+                {
+                    Decode(bitstream);
+                }
+                finally
+                {
+                    Com.Release(ref bitstream);
+                }
+
+                if (_awaited < 0 || _decoder is null)
+                    break;
+            }
+        }
+        catch (GpuException ex) when (!ex.IsDeviceLost)
+        {
+            Fail(ex.Code);
+            return true;
+        }
+
+        // Given up (or no codec left to give it): the worker draws once more and stops looking.
+        if (_awaited >= 0 && (_encoder is null || !InFlight))
+        {
+            _awaited = -1;
+            return true;
+        }
+
+        // A newer pair, or a new state (a decoder that could not be made fails here, and is published by the redraw).
+        return (_shown, _shownDecoded, _decoder?.LastTime ?? -1, _state) != before;
     }
 
     /// <summary>The compare into the output (its keyed mutex held by the caller), placed as the player places the canvas.</summary>

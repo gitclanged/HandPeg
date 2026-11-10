@@ -96,6 +96,11 @@ public partial class MainWindow
     // When the 3D view was left, and how long its layer may wait for a flat picture (the way back is 240 ms of camera, each step at
     // most a 60 Hz refresh: 15 frames, slow ones included).
     private long _explodedLeftAt;
+
+    // The front tab's last 3D camera (5.4.1-M1, the user's answer Q2 b of 5.4D): taken as the view is left, given back as it is turned on
+    // again by hand in the same tab; kept in the tab's header when it is put behind and set from it as a tab comes to the front (null:
+    // never in 3D here, the camera's start). The Reset button sets the start again.
+    private GpuPreviewEngine.CameraPose? _explodedLastPose;
     private const long ExplodedWayBackMs = 1500;
 
     /// <summary>
@@ -151,9 +156,11 @@ public partial class MainWindow
                 return;
             }
 
-            // The camera starts where it always does (the user's Q4: its angle is not remembered, but for a project tab come back,
-            // 5.4D); the spacing is the panel's, kept for the session.
-            engine.ResetCamera();
+            // The camera where this tab left it (5.4.1-M1), else where it always starts; the spacing is the panel's, kept for the session.
+            if (_explodedLastPose is { } last)
+                engine.SetCamera(last);
+            else
+                engine.ResetCamera();
             engine.ZSpacing = ExplodedSpacing.Value;
             engine.SetExploded(true);
             ShowExplodedLayer();
@@ -163,6 +170,8 @@ public partial class MainWindow
         {
             EndExplodedDrag(cancelled: true);
             _explodedUi = false;
+            if (_gpu is { } left)
+                _explodedLastPose = left.TargetPose;
             _explodedLeftAt = Environment.TickCount64;
             NoteStillStale();
             if (instant)
@@ -287,6 +296,7 @@ public partial class MainWindow
     private void ExplodedReset_Click(object sender, RoutedEventArgs e)
     {
         _gpu?.ResetCamera();
+        _explodedLastPose = null;
         NoteStillStale();
     }
 

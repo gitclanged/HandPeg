@@ -201,8 +201,11 @@ public static class LayoutTests
             "the drop hint has no outline (5.3-Stage3: no dashed Rectangle, no border): its icon and words only");
         expect(Attr(Named(main, "TitleStatus"), "Visibility") == "Collapsed",
             "the title bar's middle (TitleStatus) starts collapsed: nothing there until the user does something, something loads or work begins (5.3-Stage3)");
-        expect(Attr(Named(main, "StatusBar"), "Margin") is { } status && Sides(status)[1] <= 2 && Attr(Named(main, "DestinationBar"), "Margin") == "0,1,0,0",
-            "no 10 px band above the status bar or the destination bar");
+        expect(Named(main, "StatusBar") is null && Attr(Named(main, "DestinationBar"), "Margin") == "0,1,0,0",
+            "no 10 px band above the destination bar, and no status bar (retired in 5.4.1-M5)");
+        expect(Named(main, "WorkChip")?.Ancestors().Any(e => Attr(e, X + "Name") == "TransportRow") == true
+               && Named(main, "UpdateNotice")?.Ancestors().Any(e => Attr(e, X + "Name") == "TransportRow") == true,
+            "the progress chip and the update notice are on the transport row (5.4.1-M5)");
         expect(Attr(Named(main, "PresetBarPane"), "Margin") == "0", "no band under the Preset Bar either (its Margin 0, from 0,0,0,10): the dock's seams part the panes");
         Seams(expect, text, app);
 

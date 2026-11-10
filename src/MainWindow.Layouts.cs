@@ -455,6 +455,16 @@ public partial class MainWindow
             LeaveSelectorToPointer();
     }
 
+    /// <summary>The footer's "Projects open in their saved window" (5.4.1-M5; the same setting as the Settings window's): saved at once.</summary>
+    private void RestoreWorkspaceBox_Click(object sender, RoutedEventArgs e)
+    {
+        var on = RestoreWorkspaceBox.IsChecked == true;
+        _viewModel.SavePaneLayout(s => s.RestoreProjectWorkspaceOnOpen = on);
+        _viewModel.StatusText = on ? "Projects open in the window they were saved in." : "Projects open in the window as it is.";
+        if (!FromKeyboard)
+            LeaveSelectorToPointer();
+    }
+
     // ----- The Layout Selector -----
 
     // The arrangement as it was when the selector opened, to come back to; the layouts its cards show (made ready to be
@@ -484,6 +494,7 @@ public partial class MainWindow
 
         // The footer (5.4D): the setting as it is now (the Settings window sets it too), and a row for each side window open.
         PerTabLayoutsBox.IsChecked = AppSettings.Current.PerTabWindowLayouts;
+        RestoreWorkspaceBox.IsChecked = AppSettings.Current.RestoreProjectWorkspaceOnOpen;
         UpdateSideWindowCheck();
         PlaceLayoutSelector(_layoutHover.OpenedFrom);
     }

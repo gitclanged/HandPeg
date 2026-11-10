@@ -6,7 +6,7 @@ namespace HandPegApp.Services;
 /// <summary>How a tool HandPeg starts is run: as work the user is waiting for, or as work done behind their back.</summary>
 public enum ProcessClass
 {
-    /// <summary>Exports, Render Preview, the queue, probes, captions: normal priority.</summary>
+    /// <summary>Exports, the queue, probes, captions: normal priority.</summary>
     Foreground,
 
     /// <summary>Thumbnails, waveforms, I-frame lists, proxies, indexing: low priority, Efficiency mode.</summary>

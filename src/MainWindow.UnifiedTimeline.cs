@@ -21,7 +21,7 @@ namespace HandPegApp;
 public partial class MainWindow
 {
     // How tall rows are: pictures and sounds by the one Track Height (1 to 50, LayerTrackHeight: the pane's height pill and
-    // slider, Alt + the wheel over the tracks, Shift + a row's lower edge dragged in the headers, and its Pane Settings), a
+    // slider, Alt + Shift + the wheel over the tracks, Shift + a row's lower edge dragged in the headers, and its Pane Settings), a
     // picture's from 32 to 120 px (5.1-Polish, the user's directive), a sound's a little lower; a track's row can have a
     // height of its own (its lower edge dragged, TimelineTrackModel.Height, the user's Q2); the captions and the background
     // are thin, having little to show.
@@ -32,7 +32,7 @@ public partial class MainWindow
     /// <summary>The Track Height HandPeg starts with (a double-click on a row's lower edge, or on the height pill, puts it back).</summary>
     private const double UsualTrackHeight = 25;
 
-    // How many steps of the Track Height one notch of Alt + the wheel is, and the setting when a row's edge drag began.
+    // How many steps of the Track Height one notch of Alt + Shift + the wheel is, and the setting when a row's edge drag began.
     private const int TrackHeightStepsPerNotch = 2;
     private double _trackHeightAtDrag;
 
@@ -74,6 +74,40 @@ public partial class MainWindow
 
     // The rows of the tracks as last made, by the track's id: which rows slide with a fold (a track's row and those in its stack).
     private Dictionary<Guid, TimelineRow> _rowByTrack = [];
+
+    /// <summary>
+    /// A tab's rows as they were when it went behind (5.4.1-M3): given back, not made again, as it comes back while its Sequence (its undo
+    /// mark and views), the scale and the switches that shape the rows are as they were.
+    /// </summary>
+    private sealed record KeptRows(TimelineRow[] Rows, Dictionary<Guid, TimelineRow> ByTrack, double Scale, object? UndoMark, (bool, bool, bool) Shape);
+
+    // The rows of the tab coming back, until they are given back or the switch's layouts are done.
+    private KeptRows? _rowsToTakeBack;
+
+    // The switches that shape the rows (BuildTimelineRows): the waveforms, Show Linked Audio and the effect lanes.
+    private (bool, bool, bool) RowShape() =>
+        (AppSettings.Current.ShowClipWaveforms, _viewModel.ShowLinkedAudio, AdoptsEffectLanes(AppSettings.Current));
+
+    /// <summary>The rows as they are now, for the tab in front put behind; null while they are owed or being made.</summary>
+    private KeptRows? KeepRows() =>
+        _rowsStale || _rebuildingRows || UnifiedTimeline.Surface.IsDragging ? null
+            : new(UnifiedTimeline.Surface.Rows.ToArray(), _rowByTrack, UnifiedTimeline.Surface.PixelsPerSecond, _viewModel.UndoMark, RowShape());
+
+    /// <summary>The rows of the tab come back, when they are still what would be made at <paramref name="scale"/> (see <see cref="KeptRows"/>).</summary>
+    private TimelineRow[]? TakeBackRows(double scale)
+    {
+        if (_rowsToTakeBack is not { } kept || kept.Scale != scale || !ReferenceEquals(kept.UndoMark, _viewModel.UndoMark) || kept.Shape != RowShape())
+            return null;
+
+        // Every track's row still one of its views (never a row of a view made anew).
+        var layers = _viewModel.Layers.ToHashSet();
+        if (kept.Rows.Any(r => r.Data is Layer layer && !layers.Contains(layer)) || kept.Rows.Count(r => r.Data is Layer) > layers.Count)
+            return null;
+
+        _rowsToTakeBack = null;
+        _rowByTrack = kept.ByTrack;
+        return kept.Rows;
+    }
 
     // The clips' views and the audio streams whose changes (a strip or a waveform arriving, a name, a mute) the rows show:
     // watched while they are on the timeline. Two sets, swapped, so that watching costs nothing new each time.
@@ -118,7 +152,7 @@ public partial class MainWindow
         surface.CloseGapRequested += Timeline_CloseGapRequested;
         surface.RazorRequested += Timeline_RazorRequested;
 
-        // The tracks' height from the surface (5.1-Polish): Alt + the wheel, and a row's lower edge dragged or double-clicked.
+        // The tracks' height from the surface (5.1-Polish): Alt + Shift + the wheel (5.4.1-M1), and a row's lower edge dragged or double-clicked.
         surface.TrackHeightStepped += notches => _viewModel.LayerTrackHeight = Math.Clamp(_viewModel.LayerTrackHeight + notches * TrackHeightStepsPerNotch, 1, 50);
         surface.TrackHeightDragStarted += () => _trackHeightAtDrag = _viewModel.LayerTrackHeight;
         surface.TrackHeightDragged += pixels => _viewModel.LayerTrackHeight = Math.Clamp(_trackHeightAtDrag + TrackHeightSteps(pixels), 1, 50);
@@ -230,7 +264,7 @@ public partial class MainWindow
         try
         {
             ShowViewOnSurface();
-            surface.SetRows(BuildTimelineRows(surface.PixelsPerSecond));
+            surface.SetRows((IReadOnlyList<TimelineRow>?)TakeBackRows(surface.PixelsPerSecond) ?? BuildTimelineRows(surface.PixelsPerSecond));
             surface.PlayheadSeconds = _viewModel.DurationMs > 0 ? _viewModel.PositionMs / 1000 : double.NaN;
             if (_expandRowKey is { } key)
             {

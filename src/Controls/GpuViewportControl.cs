@@ -16,6 +16,9 @@ namespace HandPegApp;
 /// pump at the display's refresh while playing and a picture is never more than a frame old when it is shown.</para>
 /// <para>A lost device (a TDR) or a worker of a new generation on another card makes the reader's device anew; the
 /// swap chain follows it on the next present.</para>
+/// <para>Resized (5.4.1A), it never stretches: the player's swap chain is made with DXGI_SCALING_NONE, its buffers follow the window
+/// on the next present, and a frame of another size than the window (the worker's frame one step behind a dock splitter's drag) is
+/// laid 1:1 in the middle of black (<see cref="CenteredCopy"/>), never refused, so the window always shows a frame of its own size.</para>
 /// </summary>
 internal sealed unsafe partial class GpuViewportControl : IDisposable
 {
@@ -29,6 +32,13 @@ internal sealed unsafe partial class GpuViewportControl : IDisposable
     private int _framesSeen = -1;
     private int _generationSeen = -1;
 
+    // What the desktop does with a buffer of another size than the window (5.4.1A): none for the player, a stretch for a mirror.
+    private readonly uint _scaling;
+
+    // The back buffer's render target view, made once a swap chain (flip model in D3D11: buffer 0 is always the one drawn next), for
+    // the black a centred frame lies on; let go before every ResizeBuffers.
+    private nint _backRtv;
+
     // A mirror (5.4C) shares the player's reader, and so its device: it never disposes it.
     private readonly bool _ownsReader = true;
 
@@ -37,6 +47,7 @@ internal sealed unsafe partial class GpuViewportControl : IDisposable
         _client = client;
         _reader = new CompositorFrameReader(client);
         _window = window;
+        _scaling = Dxgi.ScalingNone;
     }
 
     /// <summary>
@@ -50,6 +61,7 @@ internal sealed unsafe partial class GpuViewportControl : IDisposable
         _reader = player._reader;
         _window = window;
         _ownsReader = false;
+        _scaling = Dxgi.ScalingStretch;
     }
 
     /// <summary>The native window it presents into.</summary>
@@ -81,44 +93,54 @@ internal sealed unsafe partial class GpuViewportControl : IDisposable
             Thread.Sleep(Math.Min(milliseconds, 16));
     }
 
-    /// <summary>Whether the worker presented a frame this viewport has not shown yet.</summary>
+    /// <summary>
+    /// Whether the worker presented a frame this viewport has not shown yet, or the window changed size since the last present (5.4.1A:
+    /// the paused pump then shows the last frame at once in the resized window, centred, while the worker draws the new size).
+    /// </summary>
     public bool HasNewFrame =>
-        Volatile.Read(ref _client.Memory.Control.FramesRendered) != _framesSeen || Volatile.Read(ref _client.Memory.Control.OutputGeneration) != _generationSeen;
+        Volatile.Read(ref _client.Memory.Control.FramesRendered) != _framesSeen || Volatile.Read(ref _client.Memory.Control.OutputGeneration) != _generationSeen
+        || (PixelSize is var (width, height) && width >= 8 && height >= 8 && (width, height) != _buffers);
 
     /// <summary>
     /// Copies the worker's newest frame into the back buffer and presents it (with <paramref name="vsync"/>, on the next
-    /// refresh). False when there was no new frame (and <paramref name="force"/> is not set), the sizes differ for a
-    /// frame (a resize under way: the next one will match), or there is nothing to present on yet.
+    /// refresh). A window that changed size presents again even with no new frame, and a frame of another size than the window
+    /// is laid 1:1 in its middle on black (5.4.1A: a resize under way, never stretched, never refused). False when there was no
+    /// new frame and no new size (and <paramref name="force"/> is not set), the frame was busy, or there is nothing to present on yet.
     /// </summary>
     public bool PresentNewest(bool vsync, bool force = false)
     {
         ref var control = ref _client.Memory.Control;
         var frames = Volatile.Read(ref control.FramesRendered);
         var generation = Volatile.Read(ref control.OutputGeneration);
-        if (!force && frames == _framesSeen && generation == _generationSeen)
+        var (width, height) = PixelSize;
+        if (!force && frames == _framesSeen && generation == _generationSeen && (width, height) == _buffers)
             return false;
         if (!_reader.Ready() || _reader.Device is not { } device)
             return false;
 
         try
         {
-            var (width, height) = PixelSize;
             if (width < 8 || height < 8)
                 return false;
             if (!ReferenceEquals(device, _device) || _swapChain == 0)
                 MakeSwapChain(device, width, height);
             else if (_buffers != (width, height))
                 Resize(width, height);
-
-            // A frame of the old size while the window was resized: kept for the one at the new size.
-            if ((control.OutputWidth, control.OutputHeight) != _buffers)
+            if (_swapChain == 0)
                 return false;
 
             var back = Dxgi.BackBuffer(_swapChain);
             try
             {
-                if (!_reader.CopyPresentedTo(back, 8))
+                if (_backRtv == 0)
+                    _backRtv = device.Device.CreateRenderTargetView(back);
+                if (!_reader.CopyPresentedCentered(back, _backRtv, width, height, 8))
+                {
+                    // A capture's frame (read back, 5.4.1A): seen, never shown; the player's next frame follows it.
+                    if (_reader.SkippedReadback)
+                        (_framesSeen, _generationSeen) = (frames, generation);
                     return false;
+                }
             }
             finally
             {
@@ -143,6 +165,22 @@ internal sealed unsafe partial class GpuViewportControl : IDisposable
             DropSwapChain();
             return false;
         }
+    }
+
+    /// <summary>
+    /// Where a frame of one size goes in a target of another (5.4.1A, the player while it is resized): 1:1, never scaled, in whole
+    /// pixels, centred: a smaller frame with margins round it (DstX, DstY), a larger one with its middle cropped out of it (the source
+    /// rectangle SrcLeft..SrcRight x SrcTop..SrcBottom). Empty (all zero) for a frame or target of no size. Pure: the golden test
+    /// player-resize-no-stretch checks it.
+    /// </summary>
+    internal static (int SrcLeft, int SrcTop, int SrcRight, int SrcBottom, int DstX, int DstY) CenteredCopy(int frameWidth, int frameHeight, int targetWidth, int targetHeight)
+    {
+        if (frameWidth <= 0 || frameHeight <= 0 || targetWidth <= 0 || targetHeight <= 0)
+            return (0, 0, 0, 0, 0, 0);
+
+        var (left, x) = frameWidth > targetWidth ? ((frameWidth - targetWidth) / 2, 0) : (0, (targetWidth - frameWidth) / 2);
+        var (top, y) = frameHeight > targetHeight ? ((frameHeight - targetHeight) / 2, 0) : (0, (targetHeight - frameHeight) / 2);
+        return (left, top, left + Math.Min(frameWidth, targetWidth), top + Math.Min(frameHeight, targetHeight), x, y);
     }
 
     /// <summary>
@@ -182,7 +220,17 @@ internal sealed unsafe partial class GpuViewportControl : IDisposable
 
         try
         {
-            var (left, top, right, bottom) = MirrorRegion(control.OutputWidth, control.OutputHeight, canvasWidth, canvasHeight);
+            // A capture's frame (read back) is never mirrored, nor the swap chain resized for it; else the presented frame's own size
+            // (5.4.1A: the worker's ring can be larger than its frames).
+            var presented = Volatile.Read(ref control.PresentedIndex);
+            if (_reader.ReadbackIn(presented))
+            {
+                (_framesSeen, _generationSeen) = (frames, generation);
+                return false;
+            }
+
+            var (outputWidth, outputHeight) = _reader.ContentSize(presented);
+            var (left, top, right, bottom) = MirrorRegion(outputWidth, outputHeight, canvasWidth, canvasHeight);
             var (width, height) = (right - left, bottom - top);
             var (windowWidth, windowHeight) = PixelSize;
             if (width < 8 || height < 8 || windowWidth < 8 || windowHeight < 8)
@@ -200,7 +248,11 @@ internal sealed unsafe partial class GpuViewportControl : IDisposable
             try
             {
                 if (!_reader.CopyPresentedRegionTo(back, left, top, right, bottom, 0))
+                {
+                    if (_reader.SkippedReadback)
+                        (_framesSeen, _generationSeen) = (frames, generation);
                     return false;
+                }
             }
             finally
             {
@@ -232,14 +284,15 @@ internal sealed unsafe partial class GpuViewportControl : IDisposable
     private void MakeSwapChain(GpuDevice device, int width, int height)
     {
         DropSwapChain();
-        _swapChain = Dxgi.CreateSwapChain(device.DevicePointer, _window, width, height);
+        _swapChain = Dxgi.CreateSwapChain(device.DevicePointer, _window, width, height, _scaling);
         _waitable = Dxgi.FrameLatencyWaitable(_swapChain);
         (_device, _buffers) = (device, (width, height));
     }
 
     private void Resize(int width, int height)
     {
-        // Nothing holds a buffer here between presents (the back buffer is let go after each copy).
+        // Nothing holds a buffer here between presents (the back buffer is let go after each copy; its view now).
+        Com.Release(ref _backRtv);
         var hr = Dxgi.ResizeBuffers(_swapChain, width, height);
         if (hr < 0)
         {
@@ -252,6 +305,7 @@ internal sealed unsafe partial class GpuViewportControl : IDisposable
 
     private void DropSwapChain()
     {
+        Com.Release(ref _backRtv);
         if (_waitable != 0)
         {
             _ = CloseHandle(_waitable);

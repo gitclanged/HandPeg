@@ -32,10 +32,15 @@ internal static class MemoryTier
     /// <summary>The cache of a card with little memory of its own (and of WARP), as before.</summary>
     public const long SmallCardBudget = 512 * Megabyte;
 
-    // A discrete card's Auto: an eighth of its memory, at most 3 GB; with the card free, half of what is free, at most 12 GB,
-    // always leaving a third of the card (1 to 8 GB). The numbers FrameCache had since 5.1-TrackEqualityAndVram.
-    private const long MaxAutoBudget = 3 * Gigabyte, MaxSuperBudget = 12 * Gigabyte;
-    private const long LeastMargin = Gigabyte, MostMargin = 8 * Gigabyte;
+    // A discrete card's Auto: an eighth of its memory, at most 3 GB, while something else uses it; with the card free, up to 80% of
+    // its memory, always leaving max(2 GB, a fifth of the card) of what Windows offers free (5.4.1-M4, the user's standing rule).
+    private const long MaxAutoBudget = 3 * Gigabyte;
+    private const long LeastVramReserve = 2 * Gigabyte;
+
+    // Unified memory's ceiling (5.4.1-M4, across x64 and ARM64): a quarter of the computer's memory up to 32 GB, half above, always
+    // leaving max(5 GB, 25%) of it free up to 32 GB and max(12 GB, 30%) above (FrameCache's physical room, from AvailPhys).
+    public const long UnifiedLargeMemory = 32 * Gigabyte;
+    private const long SmallUnifiedReserve = 5 * Gigabyte, LargeUnifiedReserve = 12 * Gigabyte;
 
     // A card with no more than this of its own and several times as much shared is a SoC's graphics (DXGI alone, no DXCore).
     private const long MostCarveOut = Gigabyte;
@@ -81,8 +86,30 @@ internal static class MemoryTier
         var eighth = Math.Min(dedicatedBytes / 8, MaxAutoBudget);
         if (cardBusy || freeOnCard == 0)
             return eighth;
-        return Math.Max(eighth, Math.Min(Math.Min(freeOnCard / 2, MaxSuperBudget), freeOnCard - Math.Clamp(dedicatedBytes / 3, LeastMargin, MostMargin)));
+        var reserve = VramReserve(dedicatedBytes);
+        return Math.Max(eighth, Math.Min(Math.Min(dedicatedBytes / 5 * 4, dedicatedBytes - reserve), freeOnCard - reserve));
     }
+
+    /// <summary>What a discrete card always keeps free of the cache (bytes): max(2 GB, a fifth of its own memory).</summary>
+    public static long VramReserve(long dedicatedBytes) => Math.Max(LeastVramReserve, dedicatedBytes / 5);
+
+    /// <summary>
+    /// Unified memory's ceiling (bytes): a quarter of <paramref name="physicalBytes"/> up to <see cref="UnifiedLargeMemory"/>, half
+    /// above; <see cref="SmallCardBudget"/> when the memory is not known.
+    /// </summary>
+    public static long UnifiedCeiling(long physicalBytes) =>
+        physicalBytes <= 0 ? SmallCardBudget : physicalBytes <= UnifiedLargeMemory ? physicalBytes / 4 : physicalBytes / 2;
+
+    /// <summary>What unified memory always keeps free of the computer's available memory (bytes): max(5 GB, 25%) up to 32 GB, max(12 GB, 30%) above.</summary>
+    public static long UnifiedReserve(long physicalBytes) =>
+        physicalBytes <= UnifiedLargeMemory ? Math.Max(SmallUnifiedReserve, physicalBytes / 4) : Math.Max(LargeUnifiedReserve, physicalBytes / 10 * 3);
+
+    /// <summary>
+    /// What a unified-memory cache may hold of the computer's memory (bytes): what it holds now (<paramref name="held"/>, which it could
+    /// give back) plus what is available (<paramref name="availablePhysical"/>), less the <see cref="UnifiedReserve"/>.
+    /// </summary>
+    public static long UnifiedRoom(long held, long availablePhysical, long physicalBytes) =>
+        Math.Max(held + availablePhysical - UnifiedReserve(physicalBytes), 0);
 
     // ----- The adaptive cache (5.4D-TabPerf, the user's U3): a baseline, grown on demand up to the hardware's ceiling -----
     //
@@ -94,7 +121,8 @@ internal static class MemoryTier
     // AutoBudget (up to 12 GB: video memory nothing else wants, the user's U2); a discrete card of 4 GB or less keeps both its baseline
     // and its ceiling within its AutoBudget (the card's margin, and an eighth while something else uses it: the 5.4D-TabPerf review),
     // and 4 GB at most; unified memory keeps to 4 GB at most, and to an eighth of the computer's memory below 32 GB (each frame there is
-    // the computer's memory, which the user minds most); WARP to the small card's 512 MB. Settings' "Maximum frame cache" (AppSettings.GpuFrameCacheMb) caps the growth: 0 the ceiling, N GB the lower of N
+    // the computer's memory, which the user minds most); WARP to the small card's 512 MB. Since 5.4.1-M4 a discrete card's AutoBudget
+    // reaches 80% of its memory (max(2 GB, 20%) kept free) and unified memory's ceiling is UnifiedCeiling (25% up to 32 GB, 50% above). Settings' "Maximum frame cache" (AppSettings.GpuFrameCacheMb) caps the growth: 0 the ceiling, N GB the lower of N
     // and the ceiling. A big card (IsBigCard: the TabPerf follow-up, the user's X1) skips the baseline: its budget is the maximum at once,
     // filled as frames are decoded, and a tab put behind leaves its frames there for the least recently used order to let go of.
 
@@ -113,7 +141,7 @@ internal static class MemoryTier
     /// <summary>So does a frame this close (seconds of its file) to a moment being shown, hinted or pre-rolled: the seek window.</summary>
     public const double SeekWindowSeconds = 2;
 
-    /// <summary>The most a card of its own that is not big (4 GB or less of its own, within its AutoBudget), or unified memory, ever grows to (bytes).</summary>
+    /// <summary>The most a card of its own that is not big (4 GB or less of its own, within its AutoBudget) ever grows to (bytes).</summary>
     public const long SmallCeiling = 4 * Gigabyte;
 
     /// <summary>The cards whose ceiling is today's whole Auto budget: more than this of their own (bytes).</summary>
@@ -141,10 +169,9 @@ internal static class MemoryTier
 
     /// <summary>
     /// The most the cache grows to on this hardware (bytes, before Windows' caps): a discrete card with more than 4 GB of its own,
-    /// <see cref="AutoBudget"/> (an eighth while something else uses the card or before Windows has been asked; half of what is free on
-    /// it, at most 12 GB, once it has been); a discrete card of 4 GB or less the smaller of 4 GB and its <see cref="AutoBudget"/> (the
-    /// card's margin and the busy card's eighth kept: the 5.4D-TabPerf review); WARP <see cref="SmallCardBudget"/>; unified memory the
-    /// smaller of 4 GB and the larger of its <see cref="Baseline"/> and an eighth of the computer's memory.
+    /// <see cref="AutoBudget"/> (an eighth while something else uses the card or before Windows has been asked; up to 80% of the card,
+    /// max(2 GB, 20%) kept free, once it has been); a discrete card of 4 GB or less the smaller of 4 GB and its <see cref="AutoBudget"/>;
+    /// WARP <see cref="SmallCardBudget"/>; unified memory the larger of its <see cref="Baseline"/> and its <see cref="UnifiedCeiling"/>.
     /// </summary>
     public static long Ceiling(bool warp, bool unified, long dedicatedBytes, long physicalBytes, bool cardBusy, long freeOnCard)
     {
@@ -156,7 +183,7 @@ internal static class MemoryTier
             return IsBigCard(warp, unified, dedicatedBytes) ? auto : Math.Min(SmallCeiling, auto);
         }
 
-        return Math.Min(SmallCeiling, Math.Max(Baseline(warp, unified, dedicatedBytes, physicalBytes, cardBusy, freeOnCard), Math.Max(physicalBytes, 0) / 8));
+        return Math.Max(Baseline(warp, unified, dedicatedBytes, physicalBytes, cardBusy, freeOnCard), UnifiedCeiling(physicalBytes));
     }
 
     /// <summary>

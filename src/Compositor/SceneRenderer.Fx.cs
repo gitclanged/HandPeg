@@ -702,9 +702,7 @@ internal sealed unsafe partial class SceneRenderer
             return;
 
         var slot = (int)GpuShaderSlot.RimGlass;
-        _canvasCopy ??= _gpu.CreateTexture(_outWidth, _outHeight, DxgiFormat.R16G16B16A16Float, renderTarget: false);
-        _gpu.Context.CopyResource(_canvasCopy.Texture, _canvas!.Texture);
-        var frosted = Kawase(_canvasCopy, Math.Max(glass.P0 * _pixelScale, 2), slot);
+        var frosted = Kawase(CopyCanvas(), Math.Max(glass.P0 * _pixelScale, 2), slot);
 
         var constants = default(PassConstants);
         constants.Packet = glass;
@@ -714,7 +712,7 @@ internal sealed unsafe partial class SceneRenderer
         constants.WholeUv();
         SetWipe(ref constants, wipe, box);
         _timer.Begin(slot);
-        Quad("PSFrostedGlass", work, _canvas.Rtv, ref constants, blend: true, aux: frosted.Srv);
+        Quad("PSFrostedGlass", work, _canvas!.Rtv, ref constants, blend: true, aux: frosted.Srv);
         _timer.End();
         _gpu.Textures.Return(frosted);
     }

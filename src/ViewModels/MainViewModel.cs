@@ -629,7 +629,6 @@ public partial class MainViewModel : ObservableObject
     [NotifyCanExecuteChangedFor(nameof(StartQueueCommand))]
     [NotifyCanExecuteChangedFor(nameof(PauseQueueCommand))]
     [NotifyCanExecuteChangedFor(nameof(EditQueueJobCommand))]
-    [NotifyCanExecuteChangedFor(nameof(RenderPreviewCommand))]
     [NotifyCanExecuteChangedFor(nameof(RemoveDeadAirCommand))]
     private bool _isBusy;
 

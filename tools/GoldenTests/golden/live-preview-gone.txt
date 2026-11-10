@@ -5,7 +5,7 @@ ok: InvalidatePreviewState and PreviewStateInvalidated are there, and LivePrevie
 ok: the main window has no ApplyLiveFilter or ScheduleLiveFilter (ScheduleGpuState is called itself)
 ok: the preview state is gathered once and kept until something changes
 ok: InvalidatePreviewState raises PreviewStateInvalidated once and drops the state: the next is gathered afresh
-   the playback bar's defaults: PrevIFrame,StepBack,StepForward,NextIFrame,AddMarker,EditOnVideo,Exploded3D,ExportQualityPreview,RenderPreview,Reload,Volume,Speed,@3
+   the playback bar's defaults: PrevIFrame,StepBack,StepForward,NextIFrame,AddMarker,EditOnVideo,Exploded3D,ExportQualityPreview,Reload,Volume,Speed,@3
 ok: the playback bar offers no Live Preview control, and starts without it
 ok: a bar saved with Live Preview on it loads the rest, and saves without it
 ok: src\MainWindow.xaml is found above the test

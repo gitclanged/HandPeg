@@ -3,6 +3,42 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v5.4.1 — Smooth Timeline Wheel, a Faster 3D View, Instant Strips on Drop and Projects That Remember Their Window
+
+### User-Facing Highlights
+- **The Live Encoded Preview's split wipe is labelled.** `RAW` pills sit left of the wipe line and `ENCODED` pills sit right of it.
+- **Timeline wheel and zoom glide.** The plain wheel over clips pans the Timeline (10% a notch, with a short glide). Ctrl+wheel
+  and the ruler zoom glide, pinned to the pointer. Alt+wheel scrolls rows and Alt+Shift+wheel sets track height. The Subtitle
+  Studio zooms about the playhead.
+- **A faster 3D Exploded View.** Each plane's picture is kept, so orbiting while paused (and every refresh between video frames
+  on a high-refresh display) draws no layer again. While video plays and the camera moves, the view lowers its resolution in
+  steps only when it would drop below 60 fps, then goes back to full resolution. Each tab remembers its 3D angle.
+- **Strips and posters arrive sooner.** Media Browser posters go ahead of every other thumbnail. A video dropped on the Timeline
+  takes the Media Browser's strip at once. The tab in front's work runs before the work of tabs behind it.
+- **Quicker tab switches.** A tab whose Sequence did not change reuses its built timeline. Its paused picture leaves on the first
+  live frame. A tab put behind while playing gets a picture for its hover card.
+- **Projects remember their window.** Saving writes the dock layout, the Media Browser view and the 3D camera into the project.
+  Opening restores them (Settings and the Layout selector's footer: "Opening a project restores the window it was saved in", on by default).
+  Changing the window never marks a project as unsaved.
+- **Files prepared ahead.** After its posters, an indexed folder's waveforms and seek data are made in quiet time. A new
+  **Watched Capture Folder** (Settings > Preview & Cache > Media browser) prepares your newest recordings after start-up. It
+  skips any file still being recorded.
+- **More memory for the frame cache where there is room.** A graphics card with its own memory may now use up to 80% of it,
+  always leaving max(2 GB, 20%) free. On shared-memory PCs the cache may grow to 25% of memory (50% above 32 GB) and always
+  leaves enough free for Windows.
+- **The bottom status bar is gone.** The work chip and the update notice moved to the transport row.
+
+### Under the Hood & Fixes
+- Key frames are read straight from an MP4/MOV's `stss`/`stts`/`ctts`/edit list or an MKV/WebM's Cues in C#, in well under 1 ms,
+  with ffprobe as the fallback (fragmented MP4, an MKV without Cues). The parser was fuzzed with 9,000 damaged files. A crafted
+  table claiming hundreds of millions of samples is now refused instead of allocating gigabytes.
+- The Auto background lane scales with the processor (one job per three free threads, up to 8). Waveform, strip and key-frame work is
+  de-duplicated by full path. Speculative decode on shared memory is capped at 2 lanes.
+- The renderer keeps its flat canvas across a resize drag (42 textures over 40 sizes, was 79). Background work holds while the 3D
+  camera moves.
+- Fixed: with the Sequence Overview Scrubber hidden, scrubbing the Timeline no longer leaves the player on a frozen frame.
+- Four large source files were split into partials. Every file touched stays under 1,800 lines.
+
 ## HandPeg v5.4.0 — Project Tabs, One Export Tab With a Live Encoded Preview, a Project Media Bin and Dockable Studios
 
 ### User-Facing Highlights

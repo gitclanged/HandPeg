@@ -6,3 +6,4 @@ ok: with less left than the margin, it may hold nothing beyond its least
 ok: a small limit keeps at least 3 GB free
 ok: a large one at most 8 GB
 ok: Windows says how much is left, within its limit
+ok: and how much physical memory is available (5.4.1-M4: unified memory's room)

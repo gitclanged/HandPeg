@@ -137,7 +137,7 @@ public static class HardwareTierTests
             ("a 256 MB card of its own", false, false, 256 * Mb, 16 * Gb, false, 0, 512 * Mb),
             ("an 8 GB card, Windows not asked yet", false, false, 8 * Gb, 32 * Gb, false, 0, 1024 * Mb),
             ("an 8 GB card, a game on it", false, false, 8 * Gb, 32 * Gb, true, 2 * Gb, 1024 * Mb),
-            ("a 24 GB card, 22 GB free", false, false, 24 * Gb, 64 * Gb, false, 22 * Gb, 11 * Gb),
+            ("a 24 GB card, 22 GB free (80% of the card, max(2 GB, 20%) kept free)", false, false, 24 * Gb, 64 * Gb, false, 22 * Gb, 22 * Gb - 24 * Gb / 5),
             ("a 24 GB card, Windows not asked yet", false, false, 24 * Gb, 64 * Gb, false, 0, 3 * Gb),
         ];
         foreach (var b in budgets)

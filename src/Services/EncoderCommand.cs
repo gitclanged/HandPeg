@@ -31,12 +31,6 @@ public readonly record struct GpuExportTiming(long CanvasNumerator, long CanvasD
     /// <summary>Whether the export's rate is the canvas's (every canvas frame is piped once).</summary>
     public bool SameRate => (Int128)OutputNumerator * CanvasDenominator == (Int128)CanvasNumerator * OutputDenominator;
 
-    /// <summary>
-    /// The sequence's canvas frame the export's first frame is (0 for an export; a stretch's first for Render Preview,
-    /// <see cref="Window"/>): <see cref="CanvasFrames"/> counts from it, the export's own clock starts at it.
-    /// </summary>
-    public long FirstCanvasFrame { get; init; }
-
     /// <summary>The export's rate as FFmpeg's -framerate reads it.</summary>
     public string OutputRate => string.Create(CultureInfo.InvariantCulture, $"{OutputNumerator}/{OutputDenominator}");
 
@@ -66,32 +60,13 @@ public readonly record struct GpuExportTiming(long CanvasNumerator, long CanvasD
     public long CanvasFrameOf(long slot)
     {
         if (SameRate)
-            return FirstCanvasFrame + Math.Clamp(slot, 0, Math.Max(CanvasFrames - 1, 0));
+            return Math.Clamp(slot, 0, Math.Max(CanvasFrames - 1, 0));
 
         // round(n x c) <= k, with c = (canvas den x output num) / (canvas num x output den), is 2 n x den x num < num x den x (2k + 1).
         var a = (Int128)CanvasNumerator * OutputDenominator * (2 * slot + 1);
         var b = (Int128)2 * CanvasDenominator * OutputNumerator;
         var frame = (long)((a - 1) / b);
-        return FirstCanvasFrame + Math.Clamp(frame, 0, Math.Max(CanvasFrames - 1, 0));
-    }
-
-    /// <summary>
-    /// The frames of a stretch of the sequence from <paramref name="fromSeconds"/> to <paramref name="toSeconds"/> (Render
-    /// Preview): the canvas frames at or after its start (the first is ceil(from x rate)) and before its end, on a clock
-    /// that starts at the first of them, exported at <paramref name="output"/> by the same rule.
-    /// </summary>
-    public static GpuExportTiming Window(double fromSeconds, double toSeconds, FrameRate canvas, (long Numerator, long Denominator)? output)
-    {
-        var (cn, cd) = canvas.IsValid ? ((long)canvas.Numerator, (long)canvas.Denominator) : (60L, 1L);
-
-        // A frame within a microsecond of the start or the end is on it (the times are written to the microsecond).
-        static long FirstAtOrAfter(double seconds, long n, long d) => (long)Math.Ceiling(Math.Max(seconds, 0) * n / d - 1e-6 * n / d);
-        var first = FirstAtOrAfter(fromSeconds, cn, cd);
-        var frames = Math.Max(FirstAtOrAfter(toSeconds, cn, cd) - first, 0);
-
-        var (on, od) = output is { Numerator: > 0, Denominator: > 0 } rate ? rate : (cn, cd);
-        var timing = new GpuExportTiming(cn, cd, frames, on, od, frames) { FirstCanvasFrame = first };
-        return timing.SameRate ? timing : timing with { OutputFrames = (long)RoundNear((Int128)frames * cd * on, (Int128)cn * od) };
+        return Math.Clamp(frame, 0, Math.Max(CanvasFrames - 1, 0));
     }
 
     /// <summary>The timing of a canvas of <paramref name="durationMicros"/> at a rate, exported at another.</summary>
@@ -139,7 +114,7 @@ public enum ExportEncoder
 /// token, <see cref="EncoderCommand.SoundToken"/>, until it is made), the frames it reads from its standard input (their size and
 /// pixels, rows packed), and which frames those are.
 /// </summary>
-/// <param name="Width">The frames piped, in pixels: the sequence's frame (Render Preview: smaller, the canvas drawn into it).</param>
+/// <param name="Width">The frames piped, in pixels: the sequence's frame (or smaller, the canvas drawn into it).</param>
 /// <param name="UsesChaptersFile">The command reads its chapters from <see cref="SequenceExportState.ChaptersFilePath"/>, which has to be written first.</param>
 public sealed record GpuExportCommand(string Executable, IReadOnlyList<string> Arguments, int Width, int Height, GpuExportTiming Timing, bool UsesChaptersFile)
 {
@@ -161,7 +136,7 @@ public sealed record GpuExportCommand(string Executable, IReadOnlyList<string> A
     /// <summary>The sound tracks the command reads (their renders made before it runs, the copies mapped from the file).</summary>
     public IReadOnlyList<ExportSoundTrack> Sound { get; init; } = [];
 
-    /// <summary>The sequence's frame the picture is drawn from: the frames piped are it, or it drawn smaller (Render Preview).</summary>
+    /// <summary>The sequence's frame the picture is drawn from: the frames piped are it, or it drawn smaller.</summary>
     public int CanvasWidth { get; init; }
 
     public int CanvasHeight { get; init; }
@@ -455,39 +430,6 @@ public static class EncoderCommand
         return new GpuExportCommand(state.FfmpegExecutable.Trim('"'), args, 0, 0, timing, UsesChaptersFile: false)
         {
             Encoder = ExportEncoder.Sound, OutputPath = output, Sound = [track],
-        };
-    }
-
-    /// <summary>
-    /// Render Preview's encode: a stretch of the sequence drawn at <paramref name="percent"/> of its size (the compositor draws the
-    /// canvas into the smaller frame), its sound the engine's render (48 kHz stereo, from the first frame) when there is any, into a
-    /// small fast x264 MP4.
-    /// </summary>
-    public static GpuExportCommand BuildPreview(SequenceExportState state, string outputPath, GpuExportTiming timing, int percent, bool hasSound, bool captionsOnGpu)
-    {
-        var (canvasWidth, canvasHeight) = (state.Timeline.Width, state.Timeline.Height);
-        var factor = Math.Clamp(percent, 5, 100) / 100.0;
-        var (width, height) = (Math.Max((int)(canvasWidth * factor / 2) * 2, 2), Math.Max((int)(canvasHeight * factor / 2) * 2, 2));
-        var args = new List<string>
-        {
-            "-hide_banner", "-y",
-            "-f", "rawvideo", "-pix_fmt", PipeNv12, "-video_size", string.Create(CultureInfo.InvariantCulture, $"{width}x{height}"), "-framerate", timing.OutputRate,
-        };
-        args.AddRange(ColourTags);
-        args.AddRange(["-i", "pipe:0"]);
-        if (hasSound)
-            args.AddRange(["-f", "f32le", "-ar", GpuExport.SoundRate.ToString(CultureInfo.InvariantCulture), "-ch_layout", "stereo", "-i", $"{SoundToken}1}}"]);
-        args.AddRange(["-map", "0:v:0"]);
-        if (hasSound)
-            args.AddRange(["-map", "1:a:0"]);
-        args.AddRange(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "24"]);
-        args.AddRange(ColourTags);
-        if (hasSound)
-            args.AddRange(["-c:a", "aac", "-b:a", "128k"]);
-        args.AddRange(["-movflags", "+faststart", outputPath]);
-        return new GpuExportCommand(state.FfmpegExecutable.Trim('"'), args, width, height, timing, UsesChaptersFile: false)
-        {
-            OutputPath = outputPath, CaptionsOnGpu = captionsOnGpu, CanvasWidth = canvasWidth, CanvasHeight = canvasHeight,
         };
     }
 

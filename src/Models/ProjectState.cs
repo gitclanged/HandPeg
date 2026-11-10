@@ -92,6 +92,30 @@ public sealed class ProjectState
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public byte[]? ThumbnailJpeg { get; set; }
+
+    /// <summary>
+    /// How the project's window was arranged at the save (Pass 5.4.1-M5): its dock layout, Media Browser view and 3D pose. Only a
+    /// save sets it (the window's MainViewModel.WorkspaceForSave), and opening reads it back; never part of the unsaved-changes
+    /// fingerprint (JsonIgnore), so rearranging the window never makes a project dirty.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public ProjectWorkspace? Workspace { get; set; }
+}
+
+/// <summary>The "workspace" section of a project file: how its window looked, taken up on opening when <c>AppSettings.RestoreProjectWorkspaceOnOpen</c> is on.</summary>
+public sealed class ProjectWorkspace
+{
+    /// <summary>The dock layout (DockManager's JSON); null for none.</summary>
+    public string? LayoutJson { get; set; }
+
+    /// <summary>The Media Browser's view (its MediaView name); null for none.</summary>
+    public string? MediaView { get; set; }
+
+    public bool ExplodedOpen { get; set; }
+    public double ExplodedYaw { get; set; }
+    public double ExplodedPitch { get; set; }
+    public double ExplodedZoom { get; set; }
+    public double ExplodedSpacing { get; set; }
 }
 
 /// <summary>One step of the undo (or redo) history as a project carries it: what it was ("delete Logo"), and the timeline it puts back, packed as Undo keeps it.</summary>

@@ -22,7 +22,7 @@ frame cache Auto budget (before Windows' caps):
   a 256 MB card of its own: 512 MB
   an 8 GB card, Windows not asked yet: 1024 MB
   an 8 GB card, a game on it: 1024 MB
-  a 24 GB card, 22 GB free: 11264 MB
+  a 24 GB card, 22 GB free (80% of the card, max(2 GB, 20%) kept free): 17612.8 MB
   a 24 GB card, Windows not asked yet: 3072 MB
 Auto-Captions (whisper.cpp, its silence detection inside it): choice, NPU build, graphics back end, fell over before -> device, --no-gpu, why:
   auto, no NPU build, OpenCL, fine -> gpu: On the graphics card, whisper's OpenCL back end (Auto).

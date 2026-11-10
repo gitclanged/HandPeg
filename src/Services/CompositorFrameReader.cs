@@ -7,9 +7,11 @@ namespace HandPegApp.Services;
 /// The other end of the compositor's output (Pass 5.0-Core): a Direct3D 11 device of this process on the worker's card,
 /// with the worker's shared output textures opened by name (ID3D11Device1::OpenSharedResourceByName, keyed mutex key 0).
 /// <para>The hot path (5.0D's GpuViewportControl) copies the presented texture into its own swap chain on the card:
-/// <see cref="CopyPresentedTo"/>, no pixel leaves video memory; a side window's Live Video Preview copies the canvas's part of it
+/// <see cref="CopyPresentedCentered"/>, no pixel leaves video memory; a side window's Live Video Preview copies the canvas's part of it
 /// (5.4C, <see cref="CopyPresentedRegionTo"/>) on the same device. <see cref="TryRead"/> brings one frame back to the
 /// processor, for the golden tests and diagnostics only.</para>
+/// <para>Since 5.4.1A a frame can be smaller than the texture it is in (a resized player keeps the worker's ring while it fits): every
+/// copy takes the frame's own size, the slot's content size (<see cref="ContentSize"/>), read while the slot is held.</para>
 /// </summary>
 public sealed unsafe class CompositorFrameReader : IDisposable
 {
@@ -20,10 +22,20 @@ public sealed unsafe class CompositorFrameReader : IDisposable
     private nint _staging;
     private (int Width, int Height) _stagingSize;
 
+    // The size of the textures opened (the ring of their generation, 5.4.1A).
+    private (int Width, int Height) _ring;
+
     public CompositorFrameReader(CompositorClient client) => _client = client;
 
     /// <summary>The sequence number of the frame read last.</summary>
     public long Sequence { get; private set; }
+
+    /// <summary>
+    /// Whether the last <see cref="CopyPresentedCentered"/> or <see cref="CopyPresentedRegionTo"/> copied nothing because the presented
+    /// frame was read back (a capture: the scopes' picture, a thumbnail, a tab's still), never the player's to show (5.4.1A): the caller
+    /// takes it as seen, and shows the next.
+    /// </summary>
+    internal bool SkippedReadback { get; private set; }
 
     /// <summary>This reader's device (null until the output was first opened): the GPU viewport's swap chain lives on it.</summary>
     internal GpuDevice? Device => _gpu;
@@ -63,13 +75,50 @@ public sealed unsafe class CompositorFrameReader : IDisposable
             _opened[i] = (texture, Com.Query(texture, Iid.DxgiKeyedMutex));
         }
 
+        // The ring's size from its own textures (never control.OutputWidth: a newer ring's size can be written there before its
+        // generation), and kept only if no newer ring was announced meanwhile.
+        Texture2DDesc desc;
+        ((delegate* unmanaged<nint, Texture2DDesc*, void>)Com.Table(_opened[0].Texture)[10])(_opened[0].Texture, &desc);
+        _ring = ((int)desc.Width, (int)desc.Height);
+        if (Volatile.Read(ref control.OutputGeneration) != generation)
+        {
+            Close();
+            return false;
+        }
+
         _generation = generation;
         return true;
     }
 
-    /// <summary>The presented frame copied into a texture of this reader's device (same size, BGRA8): the zero-copy path.</summary>
-    internal bool CopyPresentedTo(nint destination, uint milliseconds = 16)
+    /// <summary>
+    /// The size of the frame in output slot <paramref name="index"/> (5.4.1A): the worker's content size, kept inside the textures this
+    /// reader opened. Exact only while the slot is held (its keyed mutex); outside it, the size of the frame there a moment ago. Empty
+    /// (0 x 0) when the slot was last drawn into another ring than the one opened (a new ring being announced): not this frame's size.
+    /// </summary>
+    internal (int Width, int Height) ContentSize(int index)
     {
+        ref var control = ref _client.Memory.Control;
+        if (control.OutputContentTag(index) >> 1 != _generation)
+            return (0, 0);
+
+        // The slot's own size against the textures opened (never the control block's ring size: a newer ring's may be there already).
+        var (width, height) = control.OutputContentWritten(index);
+        return width <= 0 || height <= 0 ? _ring : (Math.Min(width, _ring.Width), Math.Min(height, _ring.Height));
+    }
+
+    /// <summary>A frame read back (a capture) in the slot: never the player's or a mirror's to show.</summary>
+    internal bool ReadbackIn(int index) => (_client.Memory.Control.OutputContentTag(index) & 1) != 0;
+
+    /// <summary>
+    /// The presented frame copied into a texture of this reader's device (BGRA8, <paramref name="targetWidth"/> x <paramref name="targetHeight"/>):
+    /// the player's zero-copy path. A frame of the target's size in a texture of that size is one CopyResource; any other (a resize
+    /// under way, a ring larger than its frame) is laid 1:1 in the middle of the target, never scaled (5.4.1A,
+    /// GpuViewportControl.CenteredCopy): the target cleared black through <paramref name="destinationRtv"/> first (0: not cleared),
+    /// then the frame's middle copied in whole pixels. Waits at most <paramref name="milliseconds"/> for the frame.
+    /// </summary>
+    internal bool CopyPresentedCentered(nint destination, nint destinationRtv, int targetWidth, int targetHeight, uint milliseconds = 16)
+    {
+        SkippedReadback = false;
         if (!Open())
             return false;
         ref var control = ref _client.Memory.Control;
@@ -79,7 +128,33 @@ public sealed unsafe class CompositorFrameReader : IDisposable
             return false;
         try
         {
-            _gpu!.Context.CopyResource(destination, texture);
+            var context = _gpu!.Context;
+            if (ReadbackIn(index))
+            {
+                SkippedReadback = true;
+                return false;
+            }
+
+            var content = ContentSize(index);
+            if (content.Width < 1 || content.Height < 1)
+                return false;
+            if (content == _ring && content == (targetWidth, targetHeight))
+            {
+                context.CopyResource(destination, texture);
+            }
+            else
+            {
+                // Black only where the frame leaves margins (a ring larger than its frame alone is copied over the whole target).
+                if (destinationRtv != 0 && (content.Width < targetWidth || content.Height < targetHeight))
+                    context.ClearRenderTargetView(destinationRtv, 0, 0, 0, 1);
+                var (left, top, right, bottom, x, y) = GpuViewportControl.CenteredCopy(content.Width, content.Height, targetWidth, targetHeight);
+                if (right > left && bottom > top)
+                {
+                    var box = new Box { Left = (uint)left, Top = (uint)top, Front = 0, Right = (uint)right, Bottom = (uint)bottom, Back = 1 };
+                    context.CopySubresourceRegion(destination, 0, (uint)x, (uint)y, texture, 0, &box);
+                }
+            }
+
             Sequence = Volatile.Read(ref control.PresentedSequence);
         }
         finally
@@ -91,29 +166,37 @@ public sealed unsafe class CompositorFrameReader : IDisposable
     }
 
     /// <summary>
-    /// A rectangle of the presented frame (left, top, right, bottom in its pixels, kept inside it) copied to the top-left corner of a
-    /// texture of this reader's device (BGRA8, at least that large): a side window's Live Video Preview, the canvas without the player's
-    /// bars (5.4C). Waits at most <paramref name="milliseconds"/> for the frame (0: never waits; false when it is busy).
+    /// A rectangle of the presented frame (left, top, right, bottom in its pixels, kept inside the frame's own size, 5.4.1A) copied to
+    /// (<paramref name="x"/>, <paramref name="y"/>) of a texture of this reader's device (BGRA8, at least that large; the top-left corner
+    /// by default): a side window's Live Video Preview, the canvas without the player's bars (5.4C). Waits at most
+    /// <paramref name="milliseconds"/> for the frame (0: never waits; false when it is busy or the rectangle is empty).
     /// </summary>
-    internal bool CopyPresentedRegionTo(nint destination, int left, int top, int right, int bottom, uint milliseconds = 0)
+    internal bool CopyPresentedRegionTo(nint destination, int left, int top, int right, int bottom, uint milliseconds = 0, int x = 0, int y = 0)
     {
+        SkippedReadback = false;
         if (!Open())
             return false;
         ref var control = ref _client.Memory.Control;
-        var (width, height) = (control.OutputWidth, control.OutputHeight);
-        (left, top) = (Math.Clamp(left, 0, width), Math.Clamp(top, 0, height));
-        (right, bottom) = (Math.Clamp(right, left, width), Math.Clamp(bottom, top, height));
-        if (right - left < 1 || bottom - top < 1)
-            return false;
-
         var index = Volatile.Read(ref control.PresentedIndex);
         var (texture, mutex) = _opened[index];
         if (Dxgi.AcquireSync(mutex, 0, milliseconds) != 0)
             return false;
         try
         {
+            if (ReadbackIn(index))
+            {
+                SkippedReadback = true;
+                return false;
+            }
+
+            var (width, height) = ContentSize(index);
+            (left, top) = (Math.Max(0, Math.Min(left, width)), Math.Max(0, Math.Min(top, height)));
+            (right, bottom) = (Math.Max(left, Math.Min(right, width)), Math.Max(top, Math.Min(bottom, height)));
+            if (right - left < 1 || bottom - top < 1)
+                return false;
+
             var box = new Box { Left = (uint)left, Top = (uint)top, Front = 0, Right = (uint)right, Bottom = (uint)bottom, Back = 1 };
-            _gpu!.Context.CopySubresourceRegion(destination, 0, 0, 0, texture, 0, &box);
+            _gpu!.Context.CopySubresourceRegion(destination, 0, (uint)Math.Max(x, 0), (uint)Math.Max(y, 0), texture, 0, &box);
         }
         finally
         {
@@ -123,7 +206,10 @@ public sealed unsafe class CompositorFrameReader : IDisposable
         return true;
     }
 
-    /// <summary>The presented frame's pixels, BGRA8 rows packed (tests and diagnostics only: a readback).</summary>
+    /// <summary>
+    /// The presented frame's pixels, BGRA8 rows packed (tests and diagnostics only: a readback), at exactly the size the worker drew it
+    /// (its slot's content size, 5.4.1A, never the ring's).
+    /// </summary>
     public bool TryRead(out byte[] bgra, out int width, out int height)
     {
         bgra = [];
@@ -132,18 +218,32 @@ public sealed unsafe class CompositorFrameReader : IDisposable
             return false;
 
         ref var control = ref _client.Memory.Control;
-        (width, height) = (control.OutputWidth, control.OutputHeight);
-        if (_staging == 0 || _stagingSize != (width, height))
+        var index = Volatile.Read(ref control.PresentedIndex);
+        var (texture, mutex) = _opened[index];
+        if (Dxgi.AcquireSync(mutex, 0, 1000) != 0)
+            return false;
+        var context = _gpu!.Context;
+        try
         {
-            Com.Release(ref _staging);
-            _staging = _gpu!.CreateStaging(width, height, DxgiFormat.B8G8R8A8Unorm);
-            _stagingSize = (width, height);
+            (width, height) = ContentSize(index);
+            if (width < 1 || height < 1)
+                return false;
+            if (_staging == 0 || _stagingSize != (width, height))
+            {
+                Com.Release(ref _staging);
+                _staging = _gpu.CreateStaging(width, height, DxgiFormat.B8G8R8A8Unorm);
+                _stagingSize = (width, height);
+            }
+
+            var box = new Box { Left = 0, Top = 0, Front = 0, Right = (uint)width, Bottom = (uint)height, Back = 1 };
+            context.CopySubresourceRegion(_staging, 0, 0, 0, texture, 0, &box);
+            Sequence = Volatile.Read(ref control.PresentedSequence);
+        }
+        finally
+        {
+            _ = Dxgi.ReleaseSync(mutex, 0);
         }
 
-        if (!CopyPresentedTo(_staging, 1000))
-            return false;
-
-        var context = _gpu!.Context;
         Com.Check(context.Map(_staging, 0, D3D11.MapRead, 0, out var mapped), "Map");
         try
         {

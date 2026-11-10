@@ -223,12 +223,6 @@ public sealed partial class AppSettings
     [System.Text.Json.Serialization.JsonIgnore]
     public double HoverPreviewZoom => 1 + (Math.Clamp(HoverPreviewScale, 1, 5) - 1) * 0.75;
 
-    // Render Preview
-    /// <summary>Size of a rendered preview as a percentage of the real output.</summary>
-    public int PreviewResolutionPercent { get; set; } = 50;
-
-    public int PreviewDurationSeconds { get; set; } = 3;
-
     /// <summary>How many of the most recent yt-dlp downloads are kept between sessions.</summary>
     public int DownloadCacheSize { get; set; } = 5;
 
@@ -490,7 +484,7 @@ public sealed partial class AppSettings
 
     /// <summary>
     /// The Export GPU (Settings > Hardware, read as <see cref="ExportGpuAdapter"/>; stored under its old name): the graphics card an
-    /// export and a Render Preview are composited on (their clips decoded there too), by its DXGI number, so the work can be given to a
+    /// export is composited on (its clips decoded there too), by its DXGI number, so the work can be given to a
     /// second card (5.4C, GpuExport.ExportAdapter). -1, or a card no longer there: the Compositor GPU.
     /// </summary>
     public int HardwareDecodeAdapter { get; set; } = -1;
@@ -516,7 +510,7 @@ public sealed partial class AppSettings
     /// <summary>Background work waiting to start waits while the player plays (running tools carry on).</summary>
     public bool PauseBackgroundWhilePlaying { get; set; } = true;
 
-    /// <summary>Background work waiting to start waits while an export, Render Preview or the queue runs.</summary>
+    /// <summary>Background work waiting to start waits while an export or the queue runs.</summary>
     public bool PauseBackgroundWhileExporting { get; set; } = true;
 
     /// <summary>
@@ -643,7 +637,8 @@ public sealed partial class AppSettings
     /// <summary>
     /// The status bar at the bottom of the window (HandPeg starts without it, 4.1.1: <see cref="ApplyEditorDefaults"/>). The
     /// title bar carries the status and the progress either way (Pass 4.1B, always since 4.1.1). Off for everyone since 5.4D
-    /// (ViewDefaultsVersion 10, the user's call: the title bar's progress is the one home); Tabs and Panes still brings it back.
+    /// (ViewDefaultsVersion 10, the user's call: the title bar's progress is the one home). The bar itself is retired (5.4.1-M5): kept only
+    /// so that a settings file naming it still reads; nothing shows it.
     /// </summary>
     public bool ShowStatusBar { get; set; }
 
@@ -689,6 +684,14 @@ public sealed partial class AppSettings
     /// <summary>Each project tab remembers its own window layout and takes it back when brought to the front (Pass 5.4D;
     /// the Layout selector's footer and Settings). Off: every tab shares the window's layout.</summary>
     public bool PerTabWindowLayouts { get; set; } = true;
+
+    /// <summary>Opening a project takes up the window it was saved in (Pass 5.4.1-M5: the "workspace" section of its .hproj, the layout,
+    /// the Media Browser's view and the 3D pose; the Layout selector's footer and Settings). Off: the window stays as it is.</summary>
+    public bool RestoreProjectWorkspaceOnOpen { get; set; } = true;
+
+    /// <summary>A capture folder the Media Browser pre-indexes at idle (Pass 5.4.1-M5: posters, strips, waveforms and seek indexes ready
+    /// before anything is dropped on the Timeline); empty for none.</summary>
+    public string WatchedCaptureFolder { get; set; } = "";
 
     /// <summary>The Export Quality Preview's Magnifier (Pass 5.4D, Q10 b): the loupe follows the pointer over the compare
     /// without an edge slider held. A viewer preference; the preview itself is never saved.</summary>
@@ -923,8 +926,6 @@ public sealed partial class AppSettings
 
         ThumbnailIntervalSeconds = 1;
         HoverPreviewScale = 3;
-        PreviewDurationSeconds = 8;
-        PreviewResolutionPercent = 50;
     }
 
     /// <summary>Sends a Windows notification when an encode or the queue finishes.</summary>

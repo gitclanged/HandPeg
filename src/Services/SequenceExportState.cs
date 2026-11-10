@@ -260,7 +260,7 @@ public sealed record SequenceExportState
 
     /// <summary>
     /// The state the GPU preview draws (MainViewModel.LivePreviewState, 5.0-Verify): only its scene plan reads a video layer's
-    /// proxy (<see cref="PreviewPaths"/>) in place of its file. False for every export, Render Preview and filmstrip.
+    /// proxy (<see cref="PreviewPaths"/>) in place of its file. False for every export and filmstrip.
     /// </summary>
     public bool IsPreview { get; init; }
 

@@ -612,7 +612,7 @@ public static class ProjectTabsPolishTests
             "the pictures a tab keeps count width x height x 4 bytes each, one file's filmstrip on many clips once; nulls and drawings count nothing");
 
         // The wiring (the window's side).
-        var window = Source("MainWindow.ProjectTabs.cs");
+        var window = (Source("MainWindow.ProjectTabs.cs") + Source("MainWindow.TabCache.cs") + Source("MainWindow.TabMenu.cs"));
         expect(Ordered(MemberOf(window, "private void WriteTabNow("), "if (!write.TryStart())", "frozen = frozen.ShallowCopy();", "frozen.ThumbnailJpeg = write.Jpeg;",
                    "_tabs.WriteTab(write.Id, frozen,", "catch (Exception ex) when (ex is not OutOfMemoryException)", "write.Fail();", "if (!write.IsWanted)", "_unwritten.Remove(write);")
                && !window.Contains("frozen.ThumbnailJpeg = write.Jpeg = ", StringComparison.Ordinal),

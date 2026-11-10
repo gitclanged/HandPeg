@@ -39,7 +39,7 @@ ok: Normalize aims at -16 LUFS to start with (the default kept)
 ok: and at -14 when chosen, the export's sound plan with it
 ok: a FLAC track is encoded with no bitrate; an AAC one keeps its
 ok: the Export GPU: card 1 when chosen; a card no longer here, or Auto, is the Compositor GPU (-1, its own Auto, to start with)
-ok: StartCompositor (exports and Render Preview, off the window's thread) starts on ExportAdapter's card, then the Compositor GPU when that will not start, then WARP; Settings names the box Export GPU and fills it in one place (the GPU roles)
+ok: StartCompositor (exports, off the window's thread) starts on ExportAdapter's card, then the Compositor GPU when that will not start, then WARP; Settings names the box Export GPU and fills it in one place (the GPU roles)
 ok: the Squisher's override starts at veryslow (it was medium) and its first preset is Discord (10 MB), 10 MB
 ok: a settings file of before with the untouched Discord (Non-Nitro) of 20 MB reads as Discord (10 MB), 10 MB; one the user set to 18 MB stays theirs; the others keep their names
 ok: an Export GPU saved before 5.4C (it meant something else) goes back to Auto (the Compositor GPU) once; one chosen since stays

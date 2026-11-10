@@ -50,7 +50,7 @@ What is covered:
   reads the files): since 5.2-Audit each `export-*` golden is the encode's FFmpeg command (no filter graph in it), the GPU
   scene at the start and the middle of every clip, layer by layer, and the sound engine's program: 4.2.0s cuts baked into split points of the main video, video, picture and text layers, effect cards in every zone,
   keyframes with every easing about an off-centre anchor point, fades and transitions (dissolve, wipe, slide, zoom,
-  blur dissolve), crossfades on a track and across tracks, Render Preview, the composed timeline proxy, and a
+  blur dissolve), crossfades on a track and across tracks, and a
   short video repeating to the end (4.2.0's loop, read as one source). The fixtures are written in 4.2.0's terms (a
   `Scene`: the main video's clip and pieces, layers by track id); `Scene.Compile` makes the builder's state as
   `MainViewModel.CompileExportState` does, its timeline the `TimelineDocument` the test-only adapter

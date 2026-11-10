@@ -401,7 +401,7 @@ public static class ExportPresetsTests
         var command = EncoderCommand.Build(state, sound, GpuExportTiming.Of(2_000_000, FrameRate.Fps30, null), false).Arguments;
         expect(command.Contains("flac") && !command.Contains("-b:a:0") && command.Contains("-b:a:1"), "a FLAC track is encoded with no bitrate; an AAC one keeps its");
 
-        // The Export GPU (5.4C, Q6 b): exports and Render Previews composite on it while it is set and still here, else on the Compositor GPU.
+        // The Export GPU (5.4C, Q6 b): exports composite on it while it is set and still here, else on the Compositor GPU.
         GpuAdapter[] cards = [new(0, "Card A"), new(1, "Card B")];
         expect(GpuExport.ExportAdapter(new AppSettings { ExportGpuAdapter = 1, CompositorGpuAdapter = 0 }, cards) == 1
                && GpuExport.ExportAdapter(new AppSettings { ExportGpuAdapter = 2, CompositorGpuAdapter = 0 }, cards) == 0
@@ -416,7 +416,7 @@ public static class ExportPresetsTests
         expect(start.Contains("ExportAdapter(settings, GpuAdapters.All)", StringComparison.Ordinal)
                && start.IndexOf("Start(settings.CompositorGpuAdapter", StringComparison.Ordinal) is > 0 and var fallback && fallback < start.IndexOf("Start(warp", StringComparison.Ordinal)
                && settingsXaml.Contains("AutomationProperties.Name=\"Export GPU\"", StringComparison.Ordinal) && !settingsCode.Contains("DecodeAdapterBox.ItemsSource", StringComparison.Ordinal),
-            "StartCompositor (exports and Render Preview, off the window's thread) starts on ExportAdapter's card, then the Compositor GPU when that will not start, then WARP; Settings names the box Export GPU and fills it in one place (the GPU roles)");
+            "StartCompositor (exports, off the window's thread) starts on ExportAdapter's card, then the Compositor GPU when that will not start, then WARP; Settings names the box Export GPU and fills it in one place (the GPU roles)");
 
         // The slowest step for the Squisher too (5.4C): its override starts at veryslow, its first preset is Discord (10 MB).
         expect(new AppSettings().SquisherEncoderPreset == "veryslow" && SquishPreset.Defaults()[0] is { Name: "Discord (10 MB)", TargetSizeMb: 10, AudioKbps: 96 },

@@ -995,6 +995,7 @@ public partial class MainWindow
         matrix.ScaleAt(scale, scale, PlayerOverlay.ActualWidth / 2, PlayerOverlay.ActualHeight / 2);
         matrix.Translate(_playerPanX * _navPicture.Width * scale, _playerPanY * _navPicture.Height * scale);
         PlayerView.Matrix = matrix;
+        PlaceLoopbackWipe();
     }
 
     // The picture as the engine fits it into the player: the output frame (the source's size without one), letterboxed.
@@ -1017,6 +1018,7 @@ public partial class MainWindow
         if (_playerView is { } player)
             player.Matrix = Matrix.Identity;
         _gpu?.SetView(0, 0, 0);
+        PlaceLoopbackWipe();
         if (_canvasView is { } canvas)
             canvas.Matrix = Matrix.Identity;
     }

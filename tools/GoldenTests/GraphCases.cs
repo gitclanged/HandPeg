@@ -17,7 +17,7 @@ public sealed record GraphResult(string Golden, string Text, IReadOnlyList<strin
 
 /// <summary>
 /// The fixtures of the export: timelines written in code (neutral paths, files that need not exist), each made into an export
-/// (its encode, its GPU scenes, its sound program: 5.2-Audit, no filter graph) or a Render Preview command, and the same
+/// (its encode, its GPU scenes, its sound program: 5.2-Audit, no filter graph; 5.4.1A: Render Preview's commands are retired), and the same
 /// timelines through the A/V check (<see cref="GpuAvInvariant"/>: the GPU scene against the sound engine's program).
 /// </summary>
 public static class GraphCases
@@ -46,10 +46,6 @@ public static class GraphCases
         yield return Export(HardwareScene(tenBit: true), "export-hardware-10bit", "The same with 10-bit on (hevc_nvenc): the tail ends in p010le.");
         yield return Export(LoopScene(), "export-loop-to-end", "A 2 s video with sound to the end of a 60 s timeline, fading in and out: written as its rounds (4.2.0's loop as clips), read as the one repeating source 4.2.0 made of it.");
         yield return Export(TrackProcessingScene(), "export-track-processing-scope", "A main track's own processing (5.0-Verify Q1; its Sub-Lane's since 5.2-AuditB) is that lane's alone: the game stream ducked, then its gain, compressor and EQ; the microphone's chain on its own stream; the clips' sound and the music clip's on themselves.");
-
-        // ----- Render Preview -----
-        yield return Preview(LayersScene(), "preview-layers", "Render Preview of a stretch of the layered timeline at half size.", null);
-        yield return Preview(LayersScene(), "preview-timeline-proxy", "The composed timeline proxy: the same graph, silent, with the proxy encoder.", "-c:v libx264 -preset veryfast -crf 26");
     }
 
     // ----- The fixtures -----
@@ -330,17 +326,5 @@ public static class GraphCases
             .. TimelineGraphCases.GpuAvFixtures(),
         ];
         return AvCheck.GpuInvariant(fixtures);
-    }
-
-    private static GraphResult Preview(Scene scene, string golden, string description, string? videoEncode)
-    {
-        // Render Preview of a stretch (the GPU's since 5.2-Audit: one stretch, the compositor drawing it at the preview's size).
-        var state = scene.Compile();
-        var timing = GpuExportTiming.Window(10, 14, state.Timeline.FrameRate, EncoderCommand.ParseFrameRate(state.TargetFramerate));
-        var command = EncoderCommand.BuildPreview(state, "D:/session/previews/preview.mp4", timing, 50, hasSound: videoEncode is null, captionsOnGpu: false);
-        var text = new StringBuilder();
-        text.Append("# ").AppendLine(description);
-        text.AppendLine().Append(GoldenText.Command(command.CommandLine));
-        return new GraphResult(golden, text.ToString(), [], 0) { CommandLine = command.CommandLine };
     }
 }

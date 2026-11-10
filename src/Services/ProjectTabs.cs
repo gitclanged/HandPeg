@@ -186,8 +186,16 @@ public sealed class ProjectTabs
 
     public int Count => _tabs.Count;
 
-    /// <summary>The tab in front: the one the view model holds.</summary>
-    public ProjectTabHeader Active { get; private set; }
+    /// <summary>The tab in front: the one the view model holds. The scheduler is told (5.4.1-M3): the work of the tabs behind waits behind its.</summary>
+    public ProjectTabHeader Active
+    {
+        get;
+        private set
+        {
+            field = value;
+            WorkScheduler.FrontTab = value.Id;
+        }
+    }
 
     /// <summary>A new tab at the end of the strip, not in front yet.</summary>
     public ProjectTabHeader Add(string title, string? id = null)

@@ -110,6 +110,32 @@ public static class MediaBrowserFrames
         return (video.Seconds, video.Width, video.Height, strip, Poster(strip, shape, height, at));
     }
 
+    /// <summary>
+    /// The strip the Media Browser keeps of a video (5.4.1-M3: its frames and height as Settings have the browser make them), decoded whole
+    /// at <paramref name="height"/> with every frame a whole number of pixels wide: a Timeline block's strip at once, with no tool run, for a
+    /// file dropped from the browser. Null when the browser keeps none. Off the interface. Frozen.
+    /// </summary>
+    public static BitmapSource? KeptStripAt(string path, int height)
+    {
+        try
+        {
+            if (ReadKept(path, "probe", ".txt") is not { } text || ParseProbe(text) is not { Width: > 0, Height: > 0 } video)
+                return null;
+
+            var settings = AppSettings.Current;
+            var shape = (double)video.Width / video.Height;
+            var kind = StripKind(Math.Clamp(settings.BrowserPreviewFrames, 2, 40), Math.Clamp(settings.BrowserPreviewHeight, 90, 1080), shape);
+            if (FindKept(path, kind, ".jpg") is not { } strip || Layout(strip, shape) is not { } layout)
+                return null;
+
+            return Decode(strip, FrameWidthAt(layout, height) * layout.Count, height, null);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or InvalidOperationException or ArgumentException or System.Runtime.InteropServices.COMException or FileFormatException)
+        {
+            return null;
+        }
+    }
+
     // The cache's name for a strip of so many frames, at the height it is made (lowered for a strip too wide for a JPEG).
     private static string StripKind(int frames, int frameHeight, double shape) =>
         string.Create(CultureInfo.InvariantCulture, $"frames{frames}h{(int)Math.Min(frameHeight, 60000 / (frames * shape))}");

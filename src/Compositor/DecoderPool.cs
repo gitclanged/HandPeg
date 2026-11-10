@@ -1129,8 +1129,13 @@ internal sealed class DecoderPool : IDisposable
         }
     }
 
-    /// <summary>How many lanes work that can wait may take at once: two, or one for each video on screen.</summary>
-    private int BackgroundLanes => Math.Clamp(_videosShown, 2, Math.Max(_lanes.Count - 1, 2));
+    /// <summary>
+    /// How many lanes work that can wait may take at once: two, or one for each video on screen; never more than two on unified memory
+    /// (5.4.1-M4), where every speculative frame is the computer's memory and its bandwidth.
+    /// </summary>
+    private int BackgroundLanes => _gpu.UnifiedMemory ? UnifiedBackgroundLanes : Math.Clamp(_videosShown, 2, Math.Max(_lanes.Count - 1, 2));
+
+    private const int UnifiedBackgroundLanes = 2;
 
     private int _videosShown = 1;
 
@@ -2366,6 +2371,9 @@ internal sealed unsafe class ResourceCache(GpuDevice gpu, CompositorSharedMemory
 {
     private readonly Dictionary<int, (int Generation, GpuTexture? Texture, nint Lut3D, nint LutSrv, int Size)> _loaded = [];
     private int _version = -1;
+
+    /// <summary>The client's resource table's version: a 3D plane kept from an earlier frame is drawn again once it changes (5.4.1-M2).</summary>
+    public int Version => Volatile.Read(ref shared.Control.ResourcesVersion);
 
     private void Sync()
     {

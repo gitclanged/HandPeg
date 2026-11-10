@@ -1,0 +1,19 @@
+# Subtitle Studio and cutter: the wheel, Shift + wheel and the sideways swipe scroll in time with momentum; Ctrl + wheel / pinch zooms about the pointer.
+ok: strip: a notch of the plain wheel down scrubs 1.333 s later (120 DIPs at 90 DIPs a second) and says so; one notch never coasts
+ok: strip: Shift + wheel down scrolls the same way, as on the Timeline
+ok: strip: the wheel up scrolls back, earlier
+ok: strip: a sideways swipe to the right (WM_MOUSEHWHEEL +120) scrolls later and scrubs
+ok: strip: and to the left, earlier
+ok: strip: three notches 15 ms apart scroll on and coast later (the drag's sign kept), 2.928 s further in 40 ms
+ok: strip: Ctrl + wheel up zooms to 108 DIPs a second, the coast stopped
+ok: strip: Ctrl + wheel zooms in and out about the playhead wherever the pointer is: the playhead's moment stays, and the player is never told to seek
+ok: cutter: a notch of the plain wheel down scrubs 12 s later (the plain wheel no longer zooms) and says so, settled
+ok: cutter: Shift + wheel down scrolls the same way
+ok: cutter: the wheel up scrolls back, earlier
+ok: cutter: a sideways swipe to the right scrolls later
+ok: cutter: and to the left, earlier
+ok: cutter: three quick notches coast on later (unsettled scrubs) and come to rest at the file's end, settled
+ok: cutter: a wheel tick in the coast's direction that the glide already covered keeps it coasting (never a stop and a settled still)
+ok: cutter: a fast stream against the file's end tells nothing (no still asked again and again) and leaves no coast
+ok: cutter: Ctrl + wheel up at x 450 stops the coast and zooms to 12 DIPs a second about the pointer; the playhead's moment is told, settled
+ok: WM_MOUSEHWHEEL: the Timeline under the pointer first, else the first ISidewaysWheel under it (the strip and the cutter are), in the main window and every side window (MainWindow.Docking.cs)

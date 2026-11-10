@@ -1,0 +1,10 @@
+# The player draws the subtitle track's words whenever Burn Captions is on (5.4.1A): made while busy, after a file is opened, a tab brought back; none with it off; told of a style change.
+ok: a cue added (AddSubtitleCue) turns Burn Captions on; the player draws its one line and is told
+   while busy: 2 cues put in place, the player told at once, 2 lines drawn, Preview Subtitles off
+ok: cues made while an operation runs (the Edit Captions... transcription) reach the player: CaptionsChanged while busy, both lines drawn after
+ok: a file opened (SetMediaInfo) turns Preview Subtitles off, and the track's two lines are still drawn
+   hot tab switch: attached True, 2 cues back, 2 lines drawn, Burn Captions on
+ok: a tab brought back hot (AttachTab) into an emptied view model draws its own track's lines again, Burn Captions on
+ok: Burn Captions off: no lines for the player, and the live preview state has AutoCaptions off
+ok: SetCaptionStyle raises CaptionsChanged while Burn Captions is on (none while it is off)
+ok: GpuCaptions is gated on AutoCaptions, not on if (!PreviewSubtitles)

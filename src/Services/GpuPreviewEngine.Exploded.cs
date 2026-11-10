@@ -356,6 +356,23 @@ public sealed partial class GpuPreviewEngine
         Invalidate();
     }
 
+    /// <summary>
+    /// The camera's turn and distance set to <paramref name="pose"/>, held to its limits (5.4.1-M1: the front tab's last 3D angle when the
+    /// view is turned on again by hand; the spacing stays the panel's): 240 ms there when the view is up, as a reset is.
+    /// </summary>
+    internal void SetCamera(CameraPose pose)
+    {
+        lock (_camera)
+        {
+            var held = HeldToLimits(pose);
+            (_yaw, _pitch, _zoom) = (held.Yaw, held.Pitch, held.Zoom);
+            if (_wantExploded && _drawingExploded)
+                StartTransition();
+        }
+
+        Invalidate();
+    }
+
     /// <summary>While the user holds an orbit (a drag), the paused player is drawn every refresh even once the camera has caught up.</summary>
     public void SetOrbiting(bool held)
     {
@@ -429,7 +446,14 @@ public sealed partial class GpuPreviewEngine
 
             moving = _orbiting || !Settled();
         }
+
+        // While the camera turns, glides or is dragged, background work waits (5.4.1-M2): the worker's frames come first.
+        if (moving)
+            WorkScheduler.HoldBackground(CameraHold);
     }
+
+    /// <summary>How long background work is held after each frame of a moving camera.</summary>
+    private static readonly TimeSpan CameraHold = TimeSpan.FromMilliseconds(350);
 
     partial void WriteCamera(ref FrameSceneHeader header, Span<GpuLayerDescriptor> layers)
     {

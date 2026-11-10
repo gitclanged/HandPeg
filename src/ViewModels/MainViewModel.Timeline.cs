@@ -499,8 +499,15 @@ public partial class MainViewModel
         var state = CaptureState(name);
         (state.UndoHistory, state.RedoHistory) = (HistoryOf(_undo, moved), HistoryOf(_redo, moved));
         state.ThumbnailJpeg = ThumbnailForSave();
+        state.Workspace = _isBackgroundWorker ? null : WorkspaceForSave?.Invoke();
         return state;
     }
+
+    /// <summary>The window's arrangement for a save's "workspace" section (Pass 5.4.1-M5); set by the window, unset for a background worker.</summary>
+    public Func<ProjectWorkspace?>? WorkspaceForSave { get; set; }
+
+    /// <summary>Raised after a project carrying a "workspace" section is opened, for the window to take it up (when the user wants that).</summary>
+    public event Action<ProjectWorkspace>? WorkspaceOpened;
 
     /// <summary>A history as a project carries it, oldest first (its steps shared: a packed step is never changed); null when empty.</summary>
     private List<UndoStepState>? HistoryOf(List<(string What, byte[] State)> steps, Func<string, string>? moved)
@@ -899,6 +906,9 @@ public partial class MainViewModel
     // 54 pixels high (about half a megabyte), a waveform 1200 by 60.
     private const int PicturesKept = 24;
 
+    // How tall a block's strip is made (FfmpegRunner.GenerateFilmstripAsync's height): the Media Browser's strip is decoded at it.
+    private const int LayerStripHeight = 54;
+
     private readonly LruCache<string, Task<System.Windows.Media.ImageSource?>> _layerWaveforms = new(PicturesKept, StringComparer.OrdinalIgnoreCase);
     private readonly LruCache<string, System.Windows.Media.ImageSource> _layerFilmstrips = new(PicturesKept, StringComparer.OrdinalIgnoreCase);
 
@@ -969,9 +979,12 @@ public partial class MainViewModel
             // another until it is, and a frozen one is also the only kind WPF does not keep watching.
             var picture = await Task.Run(async () =>
             {
-                // Made before, for this file as it is: taken from the cache.
+                // Made before, for this file as it is: taken from the cache; else the Media Browser's strip of it (5.4.1-M3: a file dropped
+                // from the browser has its frames at once), decoded at a block's height.
                 if (PreviewCache.Timeline.Find(file, kind, ".jpg") is { } kept)
                     path = kept;
+                else if (MediaBrowserFrames.KeptStripAt(file, LayerStripHeight) is { } shared)
+                    return (System.Windows.Media.ImageSource)shared;
                 else if (await FfmpegRunner.GenerateFilmstripAsync(file, path, count, seconds, token))
                     path = PreviewCache.Timeline.Keep(file, kind, ".jpg", path);
                 else

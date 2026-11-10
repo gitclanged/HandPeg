@@ -18,7 +18,7 @@ public static class SessionPaths
     /// <summary>Hover-preview thumbnail sheets.</summary>
     public static string Sprites => Path.Combine(Root, "sprites");
 
-    /// <summary>Clips made by Render Preview.</summary>
+    /// <summary>Session scratch files: mask stills, export sound renders, GIF frames.</summary>
     public static string Previews => Path.Combine(Root, "previews");
 
     /// <summary>Cut and chapter lists belonging to queued jobs.</summary>

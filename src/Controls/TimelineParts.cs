@@ -935,12 +935,16 @@ public sealed class TimelineRuler : TimelineBar
         }
         else
         {
+            // 5.4.1-M1: the zoom glides there, the pointer's moment pinned.
             StopMomentum();
-            ZoomRequested?.Invoke(Math.Pow(1.25, e.Delta / 120.0), e.GetPosition(this).X);
+            _wheelGlide ??= new(_ => { }, (factor, at) => ZoomRequested?.Invoke(factor, at), () => IsVisible);
+            _wheelGlide.Zoom(Math.Pow(1.25, e.Delta / 120.0), e.GetPosition(this).X);
         }
 
         e.Handled = true;
     }
+
+    private WheelGlide? _wheelGlide;
 
     private static Brush FrozenBrush(Color color)
     {

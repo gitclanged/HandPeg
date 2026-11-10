@@ -206,6 +206,7 @@ public partial class MainWindow : Window
         HookLoupe();
         HookLoopback();
         _viewModel.SessionCleared += OnSessionCleared;
+        InitializeProjectWorkspace();
         _viewModel.PropertyChanged += ViewModel_PropertyChanged;
         // (The last file's Sequence Overview Scrubber pictures go before the new one is opened, which asks for its own.)
         _viewModel.MediaLoaded += _ => ClearProgramStrip();
@@ -229,7 +230,6 @@ public partial class MainWindow : Window
 
         // The timeline (4.4): its surface, ruler, toolbar and inspector hooked up to the view model and this window.
         InitializeUnifiedTimeline();
-        _viewModel.PreviewRendered += ShowPreview;
         _viewModel.AskOverwrite = AskOverwrite;
         _viewModel.Confirm = (title, message, confirm) => new ConfirmDialog(title, message, confirm) { Owner = this }.ShowDialog() == true;
 
@@ -295,7 +295,6 @@ public partial class MainWindow : Window
         KeyLanes.ZoomRequested += ZoomTimeline;
         Loaded += (_, _) => ApplyPaneLayout();
         Loaded += (_, _) => UpdateBottomBar();
-        _viewModel.ActionLogged += FlashStatus;
         _viewModel.LayerLoaded += RedrawLayout;
         _viewModel.LayerVisibilityChanged += RedrawLayout;
 
@@ -307,7 +306,6 @@ public partial class MainWindow : Window
         // A double-click on any slider or number box puts it back: to the style preset's value where there is one.
         NumericInput.ResetValue = _viewModel.GetResetValue;
         NumericInput.RegisterDoubleClickReset();
-        VideoView.SizeChanged += (_, _) => ScheduleGpuState();
 
         // The player starts once there is a surface for it to draw on, away from the UI thread.
         // And not before the window has been drawn (_shellDrawn): the workspace is on screen first, and the
@@ -357,6 +355,15 @@ public partial class MainWindow : Window
 
             // A minute in, when nothing else is starting: the caches let go of what was made from files deleted since.
             _ = PurgeCachesLaterAsync();
+
+            // The watched capture folder (5.4.1-M5): its recordings' strips, waveforms and seek indexes made in quiet time, after the
+            // index dwell (Settings' "Prepare the Whole Folder After"), so nothing of it competes with the start-up.
+            if (AppSettings.Current.WatchedCaptureFolder.Trim().Length > 0)
+            {
+                _ = Task.Delay(TimeSpan.FromSeconds(Math.Clamp(AppSettings.Current.BrowserIndexDelaySeconds, 5, 3600)), _windowClosing.Token)
+                    .ContinueWith(t => t.IsCompletedSuccessfully ? Views.MediaBrowserPane.PrepareWatchedFolderAsync(_windowClosing.Token) : Task.CompletedTask,
+                        TaskScheduler.Default).Unwrap();
+            }
 
             // Downloads beyond the cache size, temp folders of sessions that did not close cleanly, and the libmpv player an
             // earlier version installed (5.0-Verify): disk work, so not before the first frame (it was in the constructor, on
@@ -1404,6 +1411,7 @@ public partial class MainWindow : Window
 
         if (e.PropertyName == nameof(MainViewModel.PositionMs))
         {
+            FollowPlayheadInPlayer();
             MoveClipPlayheads();
             KeyLanes.MovePlayhead(_viewModel.PositionMs / 1000);
 
@@ -1779,23 +1787,6 @@ public partial class MainWindow : Window
             AudioOptionsButton.IsChecked = false;
     }
 
-    // ----- The action log -----
-
-    /// <summary>Lights the status bar up for a moment: something was just done, and it says what.</summary>
-    private void FlashStatus()
-    {
-        if (!Dispatcher.CheckAccess())
-        {
-            Dispatcher.BeginInvoke(FlashStatus);
-            return;
-        }
-
-        StatusFlash.BeginAnimation(OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.6, 0, TimeSpan.FromMilliseconds(1200))
-        {
-            EasingFunction = new System.Windows.Media.Animation.QuadraticEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseIn },
-        });
-    }
-
     // A button that opened a menu would, clicked again to close it, open it straight back up (see
     // TimelineOptionsPopup_Opened). The views menu, the bins and the keyframe menu share the cure: each popup
     // knows its button (its placement target), which is deaf while the popup is open.
@@ -1964,21 +1955,7 @@ public partial class MainWindow : Window
             _viewModel.AddImageLayer(dialog.FileName);
     }
 
-    // ----- Render preview and audio mixer -----
-
-    // The rendered stretch plays in Windows' own player (5.2-Audit: HandPeg's small player window is gone); the file is the session's, gone when it closes.
-    private void ShowPreview(string path)
-    {
-        try
-        {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true })?.Dispose();
-        }
-        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or FileNotFoundException)
-        {
-            AppLog.Write("The rendered preview could not be opened", ex);
-            _viewModel.StatusText = $"The preview is rendered ({path}), but Windows has no player for it: {ex.Message}";
-        }
-    }
+    // ----- Audio mixer -----
 
     /// <summary>
     /// The filters of one sound, from its row on the timeline or its menu. One step of Undo. An output track has none (5.2A, the user's
@@ -2181,34 +2158,14 @@ public partial class MainWindow : Window
 
     // ----- The bottom of the window -----
 
-    // Wide enough for the output row and the status bar to share a line.
-    private const double MergedBottomBarWidth = 1250;
-
     /// <summary>
-    /// The bottom of the window turns the output row and the status bar round, so that what was just done is
-    /// said where the eye is and the way out is at the far end: the status text and the
-    /// progress bar are on the left and Save As with the export buttons on the right, on one row in a window
-    /// wide enough for both, and otherwise with the status bar under the output row.
+    /// The output row across the bottom of the window (its whole width since the status bar beside it was retired, 5.4.1-M5: the status
+    /// and the progress are the title bar's and the transport row's).
     /// </summary>
     private void UpdateBottomBar()
     {
-        // While the Export tab holds the output row (Pass 4.1B), the status bar has the bottom to itself.
-        var merged = ActualWidth >= MergedBottomBarWidth && ReferenceEquals(DestinationBar.Parent, BottomBar);
-
-        var columns = BottomBar.ColumnDefinitions;
-        (columns[0].Width, columns[1].Width) = merged
-            ? (new GridLength(2, GridUnitType.Star), new GridLength(3, GridUnitType.Star))
-            : (new GridLength(3, GridUnitType.Star), new GridLength(2, GridUnitType.Star));
-
-        Grid.SetColumn(DestinationBar, merged ? 1 : 0);
-        Grid.SetColumnSpan(DestinationBar, merged ? 1 : 2);
-        Grid.SetRow(StatusBar, merged ? 0 : 1);
-        Grid.SetColumn(StatusBar, 0);
-        Grid.SetColumnSpan(StatusBar, merged ? 1 : 2);
-        // Edge to edge (5.3-Stage2): no band above it, only its words kept off the window's edges.
-        (StatusBar.Margin, StatusBar.VerticalAlignment) = merged ? (new Thickness(8, 2, 14, 2), VerticalAlignment.Center) : (new Thickness(8, 2, 8, 2), VerticalAlignment.Stretch);
-
-        // Inside the status bar the progress chip is first, at the left edge, in both modes; the action log follows it.
+        Grid.SetColumn(DestinationBar, 0);
+        Grid.SetColumnSpan(DestinationBar, 2);
     }
 
     private void ExportLayout_Click(object sender, RoutedEventArgs e)

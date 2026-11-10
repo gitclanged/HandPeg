@@ -39,7 +39,7 @@ public partial class SettingsWindow
         _settings.HardwareDecodeAdapter = TwinOf(adapters, _settings.HardwareDecodeAdapter);
         var distinct = DistinctCards(adapters);
 
-        // The Export GPU (5.4C): the card exports and Render Previews composite on (GpuExport.ExportAdapter); Auto is the Compositor GPU.
+        // The Export GPU (5.4C): the card exports composite on (GpuExport.ExportAdapter); Auto is the Compositor GPU.
         DecodeAdapterBox.ItemsSource = distinct.Prepend(ExportGpuAuto).ToList();
         DecodeAdapterBox.SelectedValue = _settings.HardwareDecodeAdapter;
 

@@ -181,14 +181,16 @@ public static class EncodedPreviewQaTests
         bar.Load("PrevIFrame,@3");
         expect(!bar["ExportQualityPreview"], "a bar saved at version 3 without it keeps it hidden: the user's choice stands");
 
-        // The XAML: the slot right after the 3D view's toggle; Render Preview keeps its own glyph.
+        // The XAML: the slot right after the 3D view's toggle; the eye is the bar's only E890 (5.4.1A: Render Preview, E7B3, is retired).
         var xaml = XDocument.Load(Path.Combine(Root(), "src", "MainWindow.xaml"));
         var exploded = Named(xaml, "ExplodedToggle");
         expect(exploded?.ElementsAfterSelf().FirstOrDefault() is { } next && Attr(next, X + "Name") == "ExportQualityPreviewBarSlot",
             "MainWindow.xaml: ExportQualityPreviewBarSlot is the next control after ExplodedToggle in the transport");
         var render = xaml.Descendants().FirstOrDefault(e => Attr(e, "AutomationProperties.Name") == "Render Preview");
-        expect(MainWindow.LoopbackGlyph == "\uE890" && MainWindow.LoopbackName == "Live Encoded Preview" && render is not null && Attr(render, "Content") == "\uE7B3",
-            "the toggle is the eye (Segoe MDL2 E890, View) and named Live Encoded Preview; Render Preview keeps E7B3, so no two share a glyph");
+        var strayEyes = xaml.Descendants().Count(e => (Attr(e, "Content") == "\uE890" || Attr(e, "Text") == "\uE890")
+            && !e.AncestorsAndSelf().Any(a => Attr(a, "AutomationProperties.Name") == "Live Encoded Preview"));
+        expect(MainWindow.LoopbackGlyph == "\uE890" && MainWindow.LoopbackName == "Live Encoded Preview" && render is null && strayEyes == 0,
+            "the toggle is the eye (Segoe MDL2 E890, View) and named Live Encoded Preview; no other control shows that glyph, and none is named Render Preview (retired)");
 
         // Law 1: the toggle is made with the bar, its flyout on first opening; no pointer hook until the preview and the Magnifier are on.
         var loopback = Read("MainWindow.LoopbackPreview.cs");

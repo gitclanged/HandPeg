@@ -464,11 +464,6 @@
         <Border x:Name="TitleStatus" Grid.ColumnSpan="3" HorizontalAlignment="Left" Background="Transparent" Padding="12,0" Visibility="Collapsed"
                 WindowChrome.IsHitTestVisibleInChrome="True" MouseEnter="WorkChip_MouseEnter" MouseLeave="WorkFlyout_MouseLeave"
                 AutomationProperties.Name="Status" AutomationProperties.AutomationId="TitleStatus">
-            <Border.ContextMenu>
-                <ContextMenu>
-                    <MenuItem Header="Show Status Bar" Click="ShowStatusBar_Click" />
-                </ContextMenu>
-            </Border.ContextMenu>
             <TextBlock x:Name="TitleStatusText" Foreground="{DynamicResource MutedTextBrush}" FontSize="12" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
         </Border>
         <StackPanel x:Name="TitleRight" Grid.Column="2" Orientation="Horizontal">
@@ -478,8 +473,6 @@
                 <TextBlock Text="&#xE72C;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" Margin="0,1,5,0" />
                 <TextBlock x:Name="EngineRecoveredText" Text="Preview engine recovered" FontSize="11.5" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
             </StackPanel>
-            <Button x:Name="TitleUpdateButton" Content="Update" Padding="10,1" Margin="0,0,8,0" VerticalAlignment="Center" FontSize="11.5" Visibility="Collapsed"
-                    WindowChrome.IsHitTestVisibleInChrome="True" Click="UpdateAction_Click" AutomationProperties.Name="Update HandPeg (Title Bar)" />
             <!-- Each takes its own clicks in the title bar (also set by their style): found in real pixels, under any UI scale (MainWindow.TitleBar.cs, FrameHitTest). -->
             <Button x:Name="MinimizeButton" Style="{StaticResource CaptionButton}" Content="&#xE921;" Click="MinimizeWindow_Click" AutomationProperties.Name="Minimize" ToolTip="Minimize"
                     WindowChrome.IsHitTestVisibleInChrome="True" />
@@ -661,6 +654,9 @@
                                 <CheckBox x:Name="PerTabLayoutsBox" Content="Each project tab remembers its own layout" VerticalAlignment="Center" Click="PerTabLayoutsBox_Click"
                                           AutomationProperties.Name="Each project tab remembers its own layout"
                                           ToolTip="On: each project tab keeps the window's layout it was left in, and takes it back when brought to the front. Off: every tab shares one layout. (Also in Settings.)" />
+                                <CheckBox x:Name="RestoreWorkspaceBox" Content="Projects open in their saved window" VerticalAlignment="Center" Click="RestoreWorkspaceBox_Click" Margin="12,0,0,0"
+                                          AutomationProperties.Name="Projects open in their saved window"
+                                          ToolTip="On: a project opens in the window it was saved in (the layout, the Media Browser's view and the 3D camera). Off: it opens in the window as it is. (Also in Settings.)" />
                             </DockPanel>
                             <StackPanel x:Name="SideWindowRows" AutomationProperties.Name="Side Windows">
                                 <StackPanel.Resources>
@@ -813,6 +809,49 @@
                             <TextBlock Text="Views" Margin="7,0,0,0" VerticalAlignment="Center" />
                         </StackPanel>
                     </ToggleButton>
+                    <!--
+                        The progress chip (5.4.1-M5: on the transport row since the status bar was retired): the work under way, the lead piece of it
+                        shown, and how many more. While the pointer rests on it, a flyout lists them all, each with its own progress and a cancel
+                        button, with the lanes' pause switches. See WorkScheduler.
+                    -->
+                    <Grid x:Name="WorkChip" DockPanel.Dock="Left" Margin="0,0,12,0" VerticalAlignment="Center" Background="Transparent"
+                          DataContext="{x:Static services:WorkScheduler.Summary}" AutomationProperties.Name="Work in Progress"
+                          Visibility="{Binding IsVisible, Converter={StaticResource BoolToVisibility}}"
+                          MouseEnter="WorkChip_MouseEnter" MouseLeave="WorkFlyout_MouseLeave">
+                        <StackPanel Orientation="Horizontal">
+                            <StackPanel.Style>
+                                <Style TargetType="StackPanel">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsBackground}" Value="True">
+                                            <Setter Property="Opacity" Value="0.7" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </StackPanel.Style>
+                            <ProgressBar Width="80" Height="10" Minimum="0" Maximum="100" VerticalAlignment="Center"
+                                         Value="{Binding Percent, Mode=OneWay}" IsIndeterminate="{Binding IsIndeterminate}" />
+                            <TextBlock Text="{Binding Title}" MaxWidth="180" TextTrimming="CharacterEllipsis" Margin="8,0,0,0" VerticalAlignment="Center" />
+                            <TextBlock Text="{Binding PercentText}" Margin="6,0,0,0" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
+                            <Border Margin="6,0,0,0" Padding="6,0" CornerRadius="7" Background="{DynamicResource AccentBrush}" VerticalAlignment="Center">
+                                <Border.Style>
+                                    <Style TargetType="Border">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding MoreText}" Value="">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Border.Style>
+                                <TextBlock Text="{Binding MoreText}" FontSize="11" Foreground="White" />
+                            </Border>
+                        </StackPanel>
+                    </Grid>
+                    <!-- A newer HandPeg: found (Update downloads it, then restarts into it) or already downloaded (Restart to update). -->
+                    <StackPanel x:Name="UpdateNotice" DockPanel.Dock="Left" Orientation="Horizontal" Margin="0,0,12,0" VerticalAlignment="Center" Visibility="Collapsed">
+                        <TextBlock x:Name="UpdateNoticeText" VerticalAlignment="Center" MaxWidth="220" TextTrimming="CharacterEllipsis" />
+                        <Button x:Name="UpdateActionButton" Content="Update" Margin="8,0,0,0" Padding="12,3" Click="UpdateAction_Click" AutomationProperties.Name="Update HandPeg" />
+                        <Button x:Name="UpdateLaterButton" Content="Later" Margin="6,0,0,0" Padding="10,3" Click="DismissUpdateNotice_Click" />
+                    </StackPanel>
                 </DockPanel>
                 <!--
                     The controls, each shown or not as chosen with the settings button at the right end (PlaybackControls). On one line, always: what the row has no room for is left out of it, least wanted first, and listed
@@ -895,13 +934,6 @@
                     <ContentControl x:Name="ExportQualityPreviewBarSlot" local:OverflowStrip.Priority="12" Focusable="False" VerticalAlignment="Center" />
                     <Button local:OverflowStrip.Priority="10" Style="{StaticResource TransportButton}" Content="&#xE722;" Tag="ExportFrame" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[ExportFrame], Converter={StaticResource BoolToVisibility}}"
                             ToolTip="Export Frame: saves the frame as it is shown (as the layout makes it) as a PNG in the output's folder." AutomationProperties.Name="Export Frame" />
-                    <Button local:OverflowStrip.Priority="55" Style="{StaticResource TransportButton}" Content="&#xE7B3;" Margin="14,0,3,0" Command="{Binding RenderPreviewCommand}"
-                            AutomationProperties.Name="Render Preview"
-                            ToolTip="Render Preview: encode a few seconds with the current crop, scaling and filters at reduced size, and play the result. Length and size are set in Settings.">
-                        <Button.Visibility>
-                            <Binding Path="PlaybackControls[RenderPreview]" Converter="{StaticResource BoolToVisibility}" />
-                        </Button.Visibility>
-                    </Button>
                     <!-- What the row has no room for: listed in a menu from here (see OverflowStrip). Shown only while something is left out. -->
                     <ToggleButton local:OverflowStrip.IsOverflowButton="True" Content="&#xE712;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,7" Margin="3,0"
                                   AutomationProperties.Name="More Playback Controls" ToolTip="More: the playback controls the bar has no room for." />
@@ -1028,9 +1060,6 @@
                                     Visibility="{Binding ShowSimplePlayback, Converter={StaticResource BoolToVisibility}}">
                             <Button Style="{StaticResource TransportButton}" Content="&#xE72C;" Padding="9,6" Click="ReloadPlayer_Click"
                                     ToolTip="Use if timeline is stuck" AutomationProperties.Name="Reload Player" />
-                            <Button Style="{StaticResource TransportButton}" Content="&#xE7B3;" Padding="9,6" Command="{Binding RenderPreviewCommand}"
-                                    AutomationProperties.Name="Render Preview"
-                                    ToolTip="Render Preview: encode a few seconds with the current crop, scaling and filters at reduced size, and play the result. Length and size are set in Settings." />
                         </StackPanel>
                         <!-- The scrubber's two times keep room for a twelve-character time and 8 DIPs more (5.3.2): the scrubber never moves. -->
                         <local:TimeReadout Grid.Column="3" Margin="12,0,6,0" Spare="8">
@@ -2162,93 +2191,6 @@
             </local:ReflowPanel>
         </Border>
 
-        <!-- Status bar -->
-        <!--
-            Right-click: hide it (Tabs and Panes); the status and the progress then move into the title bar. Right under the panes
-            since 5.3-Stage2 (no band above it), its words kept off the window's edges (UpdateBottomBar sets the margin).
-        -->
-        <Grid Grid.Row="1" Grid.ColumnSpan="2" x:Name="StatusBar" Margin="8,2,8,2" Background="Transparent">
-            <Grid.ContextMenu>
-                <ContextMenu>
-                    <MenuItem Header="Hide Status Bar" Click="HideStatusBar_Click" AutomationProperties.Name="Hide Status Bar"
-                              ToolTip="Hides this bar in this mode: the status, the progress of background work and Update move into the title bar. Tabs and Panes (the Views menu), or a right-click on the title bar's status, brings it back." />
-                </ContextMenu>
-            </Grid.ContextMenu>
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
-            </Grid.ColumnDefinitions>
-            <!--
-                The progress chip: the work under way (exports, loads, thumbnails, waveforms...), the lead piece of it
-                shown, and how many more. While the pointer rests on it, a flyout lists them all, each with its own
-                progress and a cancel button, with the lanes' pause switches. See WorkScheduler.
-            -->
-            <Grid x:Name="WorkChip" Margin="0,0,12,0" VerticalAlignment="Center" Background="Transparent"
-                  DataContext="{x:Static services:WorkScheduler.Summary}" AutomationProperties.Name="Work in Progress"
-                  Visibility="{Binding IsVisible, Converter={StaticResource BoolToVisibility}}"
-                  MouseEnter="WorkChip_MouseEnter" MouseLeave="WorkFlyout_MouseLeave">
-                <StackPanel Orientation="Horizontal">
-                    <StackPanel.Style>
-                        <Style TargetType="StackPanel">
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding IsBackground}" Value="True">
-                                    <Setter Property="Opacity" Value="0.7" />
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </StackPanel.Style>
-                    <ProgressBar Width="120" Height="10" Minimum="0" Maximum="100" VerticalAlignment="Center"
-                                 Value="{Binding Percent, Mode=OneWay}" IsIndeterminate="{Binding IsIndeterminate}" />
-                    <TextBlock Text="{Binding Title}" MaxWidth="260" TextTrimming="CharacterEllipsis" Margin="8,0,0,0" VerticalAlignment="Center" />
-                    <TextBlock Text="{Binding PercentText}" Margin="6,0,0,0" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
-                    <Border Margin="6,0,0,0" Padding="6,0" CornerRadius="7" Background="{DynamicResource AccentBrush}" VerticalAlignment="Center">
-                        <Border.Style>
-                            <Style TargetType="Border">
-                                <Style.Triggers>
-                                    <DataTrigger Binding="{Binding MoreText}" Value="">
-                                        <Setter Property="Visibility" Value="Collapsed" />
-                                    </DataTrigger>
-                                </Style.Triggers>
-                            </Style>
-                        </Border.Style>
-                        <TextBlock Text="{Binding MoreText}" FontSize="11" Foreground="White" />
-                    </Border>
-                </StackPanel>
-            </Grid>
-            <!-- The action log: the last thing done, lit up for a moment when it changes; the ones before it are in the tooltip. -->
-            <Grid Grid.Column="1" x:Name="StatusTextHost" VerticalAlignment="Center">
-                <Border x:Name="StatusFlash" Background="{DynamicResource AccentBrush}" CornerRadius="3" Margin="-4,-2" Opacity="0" IsHitTestVisible="False" />
-                <TextBlock Text="{Binding StatusText}" Foreground="{DynamicResource MutedTextBrush}" AutomationProperties.AutomationId="Status"
-                           VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Background="Transparent" ToolTipService.ShowDuration="20000">
-                    <TextBlock.ToolTip>
-                        <StackPanel MaxWidth="640">
-                            <TextBlock Text="{Binding StatusText}" TextWrapping="Wrap" />
-                            <TextBlock Text="Recent actions" FontWeight="SemiBold" Margin="0,8,0,2" />
-                            <TextBlock Text="{Binding RecentActions}" TextWrapping="Wrap" FontFamily="Consolas" />
-                        </StackPanel>
-                    </TextBlock.ToolTip>
-                </TextBlock>
-            </Grid>
-            <!--
-                A newer HandPeg: found (Update downloads it, then restarts into it) or already downloaded (Settings: Auto-download;
-                Restart to update). Ignoring it is fine: one only found is never put in, one downloaded goes in when HandPeg closes.
-            -->
-            <StackPanel Grid.Column="2" x:Name="UpdateNotice" Orientation="Horizontal" Margin="10,0,0,0" Visibility="Collapsed">
-                <TextBlock x:Name="UpdateNoticeText" VerticalAlignment="Center" />
-                <Button x:Name="UpdateActionButton" Content="Update" Margin="8,0,0,0" Padding="12,3" Click="UpdateAction_Click" AutomationProperties.Name="Update HandPeg" />
-                <Button x:Name="UpdateLaterButton" Content="Later" Margin="6,0,0,0" Padding="10,3" Click="DismissUpdateNotice_Click" />
-            </StackPanel>
-            <StackPanel Grid.Column="3" x:Name="StatusProgressHost" Orientation="Horizontal">
-                <!-- How the I-frame index came out: shown for ten seconds, then cleared -->
-                <TextBlock Text="{Binding IFrameStatusText}" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" Margin="10,0,0,0"
-                           AutomationProperties.AutomationId="I-Frame Status" />
-            </StackPanel>
-            <!-- Cancels the export, load or other operation under way (the chip's flyout cancels any piece of work). -->
-            <Button Grid.Column="4" Content="Cancel" Margin="8,0,0,0" Padding="12,3" Command="{Binding CancelCommand}" />
-        </Grid>
         </Grid>
 
         <!--

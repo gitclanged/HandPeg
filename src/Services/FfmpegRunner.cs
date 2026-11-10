@@ -242,7 +242,7 @@ public static partial class FfmpegRunner
     /// <param name="height">How tall each frame is made, in pixels: 54 for a block on the timeline.</param>
     public static Task<bool> GenerateFilmstripAsync(string videoPath, string imagePath, int count, double durationSeconds, CancellationToken cancellationToken,
         int height = 54, WorkLane lane = WorkLane.Background) =>
-        Task.Run(() => WorkScheduler.Run(new WorkSpec($"Thumbnails of {Path.GetFileName(videoPath)}", lane) { Key = $"strip|{videoPath}|{count}|{height}|{imagePath}" }, async work =>
+        Task.Run(() => WorkScheduler.Run(new WorkSpec($"Thumbnails of {Path.GetFileName(videoPath)}", lane) { Key = $"strip|{WorkScheduler.PathKey(videoPath)}|{count}|{height}|{imagePath}" }, async work =>
         {
             if (await GpuFilmstrips.TryMakeAsync(videoPath, imagePath, count, durationSeconds, height, work.Token))
                 return true;
@@ -322,12 +322,19 @@ public static partial class FfmpegRunner
     /// </summary>
     public static async Task<List<double>> GetIFramesAsync(string path, CancellationToken cancellationToken)
     {
-        if (!File.Exists(DependencyUpdater.FfprobePath))
-            return [];
-
         // Known already for this file as it is (listed this session, or taken up with a project or from seekindex.bin).
         if (MediaProbe.KnownIFrames(path) is { } known)
             return [.. known];
+
+        // Read from the file's own index in C# (5.4.1-M4: an MP4's stss, an MKV's Cues), no ffprobe and nothing decoded.
+        if (await Task.Run(() => NativeKeyFrames.Read(path), cancellationToken) is { Length: > 0 } native)
+        {
+            MediaProbe.NoteIFrames(path, native);
+            return [.. native];
+        }
+
+        if (!File.Exists(DependencyUpdater.FfprobePath))
+            return [];
 
         // Listed before, for this file as it is: a long recording takes minutes to go through.
         if (PreviewCache.Timeline.ReadBytes(path, "iframes", ".bin") is { Length: > 0 } kept && kept.Length % sizeof(double) == 0)
@@ -341,7 +348,7 @@ public static partial class FfmpegRunner
         // (K). The same list as decoding the I-frames gives, in a fraction of the time (a 4.5-hour 1440p recording
         // in about half a minute, bound by the disk), and read line by line as it comes, not held whole. Background
         // work (see WorkScheduler): asked for twice, it is read once.
-        return await WorkScheduler.Run(new WorkSpec($"I-frames of {Path.GetFileName(path)}", WorkLane.Background) { Key = $"iframes|{path}" }, async work =>
+        return await WorkScheduler.Run(new WorkSpec($"I-frames of {Path.GetFileName(path)}", WorkLane.Background) { Key = $"iframes|{WorkScheduler.PathKey(path)}" }, async work =>
         {
             var iFrames = new List<double>();
             var result = await ProcessPipes.RunAsync(Cli.Wrap(DependencyUpdater.FfprobePath)

@@ -400,8 +400,8 @@ public partial class MainViewModel
     public SequenceExportState LivePreviewState() => SdrPreviewOf(_previewState ??= CompileExportState()) with { IsPreview = true };
 
     /// <summary>
-    /// A state as a screen shows it: an export that keeps the project's HDR (5.4B) is tone-mapped for the player, Render Preview and anything
-    /// else drawn in 8-bit BT.709 (the export itself reads the frames back as P010 and keeps them HDR).
+    /// A state as a screen shows it: an export that keeps the project's HDR (5.4B) is tone-mapped for the player and anything else
+    /// drawn in 8-bit BT.709 (the export itself reads the frames back as P010 and keeps them HDR).
     /// </summary>
     internal static SequenceExportState SdrPreviewOf(SequenceExportState state) =>
         state.HdrTransfer is null ? state : state with { TonemapToSdr = true, HdrTransfer = null };

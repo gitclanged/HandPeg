@@ -114,10 +114,6 @@ public static class Program
             results.Add(GpuExportTests.Formats());
         // copy-export-refused (5.2-Arm64AndNpu, the user's answer 5): a Copy export that cannot cut is refused before it starts.
         results.Add(GpuExportTests.CopyRefusals());
-        if (filter is null || "gpu-preview-command".Contains(filter, StringComparison.OrdinalIgnoreCase))
-            results.Add(GpuExportTests.PreviewCommands());
-        if (filter is null || "gpu-preview-window".Contains(filter, StringComparison.OrdinalIgnoreCase))
-            results.Add(GpuExportTests.PreviewWindow());
         if (filter is null || "gpu-export-every-frame".Contains(filter, StringComparison.OrdinalIgnoreCase))
             results.Add(GpuExportTests.EveryFrame());
         if (filter is null || "gpu-program-strip".Contains(filter, StringComparison.OrdinalIgnoreCase))
@@ -169,6 +165,9 @@ public static class Program
         results.AddRange(TabPerfTests.All());
         results.AddRange(WorkerMemoryTests.All());
         results.AddRange(MemoryHygieneTests.All());
+        // Pass 5.4.1A: Render Preview retired (A), the player resized with no stretch and the split wipe without the encoder's wait (B).
+        results.AddRange(RenderPreviewRetiredTests.All());
+        results.AddRange(ViewportResizeTests.All());
         // Last of all: its tour needs the WPF Application it makes, and a view model works otherwise once there is one (its command
         // and its undo steps go through the dispatcher, which nothing here pumps), so no test after it would see what it saw alone.
         results.AddRange(UiScaleTests.All());

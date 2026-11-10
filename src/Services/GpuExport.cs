@@ -237,7 +237,7 @@ public sealed class GpuExport : IDisposable
     }
 
     /// <summary>
-    /// The card an export and a Render Preview are composited on (5.4C, Settings' Export GPU): <see cref="AppSettings.ExportGpuAdapter"/>
+    /// The card an export is composited on (5.4C, Settings' Export GPU): <see cref="AppSettings.ExportGpuAdapter"/>
     /// while it is set and still one of <paramref name="cards"/>, else the Compositor GPU (<see cref="AppSettings.CompositorGpuAdapter"/>,
     /// -1 its Auto). Off the UI thread only: the cards are listed by DXGI (GpuAdapters.All), never before the first frame.
     /// </summary>
@@ -310,13 +310,12 @@ public sealed class GpuExport : IDisposable
 
     /// <summary>
     /// Plans an export on a compositor (the UI thread, or another STA thread: WPF draws the text clips): its tables, its scene
-    /// (fades and captions drawn by the compositor, the captions from <paramref name="captions"/>, their words on their file's
-    /// clock, which is <paramref name="captionsShift"/> seconds before the sequence's: a Render Preview's stretch's start), and the
-    /// readback section. Takes <paramref name="client"/> over when it returns an export; null (and why) when it cannot.
+    /// (fades and captions drawn by the compositor, the captions from <paramref name="captions"/>, their words on the sequence's
+    /// clock), and the readback section. Takes <paramref name="client"/> over when it returns an export; null (and why) when it cannot.
     /// <paramref name="energies"/> (5.2B) are the bands of its sound each frame's header carries (AudioReactive.MapOf); null for none.
     /// </summary>
     public static GpuExport? Prepare(SequenceExportState state, GpuExportCommand command, CompositorClient client, out string whyNot,
-        CaptionGenerator.CaptionWords? captions = null, double captionsShift = 0, AudioEnergyMap? energies = null)
+        CaptionGenerator.CaptionWords? captions = null, AudioEnergyMap? energies = null)
     {
         GpuResourceBroker? broker = null;
         try
@@ -325,8 +324,7 @@ public sealed class GpuExport : IDisposable
             var drawsCaptions = command.CaptionsOnGpu && captions is not null && state.AutoCaptions;
             if (drawsCaptions)
             {
-                var lines = captions!.Lines.Select(line => (IReadOnlyList<CaptionWord>)line.Select(w => w with { Start = w.Start + captionsShift, End = w.End + captionsShift }).ToList()).ToList();
-                broker.Text.SetCaptions(lines, captions.Style, captions.TextScale);
+                broker.Text.SetCaptions(captions!.Lines, captions.Style, captions.TextScale);
             }
 
             var plan = GpuScenePlan.Create(state with { AutoCaptions = drawsCaptions }, broker);
@@ -499,97 +497,6 @@ public sealed class GpuExport : IDisposable
             AppLog.Write("GPU export: the sound's bands could not be measured; the audio-reactive effects do not pulse", ex);
             return null;
         }
-    }
-
-    /// <summary>
-    /// Render Preview (for the view model, from the UI thread): the stretch from <paramref name="fromSeconds"/> to
-    /// <paramref name="toSeconds"/> drawn as the export draws its frames, at <paramref name="percent"/> of the frame's size, its sound
-    /// the engine's render of the same program (from the first frame drawn), into a small fast x264 MP4. Throws as
-    /// <see cref="RunAsync"/> does.
-    /// </summary>
-    /// <param name="captionsPath">The stretch's auto-caption file (timed from its start), or null.</param>
-    public static async Task RunPreviewAsync(SequenceExportState state, string outputPath, double fromSeconds, double toSeconds, int percent,
-        string? captionsPath, IProgress<FfmpegProgress> progress, CancellationToken cancellationToken)
-    {
-        var captions = captionsPath is not null ? CaptionGenerator.ReadWords(captionsPath) : null;
-        if (EncoderCommand.WhyNot(state) is { } reason)
-            throw new GpuExportException($"The preview cannot be made: {reason}.");
-        var output = EncoderCommand.ParseFrameRate(state.TargetFramerate);
-        var length = TimelineLowering.Lowering(state).SequenceSeconds;
-        var timing = GpuExportTiming.Window(fromSeconds, Math.Min(toSeconds, length), state.Timeline.FrameRate, output)
-            with { SampleLimitSeconds = EncoderCommand.SampleLimitOf(length, state.Timeline.FrameRate) };
-        if (timing.OutputFrames <= 0)
-            throw new GpuExportException("The preview cannot be made: the stretch holds no frame.");
-
-        // The stream source's subtitles to burn in, as the export burns them.
-        if (state.BurnedSubtitleStreams.Count > 0)
-            state = state with { PictureSubtitles = await BurnedSubtitles.PrepareAsync(state, cancellationToken) };
-
-        // The sound first, off this thread (it decodes): exactly as long as the frames piped, from the first of them; every track
-        // heard, as the export hears them, whatever is soloed.
-        var start = timing.CanvasSeconds(timing.FirstCanvasFrame);
-        var frames = (long)Math.Round(timing.OutputSeconds(timing.OutputFrames) * SoundRate);
-        var program = AudioProgram.Build(state, new AudioBuildOptions { IgnoresSolo = true });
-        var soundPath = program.Strips.Count > 0 && frames > 0 ? outputPath + ".sound.f32" : null;
-        var command = EncoderCommand.BuildPreview(state with { AutoCaptions = captions is not null }, outputPath, timing, percent, soundPath is not null, captions is not null);
-        try
-        {
-            progress.Report(new FfmpegProgress("Rendering the preview's sound...", null, null));
-            if (soundPath is not null)
-            {
-                await Task.Run(() => WriteSound(program, start, frames, soundPath), cancellationToken);
-                command = command with { Sound = [new ExportSoundTrack("", "aac", "128k", 2, [0]) { RenderPath = soundPath }] };
-            }
-
-            // The bands of its sound (5.2B), from a second before the stretch (what the bands' followers remember of it) to its end.
-            var energies = await EnergiesAsync(state, Math.Max(start - 1, 0), start + timing.OutputSeconds(timing.OutputFrames) + 0.1, progress, cancellationToken);
-            progress.Report(new FfmpegProgress("Starting the GPU compositor...", null, null));
-            var (client, why) = await Task.Run(() => (StartCompositor(out var whyNot), whyNot), cancellationToken);
-            if (client is null)
-                throw new GpuExportException($"The preview could not be made: {why}.");
-
-            // Back on the caller's thread (the UI's): the scene is planned there. The preview's captions were made for the stretch from its start.
-            if (Prepare(state with { AutoCaptions = captions is not null }, command, client, out why, captions, fromSeconds, energies) is not { } export)
-            {
-                client.Dispose();
-                throw new GpuExportException($"The preview could not be made: {why}.");
-            }
-
-            using (export)
-            {
-                progress.Report(new FfmpegProgress($"Rendering the preview on the GPU compositor ({client.Message})...", null, null));
-                var clock = Stopwatch.StartNew();
-                await export.RunAsync(progress, cancellationToken);
-                AppLog.Write(string.Create(CultureInfo.InvariantCulture,
-                    $"GPU preview: {export.FramesPiped} frames from {start:0.000} s in {clock.Elapsed.TotalSeconds:0.0} s, at {percent} % size"));
-            }
-        }
-        finally
-        {
-            if (soundPath is not null)
-            {
-                try
-                {
-                    File.Delete(soundPath);
-                }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                {
-                    // Still open: it is in the session's previews folder, which goes when HandPeg closes.
-                }
-            }
-        }
-    }
-
-    /// <summary>The rate Render Preview's sound is rendered at and given to FFmpeg (as its f32le input says).</summary>
-    public const int SoundRate = 48000;
-
-    // A program's sound from a moment, interleaved stereo float, into the file as f32le reads it (little-endian, as the processor keeps it).
-    private static void WriteSound(AudioProgram program, double fromSeconds, long frames, string path)
-    {
-        var sound = new float[checked((int)frames * 2)];
-        AudioMixer.Render(program, fromSeconds, sound, SoundRate);
-        using var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16);
-        file.Write(MemoryMarshal.AsBytes(sound.AsSpan()));
     }
 
     // ----- Running -----

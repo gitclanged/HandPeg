@@ -9,20 +9,19 @@ using HandPegApp.Services;
 
 namespace HandPegApp;
 
-// ----- The title bar, and the status bar that can hide (Pass 4.1B) -----
+// ----- The title bar (Pass 4.1B; the status bar it stood in for retired in 5.4.1-M5) -----
 // The window draws its own title bar (WindowChrome, MainWindow.xaml): HandPeg's name, and the caption buttons, the
-// Maximize button answering Windows as its own (HTMAXBUTTON), so Windows 11's Snap Layouts open from it. The status bar
-// at the bottom can be hidden for each mode (its right-click menu, or Tabs and Panes: AppSettings.ShowStatusBar);
-// hidden, its status text sits dimmed in the middle of the title bar, the work under way is a dim fill across the
-// title bar's whole height as far as it has got, resting on the status opens the work flyout as the progress chip
-// does, and an update waiting is offered there too. Nothing here polls: the work summary's one timer drives it.
+// Maximize button answering Windows as its own (HTMAXBUTTON), so Windows 11's Snap Layouts open from it. The status text
+// sits dimmed in the middle of the title bar, the work under way is a dim fill across the title bar's whole height as far
+// as it has got, and resting on the status opens the work flyout as the transport row's progress chip does. Nothing here
+// polls: the work summary's one timer drives it.
 public partial class MainWindow
 {
     /// <summary>The title bar and the status bar as the settings have them; before the first frame (Cold-Start rule 1), and on every change.</summary>
     private void InitializeTitleBar()
     {
         _startStatus = _viewModel.StatusText;
-        ApplyStatusBar();
+        UpdateTitleStatus();
         WorkScheduler.Summary.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName is nameof(WorkSummary.IsVisible) or nameof(WorkSummary.Title) or nameof(WorkSummary.Percent)
@@ -48,7 +47,6 @@ public partial class MainWindow
         // The project tabs (5.4A): one tab, made in memory, at the first frame; nothing read from the disk before it.
         InitializeProjectTabs();
         DependencyPropertyDescriptor.FromProperty(TitleProperty, typeof(Window)).AddValueChanged(this, (_, _) => TitleText.Text = Title);
-        DependencyPropertyDescriptor.FromProperty(VisibilityProperty, typeof(UIElement)).AddValueChanged(UpdateNotice, (_, _) => ApplyStatusBar());
         // Inside WM_SIZE: a new place for the window waits until that message is done (WPF lays it out from that message's size).
         StateChanged += (_, _) => ApplyWindowState(placeLater: true);
 
@@ -91,32 +89,6 @@ public partial class MainWindow
         _engineBadgeTimer.Stop();
         _engineBadgeTimer.Start();
     }
-
-    private static bool StatusBarShown => AppSettings.Current.ShowStatusBar;
-
-    /// <summary>The status bar, or the status in the title bar: whichever the mode in use has.</summary>
-    private void ApplyStatusBar()
-    {
-        // The title bar's status and its progress fill are there with the status bar shown or hidden (4.1.1); only the
-        // update button moves between them.
-        var shown = StatusBarShown;
-        StatusBar.Visibility = shown ? Visibility.Visible : Visibility.Collapsed;
-        TitleUpdateButton.Visibility = !shown && UpdateNotice.Visibility == Visibility.Visible ? Visibility.Visible : Visibility.Collapsed;
-        TitleUpdateButton.Content = UpdateActionButton.Content;
-        TitleUpdateButton.ToolTip = UpdateNoticeText.Text;
-        UpdateTitleStatus();
-    }
-
-    /// <summary>Hides or shows the status bar in the mode in use (its right-click menu, the title bar's, Tabs and Panes).</summary>
-    private void SetStatusBarShown(bool shown)
-    {
-        _viewModel.SavePaneLayout(s => s.ShowStatusBar = shown);
-        ApplyStatusBar();
-    }
-
-    private void HideStatusBar_Click(object sender, RoutedEventArgs e) => SetStatusBarShown(false);
-
-    private void ShowStatusBar_Click(object sender, RoutedEventArgs e) => SetStatusBarShown(true);
 
     /// <summary>
     /// The work under way as a title bar says it ("Encoding clip.mp4  42%  +2 more"): the main window's, and the Settings

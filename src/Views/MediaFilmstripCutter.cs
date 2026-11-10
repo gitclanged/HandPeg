@@ -10,8 +10,9 @@ namespace HandPegApp.Views;
 /// stays in the middle (the Subtitle Studio's timeline's way, without its cue rows), and a sub-clip marked on it with In and Out.
 ///
 /// Dragging the strip scrubs (the moment under the playhead is the one shown); a flick coasts on with momentum (MomentumScroller, its
-/// two guards keeping careful moves still); a click puts the playhead where it was clicked; the wheel zooms about the playhead (Shift:
-/// scrolls). The ends of the sub-clip are dragged to move them; the marked band on the ruler is dragged out onto the timeline (the pane
+/// two guards keeping careful moves still); a click puts the playhead where it was clicked. The wheel, Shift + wheel (down: later) and a
+/// sideways swipe or tilt (right: later) scroll in time with the same momentum, the Timeline's way (5.4.1A); Ctrl + wheel, or a precision
+/// touchpad's pinch, zooms about the pointer (the moment under it stays put, so the playhead's moves and is told as a scrub). The ends of the sub-clip are dragged to move them; the marked band on the ruler is dragged out onto the timeline (the pane
 /// carries it as a sub-clip). With the keyboard in it (IOwnsKeys, so the main window's shortcuts leave them to it): I and O mark In and
 /// Out at the playhead, Left and Right step a frame (Shift: ten), Home and End go to the file's ends, Space starts or stops the preview's
 /// stepping (J back, K stop, L forward), Enter inserts the sub-clip at the timeline's playhead.
@@ -19,8 +20,14 @@ namespace HandPegApp.Views;
 /// Times are seconds of the file on its clips' MediaOffset clock. The strip is drawn into a visual of its own three screens wide and slid
 /// by a transform, drawn again only when the view runs past what was drawn or something on it changes (no drawing while it coasts).
 /// </summary>
-public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys
+public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISidewaysWheel
 {
+    /// <summary>DIPs the strip slides for a wheel delta of 1 (a notch of 120: 120 DIPs), the Timeline's Shift + wheel feel (PanWheelAt).</summary>
+    internal const double WheelDipsPerDelta = 1.0;
+
+    /// <summary>What a notch of Ctrl + wheel multiplies the zoom by.</summary>
+    private const double ZoomStep = 1.2;
+
     /// <summary>The ruler's height and the frame row's, DIPs; the cutter's whole height.</summary>
     public const double RulerHeight = 16, FrameRowHeight = 46, PreferredHeight = RulerHeight + FrameRowHeight + 4;
 
@@ -70,7 +77,7 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys
         AddVisualChild(_strip);
         AddVisualChild(_head);
         System.Windows.Automation.AutomationProperties.SetName(this, "Filmstrip Cutter");
-        ToolTip = "Drag to scrub, click to go there, the wheel to zoom. I and O mark the sub-clip; drag the marked band (top) onto the timeline, or press Enter.";
+        ToolTip = "Drag to scrub, click to go there; the wheel or a sideways swipe scrolls, Ctrl + wheel or a pinch zooms. I and O mark the sub-clip; drag the marked band (top) onto the timeline, or press Enter.";
 
         // Nothing coasts while hidden or gone (the frame hook is let go).
         Unloaded += (_, _) => StopCoasting();
@@ -401,25 +408,93 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys
     protected override void OnMouseWheel(MouseWheelEventArgs e)
     {
         e.Handled = true;
+        WheelAt(e.Delta, Keyboard.Modifiers, MomentumScroller.Now(), e.GetPosition(this).X);
+    }
+
+    /// <summary>
+    /// A wheel notch over the cutter (test seam; OnMouseWheel calls it): Ctrl zooms about <paramref name="pointerX"/> (a pinch on a
+    /// precision touchpad arrives as Ctrl + wheel) and stops a coast; otherwise (none or Shift) the strip scrolls along the file, wheel
+    /// down later, a fast stream coasting on.
+    /// </summary>
+    internal void WheelAt(int delta, ModifierKeys modifiers, double nowMs, double pointerX)
+    {
         if (_duration <= 0 || !(_zoom > 0))
             return;
 
-        if ((Keyboard.Modifiers & ModifierKeys.Shift) != 0)
+        if ((modifiers & ModifierKeys.Control) != 0)
         {
-            // Shift: along the file, a fast stream coasting on.
-            var now = MomentumScroller.Now();
-            PanBy(_momentum.Wheel(e.Delta / 120.0 * 48, now));
-            Scrubbed?.Invoke(_position, !_momentum.IsCoasting);
-            if (_momentum.IsCoasting)
-                Hook();
+            StopCoasting();
+            ZoomAt(Math.Pow(ZoomStep, delta / 120.0), pointerX);
             return;
         }
 
-        // About the playhead: the moment under it stays there, and the strip opens out or closes in around it.
-        StopCoasting();
-        _zoom = Math.Clamp(_zoom * Math.Pow(1.2, e.Delta / 120.0), SmallestZoom, LargestZoom);
-        InvalidateVisual();
+        // Wheel up (positive) brings earlier moments: the strip slides right, the drag's way, as the coast that may follow goes on.
+        PanWheel(delta * WheelDipsPerDelta, nowMs);
     }
+
+    /// <summary>A sideways swipe or tilt over the cutter (WM_MOUSEHWHEEL from the window's hook): positive is to the right, later.</summary>
+    public void SidewaysWheel(double delta, double nowMs)
+    {
+        if (_duration > 0 && _zoom > 0)
+            PanWheel(-delta * WheelDipsPerDelta, nowMs);
+    }
+
+    // The strip slid by a wheel tick of DIPs in the drag's sense (PanBy: to the right brings earlier moments), a fast stream coasting on.
+    private void PanWheel(double dips, double nowMs)
+    {
+        if (_drag is not null)
+            return;
+        var (before, wasCoasting) = (_position, _momentum.IsCoasting);
+        var step = _momentum.Wheel(dips, nowMs);
+        PanBy(step);
+        if (_position != before)
+        {
+            Scrubbed?.Invoke(_position, !_momentum.IsCoasting);
+            if (_momentum.IsCoasting)
+                Hook();
+            else
+                Unhook();
+            return;
+        }
+
+        // A tick the coast had already covered: it coasts on.
+        if (step != 0 || !_momentum.IsCoasting)
+        {
+            // Held against either end (told nothing: a touchpad would ask the same still again and again), or a tick against the
+            // coast that stopped it where it was (told once, settled).
+            _momentum.Stop();
+            Unhook();
+            if (wasCoasting)
+                Scrubbed?.Invoke(_position, true);
+            return;
+        }
+
+        Hook();
+    }
+
+    // Zooms about a point of the cutter: the moment under it stays under it, so the playhead's moment (the middle) moves and is told, settled.
+    private void ZoomAt(double factor, double x)
+    {
+        // Not while a drag holds the strip (its pointer maths would jump), and nothing at all at a zoom limit (no rounding drift, no seek).
+        if (_drag is not null)
+            return;
+        var at = ToSeconds(x);
+        var zoom = Math.Max(SmallestZoom, Math.Min(_zoom * factor, LargestZoom));
+        if (zoom == _zoom)
+            return;
+        _zoom = zoom;
+        var before = _position;
+        MoveTo(at - (x - ActualWidth / 2) / _zoom);
+        InvalidateVisual();
+        if (_position != before)
+            Scrubbed?.Invoke(_position, true);
+    }
+
+    /// <summary>Whether the strip is coasting on after a flick or a fast wheel stream (test seam).</summary>
+    internal bool IsCoasting => _momentum.IsCoasting;
+
+    /// <summary>The moment at a point of the cutter, seconds of the file (test seam).</summary>
+    internal double SecondsAt(double x) => ToSeconds(x);
 
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
     {
@@ -585,9 +660,12 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys
         CompositionTarget.Rendering -= Coast;
     }
 
-    private void Coast(object? sender, EventArgs e)
+    private void Coast(object? sender, EventArgs e) => StepCoast(MomentumScroller.Now());
+
+    /// <summary>One frame of the coast at <paramref name="nowMs"/> (test seam; the frame hook calls it): whether it is still coasting.</summary>
+    internal bool StepCoast(double nowMs)
     {
-        var travel = _momentum.Tick(MomentumScroller.Now());
+        var travel = _momentum.Tick(nowMs);
         var before = _position;
         PanBy(travel);
 
@@ -597,10 +675,11 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys
             _momentum.Stop();
             Unhook();
             Scrubbed?.Invoke(_position, true);
-            return;
+            return false;
         }
 
         Scrubbed?.Invoke(_position, false);
+        return true;
     }
 
     private static Brush Frozen(Color color)

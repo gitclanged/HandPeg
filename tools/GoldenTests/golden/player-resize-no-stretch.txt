@@ -1,0 +1,28 @@
+# The player resized with no stretch (5.4.1A): a frame of another size centred 1:1, a ring that is not made anew for every size.
+ok: CenteredCopy: an 800 x 450 frame in a 1000 x 450 window is all of it, 100 pixels in from the left (margins, never a stretch)
+ok: a 1000 x 600 frame in an 800 x 600 window: its middle 800 columns (100..900) at the window's left edge (cropped, never squeezed)
+ok: a frame of the window's size: the whole frame at (0, 0)
+ok: odd sizes in whole pixels: 7 x 3 in 8 x 4 at (0, 0); 5 x 9 in 8 x 4 its rows 2..6 at column 1
+ok: a frame or a window of no size: nothing copied
+ok: OutputCapacity: the first ring is the frame's size exactly
+ok: a frame that outgrows the ring: a new one rounded up to 128 a side (768 x 512 for 700 x 400)
+ok: a frame that fits and fills at least half the ring keeps it (760 x 500, and 640 x 360, in 768 x 512)
+ok: grown one way only: the other side keeps the ring's (800 x 300 in 768 x 384: 896 x 384)
+ok: a frame under half the ring's area: a ring re-fitted to it (640 x 384 for 640 x 360 in 1920 x 1152)
+ok: a frame read back (exact: its readback copies the whole texture) is always in a ring of exactly its size
+ok: a grown ring is never more than 8192 a side
+ok: Dxgi.CreateSwapChain takes the swap chain's scaling
+ok: the player's swap chain is made with DXGI_SCALING_NONE (the desktop never stretches its buffer across a resized window); a side window's mirror keeps the stretch
+ok: PresentNewest never refuses a frame for its size (it is centred), and a window of a new size presents again at once, paused too (HasNewFrame)
+ok: the back buffer's view is let go before every ResizeBuffers and with the swap chain
+ok: a resize no longer plans the whole Sequence again (the mpv era's VideoView.SizeChanged => ScheduleGpuState is gone)
+ok: the engine is woken on the surface window's WM_SIZE, once its client rectangle has the new size (SizeChanged comes before the host moves it)
+ok: the compositor's protocol is version 8 (a ring can be larger than its frames)
+ok: each output slot's content size is at 3176..3199 of the control block, before the cache's counters (3480)
+ok: a slot's content size: what the worker wrote, never more than the ring, the whole ring where nothing was written (an older worker)
+ok: each slot's tag at 3200..3211: its ring's generation * 2, + 1 for a frame read back (a capture the player never shows)
+ok: the player and a mirror never show a capture's frame (read back), a slot drawn into another ring gives no size, and the ring's size comes from its textures
+ok: 40 frames of a drag from 640 x 360 to 757 x 418, 3 pixels a step: each read back at exactly its size, its bars and picture where SceneRenderer.Letterbox puts them
+ok: the worker made at most 3 output rings for the 40 sizes (one a size before 5.4.1A), the last one large enough for the largest frame
+ok: a frame read back after the drag (FlagReadback) is drawn in a ring of exactly its size, 640 x 360: its readback and the reader's copy are the same 640 x 360 pixels
+ok: the reader copies a 700 x 400 frame from a larger ring into a 760 x 420 window 1:1 in its middle on black, into a 600 x 380 one its middle cropped, into a 700 x 400 one exactly: every pixel, nothing scaled

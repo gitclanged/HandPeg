@@ -252,7 +252,7 @@ public static partial class SideWindowTests
 
         // The window asks for it all: the side windows with the one load before the first frame, both saved together.
         var docking = File.ReadAllText(Path.Combine(RepositoryRoot(), "src", "MainWindow.Docking.cs"));
-        var manager = File.ReadAllText(Path.Combine(RepositoryRoot(), "src", "Docking", "DockManager.cs"));
+        var manager = File.ReadAllText(Path.Combine(RepositoryRoot(), "src", "Docking", "DockManager.cs")) + File.ReadAllText(Path.Combine(RepositoryRoot(), "src", "Docking", "DockManager.DragAndSides.cs"));
         expect(docking.Contains("_dock.Load(sideWindows: AppSettings.Current.SideWindows,", StringComparison.Ordinal)
                && docking.Contains("settings.SideWindows = _dock.SaveSideWindows();", StringComparison.Ordinal),
             "InitializeDocking loads AppSettings.SideWindows with the arrangement; SaveDockInto saves both");

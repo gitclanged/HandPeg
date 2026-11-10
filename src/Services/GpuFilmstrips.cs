@@ -299,7 +299,7 @@ public static class GpuFilmstrips
 
             var tall = height is { } asked ? FrameHeight(asked) : video.Height;
             var wide = height is null ? video.Width : FrameWidth(video.Width, video.Height, tall);
-            sheet = new Sheet(videoPath, imagePath, new StripLayout(1, wide, tall, 1), [moment], complete, token);
+            sheet = new Sheet(videoPath, imagePath, new StripLayout(1, wide, tall, 1), [moment], complete, token) { IsStill = true };
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
@@ -313,8 +313,10 @@ public static class GpuFilmstrips
     // A sheet through the queue, a few decoding sessions at a time.
     private static async Task<bool> RunAsync(Sheet sheet, string videoPath, CancellationToken token)
     {
-        // A few decoding sessions at a time on the card, whatever asked for them (see WorkScheduler.GpuDecodeGate).
-        await WorkScheduler.GpuDecodeGate.WaitAsync(token);
+        // A few decoding sessions at a time on the card, whatever asked for them (see WorkScheduler.GpuDecodeGate). A still (5.4.1-M3:
+        // Priority 0, a poster in sight) never waits there behind strips: it is one frame, drawn by the one worker the queue already has.
+        if (!sheet.IsStill)
+            await WorkScheduler.GpuDecodeGate.WaitAsync(token);
         Result result;
         try
         {
@@ -323,7 +325,8 @@ public static class GpuFilmstrips
         }
         finally
         {
-            WorkScheduler.GpuDecodeGate.Release();
+            if (!sheet.IsStill)
+                WorkScheduler.GpuDecodeGate.Release();
         }
 
         switch (result.Outcome)
@@ -343,17 +346,20 @@ public static class GpuFilmstrips
     }
 
     // A file's I-frames on the container's clock, as HandPeg knows them: from this session, from the Timeline cache's seek
-    // facts (seekindex.bin), or from the list FfmpegRunner.GetIFramesAsync kept there; null when none of them has it.
+    // facts (seekindex.bin), from the list FfmpegRunner.GetIFramesAsync kept there, or from the file's own index (NativeKeyFrames,
+    // 5.4.1-M4); null when none of them has it.
     private static double[]? KnownIFrames(string path)
     {
         if (MediaProbe.KnownIFrames(path) is { Length: > 0 } known)
             return known;
         if (MediaProbe.Recall(path) && MediaProbe.KnownIFrames(path) is { Length: > 0 } recalled)
             return recalled;
-        if (PreviewCache.Timeline.ReadBytes(path, "iframes", ".bin") is not { Length: > 0 } kept || kept.Length % sizeof(double) != 0)
+        var times = PreviewCache.Timeline.ReadBytes(path, "iframes", ".bin") is { Length: > 0 } kept && kept.Length % sizeof(double) == 0
+            ? MemoryMarshal.Cast<byte, double>(kept).ToArray()
+            : NativeKeyFrames.Read(path);
+        if (times is not { Length: > 0 })
             return null;
 
-        var times = MemoryMarshal.Cast<byte, double>(kept).ToArray();
         MediaProbe.NoteIFrames(path, times);
         return times;
     }
@@ -420,10 +426,14 @@ public static class GpuFilmstrips
     private sealed record Sheet(string VideoPath, string ImagePath, StripLayout Layout, double[] Targets, double[]? IFrames, CancellationToken Token)
     {
         public TaskCompletionSource<Result> Done { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        /// <summary>One frame (a poster, a still: <see cref="TryStillAsync"/>): drawn ahead of every strip waiting (5.4.1-M3, Priority 0).</summary>
+        public bool IsStill { get; init; }
     }
 
     private static readonly object Gate = new();
     private static readonly Queue<Sheet> Waiting = new();
+    private static readonly Queue<Sheet> StillsWaiting = new();
     private static Thread? _server;
     private static long _serial;
 
@@ -431,7 +441,7 @@ public static class GpuFilmstrips
     {
         lock (Gate)
         {
-            Waiting.Enqueue(sheet);
+            (sheet.IsStill ? StillsWaiting : Waiting).Enqueue(sheet);
             if (_server is null)
             {
                 _server = new Thread(Serve) { Name = "GPU filmstrips", IsBackground = true, Priority = ThreadPriority.BelowNormal };
@@ -447,7 +457,7 @@ public static class GpuFilmstrips
     }
 
     /// <summary>
-    /// The thumbnail worker's thread: the strips in the order they were asked for, the compositor started for the first and
+    /// The thumbnail worker's thread: the stills, then the strips, each in the order they were asked for, the compositor started for the first and
     /// ended once nothing has been asked for <see cref="IdleMilliseconds"/>; then the thread ends too (a new strip starts both
     /// again). The only thread that writes the worker's scenes.
     /// </summary>
@@ -464,15 +474,19 @@ public static class GpuFilmstrips
                 lock (Gate)
                 {
                     // Nothing left and no worker: the thread goes (under the lock, so a strip asked for now starts a new one).
-                    if (Waiting.Count == 0 && client is null)
+                    if (Waiting.Count + StillsWaiting.Count == 0 && client is null)
                     {
                         _server = null;
                         return;
                     }
 
-                    if (Waiting.Count == 0)
+                    if (Waiting.Count + StillsWaiting.Count == 0)
                         Monitor.Wait(Gate, IdleMilliseconds);
-                    if (Waiting.Count > 0)
+
+                    // The stills first (5.4.1-M3): a poster in sight is never drawn after the strips asked for before it.
+                    if (StillsWaiting.Count > 0)
+                        next = StillsWaiting.Dequeue();
+                    else if (Waiting.Count > 0)
                         next = Waiting.Dequeue();
                 }
 
@@ -514,7 +528,7 @@ public static class GpuFilmstrips
             next?.Done.TrySetResult(new Result(Outcome.NotDrawn, ex.Message));
             lock (Gate)
             {
-                while (Waiting.TryDequeue(out var left))
+                while (StillsWaiting.TryDequeue(out var left) || Waiting.TryDequeue(out left))
                     left.Done.TrySetResult(new Result(Outcome.NotDrawn, ex.Message));
                 _server = null;
             }

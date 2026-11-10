@@ -12,17 +12,28 @@ namespace HandPegApp.Views;
 /// which stays in the middle. Everything is drawn in OnRender from the cues themselves; there is no element
 /// per cue, so a film's worth of subtitles scrolls and zooms as readily as ten do.
 ///
-/// Time is mapped to pixels by two transforms: a scale (pixels to the second, changed by the mouse wheel)
-/// and a translation (changed by dragging the strip, which is the same as scrubbing: the playhead does not
-/// move, the time under it does). A cue is dragged by its middle to move it and by an end to retime that end.
+/// Time is mapped to pixels by two transforms: a scale (pixels to the second, changed by Ctrl + wheel or a
+/// pinch) and a translation (changed by dragging the strip or by the wheel, which is the same as scrubbing: the
+/// playhead does not move, the time under it does). A cue is dragged by its middle to move it and by an end to
+/// retime that end.
 ///
 /// A flick of the strip coasts on (5.4C, a <see cref="MomentumScroller"/>): the time under the playhead goes on
 /// changing and slows to a stop, each step told as a scrub. A slow drag, a rest of 40 ms before letting go and
-/// a cue's drag never coast; any press, the wheel, the strip hidden, or the position set from outside (playback,
+/// a cue's drag never coast; any press, a zoom, the strip hidden, or the position set from outside (playback,
 /// a typed time) stops it. Its frame hook is there only while it coasts.
+///
+/// The wheel (5.4.1A) scrolls in time as the Timeline's Shift + wheel does: the plain wheel and Shift + wheel (down: later) and a
+/// sideways swipe or tilt (<see cref="ISidewaysWheel"/>, right: later), a fast stream coasting on; Ctrl + wheel (a precision
+/// touchpad's pinch arrives as one) zooms about the playhead in the middle (5.4.1-M1, the user's answer Q2 b: no seek on a pinch).
 /// </summary>
-public sealed class SubtitleTimeline : FrameworkElement
+public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
 {
+    /// <summary>DIPs the strip slides for a wheel delta of 1 (a notch of 120: 120 DIPs), the Timeline's Shift + wheel feel (PanWheelAt).</summary>
+    internal const double WheelDipsPerDelta = 1.0;
+
+    /// <summary>What a notch of Ctrl + wheel multiplies the zoom by.</summary>
+    private const double ZoomStep = 1.2;
+
     private const double SmallestZoom = 4, LargestZoom = 1200, EdgePixels = 7, RulerHeight = 18, ShortestCue = 0.1;
 
     private static readonly Typeface Face = new("Segoe UI");
@@ -376,12 +387,81 @@ public sealed class SubtitleTimeline : FrameworkElement
 
     protected override void OnMouseWheel(MouseWheelEventArgs e)
     {
-        // About the playhead: the moment under it stays there, and the strip opens out or closes in around it. A coast stops.
-        StopCoast();
-        _zoom.ScaleX = Math.Clamp(_zoom.ScaleX * Math.Pow(1.2, e.Delta / 120.0), SmallestZoom, LargestZoom);
-        InvalidateVisual();
         e.Handled = true;
+        WheelAt(e.Delta, Keyboard.Modifiers, MomentumScroller.Now(), e.GetPosition(this).X);
     }
+
+    /// <summary>
+    /// A wheel notch over the strip (test seam; OnMouseWheel calls it): Ctrl zooms about the playhead (a pinch on a precision
+    /// touchpad arrives as Ctrl + wheel; <paramref name="pointerX"/> is not used for it) and stops a coast; otherwise (none or Shift) the strip scrolls in time, wheel down
+    /// later, with momentum.
+    /// </summary>
+    internal void WheelAt(int delta, ModifierKeys modifiers, double nowMs, double pointerX)
+    {
+        if ((modifiers & ModifierKeys.Control) != 0)
+        {
+            StopCoast();
+            ZoomAt(Math.Pow(ZoomStep, delta / 120.0));
+            return;
+        }
+
+        // Wheel up (positive) brings earlier moments: the strip slides right, the drag's way, as the coast that may follow goes on.
+        PanWheel(delta * WheelDipsPerDelta, nowMs);
+    }
+
+    /// <summary>A sideways swipe or tilt over the strip (WM_MOUSEHWHEEL from the window's hook): positive is to the right, later.</summary>
+    public void SidewaysWheel(double delta, double nowMs) => PanWheel(-delta * WheelDipsPerDelta, nowMs);
+
+    // The strip slid by a wheel tick of DIPs in the drag's sense (to the right brings earlier moments): what the momentum gives now is
+    // applied and told as a scrub; a fast stream coasts on (StepCoast subtracts the same way, so the coast keeps the direction).
+    private void PanWheel(double dips, double nowMs)
+    {
+        if (_drag is not null || !(_zoom.ScaleX > 0))
+            return;
+
+        _momentum ??= new();
+        var step = _momentum.Wheel(dips, nowMs);
+        if (step != 0)
+        {
+            var before = _position;
+            _coastSetting = true;
+            try
+            {
+                PositionSeconds = _position - step / _zoom.ScaleX;
+            }
+            finally
+            {
+                _coastSetting = false;
+            }
+
+            if (_position == before)
+                _momentum.Stop();
+            else
+                Scrubbed?.Invoke(_position);
+        }
+
+        if (_momentum.IsCoasting)
+            HookCoast();
+    }
+
+    // Zooms about the playhead (5.4.1-M1, the user's answer Q2 b): the moment under it stays in the middle, so the player never seeks on a
+    // pinch; the Media Browser's cutter keeps zooming about the pointer. Not while a drag holds the strip (a cue would leave the pointer).
+    private void ZoomAt(double factor)
+    {
+        if (_drag is not null)
+            return;
+        var zoom = Math.Max(SmallestZoom, Math.Min(_zoom.ScaleX * factor, LargestZoom));
+        if (zoom == _zoom.ScaleX)
+            return;
+        _zoom.ScaleX = zoom;
+        InvalidateVisual();
+    }
+
+    /// <summary>Pixels to the second (test seam).</summary>
+    internal double PixelsPerSecond => _zoom.ScaleX;
+
+    /// <summary>The moment at a point of the strip, on the cues' clock (test seam).</summary>
+    internal double SecondsAt(double x) => (x - _pan.X) / _zoom.ScaleX;
 
     // Any press on the strip (any button, before anything else of it): a coast stops where it is (5.4C).
     protected override void OnPreviewMouseDown(MouseButtonEventArgs e)

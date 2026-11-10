@@ -1,0 +1,16 @@
+# Render Preview retired (5.4.1A): the Live Encoded Preview is the single encode preview; nothing of the old one is left.
+ok: MainViewModel has no RenderPreviewCommand, RenderPreviewAsync, PreviewRendered event or PreviewFolder
+ok: GpuExport has no RunPreviewAsync, SoundRate or WriteSound
+ok: GpuExport.Prepare takes no captionsShift (the preview's stretch start): an export's captions are on the sequence's clock
+ok: EncoderCommand has no BuildPreview, and GpuExportTiming no Window or FirstCanvasFrame (an export starts at the canvas's frame 0)
+ok: AppSettings has no PreviewResolutionPercent or PreviewDurationSeconds
+ok: SessionPaths.Previews stays: the session's scratch files (mask stills, export sound renders, GIF frames) use it
+ok: an old settings file with PreviewResolutionPercent and PreviewDurationSeconds loads (its other values kept) and saves without them
+ok: the playback bar offers no RenderPreview control
+   RenderPreview,Volume,@3 saves as Volume,@3
+ok: a bar saved as RenderPreview,Volume,@3 loads with Volume shown and saves as Volume,@3
+ok: the bar's defaults do not name RenderPreview
+ok: MainWindow.xaml: neither playback bar has a Render Preview button, binding or visibility switch
+ok: SettingsWindow.xaml: no Render Preview section, text or binding (Preview & Cache starts at Caches)
+ok: SettingsWindow.Stage.cs: the Preview & Cache intro and the stage map name no Render Preview section
+ok: no .cs or .xaml file under src names RenderPreview, BuildPreview, RunPreviewAsync, PreviewRendered, PreviewResolutionPercent or PreviewDurationSeconds

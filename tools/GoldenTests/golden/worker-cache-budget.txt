@@ -1,26 +1,34 @@
 # The frame cache's adaptive budget (5.4D-TabPerf, the user's U3): a baseline grown on demand up to the hardware's ceiling or the user's maximum.
 each machine: where Auto starts, the most it grows to (before Windows' caps), and its steps of growth:
-  RX 7900 XTX, 24 GB, 22 GB free, 64 GB computer: 2 GB, at most 11 GB; 2 GB -> 3 GB -> 4 GB -> 5 GB -> 6 GB -> 7 GB -> 8 GB -> 9 GB -> 10 GB -> 11 GB
+  RX 7900 XTX, 24 GB, 22 GB free, 64 GB computer: 2 GB, at most 17612.8 MB; 2 GB -> 3 GB -> 4 GB -> 5 GB -> 6 GB -> 7 GB -> 8 GB -> 9 GB -> 10 GB -> 11 GB -> 12 GB -> 13 GB -> 14 GB -> 15 GB -> 16 GB -> 17 GB
   RX 7900 XTX, Windows not asked yet: 2 GB, at most 3 GB; 2 GB -> 3 GB
   RX 7900 XTX, a game on it: 2 GB, at most 3 GB; 2 GB -> 3 GB
-  GTX 1070, 8 GB, 7 GB free, 16 GB computer: 2 GB, at most 3584 MB; 2 GB -> 3 GB -> 3584 MB
+  GTX 1070, 8 GB, 7 GB free, 16 GB computer: 2 GB, at most 5 GB; 2 GB -> 3 GB -> 4 GB -> 5 GB
   an 8 GB card, a game on it: 2 GB, at most 1 GB; 1 GB
-  a 4 GB card, 16 GB computer: 1536 MB, at most 1536 MB; 1536 MB
-  a 4 GB card, 64 GB computer: 1536 MB, at most 1536 MB; 1536 MB
-  a 4 GB card, 3.5 GB free, 32 GB computer: 1792 MB, at most 1792 MB; 1792 MB
+  a 4 GB card, 16 GB computer: 1 GB, at most 1 GB; 1 GB
+  a 4 GB card, 64 GB computer: 1 GB, at most 1 GB; 1 GB
+  a 4 GB card, 3.5 GB free, 32 GB computer: 1536 MB, at most 1536 MB; 1536 MB
   a 4 GB card (Arc A310), a game on it, 64 GB computer: 512 MB, at most 512 MB; 512 MB
   a 4 GB card, Windows not asked yet: 512 MB, at most 512 MB; 512 MB
   a 2 GB card, 1 GB free, 24 GB computer: 256 MB, at most 256 MB; 256 MB
-  a 2 GB card, 1.75 GB free, 32 GB computer: 768 MB, at most 768 MB; 768 MB
+  a 2 GB card, 1.75 GB free, 32 GB computer: 256 MB, at most 256 MB; 256 MB
   a 2 GB card, a game on it: 256 MB, at most 256 MB; 256 MB
   a 256 MB card, 16 GB computer: 512 MB, at most 512 MB; 512 MB
-  Adreno X1-85, 16 GB computer (unified): 2 GB, at most 2 GB; 2 GB
-  unified memory, 32 GB computer: 2 GB, at most 4 GB; 2 GB -> 3 GB -> 4 GB
-  unified memory, 64 GB computer: 2 GB, at most 4 GB; 2 GB -> 3 GB -> 4 GB
-  unified memory, 8 GB computer: 1 GB, at most 1 GB; 1 GB
+  Adreno X1-85, 16 GB computer (unified): 2 GB, at most 4 GB; 2 GB -> 3 GB -> 4 GB
+  unified memory, 32 GB computer: 2 GB, at most 8 GB; 2 GB -> 3 GB -> 4 GB -> 5 GB -> 6 GB -> 7 GB -> 8 GB
+  unified memory, 64 GB computer: 2 GB, at most 32 GB; 2 GB -> 3 GB -> 4 GB -> 5 GB -> 6 GB -> 7 GB -> 8 GB -> 9 GB -> 10 GB -> 11 GB -> 12 GB -> 13 GB -> 14 GB -> 15 GB -> 16 GB -> 17 GB
+  unified memory, 8 GB computer: 1 GB, at most 2 GB; 1 GB -> 2 GB
   unified memory, its size not known: 512 MB, at most 512 MB; 512 MB
   WARP, 16 GB computer: 512 MB, at most 512 MB; 512 MB
   WARP, 32 GB computer: 512 MB, at most 512 MB; 512 MB
+kept free of the cache: a discrete card's reserve, unified memory's reserve and room (held + available - reserve):
+  a 24 GB card's reserve: 4915.2 MB
+  an 8 GB card's reserve: 2 GB
+  16 GB unified: reserve: 5 GB
+  32 GB unified: reserve: 8 GB
+  64 GB unified: reserve: 19660.8 MB
+  16 GB unified, 1 GB held, 7 GB available: room: 3 GB
+  16 GB unified, nothing held, 4 GB available: room: 0 GB
 the user's maximum on the RX 7900 XTX (ceiling 11 GB) and on the Adreno (ceiling 2 GB): Auto, 1, 4, 8, 16 GB:
   RX 7900 XTX: 11 GB, 1 GB, 4 GB, 8 GB, 11 GB
   Adreno: 2 GB, 1 GB, 2 GB, 2 GB, 2 GB
@@ -58,18 +66,18 @@ Settings' Maximum Frame Cache (GB), typed -> the setting (MB; 0 Auto, -1 Off):
   "": not a maximum
   the list with 2.5 GB typed, on a card whose ceiling is 11 GB: Auto (up to 11.0 GB here), Off, 1 GB, 2 GB, 2.5 GB, 4 GB, 8 GB, 12 GB, 16 GB
 the big card's rule (discrete, more than 4 GB of its own): where Auto's budget starts, and a tab put behind:
-  RX 7900 XTX, 24 GB, 22 GB free, 64 GB computer: a big card, starts at 11 GB; a tab put behind keeps its frames
+  RX 7900 XTX, 24 GB, 22 GB free, 64 GB computer: a big card, starts at 17612.8 MB; a tab put behind keeps its frames
   RX 7900 XTX, Windows not asked yet: a big card, starts at 3 GB; a tab put behind keeps its frames
   RX 7900 XTX, a game on it: a big card, starts at 3 GB; a tab put behind keeps its frames
-  GTX 1070, 8 GB, 7 GB free, 16 GB computer: a big card, starts at 3584 MB; a tab put behind keeps its frames
+  GTX 1070, 8 GB, 7 GB free, 16 GB computer: a big card, starts at 5 GB; a tab put behind keeps its frames
   an 8 GB card, a game on it: a big card, starts at 1 GB; a tab put behind keeps its frames
-  a 4 GB card, 16 GB computer: not a big card, starts at 1536 MB; a tab put behind empties the cache
-  a 4 GB card, 64 GB computer: not a big card, starts at 1536 MB; a tab put behind empties the cache
-  a 4 GB card, 3.5 GB free, 32 GB computer: not a big card, starts at 1792 MB; a tab put behind empties the cache
+  a 4 GB card, 16 GB computer: not a big card, starts at 1 GB; a tab put behind empties the cache
+  a 4 GB card, 64 GB computer: not a big card, starts at 1 GB; a tab put behind empties the cache
+  a 4 GB card, 3.5 GB free, 32 GB computer: not a big card, starts at 1536 MB; a tab put behind empties the cache
   a 4 GB card (Arc A310), a game on it, 64 GB computer: not a big card, starts at 512 MB; a tab put behind empties the cache
   a 4 GB card, Windows not asked yet: not a big card, starts at 512 MB; a tab put behind empties the cache
   a 2 GB card, 1 GB free, 24 GB computer: not a big card, starts at 256 MB; a tab put behind empties the cache
-  a 2 GB card, 1.75 GB free, 32 GB computer: not a big card, starts at 768 MB; a tab put behind empties the cache
+  a 2 GB card, 1.75 GB free, 32 GB computer: not a big card, starts at 256 MB; a tab put behind empties the cache
   a 2 GB card, a game on it: not a big card, starts at 256 MB; a tab put behind empties the cache
   a 256 MB card, 16 GB computer: not a big card, starts at 512 MB; a tab put behind empties the cache
   Adreno X1-85, 16 GB computer (unified): not a big card, starts at 2 GB; a tab put behind empties the cache

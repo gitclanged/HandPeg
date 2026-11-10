@@ -374,7 +374,7 @@ internal sealed class VoiceProducer
             if (got <= 0)
             {
                 // Nothing yet is only ever an FFmpeg pipe that has not caught up (a decoder fills with silence past its
-                // end). Live, the feeder comes back to it; offline (exact: AudioMixer.Render, Render Preview's sound) it is
+                // end). Live, the feeder comes back to it; offline (exact: AudioMixer.Render, an export's sound) it is
                 // waited for, up to 20 s, so what is rendered is the file's sound and never a gap.
                 if (exact && (waitedSince == 0 || Stopwatch.GetElapsedTime(waitedSince).TotalSeconds < 20))
                 {

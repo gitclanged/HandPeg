@@ -1,0 +1,16 @@
+# The Live Encoded Preview's split wipe without the encoder's wait (5.4.1A): nothing encoded again, the line where the handle is.
+ok: at display scales 1, 1.25, 1.5 and 2, three zooms and pans and two player sizes, the handle's line lies within half a pixel of the line the worker draws (96 cases)
+ok: WipeAt is the inverse of WipeLineX (the drag puts the wipe where the pointer is)
+ok: WipeAt keeps the wipe in 0..1 off the picture, and is 0.5 for a picture of no width or a pointer nowhere
+ok: WipeLineX keeps the line on the picture
+ok: Collect waits for a paused frame only in the scene that handed it to the encoder; a wipe or loupe moved meanwhile takes what is back without waiting
+ok: Poll takes what the encoder gave out, never waiting (it drains a paused frame the submitting scene found not yet in the encoder); a picture that lacked a video frame is rendered again only once more frames were decoded
+ok: the worker still looks every 2 ms while a paused frame is in the encoder, but draws again only when Poll says the picture changed
+ok: the handle is placed with WipeLineX and dragged with WipeAt, its edge rounded to a device pixel, and the wipe and the Magnifier measure the same element
+ok: the wipe's layer undoes the player's zoom and pan (the overlay's view matrix, inverted), so a zoomed player moves the handle once and never scales it; the drag reads the pointer in that layer; a zoom re-places it at once
+ok: the wipe maps through the picture's rectangle (PictureSpan, the worker's letterbox), never the crop canvas's GetDisplayedVideoArea
+ok: 20 scenes with the same content stamp, only the wipe moved (0.05 to 0.95): nothing is rendered or encoded again and no texture is made
+ok: in each, the divider is the column at round(wipe x 640) +-1, in every row (the canvas fills the 640 x 360 output)
+ok: with a real H.264 encoder, the wipe moved right after a new paused frame went to it: no wipe scene waits for the encoder (each back within ExportLoopbackPreview.PausedWaitMs, 120 ms), nothing encoded again; else nothing to wait for
+ok: and the frame still in the encoder is drawn by the worker's poll once it is back (or given up), with no new scene and at most 3 redraws (not one every 2 ms)
+ok: a paused frame its scene never waited for (test flag 2) comes back through the worker's Poll alone: drawn with no new scene, in 1 to 3 redraws, before it would be given up

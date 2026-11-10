@@ -41,7 +41,6 @@ public static class AudioEngineTests
             yield return Case("audio-engine-export-track-scope", "# A main track's own processing is that track's sound alone (5.0-Verify Q1): the engine's mix against the FFmpeg export's sound of one timeline.", (t, p) => ExportTrackScope(files, t, p));
             yield return Case("audio-engine-clip-streams", "# Every video's streams on any track (5.1-TrackEqualityAndVram, the user's directive): a sound clip plays the stream it names, in the player's mix and in the export, each exactly FFmpeg's 0:a:N and unlike the others.", (t, p) => ClipStreams(files, t, p));
             yield return Case("audio-engine-container-starts", "# Media time from the first video frame in every container (5.0-Verify: an MPEG-TS layer's sound was 2.1 s early): the engine's sound against the export's, MP4, Matroska, MPEG-TS, M2TS and MPEG-PS made by HandPeg's FFmpeg with a non-zero start.", (t, p) => ContainerStarts(files, t, p));
-            yield return Case("preview-sequence-fades", "# Render Preview's stretches and the sequence's fades (5.0-Verify): faded only where a stretch overlaps the sequence's first or last second, on the sequence's clock, picture and sound alike (the sound engine's render fades the same moments); before, every preview's picture faded in from black at its start.", PreviewFades);
         }
         finally
         {
@@ -544,53 +543,6 @@ public static class AudioEngineTests
             Note($"{label} (picture at {videoStart:0.###} s, sound at {soundStart:0.###} s), {(told ? "told" : "learnt")}: lag {lag}, correlation {correlation:0.0000}, sound from {Onset(ours):0.####} s (export {Onset(theirs):0.####} s)");
             if (Math.Abs(lag) > within || correlation < 0.99)
                 problems.Add(string.Create(CultureInfo.InvariantCulture, $"{label}, video start {(told ? "told" : "learnt")}: the engine's sound is {lag} samples from the export's (correlation {correlation:0.000})"));
-        }
-    }
-
-    /// <summary>
-    /// The fades of Render Preview's commands (BuildGpuPreviewCommand's finishing, BuildPreviewCommand's stretches) for a 10 s
-    /// sequence with both fades: stretches at the start, in the middle, at the end, across the whole, and two joined.
-    /// </summary>
-    private static void PreviewFades(StringBuilder text, List<string> problems)
-    {
-        const string main = "D:/media/main.mp4";
-        var document = Document();
-        var clip = MainClip(main, 0, 10, 0);
-        Track(document, TimelineTrackKind.Video).Clips.Add(clip);
-        var state = Opened(State(document) with
-        {
-            FfmpegExecutable = "ffmpeg",
-            Container = "mp4",
-            OutputPath = "D:/media/out.mp4",
-            MediaStarts = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase) { [main] = 0 },
-            FadeIn = true,
-            FadeOut = true,
-        }, main, 10, new LegacyStream(0, "Track 1"));
-
-        var fades = new System.Text.RegularExpressions.Regex(@"(a?setpts=PTS[+-][0-9.]+/TB,)?a?fade=t=(in|out)[^,;""\[\]]*(,a?fade=t=out[^,;""\[\]]*)?(,a?setpts=PTS[+-][0-9.]+/TB)?");
-        string Fades(string command) => string.Join(" | ", fades.Matches(command).Select(m => m.Value).Distinct());
-        foreach (var (name, ranges) in new (string, (double, double)[])[]
-                 {
-                     ("the start (0 to 2 s)", [(0, 2)]),
-                     ("inside the fade in (0.4 to 2.4 s)", [(0.4, 2.4)]),
-                     ("the middle (4 to 6 s)", [(4, 6)]),
-                     ("the end (8.5 to 10 s)", [(8.5, 10)]),
-                     ("the whole (0 to 10 s)", [(0, 10)]),
-                 })
-        {
-            text.Append(CultureInfo.InvariantCulture, $"\n{name}:\n");
-            // Since 5.1-Polish the compositor draws the sequence's fades (its plan, at their moments on the sequence, under the
-            // captions as the player has them), and since 5.2-Audit there is no other preview: the command has no fade of its own;
-            // the sound engine's render (outside the command) fades the sound.
-            var timing = GpuExportTiming.Window(ranges[0].Item1, ranges[0].Item2, state.Timeline.FrameRate, null);
-            var gpu = EncoderCommand.BuildPreview(state, "D:/session/preview.mp4", timing, 50, hasSound: true, captionsOnGpu: false);
-            var line = Fades(gpu.CommandLine);
-            text.Append("  GPU: ").Append(gpu.FadesOnGpu ? "the compositor's" : "FFmpeg's").Append(", in the command: ").Append(line.Length == 0 ? "no fade" : line).Append('\n');
-            if (!gpu.FadesOnGpu || gpu.CommandLine.Contains("fade=t=", StringComparison.Ordinal))
-                problems.Add($"{name}: the preview's fades are not the compositor's alone");
-            var program = AudioProgram.Build(state);
-            if (!program.FadeIn || !program.FadeOut)
-                problems.Add($"{name}: the sound engine's program does not fade the sequence's ends");
         }
     }
 

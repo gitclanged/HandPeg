@@ -21,7 +21,7 @@ public sealed partial class AppSettings
     public int DecodeGpuAdapter { get; set; } = -1;
 
     /// <summary>
-    /// Export GPU: the card an export and a Render Preview are composited on, their clips decoded there too (5.4C,
+    /// Export GPU: the card an export is composited on, its clips decoded there too (5.4C,
     /// GpuExport.ExportAdapter); -1 (Auto), or a card that is gone, is the <see cref="CompositorGpuAdapter"/>. Frames reach the encoder
     /// through system memory, so this need not be the card whose hardware encoder is chosen (that one is picked by the encoder's name).
     /// The same setting as <see cref="HardwareDecodeAdapter"/>, which keeps its saved name: this is only the role's name for it.

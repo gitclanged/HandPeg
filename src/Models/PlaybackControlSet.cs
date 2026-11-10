@@ -50,7 +50,6 @@ public sealed class PlaybackControlSet : ObservableObject
             // editor can switch it on while cutting. Only the button is shown: the preview itself is never saved and starts off.
             new("ExportQualityPreview", "Live Encoded Preview", "Viewer", "Shows the picture as the export's encoder would leave it, live: the encoded frame, a split wipe against the source, or the difference x10 (an approximation by this PC's hardware encoder)."),
             new("ExportFrame", "Export Frame", "Viewer", "Saves the frame as it is shown, as a PNG beside the output."),
-            new("RenderPreview", "Render Preview", "Viewer", "Encodes a few seconds as the export will look, and plays them."),
             new("Reload", "Reload Player", "Viewer", "For when the player has stopped answering."),
             new("Timecode", "Timecode", "Viewer", "The playhead's time and the sequence's length."),
             new("Mute", "Mute", "Sound", "Silences the player (not the export)."),
@@ -76,10 +75,10 @@ public sealed class PlaybackControlSet : ObservableObject
     /// <summary>Whether the control of this name is shown.</summary>
     public bool this[string id] => _byId.TryGetValue(id, out var option) && option.IsShown;
 
-    // What the bar starts with. (5.3-Stage2: the Live Preview switch is gone; a saved list naming it shows the rest, as Load
-    // ignores a name it does not know.)
+    // What the bar starts with. (5.3-Stage2: the Live Preview switch is gone; 5.4.1A: so is Render Preview. A saved list naming
+    // either shows the rest, as Load ignores a name it does not know, and the next save drops it.)
     private static readonly string[] Defaults =
-        ["PrevIFrame", "StepBack", "StepForward", "NextIFrame", "RenderPreview", "Reload", "Volume", "Speed", "AddMarker", "EditOnVideo", "Exploded3D", "ExportQualityPreview"];
+        ["PrevIFrame", "StepBack", "StepForward", "NextIFrame", "Reload", "Volume", "Speed", "AddMarker", "EditOnVideo", "Exploded3D", "ExportQualityPreview"];
 
     // The saved list's version (its last name, "@3"), and the controls each version brought: a list saved before a control
     // existed shows it once (5.0-Verify, the user's Q4: the 3D Exploded View on bars saved before 5.0; 5.4D: the Live

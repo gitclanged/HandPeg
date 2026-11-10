@@ -269,7 +269,7 @@ public static class TabWindowStateTests
 
     private static void Window(Action<bool, string> expect)
     {
-        var tabs = Read("MainWindow.ProjectTabs.cs");
+        var tabs = (Read("MainWindow.ProjectTabs.cs") + Read("MainWindow.TabCache.cs") + Read("MainWindow.TabMenu.cs"));
         var exploded = Read("MainWindow.Exploded.cs");
 
         var stop = Method(tabs, "private void StopPlayingForTabs()");
@@ -287,14 +287,14 @@ public static class TabWindowStateTests
             "the wait for a tab's player or engine is let go only as the tab goes behind (5.4D review), which is at once and never refused (5.4D-TabPerf: nothing awaited)");
         var still = Method(Read("MainWindow.TabStill.cs"), "private async Task TakeLiveStillAsync(");
         expect(InOrder(still, "var mark = new StillMark(_viewModel.UndoMark, _viewModel.PositionMs, _explodedUi);", "engine.CaptureThumbnailAsync(StillShortSide, asShown: mark.Shown3D)")
-               && InOrder(Method(tabs, "private TabViewContext DetachActive("), "var (still, stillMark) = (_liveStill, _liveStillMark);", "still is not null && !stillMark.Shown3D ? still : null")
+               && InOrder(Method(tabs, "private TabViewContext DetachActive("), "var (still, stillMark) = (_liveStill, _liveStillMark);", "var preview = still is null && ", "still is not null && !stillMark.Shown3D ? still : preview")
                && InOrder(suspend, "var live = DetachActive(tab, out write);", "LeaveExplodedAtOnce();", "_gpu?.Suspend();"),
             "its still is captured as it is shown (the 3D picture), kept fresh ahead, never made the project's thumbnail, and the view is left at once right before the engine lets go");
 
         var capture = Method(tabs, "private void CaptureWindowStateForTab(");
         expect(InOrder(Method(tabs, "private void EndLayoutPreview()"), "_layoutHover.Close();", "RestoreLayoutBeforePreview();")
                && InOrder(capture, "EndLayoutPreview();", "if (_unresumed.Contains(tab.Id))", "return;", "tab.LayoutJson = TabLayoutOf(_dock, perTab);", "tab.MediaView = TabMediaViewOf(MediaBrowser.ViewMode, perTab);",
-                   "TakeExplodedState(tab, _explodedUi && _gpu is { } engine ? engine.TargetPose : null, _explodedWaitingTab);"),
+                   "TakeExplodedState(tab, _explodedUi && _gpu is { } engine ? engine.TargetPose : null, _explodedWaitingTab, _explodedLastPose);"),
             "CaptureWindowStateForTab: the selector closed and its preview put back before the layout is taken; nothing of a tab in front that could not be brought back (5.4D review: its header keeps its window); the layout, the Media Browser's view, the 3D view and the engine's target pose");
         expect(Method(tabs, "private void TakeHeaderForTab(") is { Length: > 0 } header && !header.Contains("CaptureWindowStateForTab", StringComparison.Ordinal),
             "never in TakeHeaderForTab (the header's project part only)");
@@ -420,7 +420,7 @@ public static class TabWindowStateTests
 
     private static void Wiring(Action<bool, string> expect)
     {
-        var tabs = Read("MainWindow.ProjectTabs.cs");
+        var tabs = (Read("MainWindow.ProjectTabs.cs") + Read("MainWindow.TabCache.cs") + Read("MainWindow.TabMenu.cs"));
         expect(InOrder(Method(tabs, "private async Task SwitchToTabAsync("), "_tabs.Activate(tab);", "ShowTabs();", "ApplyTabLayout(tab);", "await ResumeTabAsync(tab, behind);"),
             "a switch lays the tab's layout out right after it is in front, before its still shows (ResumeTabAsync)");
         expect(InOrder(Method(tabs, "private void TakeBack("), "_tabs.Activate(behind);", "ApplyTabLayout(behind);", "AttachHydrated(behind, live)")

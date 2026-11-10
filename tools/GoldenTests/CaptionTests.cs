@@ -1,8 +1,11 @@
 using System.IO;
 using System.Globalization;
+using System.Reflection;
 using System.Text;
 using HandPegApp.Models;
+using HandPegApp.Models.Timeline;
 using HandPegApp.Services;
+using HandPegApp.ViewModels;
 
 namespace HandPegGoldenTests;
 
@@ -10,6 +13,8 @@ namespace HandPegGoldenTests;
 /// Captions (4.4) on their own: the word ends whisper's output gives (no word left up through a silence), anchored captions
 /// projected through clip windows as cuts, folds, speeds and J cuts place them, the Subtitle Studio's edits written back, and
 /// Remove Dead Air's gaps between captioned words. All pure functions; each case writes down what it did and checks itself.
+/// captions-shown-in-player (5.4.1A) is the one on a view model: the player draws the subtitle track's words whenever Burn Captions
+/// into Export is on, whatever made them (a busy operation, a file opened, a tab brought back), and is told of each change.
 /// </summary>
 public static class CaptionTests
 {
@@ -23,6 +28,8 @@ public static class CaptionTests
             "# Splitting a caption block (5.1-Polish, the user's directive): its words split at the word under the cut, never trimmed; anchored captions written back as two; no caption across a cut.", SplitText);
         yield return Case("deadair-caption-gaps",
             "# Remove Dead Air by the captions (4.4): the gaps between words, the minimum gap, and the pads before and after each word.", DeadAirGaps);
+        yield return Case("captions-shown-in-player",
+            "# The player draws the subtitle track's words whenever Burn Captions is on (5.4.1A): made while busy, after a file is opened, a tab brought back; none with it off; told of a style change.", ShownInPlayer);
     }
 
     private static GraphResult Case(string golden, string header, Action<StringBuilder, List<string>> body)
@@ -279,5 +286,94 @@ public static class CaptionTests
         Expect(problems, natural.Count == 3 && Math.Abs(natural[1].Start - 3.12) < 1e-9 && Math.Abs(natural[1].End - 3.92) < 1e-9,
             "a gap is cut from the last word's end plus its pad to the next word's start less its pad");
         Expect(problems, CaptionProjection.WordGaps([], 0.5, 0.08, 0.12, 8).Count == 0, "no words: nothing is cut");
+    }
+
+    // ----- Captions over the video (5.4.1A) -----
+
+    private const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
+
+    /// <summary>
+    /// The player's captions (MainViewModel.GpuCaptions) on a view model with an empty Sequence: gated on Burn Captions into Export
+    /// (AutoCaptions), never on the hidden Preview Subtitles latch a file load, a tab attach or a busy operation cleared; and
+    /// CaptionsChanged raised for each change, also while an operation runs (the Edit Captions... path).
+    /// </summary>
+    private static void ShownInPlayer(StringBuilder text, List<string> problems)
+    {
+        void Check(bool held, string what)
+        {
+            text.Append(held ? "ok: " : "NOT: ").Append(what).Append('\n');
+            Expect(problems, held, what);
+        }
+
+        var vm = new MainViewModel();
+        typeof(MainViewModel).GetMethod("InstallDocument", Hidden)!.Invoke(vm, [new TimelineDocument()]);
+        var told = 0;
+        vm.CaptionsChanged += () => told++;
+        int Lines() => vm.GpuCaptions().Lines?.Count ?? 0;
+
+        // 1. A cue typed in the Subtitle Studio switches Burn Captions on, and the player draws it.
+        vm.AddSubtitleCue(1, 2, "hello there");
+        Check(vm.AutoCaptions && Lines() == 1 && told > 0, "a cue added (AddSubtitleCue) turns Burn Captions on; the player draws its one line and is told");
+
+        // 2-3. Cues put in place while an operation runs (Edit Captions... with no track: ConvertCaptionsToCuesAsync inside RunOperationAsync).
+        told = 0;
+        vm.IsBusy = true;
+        SubtitleCue[] cues = [new() { Index = 1, Start = 1, End = 2, Text = "first words" }, new() { Index = 2, Start = 3, End = 4, Text = "second words" }];
+        typeof(MainViewModel).GetMethod("SetSubtitleTrack", Hidden)!.Invoke(vm, [cues, "", false, 0.0, null, null]);
+        var toldWhileBusy = told;
+        vm.IsBusy = false;
+        Line(text, $"   while busy: {cues.Length} cues put in place, the player told {(toldWhileBusy > 0 ? "at once" : "never")}, {Lines()} lines drawn, Preview Subtitles {(vm.PreviewSubtitles ? "on" : "off")}");
+        Check(toldWhileBusy > 0 && Lines() == 2, "cues made while an operation runs (the Edit Captions... transcription) reach the player: CaptionsChanged while busy, both lines drawn after");
+
+        // 4. A file opened (SetMediaInfo clears the preview-only latch): the track's words stay. The latch is set first, so the step
+        // sees SetMediaInfo clear it rather than a latch that was never on.
+        typeof(MainViewModel).GetField("_previewSubtitles", Hidden)!.SetValue(vm, true);
+        var latchedBefore = vm.PreviewSubtitles;
+        typeof(MainViewModel).GetMethod("SetMediaInfo", Hidden)!.Invoke(vm,
+            [new MediaInfo("mov,mp4", 60, 0, new VideoStreamInfo(1920, 1080, "h264", 60, "16:9", "1:1", "bt709", "bt709", 0), [], [])]);
+        Check(latchedBefore && !vm.PreviewSubtitles && Lines() == 2, "a file opened (SetMediaInfo) turns Preview Subtitles off, and the track's two lines are still drawn");
+
+        // 5. The tab put behind and brought back hot (DetachForTab, AttachTab: ResetForNewSource and SetMediaInfo again).
+        // The view model is emptied between the two (no track, Burn Captions off), so what comes back is the tab's own, not leftovers.
+        var tab = vm.DetachForTab("Captions");
+        typeof(MainViewModel).GetMethod("ApplySubtitles", Hidden)!.Invoke(vm, [null]);
+        vm.AutoCaptions = false;
+        var emptied = Lines() == 0 && vm.SubtitleCues.Count == 0;
+        var attached = vm.AttachTab(tab);
+        Line(text, $"   hot tab switch: attached {attached}, {vm.SubtitleCues.Count} cues back, {Lines()} lines drawn, Burn Captions {(vm.AutoCaptions ? "on" : "off")}");
+        Check(emptied && attached && vm.AutoCaptions && Lines() == 2, "a tab brought back hot (AttachTab) into an emptied view model draws its own track's lines again, Burn Captions on");
+
+        // 6. Burn Captions off: nothing drawn, and the preview state plans no captions.
+        vm.AutoCaptions = false;
+        Check(vm.GpuCaptions().Lines is null && !vm.LivePreviewState().AutoCaptions, "Burn Captions off: no lines for the player, and the live preview state has AutoCaptions off");
+
+        // 7. A style change tells the player while Burn Captions is on (the style is no observable property), and not while it is off.
+        told = 0;
+        var style = vm.CaptionStyle.Clone();
+        style.FontSize += 4;
+        vm.SetCaptionStyle(style);
+        var toldOff = told;
+        vm.AutoCaptions = true;
+        told = 0;
+        vm.SetCaptionStyle(style.Clone());
+        Check(toldOff == 0 && told > 0 && Lines() == 2, "SetCaptionStyle raises CaptionsChanged while Burn Captions is on (none while it is off)");
+
+        // 8. The source: no Preview Subtitles gate in front of the track's words.
+        var source = File.ReadAllText(Path.Combine(SourceRoot(), "src", "ViewModels", "MainViewModel.Captions.cs"));
+        var start = source.IndexOf("TextScale) GpuCaptions()", StringComparison.Ordinal);
+        var body = start < 0 ? "" : source[start..source.IndexOf("\n    }", start, StringComparison.Ordinal)];
+        Check(body.Contains("if (!AutoCaptions)", StringComparison.Ordinal) && !body.Contains("if (!PreviewSubtitles)", StringComparison.Ordinal),
+            "GpuCaptions is gated on AutoCaptions, not on if (!PreviewSubtitles)");
+    }
+
+    private static string SourceRoot()
+    {
+        for (var folder = new DirectoryInfo(AppContext.BaseDirectory); folder is not null; folder = folder.Parent)
+        {
+            if (File.Exists(Path.Combine(folder.FullName, "HandPegApp.csproj")))
+                return folder.FullName;
+        }
+
+        throw new DirectoryNotFoundException("HandPegApp.csproj was not found above the golden tests' program.");
     }
 }

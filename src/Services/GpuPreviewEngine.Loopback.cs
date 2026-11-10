@@ -77,6 +77,22 @@ public sealed partial class GpuPreviewEngine
     }
 
     /// <summary>
+    /// The split wipe under a pointer at <paramref name="pointerX"/> (5.4.1A): its fraction of the picture's width (<paramref name="span"/>,
+    /// <see cref="PictureSpan"/> in the same units), 0..1; 0.5 for a picture of no width. The handle's drag and the worker's line use the
+    /// same span, so the line is where the handle is. Pure, for the golden tests.
+    /// </summary>
+    internal static double WipeAt(double pointerX, (double Left, double Width) span) =>
+        span.Width > 1 && double.IsFinite(pointerX) && double.IsFinite(span.Left) ? Math.Max(0, Math.Min((pointerX - span.Left) / span.Width, 1)) : 0.5;
+
+    /// <summary>
+    /// Where the split wipe's line lies across the player (5.4.1A): <paramref name="wipe"/> (0..1) of the picture's width from its left edge,
+    /// in the units of <paramref name="span"/>, as the worker draws it (Loopback.hlsl: the picture's left plus the wipe times its width).
+    /// The inverse of <see cref="WipeAt"/>. Pure, for the golden tests.
+    /// </summary>
+    internal static double WipeLineX(double wipe, (double Left, double Width) span) =>
+        span.Left + Math.Max(0, Math.Min(double.IsFinite(wipe) ? wipe : 0.5, 1)) * span.Width;
+
+    /// <summary>
     /// Where the picture lies on the player, in the units of <paramref name="viewportWidth"/> (5.4D: <see cref="PictureSpan"/> with its
     /// top and height, for the Magnifier): fitted, zoomed and panned as the worker places it.
     /// </summary>

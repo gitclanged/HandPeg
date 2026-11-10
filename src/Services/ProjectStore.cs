@@ -128,6 +128,10 @@ public sealed class ProjectFile
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull), JsonConverter(typeof(UndoStepsConverter))]
     public List<ProjectUndoStep>? RedoHistory { get; set; }
 
+    /// <summary>The window as it was at the save (Pass 5.4.1-M5): never part of the unsaved-changes fingerprint. Absent when not saved from a window.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ProjectWorkspace? Workspace { get; set; }
+
     /// <summary>
     /// The timeline: every track and clip (the main video's among them), the markers and the Sequence Output's effects.
     /// Last in the file, and required: a project without one is refused.
@@ -883,6 +887,7 @@ public static class ProjectStore
             (file.UndoHistory, file.RedoHistory) = (StepsOf(state.UndoHistory), StepsOf(state.RedoHistory));
         }
 
+        file.Workspace = state.Workspace;
         return file;
     }
 
@@ -1047,6 +1052,7 @@ public static class ProjectStore
             CaptionUseExternalAudio = sequence.CaptionUseExternalAudio,
             CaptionAudioTrackIndex = sequence.CaptionAudioTrack,
             ThumbnailJpeg = ThumbnailOf(file.ThumbnailJpeg),
+            Workspace = file.Workspace,
         };
 
         // Opened (not only listed): its video files are made ready to be seeked in now, before the first graph is built, and

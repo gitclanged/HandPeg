@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using HandPegApp.Compositor.Native;
 using HandPegApp.Models.Effects;
 using HandPegApp.Services;
@@ -45,6 +46,35 @@ internal sealed unsafe partial class SceneRenderer
     // How far the planes are stepped down to keep within the budget (0: their full resolution).
     private int _budgetStep;
 
+    // Each plane's picture kept from frame to frame (5.4.1-M2), by its layer's place in the scene: drawn again only when what it comes
+    // from changed (KeepPlane), so a paused 3D view the camera turns about, and a fast display's refreshes between a video's frames, only
+    // lay the planes. Kept while the budget has room for them (LayOutPlanes); the others are drawn into the plane texture as before.
+    private readonly KeptPlane[] _keptPlanes = new KeptPlane[CompositorProtocol.MaxLayers];
+
+    // The 60 fps governor (5.4.1-M2, Govern): the scale the planes are drawn at under the budget's, the frames before it may step again,
+    // the camera last seen and when it last moved (Stopwatch), and a 3D frame's rolling time on the card and on the processor (ms).
+    private int _motionStep, _motionHold;
+    private (float Yaw, float Pitch, float Zoom, float Spread) _governedCamera;
+    private long _cameraMovedAt;
+    private float _explodedGpuMs, _explodedCpuMs;
+
+    /// <summary>The governor's scales, full resolution first: a step at a time down while frames are slow, back up while they are quick.</summary>
+    private static readonly float[] MotionScales = [1f, 0.85f, 0.70f, 0.55f];
+
+    /// <summary>
+    /// A frame slower than this (ms) steps the planes down, one quicker than the second steps them back up; frames between steps (the
+    /// rolling time catching up); how long after the camera's last move it counts as still (ms).
+    /// </summary>
+    private const float SlowFrameMs = 14.5f, FastFrameMs = 10f;
+    private const int MotionHoldFrames = 10;
+    private const double CameraStillMs = 120;
+
+    // The governor's clock: the card's time for each 3D frame (a disjoint query and two timestamps a frame), read a few frames late without waiting.
+    private const int ClockRing = 4;
+    private readonly nint[] _clockQueries = new nint[ClockRing * 3];
+    private readonly bool[] _clockPending = new bool[ClockRing];
+    private int _clockNext;
+
     /// <summary>The largest side of a plane's picture, in pixels.</summary>
     private const int MaxPlaneSide = 4096;
 
@@ -79,16 +109,36 @@ internal sealed unsafe partial class SceneRenderer
     /// <summary>
     /// Where a plane's picture lies and how finely it is drawn: the part of the canvas it can reach (canvas pixels), its
     /// layer's box size, its scale at its source's own pixels (texels a canvas pixel; 0: as fitted), the scale drawn at, its
-    /// first texel on the canvas's texel grid and its size in texels; whether its layer is blended, and whether it has
-    /// nothing on the canvas (or is an adjustment layer's glass).
+    /// first texel on the canvas's texel grid and its size in texels; whether its layer is blended, whether it has
+    /// nothing on the canvas (or is an adjustment layer's glass), and whether its picture is kept in a texture of its own (5.4.1-M2).
     /// </summary>
     private struct PlaneLayout
     {
         public float X, Y, W, H, BoxW, BoxH;
         public float Full, Scale;
         public int OriginX, OriginY, TexelsX, TexelsY;
-        public bool Blends, Empty;
+        public bool Blends, Empty, Kept;
     }
+
+    /// <summary>
+    /// A plane's picture kept (5.4.1-M2): its texture, the layer as it was drawn (AsDrawn), what else the picture came from, and whether
+    /// a plane used it this frame (one not used is let go of).
+    /// </summary>
+    private struct KeptPlane
+    {
+        public GpuTexture? Texture;
+        public GpuLayerDescriptor Drawn;
+        public PlaneStamp Stamp;
+        public bool Used;
+    }
+
+    /// <summary>
+    /// What a plane's picture comes from besides its layer: where it lies and how finely (PlaneLayout), the canvas, the decoded frame
+    /// drawn (a video's frame is shown for many refreshes), the resource table's version, and, for a layer whose picture moves with the
+    /// clock or the music (VariesWithClock), the moment and the audio's bands.
+    /// </summary>
+    private readonly record struct PlaneStamp(float Scale, int OriginX, int OriginY, int TexelsX, int TexelsY, int CanvasWidth, int CanvasHeight,
+        int FrameSource, double FrameTime, nint FrameLuma, int Resources, double Moment, float Bass, float Mid, float High);
 
     /// <summary>Draws the scene as the 3D exploded layer stack (ViewMode 1) into <paramref name="outputRtv"/>.</summary>
     private void RenderExploded(in FrameSceneHeader header, ReadOnlySpan<GpuLayerDescriptor> layers, nint outputRtv, int outputWidth, int outputHeight, bool raw)
@@ -105,6 +155,10 @@ internal sealed unsafe partial class SceneRenderer
         var timing = (header.Flags & FrameSceneHeader.FlagTimePasses) != 0;
         _timer.BeginFrame(timing);
         _gpu.BindCommon();
+
+        // The governor's scale for this frame, and its clock round the frame's work (not while the passes are timed: their own disjoint query is open).
+        Govern(header);
+        var clocked = !timing && BeginExplodedClock();
 
         if (_view3D is null || _view3D.Width != outputWidth || _view3D.Height != outputHeight)
         {
@@ -141,18 +195,25 @@ internal sealed unsafe partial class SceneRenderer
                 }
 
                 // The layer alone, onto a clear plane of its own: the flat path's canvas is this plane while it draws. A tilted layer
-                // is drawn flat onto it, and its plane is tilted instead (5.2B, the user's Q4: TiltsInDepth).
+                // is drawn flat onto it, and its plane is tilted instead (5.2B, the user's Q4: TiltsInDepth). A kept plane (5.4.1-M2)
+                // is drawn only when what its picture comes from changed.
                 var plane = _planeLayouts[n];
-                var target = plane.Empty ? null : plane.Blends ? _gpu.Textures.Rent(plane.TexelsX, plane.TexelsY) : _planeTarget;
-                if (target is not null && TiltsInDepth(layer))
+                GpuTexture? target = null;
+                if (!plane.Empty)
                 {
-                    var flat = layer;
-                    (flat.TiltX, flat.TiltY) = (0, 0);
-                    DrawAlone(flat, plane, target, canvasWidth, canvasHeight);
-                }
-                else if (target is not null)
-                {
-                    DrawAlone(layer, plane, target, canvasWidth, canvasHeight);
+                    var drawn = layer;
+                    if (TiltsInDepth(layer))
+                        (drawn.TiltX, drawn.TiltY) = (0, 0);
+                    if (plane.Kept)
+                    {
+                        target = KeepPlane(ref _keptPlanes[_planeOrder[n]], drawn, plane, canvasWidth, canvasHeight);
+                    }
+                    else
+                    {
+                        target = plane.Blends ? _gpu.Textures.Rent(plane.TexelsX, plane.TexelsY) : _planeTarget;
+                        if (target is not null)
+                            DrawAlone(drawn, plane, target, canvasWidth, canvasHeight);
+                    }
                 }
 
                 // Whatever a pass of the layer's own left bound, the planes' passes start from the frame's common state (the
@@ -182,6 +243,7 @@ internal sealed unsafe partial class SceneRenderer
             (_canvas, _canvasCopy) = (canvas, canvasCopy);
         }
 
+        SweepKeptPlanes();
         var constants = default(PassConstants);
         constants.Color = new Vector4(0, 0, 0, 1);
         constants.Params4 = new Vector4(1, 1, raw ? 1 : 0, (float)_time);
@@ -189,6 +251,9 @@ internal sealed unsafe partial class SceneRenderer
         _timer.Begin(0);
         Draw("PSFinal", _view3D, outputRtv, outputWidth, outputHeight, ref constants, blend: false);
         _timer.End();
+        if (clocked)
+            EndExplodedClock();
+        _explodedCpuMs = Rolling(_explodedCpuMs, (float)System.Diagnostics.Stopwatch.GetElapsedTime(_explodedAt).TotalMilliseconds);
         _gpu.Textures.EndFrame();
         _explodedFrame = _gpu.Textures.Frame;
         _timer.EndFrame();
@@ -224,6 +289,191 @@ internal sealed unsafe partial class SceneRenderer
         if (_canvasCopy is { Rented: false } made)
             made.Dispose();
         _canvasCopy = null;
+    }
+
+    // ----- Planes kept from frame to frame (5.4.1-M2) -----
+
+    /// <summary>
+    /// A kept plane's texture with its layer's picture in it: drawn again (DrawAlone) only when the layer as drawn (AsDrawn) or anything
+    /// else its picture comes from (PlaneStamp) changed since, or its texture had to be made anew. A blended plane's texture is its size
+    /// exactly (its canvas copy must be: Place); another's is used again while large enough and not much too large (the governor's smaller
+    /// scales are drawn into the one there is).
+    /// </summary>
+    private GpuTexture KeepPlane(ref KeptPlane kept, in GpuLayerDescriptor layer, in PlaneLayout plane, int canvasWidth, int canvasHeight)
+    {
+        var clock = VariesWithClock(layer);
+        var drawn = AsDrawn(layer, clock);
+        var stamp = StampOf(layer, plane, canvasWidth, canvasHeight, clock);
+        kept.Used = true;
+
+        var (width, height) = plane.Blends ? (plane.TexelsX, plane.TexelsY) : (Stepped(plane.TexelsX), Stepped(plane.TexelsY));
+        var fits = kept.Texture is { } texture && (plane.Blends
+            ? texture.Width == width && texture.Height == height
+            : texture.Width >= plane.TexelsX && texture.Height >= plane.TexelsY && (_motionStep > 0 || (long)texture.Width * texture.Height <= 2L * width * height));
+        if (!fits)
+        {
+            kept.Texture?.Dispose();
+            kept.Texture = _gpu.CreateTexture(width, height, DxgiFormat.R16G16B16A16Float, renderTarget: true);
+        }
+        else if (kept.Stamp == stamp && Same(kept.Drawn, drawn))
+        {
+            return kept.Texture!;
+        }
+
+        DrawAlone(layer, plane, kept.Texture!, canvasWidth, canvasHeight);
+        (kept.Drawn, kept.Stamp) = (drawn, stamp);
+        return kept.Texture!;
+    }
+
+    /// <summary>
+    /// A layer as its plane's picture sees it: its place in depth and its outline's flags left out (they are not in its picture) and, unless
+    /// its picture moves with the clock, the moments its frames are found at (the frame found stands in PlaneStamp: a video's frame is
+    /// shown for many refreshes while its moment moves on).
+    /// </summary>
+    private static GpuLayerDescriptor AsDrawn(in GpuLayerDescriptor layer, bool clock)
+    {
+        var drawn = layer;
+        drawn.ZDepth = 0;
+        drawn.Flags &= ~(GpuLayerDescriptor.FlagSelected | GpuLayerDescriptor.FlagSelectedTrack);
+        if (!clock)
+            (drawn.MediaSeconds, drawn.PreviousMoment) = (0, 0);
+        return drawn;
+    }
+
+    /// <summary>What else a plane's picture comes from: its layout, the canvas, the frame a video's layer shows (DrawSource is given the same: DecoderPool.Resolve), the resources, and the moment and the music for a layer that moves with them.</summary>
+    private PlaneStamp StampOf(in GpuLayerDescriptor layer, in PlaneLayout plane, int canvasWidth, int canvasHeight, bool clock)
+    {
+        var frame = layer.SourceKind == (int)GpuSourceKind.Media ? _decoders.Resolve(layer.SourceId, layer.MediaSeconds, layer.SourcePathHash, layer.ClipKey) : null;
+        return new PlaneStamp(plane.Scale, plane.OriginX, plane.OriginY, plane.TexelsX, plane.TexelsY, canvasWidth, canvasHeight,
+            frame?.Source ?? 0, frame?.Time ?? 0, frame?.LumaSrv ?? 0, _resources.Version,
+            clock ? _time : 0, clock ? _audioBass : 0, clock ? _audioMid : 0, clock ? _audioHigh : 0);
+    }
+
+    /// <summary>
+    /// Whether a layer's picture changes with the moment or the music though nothing else about it does: a shutter (Motion Blur), or a
+    /// card whose shader reads the clock or the audio's bands or keeps a history (Film Grain, Matte Smooth over time, the 5.1-GpuFx cards,
+    /// the particle and social-cut transitions, a slot unknown here). Such a plane is kept only while the moment holds still.
+    /// </summary>
+    private static bool VariesWithClock(in GpuLayerDescriptor layer)
+    {
+        if ((layer.Flags & (GpuLayerDescriptor.FlagShutterPlace | GpuLayerDescriptor.FlagPreviousMoment)) != 0)
+            return true;
+        var count = Math.Clamp(layer.EffectCount, 0, CompositorProtocol.MaxEffectsPerLayer);
+        for (var k = 0; k < count; k++)
+        {
+            if (layer.Effects[k].Slot is not (GpuShaderSlot.None or (>= GpuShaderSlot.TransformComposite and <= GpuShaderSlot.Vignette)
+                or (>= GpuShaderSlot.ChromaKey and <= GpuShaderSlot.MatteChoke) or (>= GpuShaderSlot.LayerMask and <= GpuShaderSlot.Sharpen)
+                or (>= GpuShaderSlot.TransitionDissolve and <= GpuShaderSlot.TransitionBlurDissolve)))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>Two layers byte for byte the same.</summary>
+    private static bool Same(in GpuLayerDescriptor a, in GpuLayerDescriptor b) =>
+        MemoryMarshal.AsBytes(new ReadOnlySpan<GpuLayerDescriptor>(in a)).SequenceEqual(MemoryMarshal.AsBytes(new ReadOnlySpan<GpuLayerDescriptor>(in b)));
+
+    /// <summary>Kept planes no layer used this frame let go of (their layer gone, or no longer kept); the rest marked afresh for the next.</summary>
+    private void SweepKeptPlanes()
+    {
+        for (var i = 0; i < _keptPlanes.Length; i++)
+        {
+            ref var kept = ref _keptPlanes[i];
+            if (!kept.Used && kept.Texture is not null)
+            {
+                kept.Texture.Dispose();
+                kept = default;
+            }
+
+            kept.Used = false;
+        }
+    }
+
+    // ----- The 60 fps governor (5.4.1-M2) -----
+
+    /// <summary>
+    /// The 3D view starts at its planes' full resolution and keeps it, unless the camera moves while the video plays and a frame takes longer
+    /// than <see cref="SlowFrameMs"/> (rolling, on the card or the processor, whichever is longer): then the planes are drawn a step coarser
+    /// (<see cref="MotionScales"/>, into the textures there are), a step finer again once frames take under <see cref="FastFrameMs"/>, and
+    /// at full resolution the moment the camera or the video holds still.
+    /// </summary>
+    private void Govern(in FrameSceneHeader header)
+    {
+        ReadExplodedClock();
+        var camera = (header.CameraYaw, header.CameraPitch, header.CameraZoom, header.ExplodedZSpread);
+        if (camera != _governedCamera)
+            (_governedCamera, _cameraMovedAt) = (camera, _explodedAt);
+
+        var moving = header.IsPlaying != 0 && System.Diagnostics.Stopwatch.GetElapsedTime(_cameraMovedAt, _explodedAt).TotalMilliseconds < CameraStillMs;
+        if (!moving)
+        {
+            (_motionStep, _motionHold) = (0, 0);
+            return;
+        }
+
+        if (_motionHold > 0)
+        {
+            _motionHold--;
+            return;
+        }
+
+        var ms = Math.Max(_explodedGpuMs, _explodedCpuMs);
+        if (ms > SlowFrameMs && _motionStep < MotionScales.Length - 1)
+            (_motionStep, _motionHold) = (_motionStep + 1, MotionHoldFrames);
+        else if (ms < FastFrameMs && _motionStep > 0)
+            (_motionStep, _motionHold) = (_motionStep - 1, MotionHoldFrames);
+    }
+
+    private static float Rolling(float rolling, float ms) => rolling <= 0 ? ms : rolling + (ms - rolling) * 0.25f;
+
+    /// <summary>The clock started round a 3D frame's work; false while the ring's next entry is still being read (the card far behind: this frame is not timed).</summary>
+    private bool BeginExplodedClock()
+    {
+        var at = _clockNext * 3;
+        if (_clockPending[_clockNext])
+            return false;
+        if (_clockQueries[at] == 0)
+        {
+            _clockQueries[at] = _gpu.Device.CreateQuery(D3D11.QueryTimestampDisjoint);
+            _clockQueries[at + 1] = _gpu.Device.CreateQuery(D3D11.QueryTimestamp);
+            _clockQueries[at + 2] = _gpu.Device.CreateQuery(D3D11.QueryTimestamp);
+        }
+
+        _gpu.Context.Begin(_clockQueries[at]);
+        _gpu.Context.End(_clockQueries[at + 1]);
+        return true;
+    }
+
+    private void EndExplodedClock()
+    {
+        var at = _clockNext * 3;
+        _gpu.Context.End(_clockQueries[at + 2]);
+        _gpu.Context.End(_clockQueries[at]);
+        _clockPending[_clockNext] = true;
+        _clockNext = (_clockNext + 1) % ClockRing;
+    }
+
+    /// <summary>The frames the card has finished since, into the rolling time; one not finished yet is left for a later frame (never waited for).</summary>
+    private void ReadExplodedClock()
+    {
+        var context = _gpu.Context;
+        for (var k = 0; k < ClockRing; k++)
+        {
+            if (!_clockPending[k])
+                continue;
+            var at = k * 3;
+            TimestampDisjoint disjoint;
+            ulong begin, end;
+            if (context.GetData(_clockQueries[at], &disjoint, (uint)sizeof(TimestampDisjoint), D3D11.AsyncGetDataDoNotFlush) != 0
+                || context.GetData(_clockQueries[at + 1], &begin, sizeof(ulong), D3D11.AsyncGetDataDoNotFlush) != 0
+                || context.GetData(_clockQueries[at + 2], &end, sizeof(ulong), D3D11.AsyncGetDataDoNotFlush) != 0)
+                continue;
+
+            _clockPending[k] = false;
+            if (disjoint.Disjoint == 0 && disjoint.Frequency != 0 && end > begin)
+                _explodedGpuMs = Rolling(_explodedGpuMs, (float)((end - begin) * 1000.0 / disjoint.Frequency));
+        }
     }
 
     // ----- How finely each plane is drawn -----
@@ -266,15 +516,24 @@ internal sealed unsafe partial class SceneRenderer
             step--;
         _budgetStep = step;
 
+        // At the governor's scale under the budget's (5.4.1-M2: its smaller planes fit in the textures there are). A plane is kept in a
+        // texture of its own while what the budget leaves has room for it (a blended plane's own is counted in the budget already); the
+        // plane texture is as large as the largest of the others.
         var factor = StepFactor(step);
+        var motion = MotionScales[_motionStep];
+        var spare = PlaneBudgetBytes - BytesAt(count, factor, fit);
         var (largestX, largestY) = (0, 0);
         for (var n = 0; n < count; n++)
         {
             ref var plane = ref _planeLayouts[n];
             if (plane.Empty)
                 continue;
-            Place(ref plane, ScaleAt(plane, factor, fit));
-            if (!plane.Blends)
+            Place(ref plane, ScaleAt(plane, factor, fit) * motion);
+            var own = plane.Blends ? 0 : 8L * Stepped(plane.TexelsX) * Stepped(plane.TexelsY);
+            plane.Kept = own <= spare;
+            if (plane.Kept)
+                spare -= own;
+            else if (!plane.Blends)
                 (largestX, largestY) = (Math.Max(largestX, plane.TexelsX), Math.Max(largestY, plane.TexelsY));
         }
 
@@ -343,14 +602,24 @@ internal sealed unsafe partial class SceneRenderer
     private void EnsurePlaneTarget(int neededX, int neededY)
     {
         if (neededX <= 0 || neededY <= 0)
+        {
+            // No plane needs it (every one kept in its own, 5.4.1-M2): let go of after a while.
+            if (_planeTarget is not null && ++_planeTargetOversized >= PlaneTargetPatience)
+            {
+                _planeTarget.Dispose();
+                (_planeTarget, _planeTargetOversized) = (null, 0);
+            }
+
             return;
+        }
 
         var (width, height) = (Stepped(neededX), Stepped(neededY));
         if (_planeTarget is { } target)
         {
             if (target.Width >= neededX && target.Height >= neededY)
             {
-                var oversized = (long)target.Width * target.Height > 2L * width * height;
+                // (Never made smaller while the governor draws the planes coarser: they are back to full size in a moment.)
+                var oversized = _motionStep == 0 && (long)target.Width * target.Height > 2L * width * height;
                 _planeTargetOversized = oversized ? _planeTargetOversized + 1 : 0;
                 if (_planeTargetOversized < PlaneTargetPatience)
                     return;
@@ -778,6 +1047,10 @@ internal sealed unsafe partial class SceneRenderer
     {
         ReleaseExplodedTextures();
         _budgetStep = 0;
+        for (var i = 0; i < _clockQueries.Length; i++)
+            Com.Release(ref _clockQueries[i]);
+        Array.Clear(_clockPending);
+        (_clockNext, _motionStep, _motionHold, _explodedGpuMs, _explodedCpuMs) = (0, 0, 0, 0, 0);
     }
 
     /// <summary>
@@ -792,5 +1065,19 @@ internal sealed unsafe partial class SceneRenderer
         _planeTarget?.Dispose();
         _planeTarget = null;
         _planeTargetOversized = 0;
+        foreach (ref var kept in _keptPlanes.AsSpan())
+        {
+            kept.Texture?.Dispose();
+            kept = default;
+        }
+    }
+
+    /// <summary>The planes kept in textures of their own (the goldens: IdleTexturesForTests).</summary>
+    private int KeptPlaneTextures()
+    {
+        var count = 0;
+        foreach (ref readonly var kept in _keptPlanes.AsSpan())
+            count += kept.Texture is null ? 0 : 1;
+        return count;
     }
 }

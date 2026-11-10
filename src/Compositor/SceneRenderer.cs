@@ -116,11 +116,20 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         _timer.BeginFrame(timing);
         _gpu.BindCommon();
 
-        if (_canvas is null || _canvas.Width != outputWidth || _canvas.Height != outputHeight)
+        // The canvas is kept at a capacity (CompositorWorker.OutputCapacity, 5.4.1-M2) and drawn into its top left, so a dock splitter's
+        // drag of the player makes a few canvases, not one a pixel; an export's stays exactly its size. The copy a blend reads is the
+        // drawn part's size exactly (CopyCanvas).
+        var capacity = CompositorWorker.OutputCapacity(_canvas?.Width ?? 0, _canvas?.Height ?? 0, outputWidth, outputHeight,
+            (header.Flags & FrameSceneHeader.FlagReadback) != 0);
+        if (_canvas is null || (_canvas.Width, _canvas.Height) != capacity)
         {
             _canvas?.Dispose();
-            _canvasCopy?.Dispose();
-            _canvas = _gpu.CreateTexture(outputWidth, outputHeight, DxgiFormat.R16G16B16A16Float, renderTarget: true);
+            _canvas = _gpu.CreateTexture(capacity.Width, capacity.Height, DxgiFormat.R16G16B16A16Float, renderTarget: true);
+        }
+
+        if (_canvasCopy is not null && (_canvasCopy.Width != outputWidth || _canvasCopy.Height != outputHeight))
+        {
+            _canvasCopy.Dispose();
             _canvasCopy = null;
         }
 
@@ -154,7 +163,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         var constants = default(PassConstants);
         constants.Color = _letterbox ? new Vector4(0, 0, 0, 1) : new Vector4(header.BackgroundR, header.BackgroundG, header.BackgroundB, 1);
         constants.Params4 = new Vector4(1, 1, raw ? 1 : 0, (float)_time);
-        constants.WholeUv();
+        (constants.U0, constants.V0, constants.U1, constants.V1) = (0, 0, (float)outputWidth / _canvas.Width, (float)outputHeight / _canvas.Height);
         _timer.Begin(0);
         Draw("PSFinal", _canvas, outputRtv, outputWidth, outputHeight, ref constants, blend: false);
         _timer.End();
@@ -360,10 +369,9 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         if (blendMode is > 0 and <= 7)
         {
             // The mixed colours need the canvas under it: a copy of it, read where the layer lands.
-            _canvasCopy ??= _gpu.CreateTexture(_outWidth, _outHeight, DxgiFormat.R16G16B16A16Float, renderTarget: false);
-            _gpu.Context.CopyResource(_canvasCopy.Texture, _canvas!.Texture);
+            var canvasUnder = CopyCanvas();
             _timer.Begin((int)GpuShaderSlot.BlendMode);
-            Quad("PSCompositeBlend", work, _canvas.Rtv, ref constants, blend: false, aux: _canvasCopy.Srv);
+            Quad("PSCompositeBlend", work, _canvas!.Rtv, ref constants, blend: false, aux: canvasUnder.Srv);
             _timer.End();
         }
         else
@@ -583,15 +591,35 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
     /// <summary>An adjustment layer's picture: the canvas under its box.</summary>
     private bool CopyCanvasInto(GpuTexture target, (float X, float Y, float W, float H) box)
     {
-        _canvasCopy ??= _gpu.CreateTexture(_outWidth, _outHeight, DxgiFormat.R16G16B16A16Float, renderTarget: false);
-        _gpu.Context.CopyResource(_canvasCopy.Texture, _canvas!.Texture);
+        var under = CopyCanvas();
         var constants = default(PassConstants);
         constants.U0 = box.X / _outWidth;
         constants.V0 = box.Y / _outHeight;
         constants.U1 = (box.X + box.W) / _outWidth;
         constants.V1 = (box.Y + box.H) / _outHeight;
-        Draw("PSCopy", _canvasCopy, target.Rtv, target.Width, target.Height, ref constants, blend: false);
+        Draw("PSCopy", under, target.Rtv, target.Width, target.Height, ref constants, blend: false);
         return true;
+    }
+
+    /// <summary>
+    /// The canvas as it is now, in its copy (made at the drawn part's size when there is none): the whole texture when the two are one size
+    /// (a 3D plane's own copy), else the drawn part, the canvas's top left (the flat canvas is kept at a capacity, 5.4.1-M2).
+    /// </summary>
+    private GpuTexture CopyCanvas()
+    {
+        var canvas = _canvas!;
+        var copy = _canvasCopy ??= _gpu.CreateTexture(_outWidth, _outHeight, DxgiFormat.R16G16B16A16Float, renderTarget: false);
+        if (copy.Width == canvas.Width && copy.Height == canvas.Height)
+        {
+            _gpu.Context.CopyResource(copy.Texture, canvas.Texture);
+        }
+        else
+        {
+            var box = new Box { Right = (uint)Math.Min(copy.Width, canvas.Width), Bottom = (uint)Math.Min(copy.Height, canvas.Height), Back = 1 };
+            _gpu.Context.CopySubresourceRegion(copy.Texture, 0, 0, 0, canvas.Texture, 0, &box);
+        }
+
+        return copy;
     }
 
     // ----- Zones 1-3 -----
@@ -1252,7 +1280,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
     /// </summary>
     internal (int Textures, int History) IdleTexturesForTests()
     {
-        var textures = (_canvasCopy is null ? 0 : 1) + (_view3D is null ? 0 : 1) + (_planeTarget is null ? 0 : 1)
+        var textures = (_canvasCopy is null ? 0 : 1) + (_view3D is null ? 0 : 1) + (_planeTarget is null ? 0 : 1) + KeptPlaneTextures()
             + (_loupeScan is null ? 0 : 1) + (_loupeView is null ? 0 : 1) + (_loupeFound is null ? 0 : 1) + _loupeStaging.Count(s => s != 0);
         return (textures, _flows.Count + (_noise3D == 0 ? 0 : 1) + _histories.Count);
     }

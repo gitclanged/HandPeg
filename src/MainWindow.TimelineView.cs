@@ -291,7 +291,9 @@ public partial class MainWindow
     /// <summary>
     /// A touchpad's two-finger sideways scroll (or a tilting wheel) moves the timeline's view along, with momentum: WPF raises nothing for
     /// WM_MOUSEHWHEEL, so a hook of its own on the main window reads it (never TitleBarHook or FrameHook, whose answers are pinned), added
-    /// once the window's handle is made, and only while the pointer is over the timeline's tracks or ruler does it take the message.
+    /// once the window's handle is made, and only while the pointer is over the timeline's tracks or ruler does it take the message for the
+    /// timeline. Elsewhere (5.4.1A) it goes to the first visible strip under the pointer that scrolls in time (ISidewaysWheel: the Subtitle
+    /// Studio's strip, the Media Browser's filmstrip cutter), docked or in a side window (each has this same hook); else it is left alone.
     /// </summary>
     private void HookTimelineSidewaysWheel()
     {
@@ -304,13 +306,37 @@ public partial class MainWindow
 
     private IntPtr TimelineSidewaysWheel(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (msg != WmMouseHWheel || TimelineUnderPointer() is not { } surface)
+        if (msg != WmMouseHWheel)
             return IntPtr.Zero;
 
         // Positive is to the right: later. Answered TRUE, or Windows sends it on as clicks of an old tilt wheel.
-        surface.PanWheelAt((short)((wParam.ToInt64() >> 16) & 0xFFFF), MomentumScroller.Now());
+        var delta = (short)((wParam.ToInt64() >> 16) & 0xFFFF);
+        var now = MomentumScroller.Now();
+        if (TimelineUnderPointer() is { } surface)
+            surface.PanWheelAt(delta, now);
+        else if (SidewaysWheelUnderPointer() is { } strip)
+            strip.SidewaysWheel(delta, now);
+        else
+            return IntPtr.Zero;
+
         handled = true;
         return new IntPtr(1);
+    }
+
+    /// <summary>
+    /// The first visible control that scrolls in time on a sideways swipe (<see cref="ISidewaysWheel"/>) from the element under the pointer
+    /// up: its visual parents, its logical ones where the visual tree ends (a popup, a content element). Null for none. Allocates nothing.
+    /// </summary>
+    internal static ISidewaysWheel? SidewaysWheelUnderPointer()
+    {
+        for (var node = Mouse.DirectlyOver as DependencyObject; node is not null;
+             node = (node is Visual or System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(node) : null) ?? LogicalTreeHelper.GetParent(node))
+        {
+            if (node is ISidewaysWheel wheel and UIElement { IsVisible: true })
+                return wheel;
+        }
+
+        return null;
     }
 
     // The timeline's surface while the pointer is over it or its ruler (and it is shown); null otherwise.
