@@ -11,6 +11,10 @@ without the timeline lagging.
 
 ![The editor edge to edge with three project tabs in the title bar (Ranked Highlights, Clutch Round and Shorts Cut), a vertical gameplay frame with its caption in the player, the Live Encoded Preview eye on the player's transport bar, the Sequence Overview Scrubber's strip of pictures and waveform, the Timeline's video clip with its filmstrip, waveform and HUD Cutout Sub-Lanes, and the Effects and Media panes](docs/screenshots/workspace-v5.4.png)
 
+![The first start's two-screen welcome, step 2 of 2: GPU & NPU Roles measured in the background in 0.4 s, with the Compositor, Decode, Background and Export cards and their decode speed and bus rate, the NPU detected; beside it the Default Export's hardware video encoder, the audio encoder, and the Behaviour check boxes](docs/screenshots/first-run-v5.5.png)
+
+![Closing HandPeg with two project tabs open: one dialog lists Ranked Highlights, shown as saved, and Clutch Round, checked because it has unsaved changes, with Save Checked & Close, Keep Suspended for Next Launch, Discard & Close and Cancel](docs/screenshots/exit-tabs-v5.5.png)
+
 ![The Layout selector open over the editor: five built-in layout cards with Standard Editing marked Default and in use, the Vertical Creator Split among them, the theme swatches below, and a footer with the "Each project tab remembers its own layout" check box, "+ New Side Window" and "Save Current Layout..."](docs/screenshots/layout-selector-v5.4.png)
 
 ![The Export tab's three columns under the player: Preset & Format with the Export Presets selector on YouTube Shorts and a hardware H.264 encoder; Quality, Bitrate & Resolution at 1080 x 1920 with the project's frame rate; and Audio & Output with the project's sample rate, the Live Encoded Preview button and the Projected Output summary](docs/screenshots/export-tab-v5.4.png)
@@ -24,7 +28,11 @@ without the timeline lagging.
 ## Main workflows
 - **Project tabs.** Keep several projects open in the title bar, browser-style (Ctrl+T, Ctrl+W, Ctrl+Tab, drag to
   reorder). A tab you have been in stays live in memory, so switching back is a swap rather than a reload. Each tab keeps its
-  own window layout and its own 3D view and camera.
+  own window layout and its own 3D view and camera. Closing HandPeg asks only when a tab holds unsaved work, and the tab in
+  front keeps a crash-recovery copy while you edit.
+- **Tethers and nested tracks.** Drop a clip on another clip's bottom band to tether it (a webcam that follows its gameplay
+  clip in time), and drag a track's header onto another's to nest it as a Sub-Lane. Fast drags glide over tracks; a short rest
+  drops the clip where the pointer is.
 - **Layouts made for the job.** The Layout button opens visual cards of the built-in layouts (Standard Editing, Vertical &
   Shorts Studio, the new Vertical Creator Split and others) and your own. `☆ Set Default` picks the one HandPeg opens in. Every
   studio (Subtitle Studio, Voiceover Studio, Render Queue, Video Scopes) is a pane you can dock anywhere or tear off into a
@@ -35,7 +43,8 @@ without the timeline lagging.
   slowest, best step by default (Fast Proxy at its fastest). The Live Encoded Preview, on the player bar, shows the picture as
   the export would encode it, with a magnifier.
 - **Track Preset Nodes and the Cutout Studio.** Set a Game Preset on a track and every clip on it, or dropped onto it,
-  gets that preset's frame, HUD Cutouts and blurred background. Draw your own game's HUD pieces in the Cutout Studio
+  gets that preset's frame, HUD Cutouts and blurred background. Built-in vertical presets include Overwatch Vertical and
+  Fortnite Vertical, made from real hand-built ones. Draw your own game's HUD pieces in the Cutout Studio
   (pen, rectangle, ellipse, slant; zoom up to 64x with a pixel grid, pan with a right-drag or the Source Navigator's
   picture of the whole frame) and save them as a preset.
 - **Multi-track audio.** Each audio stream of a recording gets its own Sub-Lane under its clip. Studio Voice (denoise,
@@ -54,8 +63,8 @@ From the [latest release](https://github.com/gitclanged/HandPeg/releases/latest)
 - `HandPeg-win-Setup.exe`: the installer (Windows 10 or 11, x64). It updates itself.
 - `HandPeg-win-arm64-Setup.exe`: the native installer for Windows on ARM (Snapdragon PCs). It updates itself from the ARM64
   releases.
-- `HandPeg-5.4.2-win-x64-Portable.zip` (about 7 MB): unzip and run `HandPeg.exe`.
-- `HandPeg-5.4.2-win-arm64-Portable.zip` (about 7 MB): the same for Windows on ARM.
+- `HandPeg-5.5.0-win-x64-Portable.zip` (about 7 MB): unzip and run `HandPeg.exe`.
+- `HandPeg-5.5.0-win-arm64-Portable.zip` (about 7 MB): the same for Windows on ARM.
 
 HandPeg runs on Microsoft's .NET 10 Desktop Runtime, and neither the installers nor the zips need it installed first. On a PC
 without it (an older .NET such as .NET 8 is not enough), `HandPeg.exe` asks the first time it starts: download .NET 10 for

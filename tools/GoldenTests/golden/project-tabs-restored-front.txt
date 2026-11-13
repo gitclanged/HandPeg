@@ -1,0 +1,31 @@
+# The tabs a session left come back with the one in front last time in front (resumed as a switch resumes it), and no blank start-up tab before them.
+ok: the start-up tab alone, blank and untouched, no project to open: the tab in front last time is brought forward
+ok: not with another tab beside it (Ctrl+T made one), work in it, or a project file open in it: the restored tabs stay behind it, as before
+ok: nor with the blank tab shown on purpose (Ctrl+T or +), something under way in it (a switch, an open, an import, a drop, a drag, the close), or HandPeg started with a project to open
+ok: a session's tab in front: the one its tabs.json named when it was taken; (fix round 3) none when it was not (a blank tab in front, never kept) or none was named, never the one last in front by its header; none for none
+ok: (final review) tabs.json says Kept only as written by the close that keeps the tabs (left out otherwise, as before; one without it reads as not kept)
+ok: (final review) the close's kept tabs.json is the session's last word: a write from before it still on its way never lands over it
+ok: the next start takes the tabs back in their order and knows the one in front last time: Beta (tabs.json's)
+ok: taken in behind the blank start-up tab, the only tab but them and in front: Beta is brought forward
+ok: brought forward: Beta in front, no blank tab left, as many tabs as came back (3), in the order they had
+ok: its resume failing instead: a blank tab back in front where the start-up tab was, Beta behind it with its files kept (a click tries again)
+ok: the tab last in front (n1) of the session that wrote last, not of the older one (o1)
+ok: (final review) a session that fell over: its two tabs taken in behind the blank start-up tab, none named to bring forward (RestoredFrontToBring then brings none)
+ok: (final review) a kept session and a newer one that fell over: the kept one's tab in front (k1) is the one brought forward
+ok: (fix round 3) a kept tabs.json whose tab in front was blank (never kept, so not taken): both tabs taken in, none brought forward (the start-up tab stays in front), never the one used last (u2)
+ok: (fix round 3) with an older kept session's tab in front (v1) as well: the newer session, blank in front, has the word: none is brought forward
+ok: Law 1: at idle after the first frame (the blank Timeline, the strip collapsed), and only once the tabs are taken in; the strip shown once, tabs.json written, the status line set
+ok: through a switch's own steps: the blank tab put behind and gone, the tab shown in front (the slide comes out from it), then resumed from its cache file; a failure puts a blank tab back in front and is logged
+ok: Law 1: no layout laid out for it (the first frame's single dock build stays the only one): it takes the window as it is
+ok: the start-up tab read as it is now: the only other tab and in front, nothing under way, holding nothing, no project file, not shown on purpose, no project to open
+ok: the status line: which project is open and how many came back (as before when none was brought forward)
+ok: (final review) brought back with unsaved changes: its file and its saved state's fingerprint stay, and the tick leaves them while its history has not moved
+ok: (final review) the tick's table: nothing while unmoved, written anew once the history moves, let go once clean
+ok: (final review) undone back to the save: the tick lets its file go
+ok: (final review) every resume keeps the files of a tab with unsaved changes (from its cache: AD-1, a click, Ctrl+Tab; from memory once its file was written whole), a clean tab's still go
+ok: (final review) the tab brought forward (with a layout of its own) keeps it as it goes behind (the start-up layout never taken for it); a switch back lays it out, and a change by hand (DockManager.Changed) or its close lets it go
+ok: (final review) only that tab keeps its layout, and only until it is let go (another tab's layout laid out or closed changes nothing)
+ok: (final review) RecoverProjectTabs takes nothing in while a close is asking (put off, run again once the close is called off) and adopts nothing should one begin meanwhile
+ok: (final review) tabs moved in but never adopted (a close begun meanwhile): the Forget plan's ForgetSession keeps their files, and the next start takes them in
+ok: (fix round 3) on the window: RecoverProjectTabs while a close is asking puts the tabs off (_leftTabsPutOff), the dead session's files stay where they are, and no tab is added
+ok: (fix round 3) the close called off (TakeInLeftTabsPutOff): run again at idle, it takes them in behind the tab in front, their files moved into this session's folder, and says so

@@ -1,0 +1,58 @@
+# For the first second of a cold play (new sources, a seek that missed), the cuts more than CutSoon ahead wait: the playhead's own frames first.
+ok: the window is 1 s of playback (ColdPlaySeconds) and the cuts within 1.5 s of the playhead (CutSoon) are never held
+ok: playing 0.2 s into the window, a cut 2.0 s ahead: held back
+ok: a cut exactly 1.5 s ahead: read
+ok: a cut 1.0 s ahead: read
+ok: a cut behind the playhead: read
+ok: the window's end reached (now == until): read
+ok: paused: read
+ok: no window (until 0): read
+ok: a playhead not known (NaN): read
+ok: a loop's cut shifted past the loop's end (62 against a playhead at 59.5): held back
+ok: at 1x, a cut 2.0 s ahead (2.0 s of real time): held back
+ok: at 1x, a cut 1.5 s ahead: read
+ok: at 2x, a cut 2.0 s ahead (1.0 s of real time): read
+ok: at 2x, a cut exactly 3.0 s ahead (1.5 s of real time): read
+ok: at 2x, a cut 3.5 s ahead (1.75 s of real time): held back
+ok: at 0.5x, a cut 2.0 s ahead (never less than CutSoon): held back
+ok: at 0.5x, a cut 1.5 s ahead: read
+ok: a rate not known (NaN): read
+ok: PlayRateOf, 0.2 s of the Sequence in 0.1 s of the clock: 2x
+ok: PlayRateOf, 0.1 s in 0.1 s: 1x
+ok: PlayRateOf, 0.025 s in 0.1 s (0.25x): 0.25x
+ok: PlayRateOf, a loop's wrap (-5 s in 0.1 s): the slowest: 0.25x
+ok: PlayRateOf, a stall's catch-up (2 s in 0.1 s): the fastest: 4x
+ok: PlayRateOf, no time passed: 1x
+ok: PlayRateOf, a playhead not known (NaN): 1x
+ok: a fresh pool, paused: its first sources arm a cold play; no window while paused
+ok: its first playing frame opens the window: 1 s from that frame (ColdPlaySeconds), the arm spent
+ok: the next playing frame keeps the window; a pause closes it at once
+ok: playing again with nothing new (warm): no window
+ok: a tab switch while paused (sources cleared, others registered): armed, the window waits for the play
+ok: a paused frame after it keeps the arm (a pause never spends it)
+ok: the play after the switch opens the window from its first frame
+ok: a warm seek (the jump's frame found in the cache): not armed
+ok: and the play after it opens no window
+ok: a file opened arms the pool and the next playing frame opens the window
+ok: paused again: the window closed, nothing armed
+ok: a jump to 70 s whose picture misses its frame: not armed until the next frame looks back at it
+ok: the next frame: the jump's picture missed, a cold seek: armed
+ok: an exact-frame scene, even one marked playing: no window opened, the arm kept
+ok: the player's next playing frame opens it
+ok: paused: the play rate is 1
+ok: playing at 2x: still 1 before a sample's 0.1 s (PlayRateSampleSeconds) has run, then 2
+ok: the speed set to 1x while playing: 1 within the next sample
+ok: a jump while playing starts the sample again at 1; 0.4 s in 0.1 s then reads 4x (the fastest)
+ok: a pause: 1 again
+ok: new sources (a tab switch) start the sample again at 1, as a pause does; the next sample reads 2x again
+ok: a paused BeginFrame resets the rate to 1 (BeginFrame samples every frame of the player)
+ok: MostUrgent skips a held cut before any rank is weighed (it stays a demand: no frame taken, no decoder opened)
+ok: a lane on a far cut gives way at once when a cold play opens (the read is taken up again where it stopped)
+ok: a held cut never counts as waiting, so nothing gives way to it
+ok: BeginFrame arms on a jump whose picture missed (before LastFrameExact is reset), closes the window on a pause and opens it on the first playing frame
+ok: SyncSources arms a cold play whenever the sources change (a tab switch, a file opened, a fresh worker)
+ok: only cut entries are held, never in an exact-frame scene, and on every memory tier (no unified-memory gate)
+ok: RunLane looks again under the lock after waiting for the draw: a held cut opens no decoder (the open it counted on undone, the demand left to a later pick)
+ok: WorkOn looks under the lock before its first Prepare: a held cut is never sought on a decoder it was given
+ok: HeldForColdPlay holds a cut only more than CutSoon x the play rate ahead (never less than CutSoon)
+ok: BeginFrame samples the rate with the clock read as the scene came (before any wait), never in an exact-frame scene; new sources start the sample again

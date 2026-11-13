@@ -18,7 +18,31 @@ public sealed record TimelineSnapshot(
     Models.Timeline.TimelineDocument Document, List<AudioOutputEdit> Audio, bool BackgroundHidden = false, List<DeletedClip>? Bin = null,
     SubtitleTrackData? Subtitles = null, LayerState? CaptionLayer = null, CaptionStyle? CaptionStyle = null, SequenceLook? Look = null,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    ProjectSettingsFrame? Frame = null);
+    ProjectSettingsFrame? Frame = null) : System.Text.Json.Serialization.IJsonOnDeserialized
+{
+    /// <summary>
+    /// Whether the step's bin's tethers are to be read as written (5.5.0, the user's Q6; as TimelineDocument.TethersMarked for its
+    /// document): written only when the bin holds a piece that lies where a reader of an older step finds a tether.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonInclude]
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    internal bool BinTethersMarked
+    {
+        get => Bin is { Count: > 0 } && Document.LooseIn(Bin).Exists(c => !c.Tethered);
+        set => _binTethersMarkedRead = value;
+    }
+
+    private bool _binTethersMarkedRead;
+
+    void System.Text.Json.Serialization.IJsonOnDeserialized.OnDeserialized()
+    {
+        if (_binTethersMarkedRead || Bin is not { Count: > 0 })
+            return;
+
+        foreach (var clip in Document.LooseIn(Bin))
+            clip.Tethered = true;
+    }
+}
 
 /// <summary>
 /// An undo step as Undo keeps it, and (4.4-BugHunt) as a project carries it: a <see cref="TimelineSnapshot"/> as UTF-8 JSON
@@ -146,6 +170,10 @@ public partial class MainViewModel
     private readonly List<(string What, byte[] State)> _undo = [];
     private readonly List<(string What, byte[] State)> _redo = [];
 
+    // Pass 5.5A: how many of the undo steps predate the last save or open (MarkSaved): the recovery copy lags only through the rest
+    // (MainViewModel.Recovery.cs), so it never lands before what was last saved or opened.
+    private int _savedDepth;
+
     // The room a state is written into as UTF-8 before it is compressed, and read back into, kept and used again:
     // with a long subtitle track a state is hundreds of kilobytes of text, which made afresh at every checkpoint
     // (as a string, then its bytes) went on the large object heap each time. Only the compressed copy is kept. (Made
@@ -233,11 +261,26 @@ public partial class MainViewModel
         if (_isBackgroundWorker || _restoring > 0)
             return;
 
-        _undo.Add((what, Pack(before)));
-        if (_undo.Count > UndoDepth)
-            _undo.RemoveAt(0);
-        _redo.Clear();
+        PushStep(what, Pack(before));
         _touchedSinceSaved = true;
+    }
+
+    /// <summary>
+    /// A new step on Undo's history (Pass 5.5A: the one place a step is taken): Redo's history let go, the oldest step past twenty
+    /// dropped, and the count of steps before the last save or open kept true (<see cref="_savedDepth"/>): a step taken after undoing
+    /// past the save starts a new branch, the saved state left on Redo's side gone with it.
+    /// </summary>
+    private void PushStep(string what, byte[] state)
+    {
+        _savedDepth = Math.Min(_savedDepth, _undo.Count);
+        _undo.Add((what, state));
+        if (_undo.Count > UndoDepth)
+        {
+            _undo.RemoveAt(0);
+            _savedDepth = Math.Max(0, _savedDepth - 1);
+        }
+
+        _redo.Clear();
     }
 
     /// <summary>
@@ -256,10 +299,7 @@ public partial class MainViewModel
             return;
         }
 
-        _undo.Add((what, Pack(CaptureSnapshot())));
-        if (_undo.Count > UndoDepth)
-            _undo.RemoveAt(0);
-        _redo.Clear();
+        PushStep(what, Pack(CaptureSnapshot()));
         _checkpointedAt = Environment.TickCount64;
         _stepGesture = _inputGesture;
         _touchedSinceSaved = true;
@@ -272,7 +312,10 @@ public partial class MainViewModel
     public void DropStepIfUnchanged(object? mark)
     {
         if (_restoring == 0 && mark is byte[] packed && _undo.Count > 0 && ReferenceEquals(_undo[^1].State, packed) && Pack(CaptureSnapshot()).AsSpan().SequenceEqual(packed))
+        {
             _undo.RemoveAt(_undo.Count - 1);
+            _savedDepth = Math.Min(_savedDepth, _undo.Count);
+        }
     }
 
     public void Undo() => Step(_undo, _redo, "Undid");
@@ -343,7 +386,13 @@ public partial class MainViewModel
             RemoveStep(from, state);
             to.Add((what, now));
             if (to.Count > UndoDepth)
+            {
                 to.RemoveAt(0);
+
+                // The oldest step of Undo's history dropped (Pass 5.5A): one fewer of those before the last save or open.
+                if (ReferenceEquals(to, _undo))
+                    _savedDepth = Math.Max(0, _savedDepth - 1);
+            }
         }
 
         Log($"{verb}: {what}");
@@ -441,6 +490,7 @@ public partial class MainViewModel
     {
         _undo.Clear();
         _redo.Clear();
+        _savedDepth = 0;
         (_lastLookEdit, _lastFieldEdit, _visitStep) = (null, null, null);
     }
 
@@ -1189,6 +1239,9 @@ public partial class MainViewModel
     {
         _savedFingerprint = HasSource ? Fingerprint() : "";
         _touchedSinceSaved = false;
+
+        // Pass 5.5A: every step there is now predates the save (or open): the recovery copy lags only through the steps that follow.
+        _savedDepth = _undo.Count;
     }
 
     /// <summary>

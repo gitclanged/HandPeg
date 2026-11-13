@@ -26,7 +26,9 @@ namespace HandPegApp.Models.Timeline;
 //   wholly outside where they are, unlinked (Q3, 4.4-BugHunt: a clip of its own, its own children still its; on a track a
 //   ripple trim closes up, one left shorter than the shortest clip still goes), a roll is the two trims it is, a move moves
 //   them by as much on their own tracks (refused whole when one has no room), a delete and a fold take them too, and a
-//   ripple ripples the tracks under the rippled ones. A child on a locked track stays as it is.
+//   ripple ripples the tracks under the rippled ones. A child on a locked track stays as it is. Pass 5.5A: a child's tether
+//   mark (TimelineClip.Tethered) goes with its link: kept by a split (both halves), a move, a link pointed at another clip
+//   (a split's second half, a join), cleared with the link.
 // - Folds (4.3D, 4.4-BugHunt): a fold keeps its id when it is put back (RestoredFold: the stretch stays marked, to be folded
 //   again as the same fold), when it is folded again, and when a clip's edge at its seam opens part of it or folds more
 //   into it (ResizeFold). Folds and the records of stretches put back are values nobody changes: a copy of the document
@@ -261,9 +263,10 @@ public interface ITimelineTransaction : IDisposable
     /// Makes a clip the child of another (<paramref name="parentClipId"/>; null: of none, "Unlink from Parent"): while it
     /// lies with its parent in time, the parent's splits, trims, moves, deletes and folds carry it along. Refused for the
     /// clip itself, a parent not on this timeline, one that goes with this clip already (its child, or theirs), and a clip
-    /// on a locked track.
+    /// on a locked track. Pass 5.5A: <paramref name="tethered"/> sets its <see cref="TimelineClip.Tethered"/> mark (true only for the
+    /// Timeline's tether); null keeps the mark it has while it keeps a parent (a link pointed at another clip). No parent clears it.
     /// </summary>
-    void SetClipParent(TimelineClip clip, Guid? parentClipId);
+    void SetClipParent(TimelineClip clip, Guid? parentClipId, bool? tethered = null);
 
     /// <summary>
     /// Puts a track under another (<paramref name="parentTrackId"/>; null: under none): it ripples and folds with it, and
@@ -954,7 +957,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
         return true;
     });
 
-    public void SetClipParent(TimelineClip clip, Guid? parentClipId) => Step(() =>
+    public void SetClipParent(TimelineClip clip, Guid? parentClipId, bool? tethered = null) => Step(() =>
     {
         if (parentClipId is { } id)
         {
@@ -973,7 +976,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
                 up = next;
             }
         }
-        return Change(clip, c => c.ParentClipId = parentClipId);
+        return Change(clip, c => (c.ParentClipId, c.Tethered) = (parentClipId, parentClipId is not null && (tethered ?? c.Tethered)));
     });
 
     public void SetTrackParent(TimelineTrackModel track, Guid? parentTrackId) => Step(() =>

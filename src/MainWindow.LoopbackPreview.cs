@@ -39,7 +39,17 @@ public partial class MainWindow
     // The wipe's divider, drawn here too (5.4.4): the worker draws it only once an encoded picture is back, so with an encoder that
     // failed or never answered the handle and pills stood over a picture with no line. Over the worker's own line, pixel for pixel.
     private Border? _loopbackDivider;
-    private const double WipePillGap = 10, WipePillTop = 14, RawPillRoom = 56, EncodedPillRoom = 76;
+
+    // 5.5A: the pills never vanish. They sit in a layer of their own (a 0x0 Canvas, the handle and divider outside it), clipped to the
+    // picture as the player shows it, so each slides off the picture's edge with the line; the ENCODED pill keeps its whole words
+    // while they fit right of the line and its first word ("ENCODED") when they do not. 16: a pill's padding and border.
+    private const double WipePillGap = 10, WipePillTop = 14, WipePillEdge = 4, WipePillChrome = 16;
+    private Canvas? _loopbackPillLayer;
+
+    // The ENCODED pill's whole words (SetEncodedPill), and their pill's width at the display scale it was measured at (never the
+    // label's current text: once it can show the short words, that would flip between the two forms).
+    private string _loopbackEncodedText = "ENCODED";
+    private double _loopbackEncodedWidth = double.NaN, _loopbackEncodedWidthScale;
     private Border? _loopbackWipeHandle;
     private DispatcherTimer? _loopbackTimer;
     private GpuPreviewEngine? _loopbackEngine;
@@ -99,6 +109,12 @@ public partial class MainWindow
                 break;
             case nameof(ViewModels.MainViewModel.ExportQualityPreviewLoupe):
                 SyncLoopbackLoupe();
+                break;
+            case nameof(ViewModels.MainViewModel.IsPlaying):
+                // 5.5A: the ENCODED pill's words follow play and pause at once (a paused-only encoder's RAW WHILE PLAYING, its encoder
+                // again when paused), not up to a second later on the status tick. Only the pill: the flyout's status keeps its tick.
+                if (_viewModel.IsExportQualityPreview && _loopbackSettings is { } playSettings && _gpu is { } playEngine)
+                    SetEncodedPill(EncodedPillText(playSettings, playEngine.LoopbackStatus, _viewModel.IsPlaying));
                 break;
             case { } name when ViewModels.MainViewModel.LoopbackSettingNames.Contains(name):
                 if (_viewModel.IsExportQualityPreview)
@@ -256,11 +272,15 @@ public partial class MainWindow
             _ => "ENCODED",
         };
 
-    // The ENCODED pill names a failure too (5.4.4): what the flyout's status says, where the encoded picture should be.
+    // The ENCODED pill names a failure too (5.4.4): what the flyout's status says, where the encoded picture should be. 5.5A: compared
+    // with the whole words kept (the label may show the short ones), and placed again at once, so new words never run past the picture
+    // for the 250 ms until the next placing. With no wipe yet, EnsureLoopbackWipe makes the pill with these words.
     private void SetEncodedPill(string text)
     {
-        if (_loopbackEncodedPill?.Child is TextBlock label && label.Text != text)
-            label.Text = text;
+        if (text == _loopbackEncodedText)
+            return;
+        (_loopbackEncodedText, _loopbackEncodedWidth) = (text, double.NaN);
+        PlaceLoopbackWipe();
     }
 
     // ----- The player bar's toggle and its flyout -----
@@ -429,11 +449,16 @@ public partial class MainWindow
 
         _loopbackWipeLayer = new Canvas { ClipToBounds = true, Visibility = Visibility.Collapsed, RenderTransform = _loopbackWipeUnzoom };
         _loopbackRawPill = WipePill("RAW");
-        _loopbackEncodedPill = WipePill("ENCODED");
+        _loopbackEncodedPill = WipePill(_loopbackEncodedText);
+
+        // 5.5A: the pills' own layer, a 0x0 Canvas at the layer's origin: never ClipToBounds (that would clip everything), only the
+        // picture's Clip (ApplyWipePills), so the handle and the divider are not clipped with them. Z-order: divider, pills, handle.
+        _loopbackPillLayer = new Canvas { IsHitTestVisible = false };
+        _loopbackPillLayer.Children.Add(_loopbackRawPill);
+        _loopbackPillLayer.Children.Add(_loopbackEncodedPill);
         _loopbackDivider = new Border { IsHitTestVisible = false, Background = Frozen(Color.FromRgb(0xF2, 0xF2, 0xF2)) };
         _loopbackWipeLayer.Children.Add(_loopbackDivider);
-        _loopbackWipeLayer.Children.Add(_loopbackRawPill);
-        _loopbackWipeLayer.Children.Add(_loopbackEncodedPill);
+        _loopbackWipeLayer.Children.Add(_loopbackPillLayer);
         _loopbackWipeLayer.Children.Add(_loopbackWipeHandle);
         PlayerOverlay.Children.Add(_loopbackWipeLayer);
         PlayerOverlay.SizeChanged += (_, _) => PlaceLoopbackWipe();
@@ -467,9 +492,9 @@ public partial class MainWindow
         Canvas.SetLeft(_loopbackWipeHandle, Math.Round((x - _loopbackWipeHandle.Width / 2) * scale) / scale);
         Canvas.SetTop(_loopbackWipeHandle, 0);
 
-        // The pills: 10 DIPs either side of the line, 14 below the picture's top (or the player's, the picture zoomed past it); each
-        // hidden where it would not fit between the line and the picture's edge.
-        var (left, top, width, height) = _gpu.PictureRect(viewWidth, viewHeight);
+        // The pills: 10 DIPs either side of the line, 14 below the picture's top (or the player's, the picture zoomed past it).
+        var picture = _gpu.PictureRect(viewWidth, viewHeight);
+        var (_, top, _, height) = picture;
 
         // The divider (5.4.4): always with the handle, 2 device pixels wide on the worker's line, the picture's height within the player.
         if (_loopbackDivider is { } divider)
@@ -480,30 +505,20 @@ public partial class MainWindow
             Canvas.SetLeft(divider, (Math.Round(x * scale) - 1) / scale);
             Canvas.SetTop(divider, from);
         }
-        var pillTop = Math.Round((Math.Max(top, 0) + WipePillTop) * scale) / scale;
-        if (_loopbackRawPill is { } raw)
+        // 5.5A: both pills always shown with the layer, slid off the picture's edge by its clip (the picture within the player); the
+        // ENCODED pill's whole words measured from the words kept (5.4.4-Final: the encoder and its rate), shortened where they would
+        // pass the picture's visible right edge.
+        if (_loopbackRawPill is { } raw && _loopbackEncodedPill is { Child: TextBlock words } encoded && _loopbackPillLayer is { } pills)
         {
-            raw.Visibility = x - left < RawPillRoom ? Visibility.Collapsed : Visibility.Visible;
             raw.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-            Canvas.SetLeft(raw, Math.Round((x - WipePillGap - raw.DesiredSize.Width) * scale) / scale);
-            Canvas.SetTop(raw, pillTop);
-        }
-
-        if (_loopbackEncodedPill is { } encoded)
-        {
-            // 5.4.4-Final: the pill names the encoder and its rate, so it is measured: shown while it fits right of the line.
-            // (Its text measured, not the pill: a collapsed pill measures as nothing. 16: its padding and border.)
-            var words = encoded.Child as UIElement;
-            words?.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-            var pillWidth = (words?.DesiredSize.Width ?? 0) + 16;
-            encoded.Visibility = left + width - x < Math.Max(EncodedPillRoom, pillWidth + WipePillGap + 4) ? Visibility.Collapsed : Visibility.Visible;
-            Canvas.SetLeft(encoded, Math.Round((x + WipePillGap) * scale) / scale);
-            Canvas.SetTop(encoded, pillTop);
+            if (double.IsNaN(_loopbackEncodedWidth) || _loopbackEncodedWidthScale != scale)
+                (_loopbackEncodedWidth, _loopbackEncodedWidthScale) = (PillWidth(words, _loopbackEncodedText, scale), scale);
+            ApplyWipePills(pills, raw, encoded, PlanWipePills(x, picture, viewWidth, viewHeight, raw.DesiredSize.Width, _loopbackEncodedWidth, scale), _loopbackEncodedText);
         }
     }
 
-    // A small dark pill naming one side of the wipe (5.4.1-M1): semi-bold caps, no hit testing.
-    private static Border WipePill(string text) => new()
+    // A small dark pill naming one side of the wipe (5.4.1-M1): semi-bold caps, no hit testing. Internal for the golden (5.5A).
+    internal static Border WipePill(string text) => new()
     {
         IsHitTestVisible = false,
         CornerRadius = new CornerRadius(9),
@@ -513,6 +528,73 @@ public partial class MainWindow
         BorderBrush = Frozen(Color.FromRgb(0x38, 0x38, 0x42)),
         Child = new TextBlock { Text = text, FontSize = 10, FontWeight = FontWeights.SemiBold, Foreground = Frozen(Color.FromRgb(0xF2, 0xF2, 0xF2)) },
     };
+
+    /// <summary>Where the wipe's pills go (5.5A): RAW's and ENCODED's left edges, their top, whether ENCODED shows its short words, and
+    /// the pills' clip (the picture within the player). Every value is on a device pixel.</summary>
+    internal readonly record struct WipePillPlan(double RawLeft, double EncodedLeft, double Top, bool EncodedShort, Rect Clip);
+
+    /// <summary>
+    /// The pills placed for a wipe line at <paramref name="lineX"/> (5.5A). Pure, for the golden. <paramref name="picture"/> is
+    /// GpuPreviewEngine.PictureRect (the overlay's un-zoomed DIPs, the zoom and pan in it); RAW ends <see cref="WipePillGap"/> left of the
+    /// line and ENCODED starts as far right of it, both always placed (never hidden): the clip, the picture within the player, slides
+    /// them off its edges. ENCODED keeps its whole words while they fit between the line and the picture's visible right edge (the
+    /// player's, the picture zoomed past it), less <see cref="WipePillEdge"/>; else the short ones.
+    /// </summary>
+    internal static WipePillPlan PlanWipePills(double lineX, (double Left, double Top, double Width, double Height) picture,
+        double viewWidth, double viewHeight, double rawWidth, double encodedFullWidth, double scale)
+    {
+        scale = scale > 0 && double.IsFinite(scale) ? scale : 1;
+        double Snap(double value) => Math.Round(value * scale) / scale;
+        var (left, top) = (Math.Max(picture.Left, 0), Math.Max(picture.Top, 0));
+        var (right, bottom) = (Math.Min(picture.Left + picture.Width, viewWidth), Math.Min(picture.Top + picture.Height, viewHeight));
+
+        // The Point/Point form: a picture wholly off the player would give a negative size, which Rect refuses.
+        var clip = right > left && bottom > top ? new Rect(new Point(Snap(left), Snap(top)), new Point(Snap(right), Snap(bottom))) : new Rect(0, 0, 0, 0);
+        var room = right - WipePillEdge - (lineX + WipePillGap);
+        return new(Snap(lineX - WipePillGap - rawWidth), Snap(lineX + WipePillGap), Snap(top + WipePillTop), !(encodedFullWidth <= room), clip);
+    }
+
+    /// <summary>
+    /// The ENCODED pill's words where the whole ones do not fit (5.5A): the words before the first " \u00B7 " ("ENCODED \u00B7 HEVC QSV \u00B7
+    /// 12 Mbps" -> "ENCODED", "RAW WHILE PLAYING \u00B7 x264 veryslow" -> "RAW WHILE PLAYING"), "ENCODER FAILED" without its code, the others
+    /// ("NO ENCODER", "NO DECODER", "NO LOOPBACK", "ENCODED") unchanged. 5.5A review: an encoder still starting shortens to "STARTING", not
+    /// "ENCODED" (nothing is encoded yet: the right side is the plain picture). The flyout and the Export tab's status keep the whole story. Pure.
+    /// </summary>
+    internal static string ShortEncodedPillText(string text)
+    {
+        if (text.EndsWith(" \u00B7 STARTING", StringComparison.Ordinal))
+            return "STARTING";
+        var cut = text.IndexOf(" \u00B7 ", StringComparison.Ordinal);
+        return cut > 0 ? text[..cut] : text.StartsWith("ENCODER FAILED", StringComparison.Ordinal) ? "ENCODER FAILED" : text;
+    }
+
+    /// <summary>A pill's width for these words (5.5A): its TextBlock's own font at a display scale, plus the pill's padding and border.</summary>
+    internal static double PillWidth(TextBlock words, string text, double pixelsPerDip) =>
+        new FormattedText(text, CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+            new Typeface(words.FontFamily, words.FontStyle, words.FontWeight, words.FontStretch), words.FontSize, Brushes.White, null,
+            TextOptions.GetTextFormattingMode(words), pixelsPerDip > 0 && double.IsFinite(pixelsPerDip) ? pixelsPerDip : 1).WidthIncludingTrailingWhitespace + WipePillChrome;
+
+    /// <summary>
+    /// The plan applied to the pills (5.5A; static, for a golden on real elements): their places, ENCODED's whole or short words, and
+    /// the pills' layer clipped to the plan's rectangle (a frozen geometry, made again only when the rectangle moves: a zoom, a resize).
+    /// Never touches Visibility: the pills show whenever the wipe's layer does.
+    /// </summary>
+    internal static void ApplyWipePills(Canvas pills, Border raw, Border encoded, WipePillPlan plan, string encodedText)
+    {
+        var shown = plan.EncodedShort ? ShortEncodedPillText(encodedText) : encodedText;
+        if (encoded.Child is TextBlock words && words.Text != shown)
+            words.Text = shown;
+        Canvas.SetLeft(raw, plan.RawLeft);
+        Canvas.SetTop(raw, plan.Top);
+        Canvas.SetLeft(encoded, plan.EncodedLeft);
+        Canvas.SetTop(encoded, plan.Top);
+        if (pills.Clip is not RectangleGeometry current || current.Rect != plan.Clip)
+        {
+            var clip = new RectangleGeometry(plan.Clip);
+            clip.Freeze();
+            pills.Clip = clip;
+        }
+    }
 
     // The player's size for the wipe and the Magnifier alike (5.4.1A: one element for both): the layer over the video (PlayerOverlay),
     // whose window is the native window's pixels exactly, so its DIPs are the worker's output pixels over the display's scale, as the

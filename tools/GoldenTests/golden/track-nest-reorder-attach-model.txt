@@ -1,0 +1,31 @@
+# The model of it: a track nested and moved with its Sub-Lanes, a Sub-Lane taken out of its stack, a clip attached as a child; each one step of Undo.
+   at the start: T1 V2 Cut<V2 V3 | 0-8 0-4 0-4* 2-6
+ok: a picture track's header may be dragged, a top-level one's and a Sub-Lane's
+ok: V3 nested under Track 1
+ok: V3 a Sub-Lane of Track 1, kept in front of it, just over it (T1 V3<T1 V2 Cut<V2); the document holds together
+ok: not again under the same track, and Track 1 never under its own Sub-Lane
+ok: one Undo: the order and the parent as they were
+ok: V3 nested under V2, over V2's family (T1 V2 Cut<V2 V3<V2)
+ok: V2 at the seam over Track 1, where it already is: nothing to do, refused
+ok: V2 moved to the seam under Track 1
+ok: V2 under Track 1 with its Cutout lane and its nested V3, together (V2 Cut<V2 V3<V2 T1)
+ok: one Undo: V2's family back over Track 1
+ok: V3's clip (on a Sub-Lane of V2) attached to V2's clip, let go at 1 s
+ok: it is V2's clip's child at 1-5 s, marked tethered: none of its pieces (the Cutout alone is), its Link switch shown locked
+ok: one Undo: back at 2-6 s, no parent, no mark
+ok: Redo attaches it again
+ok: the parent moved 0.5 s later: its child went with it (1.5-5.5 s)
+ok: the parent split at 3 s: its child split there too, each part a child of a half, both still tethered
+ok: its Link switch clicked: unlinked, its mark gone with the link
+ok: a clip onto itself: refused
+ok: where they do not overlap in time: refused
+ok: a Cutout (already its clip's child): refused (its Link switch frees it first)
+ok: a parent onto its own child: refused (no loop)
+ok: a clip on a locked track: refused
+ok: the refusals changed nothing
+ok: set up: the Cutout lane under V2, its Cutout V2's clip's child
+ok: the Cutout lane's header let go at the seam under Track 1
+ok: the Cutout lane a track of its own under Track 1 (Cut T1 V2 V3<V2), its clip's link to V2's clip gone with its stack
+ok: one Undo: back in V2's stack, its clip linked again
+ok: V3's clip tethered to V2's clip, then V3's header let go at the seam over Track 1 (T1 V3 V2 Cut<V2): its tether and mark gone with its stack
+ok: one Undo: back in V2's stack, tethered again

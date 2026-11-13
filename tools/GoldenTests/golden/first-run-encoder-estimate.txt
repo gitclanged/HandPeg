@@ -1,0 +1,14 @@
+# The default encoder (5.5A): estimated from each card's Media Foundation encoders before FFmpeg, the Export card's family first, FFmpeg's answer always winning.
+ok: the Plex Server's GTX 1070: h264_nvenc, hevc_nvenc (a Media Foundation one only for a codec no vendor's covers; every name one the probe knows)
+ok: the XPS 13's Adreno: h264_mf, hevc_mf, av1_mf (a Media Foundation one only for a codec no vendor's covers; every name one the probe knows)
+ok: the Desktop's RX 7900 XTX and Arc A310: h264_qsv, hevc_qsv, av1_qsv, h264_amf, hevc_amf, av1_amf (a Media Foundation one only for a codec no vendor's covers; every name one the probe knows)
+ok: an RX 7900 XTX listed twice beside Intel UHD 770: h264_qsv, hevc_qsv, av1_qsv, h264_amf, hevc_amf, av1_amf (a Media Foundation one only for a codec no vendor's covers; every name one the probe knows)
+ok: an H.264-only NVIDIA card beside an Adreno: h264_nvenc, hevc_mf, av1_mf (a Media Foundation one only for a codec no vendor's covers; every name one the probe knows)
+ok: the Export card's family: AMF on the Desktop (Export Auto: the RX 7900 XTX), QuickSync where the Arc A380 exports, NVENC on the laptop, Media Foundation on the Adreno
+ok: the Desktop: AMF first and h264_amf chosen (the card that composites and exports), not the Arc A310's QuickSync
+ok: with no profile, NVENC, QuickSync, AMF, Media Foundation as before; with no H.264 hardware encoder, libx264
+ok: the estimate first: the Desktop's six estimated, h264_amf chosen, said to be estimated
+ok: then FFmpeg's answer (no AMF in this FFmpeg): its two only, h264_qsv chosen; a later profile changes nothing
+ok: FFmpeg's answer first, then the estimate: still FFmpeg's three only, ranked for the Export card once the profile names it (h264_amf chosen)
+ok: an encoder chosen by hand stays chosen through a new profile and a new answer
+ok: the XPS 13: the Media Foundation encoders named for the Adreno (from the profile's own cards), h264_mf chosen

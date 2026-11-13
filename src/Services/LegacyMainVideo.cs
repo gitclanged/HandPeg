@@ -564,7 +564,7 @@ public static class LegacyMainVideo
         part.MediaOffset = over is null ? 0 : Math.Max(plan.ClockOf(over) + (part.Start - over.Start) * over.Speed, 0);
         part.SourceDuration = over is null ? Math.Max(plan.Context.MediaSeconds, 0) : plan.LengthOf(over);
         (part.AudioSlipSeconds, part.AudioLeadInSeconds, part.AudioTailOutSeconds) = (0, 0, 0);
-        part.ParentClipId = over?.Id;
+        (part.ParentClipId, part.Tethered) = (over?.Id, false);
         part.ProxyChoice = over?.ProxyChoice ?? part.ProxyChoice;
 
         var state = Shifted(look, -shift);
@@ -749,7 +749,7 @@ public static class LegacyMainVideo
                     }
 
                     track.Clips.Remove(clip);
-                    (heir.First.Id, heir.First.ParentClipId) = (clip.Id, null);
+                    (heir.First.Id, heir.First.ParentClipId, heir.First.Tethered) = (clip.Id, null, false);
                 }
             }
         }

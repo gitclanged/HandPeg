@@ -335,6 +335,17 @@ public sealed class TimelineClip
     public Guid? ParentClipId { get; set; }
 
     /// <summary>
+    /// Pass 5.5A: it was tethered to its parent clip by the Timeline's drag (MainViewModel.AttachClip). It follows its parent in time as
+    /// any child does, but it is never one of its parent's Game Preset pieces, wherever it lies: no preset, Track Preset or Cutouts put on
+    /// the parent deletes, copies or moves it. False for every other child (a Cutout, a template's piece, a stream's sound, a clip its Link
+    /// switch locked) and for a clip with no parent: an edit that clears <see cref="ParentClipId"/> clears it too, and one that points the
+    /// link at another clip keeps it. Left out of the file while false (<see cref="TimelineDocument.TethersMarked"/> says how a file
+    /// written before the mark is read).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Tethered { get; set; }
+
+    /// <summary>
     /// The beats found in its sound (5.2B, Detect &amp; Snap to Audio Beats: Services/Audio/BeatDetector.cs), ascending, in seconds of its
     /// file (media time, as <see cref="MediaOffset"/> is), so a trim, a move, a split or a change of speed keeps each on its moment of the
     /// sound; null while none were looked for, and so left out of the file. Never changed in place: an edit puts a new array here
@@ -364,8 +375,8 @@ public sealed class TimelineClip
         && AudioSlipSeconds == other.AudioSlipSeconds && AudioLeadInSeconds == other.AudioLeadInSeconds && AudioTailOutSeconds == other.AudioTailOutSeconds
         && FadeInSeconds == other.FadeInSeconds && FadeOutSeconds == other.FadeOutSeconds && FadeInStyle == other.FadeInStyle
         && FadeOutStyle == other.FadeOutStyle && TransitionIn == other.TransitionIn && GainDb == other.GainDb && IsHidden == other.IsHidden
-        && IsMuted == other.IsMuted && ProxyChoice == other.ProxyChoice && ParentClipId == other.ParentClipId && ReferenceEquals(BeatTimes, other.BeatTimes)
-        && ReferenceEquals(State, other.State);
+        && IsMuted == other.IsMuted && ProxyChoice == other.ProxyChoice && ParentClipId == other.ParentClipId && Tethered == other.Tethered
+        && ReferenceEquals(BeatTimes, other.BeatTimes) && ReferenceEquals(State, other.State);
 
     /// <summary>Takes every value of another clip (its id too): a rollback, in place, so whoever holds this clip keeps it.</summary>
     internal void Restore(TimelineClip from)
@@ -395,6 +406,7 @@ public sealed class TimelineClip
         IsMuted = from.IsMuted;
         ProxyChoice = from.ProxyChoice;
         ParentClipId = from.ParentClipId;
+        Tethered = from.Tethered;
         BeatTimes = from.BeatTimes;
         State = from.State;
     }
@@ -495,7 +507,7 @@ public sealed record RestoredFold(Guid Id, Guid TrackId, FoldEdge? From, FoldEdg
 }
 
 /// <summary>The whole sequence: its frame, its rate, its tracks (bottom first) and what lies over all of them.</summary>
-public sealed class TimelineDocument
+public sealed class TimelineDocument : IJsonOnDeserialized
 {
     /// <summary>The shortest a clip is made by an edit (as 4.2.0's layer edits keep it), in whole frames while quantizing.</summary>
     public const double MinimumClipSeconds = 0.05;
@@ -870,6 +882,124 @@ public sealed class TimelineDocument
         }
     }
 
+    // ----- Tethers (Pass 5.5A): a child that follows its parent in time but is none of its Game Preset pieces -----
+    // A clip's tether is a mark on it (TimelineClip.Tethered), set by the Timeline's drag and kept wherever the clip, its lane or its parent
+    // goes. A document written before the mark (a project, a kept tab or an undo step of 5.4.4 or of a 5.5A preview) has its tethers found
+    // as it is read: a template puts its pieces under its clip's own track, so a picture child that lies elsewhere is taken for one a 5.5A
+    // preview tethered. A Cutout (a video of its parent's own file) never is (AttachRefusal refuses that tether), so one a 5.4.4 block drag
+    // took off its lane is still one of its clip's pieces, as it was then.
+
+    /// <summary>
+    /// Whether this document's tethers are to be read as written, none found (Pass 5.5A): true when it holds a piece that lies where a reader
+    /// of an older document finds tethers (<see cref="LooseChildren"/>: a picture child off its parent's own track, no Cutout of it, not
+    /// tethered). Written only then, so every other document's file is as it was; a document read without it has each such child marked
+    /// tethered (<see cref="IJsonOnDeserialized.OnDeserialized"/>), which for a document written with the mark changes nothing.
+    /// </summary>
+    [JsonInclude, JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    internal bool TethersMarked
+    {
+        get => LooseChildren().Any(c => !c.Tethered);
+        set => _tethersMarkedRead = value;
+    }
+
+    // What the text read said of TethersMarked (false when it said nothing): read once, as the document is read.
+    private bool _tethersMarkedRead;
+
+    void IJsonOnDeserialized.OnDeserialized()
+    {
+        if (_tethersMarkedRead)
+            return;
+
+        foreach (var child in LooseChildren())
+            child.Tethered = true;
+    }
+
+    /// <summary>
+    /// The children a document written before the mark holds as tethers (Pass 5.5A): each clip with a parent here, on a picture track (not a
+    /// sound's or the captions'), whose track does not lie under its parent's own track (its Sub-Lanes, at any depth), and that is no Cutout
+    /// of its parent (a video of its parent's own file) nor of a kind from before 5.2-AuditB (a project of that shape had no tethers).
+    /// </summary>
+    internal List<TimelineClip> LooseChildren() => LooseIn(null);
+
+    /// <summary>
+    /// The children an older document holds as tethers (<see cref="LooseChildren"/>), on its tracks and in its folds (5.5.0, the user's Q6:
+    /// a stretch folded away keeps its clips' tethers too), and, given <paramref name="bin"/> (the recycle bin a project or an undo step
+    /// keeps beside its document), in the bin: each child with the track it lay on (a folded clip's or a deleted one's own record, a
+    /// deleted one's own track gone: the track it lay under), its parent wherever it is (on the tracks, folded, or deleted with it or
+    /// before it).
+    /// </summary>
+    internal List<TimelineClip> LooseIn(IReadOnlyList<DeletedClip>? bin)
+    {
+        var loose = new List<TimelineClip>();
+        var places = new List<(TimelineClip Clip, Guid TrackId, Guid? TrackParentId, TimelineTrackKind Kind, bool Look)>();
+        foreach (var track in Tracks)
+        {
+            foreach (var clip in track.Clips)
+                places.Add((clip, track.Id, null, track.Kind, bin is null));
+        }
+
+        foreach (var segment in Folds ?? [])
+        {
+            foreach (var folded in segment.Clips)
+                places.Add((folded.Clip, folded.TrackId, null, folded.TrackKind, bin is null));
+        }
+
+        void Deleted(IReadOnlyList<DeletedClip>? entries)
+        {
+            foreach (var entry in entries ?? [])
+            {
+                places.Add((entry.Clip, entry.TrackId, entry.TrackParentId, entry.TrackKind, true));
+                Deleted(entry.Children);
+            }
+        }
+
+        Deleted(bin);
+        if (!places.Exists(p => p.Clip.ParentClipId is not null))
+            return loose;
+
+        var byId = new Dictionary<Guid, (TimelineClip Clip, Guid TrackId)>();
+        foreach (var place in places)
+            byId.TryAdd(place.Clip.Id, (place.Clip, place.TrackId));
+
+        // With a bin, only the bin's own entries are looked at (the document's are its own reading's, OnDeserialized).
+        foreach (var (clip, trackId, trackParentId, kind, look) in places)
+        {
+            if (!look || kind is TimelineTrackKind.Audio or TimelineTrackKind.Subtitle || clip.ParentClipId is not { } parentId
+                || clip.ContentKind is LayerKind.MainVideo or LayerKind.Video)
+            {
+                continue;
+            }
+
+            if (byId.TryGetValue(parentId, out var parent) && !ReferenceEquals(parent.Clip, clip) && parent.Clip.ContentKind is not (LayerKind.MainVideo or LayerKind.Video)
+                && !LiesUnder(trackId, trackParentId, parent.TrackId) && !IsCutoutOf(clip, parent.Clip))
+            {
+                loose.Add(clip);
+            }
+        }
+
+        return loose;
+    }
+
+    // Whether the track of that id (gone: the one it lay under, as its record kept it) lies under the track of the other id, at any depth.
+    private bool LiesUnder(Guid laneId, Guid? recordedParent, Guid trackId)
+    {
+        var up = Tracks.Find(t => t.Id == laneId) is { } lane ? lane.ParentTrackId : recordedParent;
+        for (var steps = 0; steps <= Tracks.Count && up is { } id; steps++)
+        {
+            if (id == trackId)
+                return true;
+            up = Tracks.Find(t => t.Id == id)?.ParentTrackId;
+        }
+
+        return false;
+    }
+
+
+    // A Cutout of its parent: a video clip of the video clip's own file (MainViewModel.IsCutout, here on the model alone).
+    private static bool IsCutoutOf(TimelineClip clip, TimelineClip parent) =>
+        clip.ContentKind == LayerKind.VideoFile && parent.ContentKind == LayerKind.VideoFile && PoolPath(clip.SourcePath).Length > 0
+        && string.Equals(PoolPath(clip.SourcePath), PoolPath(parent.SourcePath), StringComparison.OrdinalIgnoreCase);
+
     // ----- Changes -----
 
     /// <summary>The transactions open now, the outermost first (see <see cref="BeginTransaction"/>).</summary>
@@ -903,7 +1033,8 @@ public sealed class TimelineDocument
     /// where clips do not meet, clips on a track of the wrong kind, tracks numbered out of order, numbers that are not
     /// numbers, lengths, speeds, fades and file offsets out of range, and sound (a J or L cut) that starts before the
     /// timeline or reads outside its file; and (4.4) a clip that is its own parent or a track under itself, and parents
-    /// that lead back to where they began (a parent that is gone is no problem: its child is one of its own). With
+    /// that lead back to where they began (a parent that is gone is no problem: its child is one of its own), and (5.5A) a clip
+    /// marked tethered with no parent link. With
     /// <paramref name="requireFrames"/>, also edges off the frames while the document quantizes (an edit asked to be free
     /// may leave one). For tests, and for checking a project file written by hand.
     /// </summary>
@@ -948,6 +1079,8 @@ public sealed class TimelineDocument
                     Add($"{at}: it is its own parent.");
                 else if (clip.ParentClipId is { } parentClip)
                     clipParents[clip.Id] = parentClip;
+                else if (clip.Tethered)
+                    Add($"{at}: tethered, but to no clip.");
 
                 double[] values = [clip.Start, clip.End, clip.MediaOffset, clip.Speed, clip.SourceDuration, clip.AudioSlipSeconds, clip.AudioLeadInSeconds,
                                    clip.AudioTailOutSeconds, clip.FadeInSeconds, clip.FadeOutSeconds, clip.TransitionIn, clip.GainDb];

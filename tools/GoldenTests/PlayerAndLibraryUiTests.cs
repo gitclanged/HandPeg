@@ -37,7 +37,7 @@ public static class PlayerAndLibraryUiTests
     {
         yield return Case("timeline-drag-to-clip-library", "# A clip dragged out of the Timeline onto the Clip Library: held back where it began while the pane offers the drop, let go there nothing is committed and the Save dialog is asked for after the release; anywhere else the drag is as before.", DragToLibrary);
         yield return Case("expandable-pill-slider", "# The pill sliders (Volume, Timeline Zoom): the icon's size in layout open or closed, drawn past it with no child visuals, drag, Shift, wheel, double-click, keys, the readout, the icon's waves, the eased opening, UI Automation and their homes.", PillSlider);
-        yield return Case("speed-pill", "# The playback speed's pill: its face the speed at one fixed width that its widest words fit at any scale, a track of the seven speeds its thumb snaps to with no jitter, the wheel, the keys, a double-click for 1x, UI Automation, the view model's step and speed following each other, and its home.", SpeedPill);
+        yield return Case("speed-pill", "# The playback speed's pill: its face the speed at the Volume pill's 24 x 22 (the wider speeds drawn smaller to fit, 5.5A), a track of the seven speeds its thumb snaps to with no jitter, the wheel, the keys, a double-click for 1x, UI Automation, the view model's step and speed following each other, and its home.", SpeedPill);
         yield return Case("player-fullscreen", "# The Fullscreen Preview: the hover button and the bar coming and going, the order Esc goes in, F11, the bar's parts bound to the player's state, the borderless window, and the surface lifted out of its pane and given back with the dock untouched.", Fullscreen);
     }
 
@@ -571,13 +571,15 @@ public static class PlayerAndLibraryUiTests
         expect(home?.ElementsBeforeSelf().LastOrDefault() is { } volumeHome && Attr(volumeHome, X + "Name") == "VolumePill" && !home.ElementsAfterSelf().Any()
                && !main.Descendants().Any(e => e.Name.LocalName == "ComboBox" && (Attr(e, "AutomationProperties.Name") == "Playback Speed" || Attr(e, "ItemsSource") == "{Binding PlaybackSpeeds}")),
             "it sits after the Volume pill at the row's right end; no speed box (ComboBox) left anywhere");
-        var width = double.TryParse(Attr(home, "CollapsedWidth"), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) ? parsed : double.NaN;
+        // 5.5A (the user's): the Volume pill's size, the icon's 24 x 22 square, so no CollapsedWidth of its own.
+        const double width = 24;
+        expect(Attr(home, "CollapsedWidth") is null, "it sets no CollapsedWidth: its slot is the icon's square, the Volume pill's size (5.5A)");
 
         // A real pill as the XAML makes it, bound to a real view model.
         var vm = new MainViewModel();
         var pill = new ExpandablePillSlider
         {
-            Icon = PillIcon.Readout, ExpandsLeft = true, CollapsedWidth = width, Minimum = 0, Maximum = 6, SmallChange = 1, LargeChange = 1, DefaultValue = 3, Detent = 1,
+            Icon = PillIcon.Readout, ExpandsLeft = true, Minimum = 0, Maximum = 6, SmallChange = 1, LargeChange = 1, DefaultValue = 3, Detent = 1,
         };
         AutomationProperties.SetName(pill, "Playback Speed");
         pill.SetBinding(ExpandablePillSlider.DetentLabelsProperty, new Binding(nameof(MainViewModel.PlaybackSpeeds)) { Source = vm });
@@ -605,15 +607,26 @@ public static class PlayerAndLibraryUiTests
 
         text.Append("   faces: ").Append(string.Join(" ", faces)).Append('\n');
         expect(faces.SequenceEqual(vm.PlaybackSpeeds) && sizes.All(s => s == new Size(width, 22)) && pill.RenderSize == new Size(width, 22),
-            F($"collapsed, its face is the speed at each of the seven steps, and it is {width:0} x 22 at all of them: nothing beside it moves as the speed changes"));
+            F($"collapsed, its face is the speed at each of the seven steps, and it is {width:0} x 22 at all of them (the Volume pill's size): nothing beside it moves as the speed changes"));
 
-        // Wide enough for the widest words at any scale (WPF's ideal text layout), with room either side.
+        // The words fitted to the slot at any scale (WPF's ideal text layout), with room either side: the short ones at the bar's size, the
+        // long ones drawn smaller (5.5A), never below the least size.
         var family = TextElement.GetFontFamily(pill);
+        var room = width - 2 * ExpandablePillSlider.FacePad;
         double FaceWidth(string words, double scale) => ExpandablePillSlider.FaceText(words, family, Brushes.White, scale).Width;
         var widest = vm.PlaybackSpeeds.MaxBy(w => FaceWidth(w, 1));
-        var need = new[] { 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0 }.Max(scale => vm.PlaybackSpeeds.Max(w => FaceWidth(w, scale))) + 2 * ExpandablePillSlider.FacePad;
-        expect(widest == "0.25x" && width >= need && width - need < 8,
-            F($"\"0.25x\" is the widest; with {ExpandablePillSlider.FacePad:0} DIPs either side it fits the {width:0} at every scale from 100% to 300% (not much wider: under 8 DIPs to spare)"));
+        var scales = new[] { 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0 };
+        // (The type size drawn, from the line's height: it follows the size, and the full size's line is the bar's 12 DIPs.)
+        var fullLine = ExpandablePillSlider.FaceText("0", family, Brushes.White, 1).Height;
+        double TypeSize(FormattedText face) => ExpandablePillSlider.FaceFontSize * face.Height / fullLine;
+        var fitted = scales.SelectMany(scale => vm.PlaybackSpeeds.Select(w => ExpandablePillSlider.FaceText(w, family, Brushes.White, scale, room))).ToList();
+        var atOne = vm.PlaybackSpeeds.ToDictionary(w => w, w => TypeSize(ExpandablePillSlider.FaceText(w, family, Brushes.White, 1, room)));
+        text.Append("   face sizes: ").Append(string.Join(" ", atOne.Select(p => F($"{p.Key} {p.Value:0.0}")))).Append('\n');
+        expect(widest == "0.25x" && FaceWidth("0.25x", 1) > room && fitted.All(f => f.Width <= room + 0.01),
+            F($"\"0.25x\" is the widest (too wide for the slot at the bar's size); every speed, fitted, lies within the {room:0} DIPs between {ExpandablePillSlider.FacePad:0} either side at every scale from 100% to 300%"));
+        expect(Math.Abs(atOne["1x"] - ExpandablePillSlider.FaceFontSize) < 0.01 && Math.Abs(atOne["2x"] - ExpandablePillSlider.FaceFontSize) < 0.01
+               && fitted.All(f => TypeSize(f) >= ExpandablePillSlider.FaceLeastSize - 0.01),
+            F($"1x and 2x keep the bar's {ExpandablePillSlider.FaceFontSize:0} DIPs; the wider speeds are drawn smaller, never below {ExpandablePillSlider.FaceLeastSize:0}"));
         var digits = "0123456789".Select(d => FaceWidth(d.ToString(), 1)).ToList();
         expect(digits.Max() - digits.Min() < 1e-6 && Math.Abs(FaceWidth("0.25x", 1) - FaceWidth("0.75x", 1)) < 1e-6,
             F($"in the bar's text ({family.Source} {ExpandablePillSlider.FaceFontSize:0}), its figures tabular: every digit one width, 0.25x and 0.75x alike"));
@@ -623,7 +636,7 @@ public static class PlayerAndLibraryUiTests
         row.Resources["TextBrush"] = Brushes.White;
         var shown = new ExpandablePillSlider
         {
-            Icon = PillIcon.Readout, ExpandsLeft = true, CollapsedWidth = width, Minimum = 0, Maximum = 6, Detent = 1, DetentLabels = vm.PlaybackSpeeds, Value = 0,
+            Icon = PillIcon.Readout, ExpandsLeft = true, Minimum = 0, Maximum = 6, Detent = 1, DetentLabels = vm.PlaybackSpeeds, Value = 0,
             HorizontalAlignment = HorizontalAlignment.Right,
         };
         row.Children.Add(shown);
@@ -661,12 +674,12 @@ public static class PlayerAndLibraryUiTests
         }
 
         var inked = new[] { 96.0, 144.0, 192.0 }.Select(Inked).ToList();
-        expect(inked.All(i => i.Ink > 20 && i.Outside == 0 && i.Left >= 3 && i.Right >= 3),
-            F($"drawn at 96, 144 and 192 DPI, \"0.25x\" lies inside its {width:0}-DIP slot at least 3 DIPs clear of either end: never cut, never over its neighbours"));
+        expect(inked.All(i => i.Ink > 20 && i.Outside == 0 && i.Left >= 1 && i.Right >= 1),
+            F($"drawn at 96, 144 and 192 DPI, \"0.25x\" lies inside its {width:0}-DIP slot at least 1 DIP clear of either end (drawn smaller to fit, 5.5A): never cut, never over its neighbours"));
 
         // Open: the track left of the face, with no readout beside it (the face is the readout).
         var wide = new Grid { Width = 200, Height = 30, Background = Brushes.Black };
-        var opened = new ExpandablePillSlider { Icon = PillIcon.Readout, ExpandsLeft = true, CollapsedWidth = width, Minimum = 0, Maximum = 6, Detent = 1, Value = 3, HorizontalAlignment = HorizontalAlignment.Right };
+        var opened = new ExpandablePillSlider { Icon = PillIcon.Readout, ExpandsLeft = true, Minimum = 0, Maximum = 6, Detent = 1, Value = 3, HorizontalAlignment = HorizontalAlignment.Right };
         wide.Children.Add(opened);
         opened.OpenAtOnce(true);
         wide.Measure(new Size(200, 30));
@@ -836,23 +849,24 @@ public static class PlayerAndLibraryUiTests
         var detents = Enumerable.Range(0, 7).Select(i => speedAt + low + i * (high - low) / 6).ToList();
         text.Append(F($"   the speed pill open, from its slot: the Volume slot {volumeSlot.Left - speedAt:0} to {volumeSlot.Right - speedAt:0}, the detents "))
             .Append(string.Join(" ", detents.Select(d => (d - speedAt).ToString("0", CultureInfo.InvariantCulture)))).Append('\n');
-        expect(volumeSlot.Width == 24 && crossed.Count == 24 && crossed.All(hit => ReferenceEquals(hit, volumePill)) && Panel.GetZIndex(volumePill) > Panel.GetZIndex(speedPill),
-            "the row as MainWindow.xaml has it, the speed pill open over the Volume pill: every point of its 24-DIP slot is still the Volume pill's (raised over it, ZIndex), so the speaker shows and a click on it mutes");
-        expect(detents.All(d => d + 8 <= volumeSlot.Left + 1e-9 && ReferenceEquals(HitAt(d), speedPill)),
-            "no speed lies under the Volume slot: every detent, with its thumb and a press's slack (8 DIPs), left of it, each the speed pill's to the pointer");
+        expect(volumeSlot.Width == 24 && crossed.Count == 24 && crossed.All(hit => ReferenceEquals(hit, speedPill)) && Panel.GetZIndex(speedPill) > Panel.GetZIndex(volumePill),
+            "the row as MainWindow.xaml has it, the speed pill open: it pops over the Volume pill (raised over it, ZIndex, 5.5A), every point of the speaker's 24-DIP slot the speed pill's, so no speaker shows through the speeds");
+        expect(detents.All(d => ReferenceEquals(HitAt(d), speedPill)) && detents.Any(d => d > volumeSlot.Left && d < volumeSlot.Right),
+            "the track sits right by the speed's face, over the covered speaker: every detent the speed pill's to the pointer, those over the speaker's slot too");
 
-        // The pointer crossing the speaker on its way to the speed's track, resting on it, pressing it; then back on the speed.
+        // Shut, the speaker is the Volume pill's again: the pointer on it opens it at once; back on the speed, the speed opens at once and
+        // the Volume pill shuts: never both open.
         MouseEventArgs Hover(RoutedEvent routed) => new(Mouse.PrimaryDevice, 0) { RoutedEvent = routed };
+        speedPill.OpenAtOnce(false);
+        host.UpdateLayout();
+        new RenderTargetBitmap(400, 26, 96, 96, PixelFormats.Pbgra32).Render(host);
+        var speakerAgain = Enumerable.Range(0, (int)volumeSlot.Width).All(i => ReferenceEquals(HitAt(volumeSlot.Left + 0.5 + i), volumePill));
         volumePill.RaiseEvent(Hover(Mouse.MouseEnterEvent));
-        var (crossingOpened, waits, under) = (volumePill.IsExpanded, volumePill.OpensLater, volumePill.UnderOpenNeighbour());
+        var (volumeOpened, waits) = (volumePill.IsExpanded, volumePill.OpensLater);
         volumePill.RaiseEvent(Hover(Mouse.MouseLeaveEvent));
-        expect(under && !crossingOpened && waits && !volumePill.OpensLater && speedPill.IsExpanded,
-            "the pointer crossing the speaker on its way to the speed's track opens nothing (it would open the Volume pill only by resting there 250 ms, as the speed pill closes); the speed pill stays open");
-        volumePill.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = UIElement.MouseLeftButtonDownEvent });
-        var (pressedOpen, speedShut) = (volumePill.IsExpanded, !speedPill.IsExpanded);
         speedPill.RaiseEvent(Hover(Mouse.MouseEnterEvent));
-        expect(pressedOpen && speedShut && speedPill.IsExpanded && !volumePill.IsExpanded,
-            "a press on the speaker opens the Volume pill at once, the speed pill handing over (shut); the pointer back on the speed opens it at once (nothing over its slot), the Volume pill shut: never both open");
+        expect(speakerAgain && volumeOpened && !waits && speedPill.IsExpanded && !volumePill.IsExpanded,
+            "the speed pill shut, every point of the speaker's slot is the Volume pill's again and the pointer there opens it at once; the pointer back on the speed opens it at once, the Volume pill handing over (shut): never both open");
 
         // A click off an open pill closes it at once (5.4.4, the user's: it opens over the bar's other buttons, never moving them), the press
         // going on to what it was meant for; a press on the pill itself leaves it open.
@@ -874,12 +888,12 @@ public static class PlayerAndLibraryUiTests
         expect(clickedOff && reached == 2 && pressedOn && !speedPill.IsExpanded && !bar2.Contains("OpenPillOverhang", StringComparison.Ordinal),
             "a click anywhere off an open pill closes it at once and goes on to what it was meant for; a press on the pill keeps it open; the bar keeps no room for an open pill (it opens over the other buttons)");
 
-        // The inset only while the Volume pill is there.
+        // No inset (5.5A): the track sits by the face whether the Volume pill is shown or hidden in the Views menu.
         var inset = speedPill.TrackInset;
         state.PlaybackControls.Options.Single(o => o.Id == "Volume").IsShown = false;
         var (alone, aloneSpan) = (speedPill.TrackInset, speedPill.TrackSpan);
-        expect(inset == 32 && (low, high) == (-136.0, -40.0) && alone == 0 && aloneSpan == (-104.0, -8.0) && volumePill.Visibility == Visibility.Collapsed,
-            "the track starts 32 DIPs further out (-136 to -40) while the Volume pill is shown (its 24-DIP slot and 8 of margin); hidden in the Views menu, it sits by the face again (-104 to -8)");
+        expect(inset == 0 && (low, high) == (-104.0, -8.0) && alone == 0 && aloneSpan == (-104.0, -8.0) && volumePill.Visibility == Visibility.Collapsed,
+            "the track runs -104 to -8 from the speed's slot, the Volume pill shown (covered while the speed is open) or hidden in the Views menu alike: no inset");
 
         // The other pills as they were.
         var volume = new ExpandablePillSlider { Icon = PillIcon.Speaker, IsIconToggle = true };

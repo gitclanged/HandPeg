@@ -187,6 +187,14 @@ public partial class MainWindow
         surface.BadgePressed += Timeline_BadgePressed;
         surface.MarqueeSelected += Timeline_MarqueeSelected;
         surface.Together = _viewModel.EditTogether;
+
+        // 5.5A: a picture track's header dragged to a seam between the picture tracks (moved there with its Sub-Lanes, or out of its stack),
+        // or right onto the lower half of another top-level picture track's header (made its Sub-Lane). Each one step of Undo.
+        surface.CanDragRow = row => TrackLayerOf(row) is { } layer && _viewModel.CanDragTrack(layer);
+        surface.CanMoveRowTo = (row, beside, above) => TrackLayerOf(row) is { } layer && TrackLayerOf(beside) is { } besideLayer && _viewModel.CanMoveTrackToSeam(layer, besideLayer, above);
+        surface.CanNestRow = (row, parent) => TrackLayerOf(row) is { } layer && TrackLayerOf(parent) is { } parentLayer && _viewModel.CanNestTrack(layer, parentLayer);
+        surface.RowMoveRequested += Timeline_RowMoveRequested;
+        surface.RowNestRequested += Timeline_RowNestRequested;
         _viewModel.ClipSelectionChanged += ClipGroup_Changed;
         pane.Ruler.PointerSecondsChanged += surface.NotePointerOverRuler;
         RegisterTimelineChrome(pane.Ruler, pane.TimeScroll, pane.ZoomSlider);
@@ -518,6 +526,11 @@ public partial class MainWindow
             row.Data is Layer layer && _viewModel.TrackOfRow(layer) is { } track ? _viewModel.Document.Tracks.IndexOf(track) : -1;
     }
 
+    // What a picture track's header says of its drag (5.5A).
+    private const string TrackDragTip = "Drag this header up or down to move the track, its Sub-Lanes with it; drag it right onto the lower half of another track's header to make it that track's Sub-Lane. Esc cancels the drag.";
+    private const string EmptyTrackDragTip = "An empty track: drop videos and pictures onto it. " + TrackDragTip;
+    private const string SubLaneDragTip = "A Sub-Lane: drag this header past the top or bottom of its stack, to a seam between the tracks, to take it out of its stack, or right onto another track's header to move it into that one's. Let go over its own stack, or press Esc, and nothing changes.";
+
     /// <summary>A track's row (a picture's, a video's, an empty one, a sound clip's), with its clips and, while any of them is unlinked from its sound, that sound's lane in its stack.</summary>
     private TimelineRow TrackRow(Layer layer, double scale, double seconds)
     {
@@ -533,7 +546,11 @@ public partial class MainWindow
             SizedAlone = track is not null,
             HasOwnHeight = track?.Height is not null || (_rowHeightDrag is { } drag && Equals(drag.Key, layer.TrackId)),
             Accent = layer.IsAudio ? SoundClipBrush : LayerClipBrush,
-            Tip = layer.IsEmptyTrack ? "An empty track: drop videos and pictures onto it." : null,
+
+            // 5.5A: a picture track's header says it can be dragged (moved, nested, taken out of its stack).
+            Tip = track is { Kind: TimelineTrackKind.Video or TimelineTrackKind.Switch }
+                ? track.ParentTrackId is null ? layer.IsEmptyTrack ? EmptyTrackDragTip : TrackDragTip : SubLaneDragTip
+                : layer.IsEmptyTrack ? "An empty track: drop videos and pictures onto it." : null,
 
             // A gap's pill closes it on this track: never on a locked one (an unlinked sound's lane, the captions and the
             // blur fill's settings row have none either).
@@ -937,6 +954,31 @@ public partial class MainWindow
     {
         if (row.Data is Layer { IsCaptions: true } or Layer { IsBackground: true })
             SelectClip(row.Data);
+    }
+
+    // The track a row stands for (5.5A, a header's drag): a track's own row, never the captions', the blur fill's, an effect lane (its Data is
+    // no Layer) nor a track's unlinked-sound lane (it shares its track's Layer, under another key).
+    private static Layer? TrackLayerOf(TimelineRow row) =>
+        row.Data is Layer layer && Equals(row.Key, layer.TrackId) && !layer.IsCaptions && !layer.IsBackground ? layer : null;
+
+    // A track's header let go at a seam (5.5A): the track (with its Sub-Lanes) there, or out of its stack.
+    private void Timeline_RowMoveRequested(TimelineRow row, TimelineRow beside, bool above)
+    {
+        if (TrackLayerOf(row) is not { } layer || TrackLayerOf(beside) is not { } besideLayer)
+            return;
+
+        CrashReporter.Note("timeline", above ? "header drag: a track moved above another" : "header drag: a track moved below another");
+        _viewModel.MoveTrackToSeam(layer, besideLayer, above);
+    }
+
+    // A track's header let go nested (5.5A): that track a Sub-Lane of the other.
+    private void Timeline_RowNestRequested(TimelineRow row, TimelineRow parent)
+    {
+        if (TrackLayerOf(row) is not { } layer || TrackLayerOf(parent) is not { } parentLayer)
+            return;
+
+        CrashReporter.Note("timeline", "header drag: a track made a Sub-Lane");
+        _viewModel.NestTrackUnder(layer, parentLayer);
     }
 
     // A track's preset badge clicked (5.2A): its Game Presets drop from it, the track's own ticked, and Clear Track Preset under them.

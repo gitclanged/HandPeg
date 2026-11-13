@@ -26,7 +26,15 @@ public static class GamePresetLibrary
 
     // Raised when a built-in is added or changed, so that it is written (where the folder has no file of its name).
     // 1: Overwatch 2 (traced from the user's own mask and laid out as their own Game Preset), Marvel Rivals, Valorant, CS2, Apex Legends, The Finals.
-    public const int Version = 1;
+    // 2 (5.5.0): "Overwatch 2 Vertical HUD" named "Overwatch Vertical" (the user's own name for it; one untouched under the old name is
+    // renamed, see WriteMissingAsync), and "Fortnite Vertical", taken from the user's own Fortnite Game Preset.
+    public const int Version = 2;
+
+    /// <summary>The built-in Overwatch Game Preset's name before 5.5.0.</summary>
+    public const string OldOverwatchFile = "Overwatch 2 Vertical HUD" + StyleFile.Extension;
+
+    // The date WriteMissingAsync gave the first built-in it wrote (one a user saved over has a date of its own).
+    private static readonly DateTime FirstStamp = new(2026, 1, 1, 12, 0, 0, DateTimeKind.Local);
 
     // The frame the outlines below are written in, in pixels; the masks are drawn at this size too.
     private const double W = 2560, H = 1440;
@@ -60,8 +68,10 @@ public static class GamePresetLibrary
     public static IReadOnlyList<BuiltIn> All { get; } =
     [
         // Traced from the user's own mask (their Photoshop cutout, the one HandPeg 5.0 shipped: 12 islands, within 0.32 % of its
-        // pixels), and cut, placed, feathered and grown as in the vertical Game Preset the user made by hand in HandPeg.
-        new("Overwatch 2 Vertical HUD",
+        // pixels), and cut, placed, feathered and grown as in the vertical Game Preset the user made by hand in HandPeg ("Overwatch
+        // Vertical HUDv2": its mask within 1.1 % of these outlines, all at their soft edges; its boxes and places these exactly). First:
+        // the drop overlay's first target and the top of the lists (the user's call, 5.5.0).
+        new("Overwatch Vertical",
         [
             new("Killfeed",
                 "0.72148,0.07222 0.98477,0.07222 0.98477,0.18472 0.72148,0.18472;0.90469,0.02708 0.98359,0.02708 0.98359,0.05764 0.90469,0.05764",
@@ -85,6 +95,24 @@ public static class GamePresetLibrary
                 + "0.95234,0.80694 0.96094,0.80833 0.96602,0.81597 0.96719,0.82014 0.96797,0.82569 0.96719,0.8375 0.96172,0.84722 0.95234,0.84722 "
                 + "0.94805,0.84236 0.94531,0.83472 0.94453,0.82847 0.94531,0.81736 0.94883,0.80972",
                 new Rect(0.7278, 0.76598, 0.2722, 0.23402), new Spot(0.46788, 0.74208, 0.58282), FeatherRadius: 2, CornerRadius: 10),
+        ]),
+
+        // The user's own Fortnite Game Preset (5.5.0: "Fortnite draft", made in the Cutout Studio on a 16:9 recording): its outlines,
+        // boxes and places as they drew them.
+        new("Fortnite Vertical",
+        [
+            new("Inventory",
+                "0.73347,0.87717 0.73356,0.94161 0.77055,0.94161 0.77055,0.87713;0.77534,0.87713 0.77534,0.94161 0.81233,0.94161 0.81233,0.87713;"
+                + "0.81773,0.94168 0.81781,0.87713 0.85477,0.87691 0.85481,0.94177;0.85959,0.87713 0.85959,0.94161 0.89726,0.94161 0.89726,0.87713;"
+                + "0.90205,0.87713 0.90205,0.94161 0.93904,0.94161 0.93904,0.87713;0.94384,0.94161 0.94377,0.87692 0.98089,0.87704 0.98082,0.94199;"
+                + "0.93973,0.76764 0.93973,0.84307 0.98014,0.84307 0.98014,0.76521",
+                new Rect(0.73347, 0.76521, 0.24742, 0.17678), new Spot(0.5363, 0.8265, 0.4337)),
+            new("Health",
+                "0.29784,0.8749 0.03544,0.87371 0.03571,0.85624 0.02143,0.85552 0.0204,0.95537 0.29781,0.95476",
+                new Rect(0.0204, 0.85552, 0.27745, 0.09984), new Spot(0.03, 0.8478, 0.4863)),
+            new("Minimap",
+                "0.85137,0.0292 0.85146,0.26284 0.98353,0.26386 0.98424,0.02761;0.84384,0.03041 0.79525,0.0304 0.79521,0.12895 0.8435,0.12997",
+                new Rect(0.79521, 0.02761, 0.18903, 0.23625), new Spot(0.261, 0.03, 0.4781)),
         ]),
 
         // The rest are HandPeg's own outlines of each game's default HUD at 16:9 (as 5.0 had them; Valorant new), to be redrawn on a
@@ -188,8 +216,18 @@ public static class GamePresetLibrary
                 Directory.CreateDirectory(AppPaths.Styles);
                 var options = new JsonSerializerOptions { WriteIndented = true };
 
+                // 5.5.0: the Overwatch built-in as 5.1 wrote it, never saved over (its date still the one it was written with), takes
+                // its new name instead of a second copy beside it. One the user changed keeps its name (it is theirs), and the new one is written.
+                var old = Path.Combine(AppPaths.Styles, OldOverwatchFile);
+                var renamed = Path.Combine(AppPaths.Styles, All[0].FileName);
+                if (File.Exists(old) && !File.Exists(renamed) && File.GetLastWriteTime(old) == FirstStamp)
+                {
+                    File.Move(old, renamed, overwrite: false);
+                    written.Add(All[0].FileName);
+                }
+
                 // A fixed date long past, one minute apart: the first built-in is the newest of them.
-                var stamp = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Local);
+                var stamp = FirstStamp;
                 for (var i = 0; i < All.Count; i++)
                 {
                     var path = Path.Combine(AppPaths.Styles, All[i].FileName);
@@ -214,8 +252,9 @@ public static class GamePresetLibrary
 
     /// <summary>
     /// Records that the built-ins are written, on the interface's thread. An empty drop-overlay list takes every built-in; a list the user
-    /// made gets the first built-in (Overwatch 2) after their own, once per version, so that it is on the overlay without taking a place
-    /// of theirs. Asked of the folder, not of what this run wrote: a version not yet recorded still lists what an earlier run wrote.
+    /// made gets the first built-in (Overwatch Vertical) once per version where it does not have it. 5.5.0 (the user's call): it goes
+    /// first, the overlay's left-most target, and an entry of the old Overwatch file whose file took the new name (WriteMissingAsync)
+    /// becomes it. Asked of the folder, not of what this run wrote: a version not yet recorded still lists what an earlier run wrote.
     /// </summary>
     public static void Seeded()
     {
@@ -223,18 +262,29 @@ public static class GamePresetLibrary
         if (settings.BuiltInGamePresetsVersion >= Version)
             return;
 
-        var all = All.Select(b => b.FileName).Where(f => File.Exists(Path.Combine(AppPaths.Styles, f))).ToList();
         if (settings.SplashStylePresets.Count == 0)
-        {
-            settings.SplashStylePresets = all;
             settings.SplashPresetCount = Math.Max(settings.SplashPresetCount, 1);
-        }
-        else if (all.Contains(All[0].FileName) && !settings.SplashStylePresets.Contains(All[0].FileName, StringComparer.OrdinalIgnoreCase))
-        {
-            settings.SplashStylePresets = [.. settings.SplashStylePresets, All[0].FileName];
-        }
+        settings.SplashStylePresets = SeededList(settings.SplashStylePresets, f => File.Exists(Path.Combine(AppPaths.Styles, f)));
 
         settings.BuiltInGamePresetsVersion = Version;
         settings.SaveAsCurrent();
+    }
+
+    /// <summary>
+    /// The drop overlay's list once the built-ins are written (pure: Seeded, built-in-game-presets): empty, every built-in there is in the
+    /// lists' order; else the user's own with Overwatch Vertical first (an old Overwatch entry whose file is gone taken for it), the rest
+    /// of theirs in their order.
+    /// </summary>
+    public static List<string> SeededList(IReadOnlyList<string> list, Func<string, bool> exists)
+    {
+        var first = All[0].FileName;
+        if (list.Count == 0)
+            return All.Select(b => b.FileName).Where(exists).ToList();
+        if (!exists(first))
+            return [.. list];
+
+        var renamed = list.Select(f => string.Equals(f, OldOverwatchFile, StringComparison.OrdinalIgnoreCase) && !exists(OldOverwatchFile) ? first : f);
+        var mine = renamed.Where(f => !string.Equals(f, first, StringComparison.OrdinalIgnoreCase)).Distinct(StringComparer.OrdinalIgnoreCase);
+        return [first, .. mine];
     }
 }

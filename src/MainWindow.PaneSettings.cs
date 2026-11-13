@@ -181,7 +181,7 @@ public partial class MainWindow
         new("Snapping & Playback",
         [
             new(TimelineSetting.Snapping, "Enable Timeline Snapping",
-                "Clips and edges snap to the playhead, markers and other clips' edges. Shift while dragging is never snapped.",
+                "Clips and edges snap to the playhead, markers and other clips' edges. Shift while dragging is never snapped; Shift on a move onto another track keeps the clip's time exactly.",
                 nameof(AppSettings.SnapClips), "view.toggleSnap"),
             new(TimelineSetting.SnapToBeats, "Snap to Audio Beats",
                 "With snapping on, edges also catch on the beats found in clips' sound (a clip's menu: Audio & Voice, Detect & Snap to Audio Beats).",

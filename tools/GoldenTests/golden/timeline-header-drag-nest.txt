@@ -1,0 +1,25 @@
+# A track's header dragged: to a seam between the tracks at once, nested under another track's lower half once settled, a Sub-Lane taken out at a seam; over its own stack nothing, and Esc cancels.
+ok: the captions' header: the host does not let it be dragged
+ok: C's header pressed: held for a drag, not dragging yet
+ok: dragged straight up 75 DIPs in 20 ms into B's upper half: the seam over B (between A's stack and B) at once, Transit or not
+ok: let go: moved there, once; the drag's end told once
+ok: D's header swept up, and 20 DIPs right, onto B's lower half: no nest in Transit (the seam under B meanwhile)
+ok: rested past the dwell: nested under B (indented 18 DIPs or more, on its lower half)
+ok: the nest is drawn: the indented accent bracket down B's header
+ok: let go: D made B's Sub-Lane, B's stack opened (kept by its key)
+ok: only 10 DIPs right on B's lower half, settled: no nest, the seam under B
+ok: 20 DIPs right on B's upper half, settled: no nest, the seam over B
+ok: let go: moved over B
+ok: A's Sub-Lane dragged left and up into A's upper half: the seam over A, the top of the picture tracks
+ok: let go: taken out of A's stack, over A
+ok: A's Sub-Lane dragged 12 DIPs up within its own lane: a drag, over nothing (no seam bar)
+ok: on over the middle of A's own row: still over nothing (before, the seam over A: let go there, out of its stack)
+ok: right onto A's lower half, settled: never nested under its own track, and no seam either
+ok: back on its own header and let go: nothing moved or nested, the drag's end told once
+ok: into the outer band at the bottom of A's family: the seam under it (said as B's, above it)
+ok: Esc: the drag let go of, its seam bar gone, the drag's end told
+ok: the button let go after it: no header held, nothing moved
+ok: Esc on a header pressed but not dragged: nothing to cancel, its release a click
+ok: a press that moves 2 DIPs: no drag (under the system's drag distance)
+ok: let go: a click as before, nothing raised
+ok: the rows made again while a header is held: the press is let go, nothing follows

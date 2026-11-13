@@ -174,6 +174,9 @@ public partial class MainWindow : Window
         _autosave.Tick += Autosave_Tick;
         _autosave.Start();
 
+        // Pass 5.5A review: every save of the project in front lets its crash-recovery file go at once (MainWindow.TabCache.cs).
+        _viewModel.ProjectSaved += ViewModel_ProjectSaved;
+
         // Ctrl+S and Ctrl+Shift+S are key bindings of the window (see the XAML) on commands of the view model, which ask here.
         _viewModel.SaveRequested += choosePlace =>
         {
@@ -635,9 +638,13 @@ public partial class MainWindow : Window
             _closeAsked = true;
             close = MayClose();
 
-            // A clean close (5.4A): the project tabs' cache files go, so nothing is offered back at the next start.
+            // A clean close (5.4A): the project tabs' cache files go, so nothing is offered back at the next start (Pass 5.5A: or stay, as
+            // the close's plan says). The 20 s tick writes no recovery file from here on.
             if (close)
+            {
+                _autosave.Stop();
                 Guarded("let the project tabs' cache go", ForgetProjectTabs);
+            }
         }
         catch (Exception ex)
         {
@@ -653,6 +660,9 @@ public partial class MainWindow : Window
         {
             e.Cancel = true;
             Guarded("note the close called off", () => CrashReporter.MarkUserClosing(false));
+
+            // Pass 5.5A final review: the tabs a dead session left, put off while this close was asking, are taken in now (at idle, as at start).
+            TakeInLeftTabsPutOff();
             return;
         }
 
@@ -669,11 +679,22 @@ public partial class MainWindow : Window
         if (!MayCloseProjectTabs())
             return false;
 
-        var unsaved = _viewModel.HasUnsavedChanges;
-        if (unsaved)
-            AppLog.Write($"Closing with unsaved changes in {_viewModel.DescribeUnsavedChanges()}.");
-        if (!AppSettings.Current.PromptToSaveOnExit || !unsaved)
+        // Pass 5.5A: the tabs answered for the tab in front as well (kept for the next start, one dialog for every tab holding work, or nothing
+        // to ask): asked no more.
+        if (ExitAnsweredByTabs)
             return true;
+
+        // Left (the 5.5A addenda): the prompt to save switched off (nothing asked, as before), or one project alone, in front, with work not
+        // saved as a project: changes since it was opened or saved, or never saved at all (ExitPlanFor counted it, its dot made exact).
+        var unsaved = _exitQuestion == ExitQuestion.Classic;
+        if (!unsaved || !AppSettings.Current.PromptToSaveOnExit)
+        {
+            if (_viewModel.HasUnsavedChanges)
+                AppLog.Write($"Closing with unsaved changes in {_viewModel.DescribeUnsavedChanges()}.");
+            return true;
+        }
+
+        AppLog.Write(_tabs.Active.Dirty ? $"Closing with unsaved changes in {_viewModel.DescribeUnsavedChanges()}." : "Closing with a project never saved: asked whether to save it.");
 
         string name;
         try
@@ -685,7 +706,10 @@ public partial class MainWindow : Window
             name = "";
         }
 
-        var dialog = new SaveOnExitDialog(name.Length > 0 ? name : $"Project {DateTime.Now:yyyy-MM-dd HH.mm}") { Owner = this };
+        // Pass 5.5A review: a project opened from or saved to a file is saved there, as Ctrl+S saves it (and as the tabs' dialog saves the tab in
+        // front); the name box is only for work never saved.
+        var projectPath = _viewModel.CurrentProjectPath;
+        var dialog = new SaveOnExitDialog(name.Length > 0 ? name : $"Project {DateTime.Now:yyyy-MM-dd HH.mm}", projectPath) { Owner = this };
         dialog.ShowDialog();
         switch (dialog.Choice)
         {
@@ -695,7 +719,7 @@ public partial class MainWindow : Window
             case ExitChoice.SaveAndClose:
                 // A project that could not be saved must not be followed by losing what it was meant to keep without a word:
                 // what went wrong is said, and closing all the same is the user's call (never a window that silently stays).
-                var saved = _viewModel.SaveProject(dialog.ProjectName);
+                var saved = projectPath.Length > 0 ? _viewModel.SaveProjectTo(projectPath) : _viewModel.SaveProject(dialog.ProjectName);
                 return saved.StartsWith("Project saved", StringComparison.Ordinal)
                     || new ConfirmDialog("Project Not Saved", $"{saved}\n\nClose HandPeg anyway? The changes that were not saved are lost.", "Close Without Saving")
                     {
@@ -715,7 +739,8 @@ public partial class MainWindow : Window
     {
         try
         {
-            if (!_viewModel.HasUnsavedChanges)
+            // Pass 5.5A addenda: work never saved as a project counts too (UnsavedForExit), changed since it was opened or not.
+            if (!_viewModel.HasUnsavedChanges && !UnsavedForExit(false, _viewModel.HoldsNothingForTab, _viewModel.CurrentProjectPath))
                 return true;
             return MessageBox.Show(this, $"HandPeg could not ask whether to save the project ({fault.Message}).\n\nClose without saving? The changes that were not saved are lost.",
                 "HandPeg", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) == MessageBoxResult.Yes;
@@ -1292,8 +1317,19 @@ public partial class MainWindow : Window
     private DateTime _lastAutosave = DateTime.UtcNow;
 
     // Looked at every twenty seconds: when autosave is on and its interval has passed, the project is written (if it has changed).
+    // Pass 5.5A: never while playing, scrubbing, dragging on the Timeline or switching tabs (the capture is the whole state, on this
+    // thread: Law 3), the next tick looks again; and first, whatever the autosave says, the tab in front's crash-recovery file.
+    // Pass 5.5A review: a recovery file still there for a tab in front with nothing unsaved since (saved by a way that told nobody) goes
+    // before anything holds the tick back (O(1): no fingerprint); the recovery copy also waits out a press, a modal dialog or a close.
     private void Autosave_Tick(object? sender, EventArgs e)
     {
+        if (_frontRecovery is { Written: true } && !_viewModel.MayHaveUnsavedChanges && !_switchingTab)
+            DropFrontRecovery(_tabs.Active);
+        if (_viewModel.IsPlaying || _gpu is { IsPlaying: true } || IsScrubHeld || TimelineDragHeld || _switchingTab)
+            return;
+
+        if (!FrontRecoveryHeld)
+            KeepFrontRecovery();
         var settings = AppSettings.Current;
         if (!settings.AutosaveEnabled || DateTime.UtcNow - _lastAutosave < TimeSpan.FromMinutes(Math.Clamp(settings.AutosaveMinutes, 1, 120)))
             return;

@@ -1,0 +1,15 @@
+# A clip let go on the bottom edge of a clip it overlaps (settled, or Alt pressed during the move) is tethered to it as its child, a curve drawn to it.
+ok: swept up onto the band along the bottom of the clip above it (overlapping it): no tether in Transit, the row the target
+ok: rested there past the dwell: tethered to that clip, its name on the pill from the host ("Talk"), no row target, no seam
+ok: the tether is drawn: the curve from the block's top to the clip's bottom edge, at its middle
+ok: let go: attached as that clip's child at its time, and nothing else (no move along its row, none onto the row above)
+ok: Alt pressed during the move, over the middle of the clip: tethered at once, Transit or not
+ok: Alt let go there: no tether (without Alt only the bottom edge tethers), the row the target
+ok: let go: onto the row above as before
+ok: Alt held from the press (a cut where it is clicked, a slip of a clip that slips): never a tether at once
+ok: the host refusing the tether there: the row is the target as before
+ok: and let go, it goes onto that row
+ok: lower on that clip, in the band of the + New Track seam under its row: the seam, never the tether (the tether's band is just above it)
+ok: let go there: onto a new track
+ok: a selected group dragged there, even with Alt: never tethered
+ok: and none attached as it is let go

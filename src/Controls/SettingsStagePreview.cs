@@ -19,6 +19,12 @@ public enum StageKind
 
     /// <summary>The keys of the main window (4.4): the page draws its own keyboard on the stage (StageKeybindsHost), so no picture here.</summary>
     Keybinds,
+
+    /// <summary>
+    /// A live miniature of a workspace layout in a theme (5.5A, the first-run window: the layout card and the theme swatch under the
+    /// pointer, else the chosen ones): <see cref="SettingsStagePreview.Workspace"/>.
+    /// </summary>
+    Workspace,
 }
 
 /// <summary>
@@ -28,7 +34,7 @@ public enum StageKind
 /// it (4.4), the part of the editor the option is about, live, as it is now (ShowMirror). All of it is drawn here
 /// (OnRender): no child elements.
 /// </summary>
-public sealed class SettingsStagePreview : FrameworkElement
+public sealed partial class SettingsStagePreview : FrameworkElement
 {
     private AppSettings _settings = new();
 
@@ -81,6 +87,7 @@ public sealed class SettingsStagePreview : FrameworkElement
             StageKind.Cache => 272,
             StageKind.Hardware => 40 + CoreRows() * (CoreCell(width) + CoreGap) + 180 + BenchmarkHeight(),
             StageKind.Captions => 96,
+            StageKind.Workspace => WorkspaceHeight(width),
             _ => 0,
         };
 
@@ -129,6 +136,7 @@ public sealed class SettingsStagePreview : FrameworkElement
             case StageKind.Cache: DrawCaches(drawing, rest); break;
             case StageKind.Hardware: DrawHardware(drawing, rest); break;
             case StageKind.Captions: DrawSpeechModel(drawing, rest); break;
+            case StageKind.Workspace: DrawWorkspace(drawing, rest); break;
         }
 
         if (top > 0)
@@ -690,7 +698,9 @@ public sealed class SettingsStagePreview : FrameworkElement
             var memory = card.DedicatedVideoMemoryMb > 0 ? string.Create(CultureInfo.InvariantCulture, $"{card.DedicatedVideoMemoryMb / 1024.0:0.#} GB · ") : "";
             Text(drawing, memory + codecs, width, y, 10, MutedBrush, alignRight: true);
             Meter(drawing, "Hardware", card.HardwareDecodeFps, fastest, Fps(card.HardwareDecodeFps), y + 18, width, AccentBrush);
-            Meter(drawing, "Processor", software, fastest, Fps(software), y + 34, width, processorBar);
+            // 5.5A: the first start's quick check never decodes on the processor, so it has no processor figure to draw.
+            if (result.Kind != HardwareBenchmarkResult.KindQuick)
+                Meter(drawing, "Processor", software, fastest, Fps(software), y + 34, width, processorBar);
 
             var line = card.Note.Length > 0 ? card.Note : string.Join("  ·  ", new[]
             {

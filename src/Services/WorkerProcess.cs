@@ -148,10 +148,13 @@ internal sealed partial class WorkerProcess : IDisposable
         }, CancellationToken.None);
     }
 
-    /// <summary>Starts it, reads every line it writes, and returns its exit code; cancelling kills it.</summary>
-    public static async Task<int> RunLinesAsync(string arguments, Action<string> onLine, CancellationToken cancellationToken)
+    /// <summary>
+    /// Starts it, reads every line it writes, and returns its exit code; cancelling kills it. In the foreground job unless
+    /// <paramref name="jobClass"/> says otherwise (5.5A: the first-run window's quick hardware check runs in the background one).
+    /// </summary>
+    public static async Task<int> RunLinesAsync(string arguments, Action<string> onLine, CancellationToken cancellationToken, ProcessClass jobClass = ProcessClass.Foreground)
     {
-        using var worker = Start(arguments, readOutput: true);
+        using var worker = Start(arguments, readOutput: true, jobClass);
         return await worker.ReadLinesAsync(onLine, cancellationToken).ConfigureAwait(false);
     }
 

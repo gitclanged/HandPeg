@@ -263,9 +263,13 @@ public partial class MainWindow
         if (!_unresumed.Contains(tab.Id))
         {
             tab.Title = ActiveTabTitle();
-            tab.ProjectPath = _viewModel.CurrentProjectPath;
+            TakeProjectPath(tab, _viewModel.CurrentProjectPath);
             tab.Empty = _viewModel.HoldsNothingForTab;
             tab.Dirty = _viewModel.MayHaveUnsavedChanges && (fingerprint ? _viewModel.HasUnsavedChanges : tab.Dirty);
+
+            // Pass 5.5A: saved, or undone back to the save: its crash-recovery file goes at once (MainWindow.TabCache.cs).
+            if (!tab.Dirty)
+                DropFrontRecovery(tab);
         }
 
         ShowTabs();
@@ -535,8 +539,12 @@ public partial class MainWindow
         if (_viewModel.HoldsNothingForTab)
         {
             // Nothing worth keeping (a fresh tab, or one whose file could not be brought back: that keeps its file and tries again later).
+            // Pass 5.5A: a crash-recovery file of what it held before (emptied in front) goes with it.
             if (!_unresumed.Contains(tab.Id))
+            {
                 (tab.Empty, tab.Dirty) = (true, false);
+                DropFrontRecovery(tab);
+            }
             _tabs.SetStill(tab, null);
             (_liveStill, _liveStillMark) = (null, default);
             _explodedWaitingTab = null;
@@ -582,9 +590,15 @@ public partial class MainWindow
         if (_unresumed.Contains(tab.Id))
             return;
 
+        // Pass 5.5A final review: a tab brought forward at start without its own layout (AD-1, Law 1) keeps the one it was kept with until that
+        // is laid out or the user changes the window's by hand (LayoutNotTaken): the start-up layout is never taken for its own.
         var perTab = AppSettings.Current.PerTabWindowLayouts;
-        tab.LayoutJson = TabLayoutOf(_dock, perTab);
-        tab.MediaView = TabMediaViewOf(MediaBrowser.ViewMode, perTab);
+        if (!LayoutNotTaken(tab))
+        {
+            tab.LayoutJson = TabLayoutOf(_dock, perTab);
+            tab.MediaView = TabMediaViewOf(MediaBrowser.ViewMode, perTab);
+        }
+
         TakeExplodedState(tab, _explodedUi && _gpu is { } engine ? engine.TargetPose : null, _explodedWaitingTab, _explodedLastPose);
     }
 
@@ -675,6 +689,7 @@ public partial class MainWindow
                 MediaBrowser.ViewMode = view;
             if (LoadTabLayout(_dock, tab, perTab))
                 _viewModel.SavePaneLayout(SaveDockInto);
+            ForgetLayoutNotTaken(tab.Id);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
@@ -753,11 +768,15 @@ public partial class MainWindow
     /// </summary>
     private void TakeHeaderForTab(ProjectTabHeader tab)
     {
-        (tab.Title, tab.ProjectPath, tab.Empty, tab.Dirty) = (ActiveTabTitle(), _viewModel.CurrentProjectPath, false, TabDirtyNow(tab));
+        (tab.Title, tab.Empty, tab.Dirty) = (ActiveTabTitle(), false, TabDirtyNow(tab));
+        TakeProjectPath(tab, _viewModel.CurrentProjectPath);
         (tab.NewProjectName, tab.NewProjectFolder, tab.WaitingTemplate) = (_viewModel.NewProjectName, _viewModel.NewProjectFolder, _viewModel.TemplateWaitingForTab);
         (tab.PlayheadMs, tab.ViewStart, tab.ViewSpan, tab.ViewFit, tab.VerticalOffset) =
             (_viewModel.PositionMs, _viewStart, _viewSpan, _viewFit, UnifiedTimeline.Surface.VerticalOffset);
         TakeFrameForTab(tab);
+
+        // Pass 5.5A review: written from the view model, the tab's file is the project exactly as it is (a lagged crash-recovery copy says otherwise itself).
+        tab.StepsBack = 0;
     }
 
     /// <summary>
@@ -803,9 +822,21 @@ public partial class MainWindow
         ShowTabStill(_tabs.StillOf(tab));
         ProjectState state;
         string? saved;
+        var read = default(TabResume);
         try
         {
-            (state, saved) = await _tabs.Enqueue(id, () => (_tabs.ReadState(id), _tabs.ReadSaved(id)));
+            // Pass 5.5A review: a tab kept with nothing unsaved whose project file changed on the disk since (another PC, a backup, another
+            // HandPeg) opens from that file instead (ProjectTabs.ReadForResume, on its queue: the disk is never looked at on this thread).
+            // Unsaved work wins: a tab with unsaved changes is read from its cache as before.
+            if (!tab.Dirty && tab.ProjectPath is { Length: > 0 } clean)
+            {
+                read = await _tabs.Enqueue(id, () => _tabs.ReadForResume(id, clean));
+                (state, saved) = (read.State, read.Saved);
+            }
+            else
+            {
+                (state, saved) = await _tabs.Enqueue(id, () => (_tabs.ReadState(id), _tabs.ReadSaved(id)));
+            }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidDataException or NotSupportedException or ArgumentException)
         {
@@ -814,11 +845,15 @@ public partial class MainWindow
         }
 
         // Opened as a project is: a new Sequence put in place when it worked. One that did not (its file not found) leaves the last
-        // tab's Sequence where it was, which must never pass for this tab's.
+        // tab's Sequence where it was, which must never pass for this tab's. Pass 5.5A final review (C-4b): a cache whose project file changed
+        // but could not be read is tied to no file (Save asks for a name: that file is never written over) and comes back unsaved (its work
+        // is in no file now: closing asks, and its cache file stays its crash-recovery copy).
+        var unreadable = read.From == TabResumeSource.CacheFileUnreadable;
+        var (projectPath, dirty) = unreadable ? ("", true) : (tab.ProjectPath, tab.Dirty);
         var before = _viewModel.Document;
         try
         {
-            await _viewModel.ResumeTabAsync(state, tab.ProjectPath, tab.Dirty, saved, tab.NewProjectName, tab.NewProjectFolder, tab.WaitingTemplate);
+            await _viewModel.ResumeTabAsync(state, projectPath, dirty, saved, tab.NewProjectName, tab.NewProjectFolder, tab.WaitingTemplate);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
@@ -834,10 +869,33 @@ public partial class MainWindow
 
         // The tab is the view model's again: its files go (written anew when it is next put behind), and its waiting Game Preset is the
         // view model's. After its own disk work and before any asked later (5.4D-TabPerf): a delete that came after the next put-behind's
-        // write would lose the tab.
+        // write would lose the tab. Pass 5.5A final review (AD-1): one with unsaved changes keeps them as the tab in front's crash-recovery
+        // copy (its work as it came back: the 20 s tick writes it anew once the history moves, and lets it go once the tab is clean); deleted,
+        // that work would be in memory alone until the tick, and a crash on the same project would lose it for good.
         _unresumed.Remove(id);
         tab.WaitingTemplate = null;
-        DeleteTabFiles(id);
+        if (unreadable)
+            (tab.ProjectPath, tab.Dirty) = ("", true);
+        if (tab.Dirty)
+            _frontRecovery = new FrontLook(id, _viewModel.HistoryPosition, Written: true);
+        else
+            DeleteTabFiles(id);
+
+        // Pass 5.5A final review (C-4a): the stamp of its project file as the project and that file were last known to be the same: as it was
+        // read from it now (none for one tied to no file), else (read from the cache) the one its header carried. Pass 5.5A fix round 3 (S-R1):
+        // a stamp still on its way (asked before the tab went behind) never lands: the one taken here, or carried, is of the project as it came back.
+        tab.StampsAsked++;
+        if (read.From != TabResumeSource.Cache)
+            (tab.ProjectFileTicks, tab.ProjectFileLength) = (read.FileTicks, read.FileLength);
+
+        // Pass 5.5A review: said once, as it comes back: opened from its changed file, or from a crash-recovery copy written actions back.
+        if (read.From == TabResumeSource.ChangedFile)
+            _viewModel.StatusText = ChangedOnDiskLine(tab.Title);
+        else if (unreadable)
+            _viewModel.StatusText = UnreadableOnDiskLine(tab.Title, read.Why ?? "");
+        else if (tab.StepsBack > 0)
+            _viewModel.StatusText = StepsBackLine(tab.StepsBack);
+        tab.StepsBack = 0;
 
         // Left in the 3D view: waiting for its view to be restored (5.4D review), so a tab put behind again before then (a held
         // Ctrl+Tab) keeps its header's 3D view and camera rather than being taken as flat.
@@ -1034,6 +1092,19 @@ public partial class MainWindow
     {
         try
         {
+            // Pass 5.5A fix round 3 (S-R1): the file's stamp taken before the open reads it, away from this thread (StampOpenedProject carries it
+            // once the open worked); first, so every look below is made as things are after it.
+            var stamp = await Task.Run(() => ProjectTabs.FileStamp(path));
+
+            // Pass 5.5A review: nothing marks the open as under way during that wait (a file on a sleeping share can take seconds), so a close
+            // can start in it; one asking (its prompt's loop runs this continuation) or under way is never opened into.
+            if (_closeAsked || _windowClosing is { IsCancellationRequested: true })
+            {
+                AppLog.Write($"Project tabs: {Path.GetFileName(path)} was not opened: HandPeg was closing");
+                _viewModel.StatusText = $"{Path.GetFileNameWithoutExtension(path)} was not opened while HandPeg was closing: open it again.";
+                return;
+            }
+
             if (SameProjectFile(_viewModel.CurrentProjectPath, path))
             {
                 _viewModel.StatusText = $"{Path.GetFileNameWithoutExtension(path)} is open already, in the tab in front.";
@@ -1055,7 +1126,10 @@ public partial class MainWindow
                     return;
                 }
 
+                var (into, opening) = (_tabs.Active, _viewModel.CurrentProjectPath);
+                var asked = ++into.StampsAsked;
                 await _viewModel.LoadProjectAsync(path);
+                StampOpenedProject(into, opening, path, stamp, asked);
                 RefreshActiveTab();
                 return;
             }
@@ -1082,7 +1156,9 @@ public partial class MainWindow
                     return;
                 }
 
+                var asked = ++made.StampsAsked;
                 await _viewModel.LoadProjectAsync(path);
+                StampOpenedProject(made, "", path, stamp, asked);
                 RefreshActiveTab();
                 WriteTabManifest();
             }
@@ -1115,11 +1191,13 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// × on a tab, a middle click on it, Ctrl+W (null: the tab in front): Save / Discard / Cancel only when it has unsaved changes (a tab
+    /// × on a tab, a middle click on it, Ctrl+W (null: the tab in front): Save / Discard / Cancel only when it holds work not saved (5.5.0:
+    /// <see cref="UnsavedForExit(ProjectTabHeader)"/>, as closing HandPeg asks: unsaved changes, or content never saved as a project; a tab
     /// behind with a project file is saved from its cache file, never brought back for it; one never saved comes to the front for its first
     /// save), then its files deleted. The tab after it (or before, at the end) comes to the front; closing the last tab leaves one empty tab.
+    /// With <paramref name="asked"/> (Pass 5.5A: Close Other Tabs asked about every unsaved tab in one dialog), nothing is asked again.
     /// </summary>
-    private async Task CloseProjectTabAsync(ProjectTabHeader? which)
+    private async Task CloseProjectTabAsync(ProjectTabHeader? which, bool asked = false)
     {
         // Ctrl+W with no tab shown (5.4B): nothing to close, and the blank project is not made anew.
         if (which is null && TabsHidden)
@@ -1140,7 +1218,8 @@ public partial class MainWindow
 
         if (active)
             RefreshActiveTab();
-        if (tab.Dirty && !tab.Empty && !await AskToSaveTabAsync(tab))
+        // 5.5.0 (the user's Q3 b): asked by the same rule as closing HandPeg: changes not saved, or work never saved as a project at all.
+        if (!asked && UnsavedForExit(tab) && !await AskToSaveTabAsync(tab))
             return;
 
         // The question may have brought the tab to the front (its first save) and kept a dialog up a while: looked at again.
@@ -1247,7 +1326,10 @@ public partial class MainWindow
     /// </summary>
     private async Task<bool> AskToSaveTabAsync(ProjectTabHeader tab)
     {
-        var ask = new ConfirmDialog("Close Project Tab", $"\"{tab.Title}\" has changes that were not saved as a project.\n\nSave them before its tab closes, or let them go?",
+        var never = !tab.Dirty && (KeptInFile(tab) ? tab.ProjectPath : _viewModel.CurrentProjectPath).Length == 0;
+        var ask = new ConfirmDialog("Close Project Tab", never
+            ? $"\"{tab.Title}\" was never saved as a project.\n\nSave it before its tab closes, or let it go?"
+            : $"\"{tab.Title}\" has changes that were not saved as a project.\n\nSave them before its tab closes, or let them go?",
             "Save", "Discard") { Owner = this };
         if (ask.ShowDialog() != true)
             return false;
@@ -1316,6 +1398,7 @@ public partial class MainWindow
                 ProjectStore.SaveTo(state, path);
             CrashReporter.KeepOut(CrashSummaries.FilesIn(state).Append(path));
             (tab.ProjectPath, tab.Dirty, tab.NewProjectName, tab.NewProjectFolder) = (path, false, "", null);
+            _ = StampProjectFileAsync(tab, path);
             if (live is not null)
             {
                 // Saved as it comes back: one fingerprint then (the view model's own save takes one as well).
@@ -1430,10 +1513,12 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// As HandPeg closes (MayClose, before the tab in front is asked about): every tab behind it with unsaved changes asked about in turn,
-    /// as the tab in front is (Save and Close, saved from its file without bringing it back; Close Without Saving; Cancel). False when the
-    /// user chose to stay. Nothing is asked when the settings say not to ask on exit: those tabs' files are kept then (ForgetProjectTabs),
-    /// and the next start offers them again.
+    /// As HandPeg closes (MayClose, before the tab in front is asked about), Pass 5.5A (MainWindow.TabExit.cs): the plan for the tabs, from the
+    /// settings (<see cref="ExitPlanFor"/>). Kept open between sessions: the tab in front written exactly as it is (every other tab has its
+    /// file), nothing asked. The prompt to save off: nothing asked, the tabs behind with unsaved changes kept (as before). Otherwise (the
+    /// 5.5A addenda, 5.5.0 Q2 b: asked only when closing would drop work not saved), with two tabs or more holding work, every one of them in
+    /// one dialog (<see cref="AskAboutTabsOnExit"/>); one alone with work not saved as a project, MayClose's classic question when it is in front
+    /// (the dialog with its one row when it is behind); every tab saved, nothing. False when the user chose to stay.
     /// </summary>
     private bool MayCloseProjectTabs()
     {
@@ -1441,41 +1526,48 @@ public partial class MainWindow
 
         // 5.4D-TabPerf: the cache files still being written after a switch first (each tab's dot is then its exact one).
         FinishTabWrites();
-        if (!AppSettings.Current.PromptToSaveOnExit)
-            return true;
+        ExitAnsweredByTabs = false;
+        var settings = AppSettings.Current;
 
-        foreach (var tab in _tabs.Tabs.Where(t => KeptInFile(t) && t.Dirty && !t.Empty).ToList())
+        // The tab in front's dot made exact whenever the plan may ask (the 5.5A addenda: one project alone too), once: MayClose's classic
+        // question then takes it as it is (a fingerprint never made twice).
+        if (settings.PromptToSaveOnExit && !settings.KeepOpenTabsOnClose)
+            RefreshActiveTab();
+        var held = _tabs.Tabs.Where(t => !t.Empty).ToList();
+        var unsaved = held.Where(t => UnsavedForExit(t)).ToList();
+        var (plan, ask) = ExitPlanFor(settings.KeepOpenTabsOnClose, settings.PromptToSaveOnExit, held.Count, unsaved.Count,
+            unsaved.Count == 1 && !KeptInFile(unsaved[0]));
+        (_tabExitPlan, _exitQuestion) = (plan, ask);
+        switch (plan)
         {
-            AppLog.Write("Closing with unsaved changes in a project tab behind the one in front.");
-            var dialog = new SaveOnExitDialog(tab.Title) { Owner = this, Title = $"Unsaved Changes: {tab.Title}" };
-            dialog.ShowDialog();
-            switch (dialog.Choice)
-            {
-                case ExitChoice.Cancel:
-                    return false;
+            case TabExitPlan.SuspendAll:
+                return ExitAnsweredByTabs = SuspendFrontForExit();
 
-                case ExitChoice.SaveAndClose:
-                    var saved = SaveTabInPlace(tab, dialog.ProjectName);
-                    if (!saved.StartsWith("Project saved", StringComparison.Ordinal)
-                        && new ConfirmDialog("Project Not Saved", $"{saved}\n\nClose HandPeg anyway? The changes to \"{tab.Title}\" that were not saved are lost.", "Close Without Saving")
-                        {
-                            Owner = this, DefaultsToCancel = true, CancelText = "Keep HandPeg Open",
-                        }.ShowDialog() != true)
-                    {
-                        return false;
-                    }
-
-                    break;
-            }
+            case TabExitPlan.KeepDirtyBehind:
+                return true;
         }
 
-        return true;
+        switch (ask)
+        {
+            case ExitQuestion.Tabs:
+                return AskAboutTabsOnExit(held);
+
+            // One project alone, in front, with work not saved: MayClose's classic question.
+            case ExitQuestion.Classic:
+                return true;
+
+            // Nothing holding work that is not saved (one saved project, or none): nothing to ask.
+            default:
+                ExitAnsweredByTabs = true;
+                return true;
+        }
     }
 
     /// <summary>
-    /// A clean close: this session's tab files go, so nothing is offered back at the next start; with the prompt to save on exit off, the
-    /// files of the tabs behind with unsaved changes stay (nothing asked about them, and autosave covers only the tab in front), and the next
-    /// start offers them again. Never another HandPeg's.
+    /// The close's plan carried out (Pass 5.5A; MainWindow.TabExit.cs): forgotten, this session's tab files go, so nothing is offered back at
+    /// the next start; with the prompt to save on exit off (and the tabs not kept), the files of the tabs behind with unsaved changes stay (as
+    /// before); kept between sessions, every tab holding work keeps its file (the tab in front's written as the close began) and tabs.json
+    /// their order. The next start offers what stays. Never another HandPeg's.
     /// </summary>
     private void ForgetProjectTabs()
     {
@@ -1483,7 +1575,7 @@ public partial class MainWindow
         // ForgetSession, and none still to come is made at all), and a tab kept for the next start has its file (its write under way waited
         // for to its end; written now, here, when it failed or never ran).
         FinishTabWrites();
-        if (AppSettings.Current.PromptToSaveOnExit)
+        if (_tabExitPlan == TabExitPlan.Forget)
         {
             CancelTabWrites(_ => false);
             _tabs.ForgetSession();
@@ -1491,37 +1583,73 @@ public partial class MainWindow
         }
 
         WaitForKeptTabWrites();
-        Func<ProjectTabHeader, bool> keep = t => KeptInFile(t) && t.Dirty && !t.Empty;
+        Func<ProjectTabHeader, bool> keep = _tabExitPlan == TabExitPlan.SuspendAll ? t => !t.Empty : t => KeptInFile(t) && t.Dirty && !t.Empty;
         WriteKeptTabsNow(keep);
         CancelTabWrites(keep);
+
+        // Kept between sessions: their order and the tab in front as well, so the next start lists them as they were (Pass 5.5A final review:
+        // marked kept on purpose, so it brings the tab in front forward; a crash's leftovers stay behind the start-up tab).
+        if (_tabExitPlan == TabExitPlan.SuspendAll && _tabs.Tabs.Any(keep))
+        {
+            try
+            {
+                _tabs.WriteKeptManifest();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                AppLog.Write("Project tabs: tabs.json could not be written as HandPeg closed (the kept tabs come back in the order they were last written)", ex);
+            }
+        }
+
         _tabs.ForgetSession(keep);
     }
 
     /// <summary>
     /// After the first frame, at idle: the + tooltip with its keys, and the tabs other sessions left behind (those whose HandPeg is gone)
     /// taken into this session's folder and offered as tabs (cold, unopened: one comes back when clicked), behind this session's own in
-    /// the most recently used.
+    /// the most recently used. Pass 5.5A addenda (AD-1, MainWindow.TabExit.cs): with the start-up tab still blank and untouched, the tab
+    /// that was in front last time comes to the front instead, and the blank tab goes.
     /// </summary>
     private async void RecoverProjectTabs()
     {
         try
         {
-            // (The right-click menu reads its keys as it opens: KeybindManager.WithGesture in ProjectTabStrip.MenuFor.)
-            ProjectTabStrip.SetGestures(KeybindManager.WithGesture("New Project Tab", "tab.new"));
-            KeybindManager.Changed += () => ProjectTabStrip.SetGestures(KeybindManager.WithGesture("New Project Tab", "tab.new"));
+            // (The right-click menu reads its keys as it opens: KeybindManager.WithGesture in ProjectTabStrip.MenuFor.) Once, should this run again (below).
+            if (!_tabGesturesSet)
+            {
+                _tabGesturesSet = true;
+                ProjectTabStrip.SetGestures(KeybindManager.WithGesture("New Project Tab", "tab.new"));
+                KeybindManager.Changed += () => ProjectTabStrip.SetGestures(KeybindManager.WithGesture("New Project Tab", "tab.new"));
+            }
+
+            // Pass 5.5A final review: never while a close is asking (this idle callback also runs in its dialog's loop): tabs taken in then
+            // would not be on the list it asks about, and its Forget plan would delete them unasked. They stay where they are, taken in once
+            // the close is called off (MainWindow_Closing runs this again), else at the next start. Nor beside a run under way.
+            if (_closeAsked || _recoveringTabs)
+            {
+                _leftTabsPutOff |= _closeAsked;
+                return;
+            }
 
             // Closing HandPeg waits while they are moved in and put on the strip (RefuseCloseMidSwitch): ForgetSession deletes only the
             // files of the tabs it knows, so none moved in is lost either way, but one not on the strip yet would not be asked about.
             var known = _tabs.Tabs.Select(t => t.Id).ToList();
-            var adopted = 0;
+            var adopted = new List<string>();
+            string? leftFront;
             _recoveringTabs = true;
             try
             {
-                var left = await Task.Run(() => _tabs.TakeLeftBehind(known));
+                (var left, leftFront) = await Task.Run(() =>
+                {
+                    var taken = _tabs.TakeLeftBehind(known, out var front);
+                    return (taken, front);
+                });
+                // A close asking by now (none can begin while they are moved in: a second guard): no tab for them, so ForgetSession keeps
+                // their moved files (others' work) for the next start.
                 foreach (var tab in left)
                 {
-                    if (_tabs.Adopt(tab))
-                        adopted++;
+                    if (!_closeAsked && _tabs.Adopt(tab))
+                        adopted.Add(tab.Id);
                 }
             }
             finally
@@ -1529,16 +1657,38 @@ public partial class MainWindow
                 _recoveringTabs = false;
             }
 
-            if (adopted == 0)
+            if (adopted.Count == 0)
                 return;
 
             _tabs.Touch(_tabs.Active);
-            ShowTabs();
+
+            // Pass 5.5A: they come out from behind the tab in front (ProjectTabStrip's slide, 180 ms; none with the extra animations off),
+            // once: AD-1's tab brought forward is that tab, shown as soon as it is in front (while it is read).
+            var shown = false;
+            void Show()
+            {
+                if (shown)
+                    return;
+                shown = true;
+                ShowTabs();
+                ProjectTabStrip.SlideOutFromActive(adopted);
+            }
+
+            var said = _viewModel.StatusText;
+            var forward = RestoredFrontToBring(leftFront, adopted, known);
+            var stepsBack = forward?.StepsBack ?? 0;
+            var broughtForward = forward is not null && await BringRestoredTabForwardAsync(forward, Show);
+            Show();
             WriteTabManifest();
-            AppLog.Write($"Project tabs: {adopted} left in the cache by a session that ended were offered again.");
-            _viewModel.StatusText = adopted == 1
-                ? "A project tab left open when HandPeg last closed is back in the title bar: click it to open it."
-                : $"{adopted} project tabs left open when HandPeg last closed are back in the title bar: click one to open it.";
+            AppLog.Write($"Project tabs: {adopted.Count} left in the cache by a session that ended were offered again"
+                         + (forward is null ? "." : broughtForward ? ", the one in front last time in front again." : "; the one in front last time could not be brought back."));
+
+            // Which project is open and how many came back (AD-1); a word the resume had of its own (opened actions back after a crash, or
+            // from its project file changed on the disk) or why it could not come back, kept after it.
+            var line = RestoredLine(broughtForward ? forward!.Title : null, adopted.Count);
+            var resumeSaid = forward is not null && _viewModel.StatusText is { Length: > 0 } now && !string.Equals(now, said, StringComparison.Ordinal)
+                && (!broughtForward || ResumeSaidOfItsOwn(now, stepsBack)) ? now : null;
+            _viewModel.StatusText = resumeSaid is null ? line : $"{line} {resumeSaid}";
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {

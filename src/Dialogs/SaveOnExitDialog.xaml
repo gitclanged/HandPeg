@@ -7,8 +7,9 @@
     <StackPanel Margin="16">
         <TextBlock Text="You have unsaved changes. Save before closing?" FontWeight="SemiBold" FontSize="14" />
         <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,4,0,12"
-                   Text="The cuts, clips and settings of this video have changed since it was opened or last saved as a project. Saved as a project, they can be opened again with the Project button." />
-        <Grid>
+                   Text="The cuts, clips and settings of this video have changed since it was opened or last saved as a project, or were never saved as one. Saved as a project, they can be opened again with the Project button." />
+        <!-- Pass 5.5A review: the name box only for work never saved; a project with a file is saved to it (SavesToText says which). -->
+        <Grid x:Name="NameRow">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
@@ -16,6 +17,7 @@
             <TextBlock Text="Save as project:" VerticalAlignment="Center" Margin="0,0,12,0" />
             <TextBox Grid.Column="1" x:Name="NameBox" VerticalContentAlignment="Center" TextChanged="NameBox_TextChanged" AutomationProperties.Name="Project Name" />
         </Grid>
+        <TextBlock x:Name="SavesToText" TextWrapping="Wrap" TextTrimming="CharacterEllipsis" Visibility="Collapsed" />
         <TextBlock x:Name="NoteText" Foreground="{DynamicResource WarningTextBrush}" TextWrapping="Wrap" Margin="0,6,0,0" />
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
             <Button x:Name="SaveButton" Content="Save &amp; Close" MinWidth="120" IsDefault="True" Click="Save_Click" />
@@ -23,6 +25,6 @@
             <Button Content="Cancel" MinWidth="88" Margin="6,0,0,0" IsCancel="True" ToolTip="Go back to HandPeg." />
         </StackPanel>
         <TextBlock Foreground="{DynamicResource MutedTextBrush}" Margin="0,12,0,0" TextWrapping="Wrap"
-                   Text="This question can be switched off in Settings, on the Behavior tab." />
+                   Text="This question can be switched off in Settings > General > Projects and saving (Prompt to save before closing)." />
     </StackPanel>
 </Window>

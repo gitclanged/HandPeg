@@ -385,13 +385,18 @@ public partial class MainWindow
             return true;
         }
 
-        // In front again: its cache file is not written now (a write still to come is let go) and goes after any under way.
+        // In front again: its cache file is not written now (a write still to come is let go) and goes after any under way. Pass 5.5A final
+        // review (AD-1): one written whole with unsaved changes stays as the tab in front's crash-recovery copy instead (the work as it comes
+        // back, as ResumeTabAsync keeps one: the tick writes it anew once the history moves, and lets it go once the tab is clean).
         _hydrated.Remove(tab.Id);
         _unresumed.Remove(tab.Id);
         tab.WaitingTemplate = null;
         live.Write?.Cancel();
         ForgetUnwritten(live.Write);
-        DeleteTabFiles(tab.Id);
+        if (live.Write?.Dirty == true)
+            _frontRecovery = new FrontLook(tab.Id, _viewModel.HistoryPosition, Written: true);
+        else
+            DeleteTabFiles(tab.Id);
 
         if (live.ProgramSheet is { } sheet)
             AdoptProgramSheet(sheet, live.ProgramSheetMark);
@@ -593,12 +598,21 @@ public partial class MainWindow
         return bytes;
     }
 
-    /// <summary>A tab's three files deleted after its other disk work (5.4D-TabPerf: a write still queued is never undone by it, nor done after it).</summary>
-    private void DeleteTabFiles(string id) => _ = _tabs.Enqueue(id, () => _tabs.DeleteFiles(id));
+    /// <summary>
+    /// A tab's three files deleted after its other disk work (5.4D-TabPerf: a write still queued is never undone by it, nor done after it).
+    /// Pass 5.5A: a crash-recovery file written of it in front goes with them (<see cref="KeepFrontRecovery"/> writes one again when wanted).
+    /// </summary>
+    private void DeleteTabFiles(string id)
+    {
+        if (_frontRecovery is { } look && look.Id == id)
+            _frontRecovery = null;
+        _ = _tabs.Enqueue(id, () => _tabs.DeleteFiles(id));
+    }
 
     /// <summary>A tab closed: what it kept in memory let go, and its cache file's write, if it was still to come, never made.</summary>
     private void ForgetKeptTab(string id)
     {
+        ForgetLayoutNotTaken(id);
         if (!_hydrated.Remove(id, out var live))
             return;
         live.Write?.Cancel();
@@ -896,4 +910,238 @@ public partial class MainWindow
         {
         }
     }
+
+    // ----- The tab in front's crash-recovery file (Pass 5.5A) -----
+    // The tab in front lives in the view model and keeps no cache file (5.4A): a crash or a power cut took its unsaved work with it unless
+    // autosave was on (off at first). On the 20 s autosave tick (Autosave_Tick), whatever the autosave setting says, and never while playing,
+    // scrubbing, dragging or switching tabs, a tab in front with unsaved changes whose undo position moved since the last such write is
+    // written to its cache file as a tab put behind is (<id>.hptab, its header, its saved state's fingerprint), two actions back when it can
+    // be (MainViewModel.Recovery.cs: N-2, with N-1 and N on its Redo). It goes on the tab's own queue (ProjectTabs.Enqueue) like every other
+    // write of its files, so a later exact write (put behind, kept for the next start) always lands after it, and a delete (brought back to
+    // the front, closed) after it too. A clean tab in front (saved, or undone back to the save) keeps none. A tab in front that could not be
+    // brought back is never touched: its file is its work. Closing HandPeg carries its plan out over this file as over any tab's; a crash
+    // leaves it, and the next start takes it in as a tab of its own (TakeLeftBehind) that opens at N-2.
+
+    /// <summary>The tick's last look at the tab in front (Pass 5.5A): which tab, its undo position then, and whether a recovery file of it was written.</summary>
+    private readonly record struct FrontLook(string Id, (object? Newest, int Undo, int Redo) At, bool Written);
+
+    // The last look (null: none yet, or the tab's files went since): a position looked at already costs no fingerprint again.
+    private FrontLook? _frontRecovery;
+
+    /// <summary>What the tick does with the tab in front's crash-recovery file (Pass 5.5A).</summary>
+    internal enum FrontRecoveryStep
+    {
+        None,
+        Write,
+        Delete,
+    }
+
+    /// <summary>
+    /// What the tick does with the tab in front's crash-recovery file (pure: autosave-lag-front-tab): nothing for a tab in front that could
+    /// not be brought back (its file is its work); for a clean tab, the file deleted when one was written; for a tab with unsaved changes, the
+    /// file written when none is yet or its undo position moved since.
+    /// </summary>
+    internal static FrontRecoveryStep FrontRecoveryFor(bool unresumed, bool written, bool dirty, bool moved) =>
+        unresumed ? FrontRecoveryStep.None
+        : !dirty ? (written ? FrontRecoveryStep.Delete : FrontRecoveryStep.None)
+        : !written || moved ? FrontRecoveryStep.Write
+        : FrontRecoveryStep.None;
+
+    /// <summary>
+    /// The 20 s tick's look at the tab in front's crash-recovery file (Autosave_Tick, which skips it while playing, scrubbing, dragging or switching,
+    /// and, Pass 5.5A review, while <see cref="FrontRecoveryHeld"/>). Skipped while the view model opens, loads or rewrites the Sequence
+    /// (BusyWithDocument: never caught half done); 5.5.0 (the user's Q9 b): written during an export, the queue or captions, so what is
+    /// edited while they run is kept too.
+    /// </summary>
+    private void KeepFrontRecovery()
+    {
+        try
+        {
+            var tab = _tabs.Active;
+
+            // A look at another tab: that one went behind (its exact write followed on its queue) or closed (its files went with it).
+            if (_frontRecovery is { } last && last.Id != tab.Id)
+                _frontRecovery = null;
+            if (_viewModel.BusyWithDocument || _viewModel.IsRecording)
+                return;
+
+            // The fingerprint only when the history moved since the last look: unmoved, the tab is as that look found it (a save since
+            // clears MayHaveUnsavedChanges by itself), so an idle project costs nothing.
+            var position = _viewModel.HistoryPosition;
+            var written = _frontRecovery is { Written: true };
+            var moved = _frontRecovery is not { } seen || !Equals(seen.At, position);
+            var dirty = _viewModel.MayHaveUnsavedChanges && (moved ? _viewModel.HasUnsavedChanges : written);
+            switch (FrontRecoveryFor(_unresumed.Contains(tab.Id), written, dirty, moved))
+            {
+                case FrontRecoveryStep.Write:
+                    WriteFrontRecovery(tab, position);
+                    return;
+
+                case FrontRecoveryStep.Delete:
+                    DeleteTabFiles(tab.Id);
+                    written = false;
+                    break;
+            }
+
+            _frontRecovery = new FrontLook(tab.Id, position, written);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            AppLog.Write("Project tabs: the tab in front's recovery copy could not be taken", ex);
+        }
+    }
+
+    /// <summary>
+    /// The tab in front's crash-recovery file queued (Pass 5.5A): its state (a copy of its own) and the lag's packed steps taken here on the
+    /// window's thread, its header as it would go behind now (on a copy: the strip's own is left as the settling look keeps it), then made two
+    /// actions back and written on the tab's queue. One that fails is tried again at the next tick.
+    /// </summary>
+    private void WriteFrontRecovery(ProjectTabHeader tab, (object? Newest, int Undo, int Redo) position)
+    {
+        var header = tab with { };
+        TakeHeaderForTab(header);
+        (header.Dirty, header.Empty) = (true, false);
+        var (id, state, lag) = (tab.Id, _viewModel.CaptureStateForTab(header.Title), _viewModel.TakeRecoveryLag());
+        var (saved, json) = (_viewModel.SavedFingerprintForTab, ProjectTabs.HeaderJson(header));
+        _frontRecovery = new FrontLook(id, position, Written: true);
+        _ = _tabs.Enqueue(id, () =>
+        {
+            if (WriteRecoveryFile(_tabs, id, state, lag, saved, json) is not null)
+                return;
+
+            // Still taken as written (what an earlier write left is deleted once the tab is clean), at a position that never matches: tried again.
+            _ = Dispatcher.BeginInvoke(() =>
+            {
+                if (_frontRecovery is { } look && look.Id == id && Equals(look.At, position))
+                    _frontRecovery = look with { At = (null, -1, -1) };
+            }, DispatcherPriority.Background);
+        });
+    }
+
+    /// <summary>
+    /// A tab's crash-recovery file written (Pass 5.5A; any thread: the tab's queue, or a golden): <paramref name="state"/> two actions back when
+    /// <paramref name="lag"/> is given and its steps can be read, else as it is, with its header (ProjectTabs.WriteTab). True when written two
+    /// actions back, false when written as it is, null when it could not be written (logged).
+    /// Pass 5.5A review: written as it is, with its saved state's fingerprint (<paramref name="saved"/>) and a header saying it is exact
+    /// (StepsBack 0). Written two actions back, with no fingerprint at all, so it comes back unsaved until it is saved (N-2 can be the saved state
+    /// itself: two edits since the save, and the last two then live on its Redo alone), and a header saying how far back (StepsBack 2).
+    /// </summary>
+    internal static bool? WriteRecoveryFile(ProjectTabs tabs, string id, ProjectState state, MainViewModel.RecoveryLag? lag, string? saved, string header)
+    {
+        try
+        {
+            var lagged = lag is not null ? MainViewModel.Lagged(state, lag) : null;
+            var back = lagged is not null;
+            tabs.WriteTab(id, lagged ?? state, back ? null : saved, ProjectTabs.WithStepsBack(header, back ? MainViewModel.RecoveryLagSteps : 0));
+            if (back)
+                AppLog.Write("Project tabs: the tab in front's recovery copy was written two actions back (N-2, with N-1 and N on its Redo)");
+            return back;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            AppLog.Write("Project tabs: the tab in front's recovery copy could not be written", ex);
+            return null;
+        }
+    }
+
+    /// <summary>The tab in front's crash-recovery file let go at once (Pass 5.5A): the tab was saved, undone back to the save, or emptied.</summary>
+    private void DropFrontRecovery(ProjectTabHeader tab)
+    {
+        if (_frontRecovery is { Written: true } look && look.Id == tab.Id && !_unresumed.Contains(tab.Id))
+            DeleteTabFiles(tab.Id);
+    }
+
+    /// <summary>
+    /// The project in front written to its project file (Pass 5.5A review: MainViewModel.ProjectSaved, raised by every save of it, never by an
+    /// open): its crash-recovery file goes at once, on its queue after any write of it still under way, whatever holds back the settling look
+    /// and the tick (playing, a drag). Left there, a copy older than the save would be taken in after a crash and could be saved over the file.
+    /// Pass 5.5A final review (C-4a): the project and its file are the same now, so the tab carries the file's stamp (<see cref="StampProjectFileAsync"/>:
+    /// Pass 5.5A fix round 3, S-R1, taken off the tab's queue, so never behind the recovery write let go here).
+    /// </summary>
+    private void ViewModel_ProjectSaved()
+    {
+        DropFrontRecovery(_tabs.Active);
+        if (!_unresumed.Contains(_tabs.Active.Id))
+            _ = StampProjectFileAsync(_tabs.Active, _viewModel.CurrentProjectPath);
+    }
+
+    /// <summary>
+    /// The tab in front's project file as the view model has it now (RefreshActiveTab, TakeHeaderForTab), and, Pass 5.5A final review (C-4a), the
+    /// stamp it carried let go when that is another file (a New Project, an open, a Save As): a stamp is only ever of the header's own file.
+    /// </summary>
+    private static void TakeProjectPath(ProjectTabHeader tab, string path)
+    {
+        if (!string.Equals(tab.ProjectPath, path, StringComparison.OrdinalIgnoreCase))
+            (tab.ProjectFileTicks, tab.ProjectFileLength) = (0L, 0L);
+        tab.ProjectPath = path;
+    }
+
+    /// <summary>
+    /// A project just opened into <paramref name="tab"/> (Pass 5.5A final review, C-4a: OpenProjectInTabAsync): the project and its file are the
+    /// same now, so the tab carries the file's stamp. Nothing when the open put no project file in the view model (<paramref name="before"/>: the
+    /// one there before; it failed, or opened work tied to no file: an autosave, a newer format) or the tab is no longer in front. Pass 5.5A fix
+    /// round 3 (S-R1): the stamp <paramref name="stamp"/> of <paramref name="stamped"/> taken before the open read it (off this thread; asked as
+    /// <paramref name="asked"/>), never after the open, whose media looks can take seconds: a file saved over from another PC meanwhile would
+    /// be stamped as the project read. A change between the stamp and the read only leaves an older stamp, so the tab reads its file as it
+    /// comes back (the safe side). None either for a project the open took from another file (a bundle opens the project unpacked beside it:
+    /// its tab reads that file as it comes back), nor once another stamp was asked for the tab (a converted project written back as it opened:
+    /// that save's own stamp is the one).
+    /// </summary>
+    private void StampOpenedProject(ProjectTabHeader tab, string before, string stamped, (long Ticks, long Length) stamp, int asked)
+    {
+        if (ReferenceEquals(tab, _tabs.Active) && !_unresumed.Contains(tab.Id) && _viewModel.CurrentProjectPath is { Length: > 0 } opened
+            && !string.Equals(opened, before, StringComparison.OrdinalIgnoreCase) && string.Equals(opened, stamped, StringComparison.OrdinalIgnoreCase)
+            && asked == tab.StampsAsked)
+            (tab.ProjectPath, tab.ProjectFileTicks, tab.ProjectFileLength) = (opened, stamp.Ticks, stamp.Length);
+    }
+
+    /// <summary>
+    /// The stamp of a tab's project file (Pass 5.5A final review, C-4a, C-4c), taken as the tab's project and that file are known to be the same: a
+    /// project opened into it, the tab in front saved (<see cref="ViewModel_ProjectSaved"/>), a tab behind saved from its cache (SaveTabInPlace).
+    /// A tab read back from its file takes the stamp that read took (ResumeTabAsync), and one read back from its cache keeps the one it carried.
+    /// The header then carries it as its file is written (ProjectTabs.Stamped never looks at the disk: the close's waited write cannot stall on
+    /// a share gone away, nor take the stamp of a file changed since for the project kept). The stamp it carried goes at once (it was of the
+    /// file before); the new one is taken away from this thread, and dropped when the tab's project file is another by then (or the tab is
+    /// gone). A tab behind has its header file written again with it. Pass 5.5A fix round 3 (S-R1): taken off the tab's queue (Task.Run): it
+    /// needs no order with the tab's cache writes (each file write it follows is done before it is asked), so it never waits behind a
+    /// recovery write under way, a wait in which the file could change and be stamped as the one saved; and, as two can then land out of
+    /// order, it lands only while it is still the last asked for the tab (<see cref="ProjectTabHeader.StampsAsked"/>).
+    /// </summary>
+    private async Task StampProjectFileAsync(ProjectTabHeader tab, string path)
+    {
+        (tab.ProjectFileTicks, tab.ProjectFileLength) = (0L, 0L);
+        var asked = ++tab.StampsAsked;
+        if (path.Length == 0)
+            return;
+
+        try
+        {
+            var (ticks, length) = await Task.Run(() => ProjectTabs.FileStamp(path));
+            var now = KeptInFile(tab) ? tab.ProjectPath : _viewModel.CurrentProjectPath;
+            if (asked != tab.StampsAsked || !_tabs.Tabs.Contains(tab) || !string.Equals(now, path, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            // (The tab in front's header takes its file now too, so the next look at it, RefreshActiveTab, finds it its own.)
+            (tab.ProjectPath, tab.ProjectFileTicks, tab.ProjectFileLength) = (now, ticks, length);
+            if (KeptInFile(tab))
+                WriteTabHeader(tab);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            AppLog.Write("Project tabs: a project file's stamp could not be taken (its tab reads that file as it comes back)", ex);
+        }
+    }
+
+    /// <summary>
+    /// Whether the 20 s tick leaves the tab in front's crash-recovery copy for the next one (Pass 5.5A review): a press or a drag anywhere (the
+    /// player's handles, the 3D view, a slider, the key lanes: the capture is the whole state, taken on this thread), a modal dialog up, or a
+    /// close under way.
+    /// </summary>
+    private bool FrontRecoveryHeld =>
+        System.Windows.Input.Mouse.LeftButton == System.Windows.Input.MouseButtonState.Pressed || System.Windows.Input.Mouse.Captured is not null
+        || System.Windows.Interop.ComponentDispatcher.IsThreadModal || _closeAsked;
+
+    /// <summary>The status line for a tab brought back from a crash-recovery copy written <paramref name="steps"/> actions back (pure, Pass 5.5A review).</summary>
+    internal static string StepsBackLine(int steps) =>
+        $"Opened {steps} action{(steps == 1 ? "" : "s")} back from where HandPeg stopped: Ctrl+Y {steps switch { 1 => "once", 2 => "twice", _ => $"{steps} times" }} brings the last edits back.";
 }

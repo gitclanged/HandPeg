@@ -132,17 +132,37 @@ public partial class SettingsWindow
 
         // A full run sets the four roles: in this screen's copy (the lists show them) and in the settings in effect, saved
         // at once, so they hold whether this screen is then saved or cancelled. One that stopped short changes nothing.
-        if (result.Error.Length == 0 && result.Adapters.Count > 0)
-        {
-            HardwareBenchmarkService.WriteRoles(result.Recommended, _settings);
-            HardwareBenchmarkService.ApplyRoles(result.Recommended);
-            CompositorGpuBox.SelectedValue = _settings.CompositorGpuAdapter;
-            DecodeGpuBox.SelectedValue = _settings.DecodeGpuAdapter;
-            BackgroundGpuBox.SelectedValue = _settings.BackgroundGpu;
-            DecodeAdapterBox.SelectedValue = _settings.HardwareDecodeAdapter;
-        }
+        if (CanApplyRoles(result))
+            SetRecommendedRoles(result);
 
         ShowBenchmarkResult(result, fresh: true);
+    }
+
+    /// <summary>Whether a result's roles can be set (5.5.0, Apply Recommended Roles; pure): one that ended, named cards, and holds for these cards.</summary>
+    internal static bool CanApplyRoles(HardwareBenchmarkResult? result) =>
+        result is { Error.Length: 0, Adapters.Count: > 0 } && HardwareBenchmarkService.IsCurrent(result);
+
+    // A result's roles set: in this screen's copy (the lists show them) and in the settings in effect, saved at once, as a test that ends sets them.
+    private void SetRecommendedRoles(HardwareBenchmarkResult result)
+    {
+        HardwareBenchmarkService.WriteRoles(result.Recommended, _settings);
+        HardwareBenchmarkService.ApplyRoles(result.Recommended);
+        CompositorGpuBox.SelectedValue = _settings.CompositorGpuAdapter;
+        DecodeGpuBox.SelectedValue = _settings.DecodeGpuAdapter;
+        BackgroundGpuBox.SelectedValue = _settings.BackgroundGpu;
+        DecodeAdapterBox.SelectedValue = _settings.HardwareDecodeAdapter;
+    }
+
+    // 5.5.0 (the user's Q10 b): Apply Recommended Roles: the kept result's roles set again (after the user changed them by hand, say).
+    private void ApplyRoles_Click(object sender, RoutedEventArgs e)
+    {
+        if (_benchmarkRun is not null || !CanApplyRoles(_benchmarkShown))
+            return;
+
+        SetRecommendedRoles(_benchmarkShown!);
+        BenchmarkStatusText.Text = _benchmarkShown!.Kind == HardwareBenchmarkResult.KindQuick
+            ? "The roles the first start's quick check recommends are set (run the test for the full measurements)."
+            : "The roles the last test recommends are set.";
     }
 
     /// <summary>
@@ -194,6 +214,7 @@ public partial class SettingsWindow
         BenchmarkButtonText.Text = running ? "Stop the Test" : "Test & Auto-Tune Hardware";
         foreach (var box in new[] { CompositorGpuBox, DecodeGpuBox, BackgroundGpuBox, DecodeAdapterBox })
             box.IsEnabled = !running;
+        ApplyRolesButton.IsEnabled = !running && CanApplyRoles(_benchmarkShown);
     }
 
     // A result on the stage, in the status line, and the reasons for its roles under the button.
@@ -201,13 +222,16 @@ public partial class SettingsWindow
     {
         _benchmarkShown = result;
         var stale = !HardwareBenchmarkService.IsCurrent(result);
+        ApplyRolesButton.IsEnabled = _benchmarkRun is null && CanApplyRoles(result);
         StagePreview.ShowBenchmark(result, null, "", stale);
 
         var tested = DateTime.TryParse(result.MeasuredAt, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var at)
             ? at.ToLocalTime().ToString("d MMM yyyy", CultureInfo.InvariantCulture) : "";
+        // 5.5A: the first start's quick check (decoding and the bus on the cards that hold a role) reads as what it is.
         BenchmarkStatusText.Text = result.Error.Length > 0 ? $"Stopped short ({result.Error}): the roles were left as they were."
             : fresh ? string.Create(CultureInfo.InvariantCulture, $"Done in {result.TotalSeconds:0.0} s: the four roles are set from it.")
             : stale ? "Last tested on other cards or drivers: test again."
+            : result.Kind == HardwareBenchmarkResult.KindQuick ? QuickResultStatus(result)
             : tested.Length > 0 ? $"Last tested {tested}." : "Tested before.";
 
         // The roles' reasons, then (5.2-Arm64AndNpu) what decodes what, the shared memory, and the NPUs.
@@ -222,4 +246,12 @@ public partial class SettingsWindow
         BenchmarkReasonsText.Visibility = reasons.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         BenchmarkStatusText.ToolTip = reasons.Count > 0 ? BenchmarkReasonsText.Text : null;
     }
+
+    /// <summary>
+    /// The status line of a first start's quick check kept (5.5A review): what it measured, from its numbers (decoding only when a card
+    /// decoded the test clip), on the cards that hold a role (the Export card may be measured too). Pure: the goldens check it.
+    /// </summary>
+    internal static string QuickResultStatus(HardwareBenchmarkResult result) => HardwareBenchmarkService.QuickMeasured(result) is { Length: > 0 } measured
+        ? $"A quick check at the first start ({measured} on the cards that hold a role): run the test for the full measurements."
+        : "A quick check at the first start could not measure the cards: run the test for the full measurements.";
 }

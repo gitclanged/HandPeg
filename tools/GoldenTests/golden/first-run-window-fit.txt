@@ -1,0 +1,9 @@
+# The first-run window (5.5A): 940 x 600 HandPeg DIPs as UiScale sizes it, then kept inside the work area and centred in it.
+ok: a 1920 x 1080 monitor at 100 %: scale 1, the window 940 x 600 DIPs (940 x 600 px) at 490, 220, inside its work area of 1920 x 1040, centred
+ok: a 1366 x 768 laptop at 125 %: scale 0.8, the window 752 x 480 DIPs (940 x 600 px) at 170.4, 51.2, inside its work area of 1092.8 x 582.4, centred
+ok: a 1920 x 1080 monitor at 150 %: scale 0.667, the window 626.7 x 400 DIPs (940 x 600 px) at 326.7, 144, inside its work area of 1280 x 688, centred
+ok: the XPS 13's 2880 x 1800 at 200 %: scale 0.75, the window 705 x 450 DIPs (1410 x 900 px) at 367.5, 213, inside its work area of 1440 x 876, centred
+ok: a 1366 x 768 laptop at 100 %, UI Scale 150 %: scale 1.5, the window 1366 x 728 DIPs (1366 x 728 px) at 0, 0, inside its work area of 1366 x 728, centred
+ok: a second monitor at the left, 2560 x 1440 at 100 %: scale 1, the window 940 x 600 DIPs (940 x 600 px) at -1750, 400, inside its work area of 2560 x 1400, centred
+ok: a 1366 x 768 laptop at 150 % (910 x 485 DIPs of work area) fits 910 x 485; on a 1920 x 1080 monitor the same window is 940 x 600 again (the design size, not the fitted one); a UI scale not known: 940 x 600
+ok: FitToWorkArea fits the design size at the window's UI scale (its root's LayoutTransform), never its current size; MaxWidth and MaxHeight first; no Math.Clamp

@@ -1,0 +1,13 @@
+# A move at rest looks at the keys every 75 ms: Alt pressed then tethers at once, Shift keeps its time once it is off its lane; it looks again only when they change.
+ok: moved onto the middle of the clip above, no keys: no tether, the row the target (one look)
+ok: 40 ms after the move, the dwell's timer: waits on 40 ms (the 35 left of the dwell, and 5), no look
+ok: 75 ms after it: the dwell's look (still no tether there), and the timer kept ticking every 75 ms while the move rests
+ok: 75 ms on, the keys unchanged: no look again (nothing asked of the host)
+ok: Alt pressed while it rests: at the next tick the keys changed, it looks again and is tethered at once, the pointer never moved
+ok: Alt still held: no look again
+ok: let go without a move: attached as Alt asked
+ok: moved 1.5 s along onto the row above and rested: the block after the pointer (3.50 s)
+ok: Shift pressed while it rests: at the next tick its time is kept exactly (2.00 s), the row above still the target
+ok: Shift let go while it rests: after the pointer again
+ok: Shift again, let go: onto the row above at its own time
+ok: a header's drag rested past the dwell: one look, and no tick after it

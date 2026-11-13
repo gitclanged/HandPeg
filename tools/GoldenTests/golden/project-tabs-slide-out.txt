@@ -1,0 +1,18 @@
+# Restored tabs slide out from behind the tab in front after the first frame: 180 ms, cubic ease out, frozen, the tab in front on top, nothing left behind.
+ok: a slide only with tabs restored, the strip shown, the extra animations on (Settings) and Windows' client-area animations on
+ok: the slide: from where it starts to its own place, 180 ms, a cubic ease out, frozen, gone at its end (FillBehavior.Stop)
+ok: the fade in, from nothing to whole over the same ease, made once and frozen
+ok: a tab starts at the tab in front's x: its offset is the tab in front's x less its own place's
+ok: with the extra animations off the restored tabs are simply there
+ok: each restored tab starts at the tab in front's x (its offset the tab in front's x less its own place's); the tab in front does not move
+ok: each has a transform of its own, its x and its opacity animated
+ok: + slides out with them, from behind the tab in front too
+ok: the tab in front is drawn over the tabs coming out from behind it, and the tabs over +
+ok: the layout never moves: only the RenderTransform and the opacity do
+ok: ended: every transform the identity again, no clock left, the z-order cleared
+ok: left alone, the slide ends by itself once its 180 ms have run, nothing left behind
+ok: a drag along the strip ends a slide at once (the drag reads where the tabs are drawn)
+ok: and so does the strip being hidden
+ok: afterwards nothing has a background (the gaps stay the caption) and every tab keeps its margin
+ok: called only as the tabs left by the last session are taken in (ApplicationIdle after ContentRendered: never on the first frame)
+ok: the ease and the fade are made on first use (nothing at type load), and a drag ends a slide first

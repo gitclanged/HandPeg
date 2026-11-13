@@ -373,8 +373,12 @@ public partial class MainViewModel
             && Document.Tracks.Find(t => t.Id == parentTrackId) is { } parentTrack
             && parentTrack.Clips.Any(c => c.ContentKind == LayerKind.VideoFile && SameFile(clip.SourcePath, c.SourcePath ?? "")));
 
-    /// <summary>Whether a Cutout hangs from one of the clips named (the clips Cutouts are being put on, which lose their own first).</summary>
-    private bool IsCutoutOf(Layer view, IReadOnlyCollection<Guid> clips) => ClipOf(view) is { ParentClipId: { } parent } && clips.Contains(parent);
+    /// <summary>
+    /// Whether a Cutout hangs from one of the clips named (the clips Cutouts are being put on, which lose their own first): 5.5A, as one of
+    /// its pieces (<see cref="IsPiece"/>, wherever it lies), never a clip tethered to it.
+    /// </summary>
+    private bool IsCutoutOf(Layer view, IReadOnlyCollection<Guid> clips) =>
+        ClipOf(view) is { ParentClipId: { } parent } clip && clips.Contains(parent) && IsPiece(clip);
 
     /// <summary>
     /// Where a clip that 4.2.0 would have left "to the end" ends now that every clip has an end of its own: the end of the

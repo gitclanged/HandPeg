@@ -1,0 +1,28 @@
+# The tab in front's crash-recovery file: written two actions back on its queue, deleted when clean, and opened by the next start at N-2.
+ok: the tick: unsaved changes and none written yet, or the undo position moved since: written
+ok: unsaved but not moved since the last write, or clean with none written: nothing
+ok: clean (saved, or undone back to the save) with one written: deleted
+ok: a tab in front that could not be brought back: never written nor deleted (its file is its work)
+ok: three edits, each one step of Undo: a trim, a delete, a trim
+ok: the tab in front with three fresh steps: its recovery file written two actions back
+ok: <id>.hptab holds N-2, one step to undo and the last two actions to redo
+ok: beside it its header (unsaved changes, two actions back) and no saved state's fingerprint: a lagged copy comes back unsaved until it is saved
+ok: the state captured is left as it was (N, exact): the lag is made of a copy
+ok: written exactly as it is (no lag to take): its saved state's fingerprint beside it, and its header says it is exact again
+ok: a lagged write still running and an exact write asked after it (put behind, kept for the next start): the exact one lands last, its header exact
+ok: the recovery file written two actions back again
+ok: a crash later, the next start takes the tab in (its header: unsaved changes, two actions back) behind its start-up tab
+ok: clicked, it opens at N-2 with its changes still unsaved
+ok: Ctrl+Y gives N-1
+ok: Ctrl+Y again gives N: the work as it was when HandPeg fell over
+ok: two edits since the save: the copy is the saved Sequence itself (N-2), written with no saved state's fingerprint
+ok: brought back after a crash, it opens at the saved Sequence with its changes unsaved (the dot stays)
+ok: Ctrl+Y gives N-1, then N, still unsaved
+ok: the status line as it comes back: "Opened 2 actions back from where HandPeg stopped: Ctrl+Y twice brings the last edits back."
+ok: the 20 s tick: nothing while playing, scrubbing, dragging or switching (the autosave neither); the tab in front's file whatever the autosave says
+ok: the tick follows the table, never for a tab not brought back
+ok: (5.5.0, Q9 b) the tab in front's recovery copy is written while an export, the queue or captions run, and held while a project or file is opened, loaded or rewritten (Remove Dead Air)
+ok: captured on the window's thread, lagged and written on the tab's own queue (the queue every write and delete of its files is on)
+ok: deleted with the tab's files (brought back, closed), at once when it is saved or undone back to the save, and when an emptied tab goes behind
+ok: a lagged copy is marked in its header (every exact write of the tab clears it), said once as the tab comes back, and named in the exit dialog's row
+ok: the lag is taken only by the autosave and the tab in front's recovery file (Save, Save As, portable, bundle, tabs put behind or kept, duplicates and the crash writer stay exact)

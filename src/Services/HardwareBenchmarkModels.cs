@@ -71,6 +71,16 @@ public sealed class HardwareBenchmarkResult
 
     /// <summary>Why the benchmark stopped short, when it did; empty otherwise.</summary>
     public string Error { get; set; } = "";
+
+    /// <summary>
+    /// What made it (5.5A): "" the full test (Test &amp; Auto-Tune Hardware, and every file from before 5.5A), <see cref="KindEstimate"/>
+    /// the first-run window's instant look at the cards (nothing measured, never saved), <see cref="KindQuick"/> its quick background
+    /// check (decoding and the bus on the cards that hold a role only).
+    /// </summary>
+    public string Kind { get; set; } = "";
+
+    /// <summary>The kinds of <see cref="Kind"/> besides the full test's "".</summary>
+    public const string KindEstimate = "estimate", KindQuick = "quick";
 }
 
 public sealed class HardwareBenchmarkAdapter

@@ -1,0 +1,14 @@
+# A Project Settings step among the last two: the copy has the frame before it, and Redo puts each frame back with its step.
+ok: edit 1: a trim
+ok: edit 2: Project Settings to 1080 x 1920 (the frame turned tall), one step
+ok: edit 3: a delete
+ok: the frame is tall from edit 2 on
+ok: opened at N-2: the Sequence after edit 1, the frame as it was before the Project Settings step
+ok: exactly the project two Undos leave
+ok: Ctrl+Y gives N-1: the frame turned tall again with its step
+ok: Ctrl+Y again gives N, tall, exactly as it was live
+ok: edits 1 and 2: a trim and a delete
+ok: edit 3: Project Settings to 1080 x 1920
+ok: opened at N-2: flat
+ok: Ctrl+Y gives N-1: the delete back, still flat (the turn is the last action)
+ok: Ctrl+Y again gives N: tall, exactly as it was live

@@ -144,6 +144,9 @@ public sealed partial class UnifiedTimelineControl
                 drawing.DrawLine(_lowerEdgePen, new Point(ActualWidth - _edgeWidth / 2, lane.Top), new Point(ActualWidth - _edgeWidth / 2, lane.Bottom));
             }
         }
+
+        // A track's header being dragged (5.5A): it shaded, and where it would go (a seam's bar, or the nest's bracket and pill), over all.
+        DrawRowDragMarks(drawing, pixelsPerDip);
     }
 
     // A header's preset badge (5.2A): its words' size, its padding, what it says with no preset, and the outline of that empty one.
@@ -264,6 +267,7 @@ public sealed partial class UnifiedTimelineControl
         _dropWords = null;
         _dropWordsOf = null;
         _newTrackWords = null;
+        (_attachWords, _attachWordsOf, _nestWords, _nestWordsOf) = (null, null, null, null);
         foreach (var lane in _lanes)
         {
             lane.Row.NameText = null;
@@ -387,7 +391,15 @@ public sealed partial class UnifiedTimelineControl
             // go there after all), and what it means.
             if (drag.NewTrack is { } seam)
                 DrawNewTrackBar(drawing, seam.Y, drag.NewTrackFits && drag.FamilyFits, from, to, dpi.PixelsPerDip);
+
+            // On a tether (5.5A): the curve from the block to the clip it would be a child of, and what letting go does.
+            if (drag.Attach is { } attach)
+                DrawTether(drawing, drag, attach, from, to, dpi.PixelsPerDip);
         }
+
+        // A track's header dragged to a seam (5.5A): the seam's bar across the time area too, so the whole of it is lit.
+        if (_rowDrag is { Started: true, Seam: { } rowSeam })
+            DrawRowSeamBar(drawing, rowSeam.Y, from, to);
 
         if (_fadeDrag is { } fadeDrag && LaneOf(fadeDrag.Row) is >= 0 and var fadeLane)
         {

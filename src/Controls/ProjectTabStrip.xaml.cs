@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using HandPegApp.Services;
@@ -181,7 +182,10 @@ public partial class ProjectTabStrip : UserControl
         IsVisibleChanged += (_, _) =>
         {
             if (!IsVisible)
+            {
                 CloseFlyouts();
+                FinishSlide();
+            }
         };
     }
 
@@ -381,6 +385,9 @@ public partial class ProjectTabStrip : UserControl
     {
         if (IsReordering || !Tabs.Contains(item))
             return false;
+
+        // A slide still under way ends first (Pass 5.5A): the drag reads where the tabs are drawn.
+        FinishSlide();
         IsReordering = true;
         item.IsDragged = true;
         CloseFlyouts();
@@ -797,5 +804,189 @@ public partial class ProjectTabStrip : UserControl
         OverflowPopup.IsOpen = false;
         if (ItemOf(sender) is { } item)
             TabChosen?.Invoke(item);
+    }
+
+    // ----- Restored tabs slide out from behind the tab in front (Pass 5.5A) -----
+    // The tabs a session left (kept for this start, or left by a crash) come onto the strip at idle after the first frame
+    // (MainWindow.RecoverProjectTabs), out from behind the tab in front: each starts at its x, under it (the tab in front drawn on top, its
+    // face opaque) and faded out, and slides to its own place as it fades in, together with + and the overflow count (from behind it as
+    // well), 180 ms, a cubic ease out. Only a RenderTransform and the opacity move (no layout); the animations are frozen and
+    // made on first use (nothing at type load), and at their end (FillBehavior.Stop) every value is its own again: each base value is the
+    // end one already. Never with the extra animations off (Settings) or Windows' client-area animations off. A drag along the strip, or the
+    // strip hidden, ends a slide at once (ReorderTo reads where the tabs are drawn).
+
+    /// <summary>How long restored tabs take to slide out from behind the tab in front, ms.</summary>
+    public const double SlideMs = 180;
+
+    // The easing and the fade, made on first use and frozen (UI thread only).
+    private static IEasingFunction? _slideEase;
+    private static DoubleAnimation? _slideFade;
+
+    // What a slide under way moves (its transform and opacity animated) and raises (the tab in front, the tabs over + and the count).
+    private readonly List<UIElement> _sliding = [];
+    private readonly List<UIElement> _raised = [];
+
+    // The clock whose end ends the slide (the first one made: every one runs the same 180 ms).
+    private AnimationClock? _slideClock;
+
+    /// <summary>Whether a slide is under way (tests).</summary>
+    internal bool IsSliding => _sliding.Count > 0;
+
+    /// <summary>Whether restored tabs slide out (pure: project-tabs-slide-out): some were restored, the strip is shown, and both kinds of animation are on.</summary>
+    internal static bool SlideWanted(int restored, bool shown, bool extraAnimations, bool clientAreaAnimation) =>
+        restored > 0 && shown && extraAnimations && clientAreaAnimation;
+
+    /// <summary>
+    /// The tabs restored at start (<paramref name="ids"/>) slide out from behind the tab in front (Pass 5.5A; called only from
+    /// MainWindow.RecoverProjectTabs, right after the strip shows them): nothing when <see cref="SlideWanted"/> says not, or while a tab is dragged.
+    /// </summary>
+    public void SlideOutFromActive(IReadOnlyCollection<string> ids)
+    {
+        if (IsReordering || !SlideWanted(ids.Count, Visibility == Visibility.Visible, AppSettings.Current.EnableExtraAnimations, SystemParameters.ClientAreaAnimation))
+            return;
+        BeginSlide(ids);
+    }
+
+    /// <summary>
+    /// The slide begun (no gate: <see cref="SlideOutFromActive"/> has it): the strip laid out now (at idle, after the first frame) so the
+    /// restored tabs' places are known before they are first drawn, each shown restored tab (and + and the count) started at the tab in front,
+    /// the tab in front raised over them. The start offsets by tab id, in DIPs along the strip (empty: nothing slides).
+    /// </summary>
+    internal IReadOnlyDictionary<string, double> BeginSlide(IReadOnlyCollection<string> ids)
+    {
+        FinishSlide();
+        var offsets = new Dictionary<string, double>(StringComparer.Ordinal);
+        UpdateLayout();
+        var active = -1;
+        for (var i = 0; i < Tabs.Count; i++)
+        {
+            if (Tabs[i].IsActive)
+                active = i;
+        }
+
+        if (active < 0 || !Tabs[active].IsShown || Items.ItemContainerGenerator.ContainerFromIndex(active) is not FrameworkElement { ActualWidth: > 0 } front)
+            return offsets;
+
+        var frontX = front.TranslatePoint(new Point(0, 0), Items).X;
+        for (var i = 0; i < Tabs.Count; i++)
+        {
+            var item = Tabs[i];
+            if (i == active || !item.IsShown || !ids.Contains(item.Id, StringComparer.Ordinal)
+                || Items.ItemContainerGenerator.ContainerFromIndex(i) is not FrameworkElement { ActualWidth: > 0 } box)
+            {
+                continue;
+            }
+
+            var offset = SlideOffset(frontX, box.TranslatePoint(new Point(0, 0), Items).X);
+            Slide(box, offset);
+            offsets[item.Id] = offset;
+        }
+
+        if (offsets.Count == 0)
+            return offsets;
+
+        // The tab in front drawn over the tabs coming out from behind it, and the tabs over + and the count, which come out from behind it too.
+        Raise(front);
+        Raise(Items);
+        foreach (var button in new FrameworkElement[] { OverflowButton, NewTabButton })
+        {
+            if (button.Visibility == Visibility.Visible && button.ActualWidth > 0)
+                Slide(button, SlideOffset(frontX, button.TranslatePoint(new Point(0, 0), Items).X));
+        }
+
+        return offsets;
+    }
+
+    /// <summary>Where a tab starts its slide (pure): the tab in front's x less its own place's, in DIPs.</summary>
+    internal static double SlideOffset(double activeX, double slotX) => activeX - slotX;
+
+    /// <summary>
+    /// The slide along the strip from <paramref name="from"/> DIPs to its own place (0), 180 ms, a cubic ease out, frozen, and gone at its
+    /// end (FillBehavior.Stop: the base value, 0, is the end one).
+    /// </summary>
+    internal static DoubleAnimation SlideAnimation(double from)
+    {
+        var slide = new DoubleAnimation(from, 0, TimeSpan.FromMilliseconds(SlideMs)) { EasingFunction = SlideEase, FillBehavior = FillBehavior.Stop };
+        slide.Freeze();
+        return slide;
+    }
+
+    /// <summary>The cubic ease out the slide and its fade follow (made on first use, frozen).</summary>
+    internal static IEasingFunction SlideEase
+    {
+        get
+        {
+            if (_slideEase is null)
+            {
+                var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+                ease.Freeze();
+                _slideEase = ease;
+            }
+
+            return _slideEase;
+        }
+    }
+
+    /// <summary>The fade in from nothing over the slide (made on first use, frozen; the base opacity, 1, is the end one).</summary>
+    internal static DoubleAnimation SlideFade
+    {
+        get
+        {
+            if (_slideFade is null)
+            {
+                var fade = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(SlideMs)) { EasingFunction = SlideEase, FillBehavior = FillBehavior.Stop };
+                fade.Freeze();
+                _slideFade = fade;
+            }
+
+            return _slideFade;
+        }
+    }
+
+    /// <summary>One element's slide and fade started, with a transform of its own (animated, so never frozen).</summary>
+    private void Slide(UIElement element, double offset)
+    {
+        var shift = new TranslateTransform();
+        element.RenderTransform = shift;
+        var clock = SlideAnimation(offset).CreateClock();
+        shift.ApplyAnimationClock(TranslateTransform.XProperty, clock);
+        element.ApplyAnimationClock(OpacityProperty, SlideFade.CreateClock());
+        _sliding.Add(element);
+        if (_slideClock is null)
+        {
+            _slideClock = clock;
+            clock.Completed += SlideClock_Completed;
+        }
+    }
+
+    private void Raise(UIElement element)
+    {
+        Panel.SetZIndex(element, 1);
+        _raised.Add(element);
+    }
+
+    private void SlideClock_Completed(object? sender, EventArgs e) => FinishSlide();
+
+    /// <summary>The slide ended (at its end, as a drag begins, or as the strip hides): every clock let go, every transform and z-order its own again.</summary>
+    internal void FinishSlide()
+    {
+        if (_slideClock is { } clock)
+        {
+            clock.Completed -= SlideClock_Completed;
+            _slideClock = null;
+        }
+
+        foreach (var element in _sliding)
+        {
+            element.ApplyAnimationClock(OpacityProperty, null);
+            if (element.RenderTransform is TranslateTransform { IsFrozen: false } shift)
+                shift.ApplyAnimationClock(TranslateTransform.XProperty, null);
+            element.ClearValue(RenderTransformProperty);
+        }
+
+        foreach (var element in _raised)
+            element.ClearValue(Panel.ZIndexProperty);
+        _sliding.Clear();
+        _raised.Clear();
     }
 }

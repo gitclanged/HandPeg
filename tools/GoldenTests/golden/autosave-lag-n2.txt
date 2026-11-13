@@ -1,0 +1,13 @@
+# The recovery copy is written two actions back: N-2 opened, N-1 and N on its Redo, exactly as two Undos leave the project.
+ok: three edits, each one step of Undo: a trim, a delete, a trim
+ok: the exact state carries the three steps and nothing to redo; three steps since the save: the copy lags
+ok: the copy's Sequence is the one after the first edit (N-2)
+ok: its Undo holds the first edit's step alone (the very packed bytes Undo keeps)
+ok: its Redo holds the last two actions, the second edit last (Ctrl+Y gives it first)
+ok: the view model is left as it was: the Sequence at N, its three steps, nothing to redo
+ok: written and opened, the project is at N-2, taken as it was opened
+ok: opened, it is exactly the project two Undos leave (every setting, the Sequence, the bin)
+ok: (the view model's two Undos redone)
+ok: Ctrl+Y gives N-1: the second edit back
+ok: Ctrl+Y again gives N: the project exactly as it was live
+ok: and Undo goes back through all three steps to the saved Sequence

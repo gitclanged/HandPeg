@@ -204,8 +204,11 @@ public partial class MainWindow
         CrashReporter.KeepOut(target);
         if (front)
         {
+            // Pass 5.5A final review: the file moved as it was (its last write and length with it), so the stamp the tab carries goes with it.
+            var stamp = (tab.ProjectFileTicks, tab.ProjectFileLength);
             _viewModel.RenameProjectFile(target);
             RefreshActiveTab();
+            (tab.ProjectFileTicks, tab.ProjectFileLength) = stamp;
         }
         else
         {
@@ -378,7 +381,8 @@ public partial class MainWindow
     /// <summary>
     /// Close Other Tabs: <paramref name="keep"/> brought to the front, then every other tab closed in turn as its × closes it (asked about
     /// when it has unsaved changes). Stops at the first one the user keeps (Cancel), and looks again after every wait: a first save can
-    /// bring another tab to the front, and the Project Manager can open another project meanwhile.
+    /// bring another tab to the front, and the Project Manager can open another project meanwhile. Pass 5.5A: with two or more of the
+    /// others unsaved, they are asked about in one dialog instead (<see cref="CloseOthersAskedOnceAsync"/>).
     /// </summary>
     private async Task CloseOtherProjectTabsAsync(ProjectTabHeader keep)
     {
@@ -389,6 +393,14 @@ public partial class MainWindow
             await SwitchToTabAsync(keep);
             if (!ReferenceEquals(keep, _tabs.Active))
                 return;
+        }
+
+        // The others' dots made the exact ones their writes found (a tab put behind just now may not have told its own yet).
+        TakeWrittenDots();
+        if (_tabs.Tabs.Count(t => !ReferenceEquals(t, keep) && t.Dirty && !t.Empty) >= 2)
+        {
+            await CloseOthersAskedOnceAsync(keep);
+            return;
         }
 
         foreach (var other in _tabs.Tabs.Where(t => !ReferenceEquals(t, keep)).ToList())
@@ -405,6 +417,65 @@ public partial class MainWindow
         // A first save brought another tab to the front on the way: the one kept comes back.
         if (_tabs.Tabs.Contains(keep) && !ReferenceEquals(keep, _tabs.Active) && !_switchingTab)
             await SwitchToTabAsync(keep);
+    }
+
+    /// <summary>
+    /// Close Other Tabs with two or more of the others unsaved (Pass 5.5A): one dialog for all of them (SaveTabsOnExitDialog, its Close Other
+    /// Tabs words). Save Checked &amp; Close Tabs saves the checked ones from their cache files (never brought to the front: a tab never saved
+    /// under the name typed for it) and closes every other tab but one whose save failed (unchecked ones unsaved); Keep Unsaved Tabs Open
+    /// closes only the others with nothing unsaved;
+    /// Discard &amp; Close Tabs closes them all. Cancel closes none. Each is then closed as its × closes it, with no second question.
+    /// </summary>
+    private async Task CloseOthersAskedOnceAsync(ProjectTabHeader keep)
+    {
+        var others = _tabs.Tabs.Where(t => !ReferenceEquals(t, keep)).ToList();
+        var rows = RowsOf(others.Where(t => t.Dirty && !t.Empty));
+        var dialog = new SaveTabsOnExitDialog(rows, SaveTabsOnExitDialog.Purpose.CloseOthers) { Owner = this };
+        dialog.ShowDialog();
+
+        var staying = new HashSet<string>(StringComparer.Ordinal);
+        var failed = new List<string>();
+        switch (dialog.Choice)
+        {
+            case TabsExitChoice.SaveChecked:
+                foreach (var row in rows.Where(r => r.IsChecked))
+                {
+                    if (_tabs.Find(row.Id) is not { } tab || ReferenceEquals(tab, _tabs.Active))
+                        continue;
+                    var saved = SaveTabInPlace(tab, row.Name.Trim().Length > 0 ? row.Name.Trim() : tab.Title);
+                    if (!saved.StartsWith("Project saved", StringComparison.Ordinal))
+                    {
+                        staying.Add(tab.Id);
+                        failed.Add(tab.Title);
+                    }
+                }
+
+                break;
+
+            case TabsExitChoice.KeepSuspended:
+                staying.UnionWith(rows.Select(r => r.Id));
+                break;
+
+            case TabsExitChoice.Discard:
+                break;
+
+            default:
+                return;
+        }
+
+        foreach (var other in others)
+        {
+            if (!_tabs.Tabs.Contains(keep))
+                return;
+            if (staying.Contains(other.Id) || !_tabs.Tabs.Contains(other) || ReferenceEquals(other, _tabs.Active))
+                continue;
+            await CloseProjectTabAsync(other, asked: true);
+        }
+
+        if (failed.Count > 0)
+            _viewModel.StatusText = failed.Count == 1
+                ? $"\"{failed[0]}\" could not be saved: its tab stays open."
+                : $"{failed.Count} tabs could not be saved: their tabs stay open.";
     }
 
     /// <summary>

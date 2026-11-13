@@ -243,7 +243,7 @@ public partial class MainViewModel
             return null;
 
         string? path = null;
-        await RunOperationAsync("Downloading a link", WorkLane.Interactive, async cancellationToken =>
+        await RunOperationAsync("Downloading a link", WorkLane.Interactive, loadsDocument: true, operation: async cancellationToken =>
         {
             IsProgressIndeterminate = true;
             StatusText = "Starting yt-dlp...";
@@ -256,7 +256,7 @@ public partial class MainViewModel
         return path is not null && File.Exists(path) ? path : null;
     }
 
-    private Task LoadSourceNowAsync() => RunOperationAsync("Loading the source", WorkLane.Interactive, async cancellationToken =>
+    private Task LoadSourceNowAsync() => RunOperationAsync("Loading the source", WorkLane.Interactive, loadsDocument: true, operation: async cancellationToken =>
     {
         var source = SourcePath.Trim().Trim('"');
         if (source.Length == 0)
@@ -300,7 +300,7 @@ public partial class MainViewModel
         await LoadFileWithStyleNowAsync(path, stylePath);
     }
 
-    private Task LoadFileWithStyleNowAsync(string path, string stylePath) => RunOperationAsync("Loading with a Game Preset", WorkLane.Interactive, async cancellationToken =>
+    private Task LoadFileWithStyleNowAsync(string path, string stylePath) => RunOperationAsync("Loading with a Game Preset", WorkLane.Interactive, loadsDocument: true, operation: async cancellationToken =>
     {
         SourcePath = path;
         EditingJob = null;
@@ -767,10 +767,14 @@ public partial class MainViewModel
     /// status it reports here, and cancelled from the chip's flyout as by the Cancel button.
     /// </summary>
     /// <param name="title">What the progress chip calls it.</param>
-    private async Task RunOperationAsync(string title, WorkLane lane, Func<CancellationToken, Task<string?>> operation)
+    /// <param name="loadsDocument">5.5.0: the operation opens, loads or rewrites the Sequence as a whole (an open, a load, Remove Dead Air), so
+    /// the tab in front's crash-recovery copy waits for it (<see cref="BusyWithDocument"/>); an export, the queue or captions do not.</param>
+    private async Task RunOperationAsync(string title, WorkLane lane, Func<CancellationToken, Task<string?>> operation, bool loadsDocument = false)
     {
         if (IsBusy)
             return;
+
+        _operationLoadsDocument = loadsDocument;
 
         using var cancellation = new CancellationTokenSource();
         _operationCancellation = cancellation;
@@ -824,9 +828,19 @@ public partial class MainViewModel
         ProgressValue = 0;
         IsProgressIndeterminate = false;
         IsBusy = false;
+        _operationLoadsDocument = false;
         if (outcome is not null)
             StatusText = outcome;
     }
+
+    // Whether the operation under way opens, loads or rewrites the Sequence as a whole (RunOperationAsync's loadsDocument).
+    private bool _operationLoadsDocument;
+
+    /// <summary>
+    /// Busy with an operation that opens, loads or rewrites the Sequence as a whole (5.5.0): a crash-recovery copy taken now could catch it
+    /// half done. False during an export, the queue, captions or a download of a speech model, while the Sequence can still be edited.
+    /// </summary>
+    public bool BusyWithDocument => IsBusy && _operationLoadsDocument;
 
     private void ReportStatus(string message)
     {

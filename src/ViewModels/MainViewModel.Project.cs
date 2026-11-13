@@ -343,7 +343,7 @@ public partial class MainViewModel
     /// 5.2-AuditB (a 5.1 project) is converted on the way (<see cref="ConvertLegacy"/>, <see cref="ConvertedFrom"/>); a queued job or
     /// an undo step is of this version's own making.
     /// </summary>
-    public Task RestoreStateAsync(ProjectState state, string doneMessage) => RunOperationAsync("Opening a project", WorkLane.Interactive, async cancellationToken =>
+    public Task RestoreStateAsync(ProjectState state, string doneMessage) => RunOperationAsync("Opening a project", WorkLane.Interactive, loadsDocument: true, operation: async cancellationToken =>
     {
         // What makes it a project of 5.1's shape, read before anything of it changes (null for one of this version's).
         var oldShape = ProjectStore.OldShapeOf(state.Timeline, state.Deleted, state.Subtitles);
@@ -547,6 +547,12 @@ public partial class MainViewModel
     /// <summary>Ctrl+S, or Ctrl+Shift+S when <paramref name="choosePlace"/>: the window does the saving, since it may have to ask where.</summary>
     public event Action<bool>? SaveRequested;
 
+    /// <summary>
+    /// Raised once the open project was written to its project file (Pass 5.5A review: Save, Save As, a portable save, a project converted as it
+    /// opened written back over its file), never by an open, an autosave or a bundle: the window lets the tab in front's crash-recovery file go.
+    /// </summary>
+    public event Action? ProjectSaved;
+
     [RelayCommand]
     private void SaveProjectNow() => SaveRequested?.Invoke(false);
 
@@ -706,6 +712,7 @@ public partial class MainViewModel
             CurrentProjectPath = path;
             DevFlightRecorder.Record("project", "path " + path);
             MarkSaved();
+            ProjectSaved?.Invoke();
             RefreshRecentProjects(Path.GetFileNameWithoutExtension(path));
             _ = OfferToKeepDownloadsAsync();
             return StatusText = $"Project saved: {path}";
@@ -810,7 +817,9 @@ public partial class MainViewModel
     /// Writes the project to its autosave file ("Name.autosave.hproj") if it has changed since the last time.
     /// The state is gathered here, on the UI thread, which takes a moment; making JSON of it and writing the
     /// file happen on the thread pool, so the window is never held up by the disk. The project itself is not
-    /// touched, it does not count as saved, and the undo history stays as it is.
+    /// touched, it does not count as saved, and the undo history stays as it is. Pass 5.5A: once two steps or more were taken since the
+    /// last save or open, the file is written two actions back, with those two actions on its Redo (MainViewModel.Recovery.cs): a
+    /// project that went wrong in its last edits opens before them, and Ctrl+Y gives them back one at a time.
     /// </summary>
     public async Task AutosaveAsync()
     {
@@ -827,10 +836,18 @@ public partial class MainViewModel
         // With the undo history (4.4-BugHunt): its steps are never changed once packed, so the file is written from them away
         // from the interface's thread as they are.
         var state = CaptureStateForSave(Path.GetFileNameWithoutExtension(path));
+        var lag = TakeRecoveryLag();
         _autosaving = true;
         try
         {
-            await Task.Run(() => ProjectStore.SaveTo(state, path));
+            // Made two actions back away from this thread (Pass 5.5A), from the packed steps and the state's own copy.
+            await Task.Run(() =>
+            {
+                var written = lag is not null && Lagged(state, lag) is { } lagged ? lagged : state;
+                ProjectStore.SaveTo(written, path);
+                if (!ReferenceEquals(written, state))
+                    AppLog.Write("Autosave: written two actions back (N-2), the last two on its Redo (Ctrl+Y gives N-1, then N)");
+            });
             _autosavedFingerprint = fingerprint;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
@@ -859,6 +876,7 @@ public partial class MainViewModel
             CurrentProjectPath = path;
             DevFlightRecorder.Record("project", "path " + path);
             MarkSaved();
+            ProjectSaved?.Invoke();
             RefreshRecentProjects(Path.GetFileNameWithoutExtension(path));
             _ = OfferToKeepDownloadsAsync();
             if (outcome.Copying > 0)
@@ -920,6 +938,7 @@ public partial class MainViewModel
             CurrentProjectPath = path;
             DevFlightRecorder.Record("project", "path " + path);
             MarkSaved();
+            ProjectSaved?.Invoke();
             RefreshRecentProjects(Path.GetFileNameWithoutExtension(path));
             _ = OfferToKeepDownloadsAsync();
             return StatusText = $"Project saved: {Path.GetFileNameWithoutExtension(path)}";
@@ -1106,6 +1125,7 @@ public partial class MainViewModel
         {
             ProjectStore.SaveTo(CaptureStateForSave(name), path);
             MarkSaved();
+            ProjectSaved?.Invoke();
             AppLog.Write($"The converted project was written over its file in 5.2's shape: {path} (was {from})");
             return StatusText = $"Project loaded and converted from {from}; saved over its file in this version's shape: {name}";
         }

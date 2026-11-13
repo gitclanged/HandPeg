@@ -1,13 +1,16 @@
-# The playback speed's pill: its face the speed at one fixed width that its widest words fit at any scale, a track of the seven speeds its thumb snaps to with no jitter, the wheel, the keys, a double-click for 1x, UI Automation, the view model's step and speed following each other, and its home.
+# The playback speed's pill: its face the speed at the Volume pill's 24 x 22 (the wider speeds drawn smaller to fit, 5.5A), a track of the seven speeds its thumb snaps to with no jitter, the wheel, the keys, a double-click for 1x, UI Automation, the view model's step and speed following each other, and its home.
 ok: MainWindow.xaml: the row's one Playback Speed is a pill (SpeedPill), its face the speed (Readout), opening left; its value PlaybackSpeedStep, 0 to 6 a step at a time, 3 (1x) on a double-click, the speeds its detents' words; shown as the Views menu says
 ok: it sits after the Volume pill at the row's right end; no speed box (ComboBox) left anywhere
+ok: it sets no CollapsedWidth: its slot is the icon's square, the Volume pill's size (5.5A)
 ok: bound to the view model: 1x is step 3, and the face says 1x
    faces: 0.25x 0.5x 0.75x 1x 1.25x 1.5x 2x
-ok: collapsed, its face is the speed at each of the seven steps, and it is 44 x 22 at all of them: nothing beside it moves as the speed changes
-ok: "0.25x" is the widest; with 6 DIPs either side it fits the 44 at every scale from 100% to 300% (not much wider: under 8 DIPs to spare)
+ok: collapsed, its face is the speed at each of the seven steps, and it is 24 x 22 at all of them (the Volume pill's size): nothing beside it moves as the speed changes
+   face sizes: 0.25x 8.7 0.5x 11.4 0.75x 8.7 1x 12.0 1.25x 8.7 1.5x 11.4 2x 12.0
+ok: "0.25x" is the widest (too wide for the slot at the bar's size); every speed, fitted, lies within the 20 DIPs between 2 either side at every scale from 100% to 300%
+ok: 1x and 2x keep the bar's 12 DIPs; the wider speeds are drawn smaller, never below 7
 ok: in the bar's text (Segoe UI 12), its figures tabular: every digit one width, 0.25x and 0.75x alike
-ok: drawn at 96, 144 and 192 DPI, "0.25x" lies inside its 44-DIP slot at least 3 DIPs clear of either end: never cut, never over its neighbours
-ok: open, its 96-DIP track lies left of the face (-104 to -8) and the pill reaches 118 DIPs past it, no readout of its own beside the track; its width in layout still 44
+ok: drawn at 96, 144 and 192 DPI, "0.25x" lies inside its 24-DIP slot at least 1 DIP clear of either end (drawn smaller to fit, 5.5A): never cut, never over its neighbours
+ok: open, its 96-DIP track lies left of the face (-104 to -8) and the pill reaches 118 DIPs past it, no readout of its own beside the track; its width in layout still 24
 ok: a drag across the track in half-DIP moves: only whole steps, never back (no jitter from the view model), each speed once: six changes of the pill and six of PlaybackSpeed, ending at 2x
 ok: the thumb snaps to the nearest detent (0.4 of the way to the next: the one before; 0.6: the next); Shift has nothing finer to give, so it snaps too
 ok: the wheel steps one speed a notch (1x up to 1.25x, two down to 0.75x) and stops at 0.25x
@@ -20,11 +23,10 @@ ok: PlaybackSpeed 0.5x is step 1 (the pill follows: one PlaybackSpeedStep change
 ok: a value between steps reaching the view model (2.4, past the pill's own snapping) is put on its step, and the pill is shown that step (2)
 ok: neither the speed nor its step builds the command again (NonCommandProperties): a speed changed during playback rebuilds nothing
 ok: MainViewModel has no static constructor of its own (beforefieldinit): the step is named in NonCommandProperties' own list
-   the speed pill open, from its slot: the Volume slot -32 to -8, the detents -136 -120 -104 -88 -72 -56 -40
-ok: the row as MainWindow.xaml has it, the speed pill open over the Volume pill: every point of its 24-DIP slot is still the Volume pill's (raised over it, ZIndex), so the speaker shows and a click on it mutes
-ok: no speed lies under the Volume slot: every detent, with its thumb and a press's slack (8 DIPs), left of it, each the speed pill's to the pointer
-ok: the pointer crossing the speaker on its way to the speed's track opens nothing (it would open the Volume pill only by resting there 250 ms, as the speed pill closes); the speed pill stays open
-ok: a press on the speaker opens the Volume pill at once, the speed pill handing over (shut); the pointer back on the speed opens it at once (nothing over its slot), the Volume pill shut: never both open
+   the speed pill open, from its slot: the Volume slot -32 to -8, the detents -104 -88 -72 -56 -40 -24 -8
+ok: the row as MainWindow.xaml has it, the speed pill open: it pops over the Volume pill (raised over it, ZIndex, 5.5A), every point of the speaker's 24-DIP slot the speed pill's, so no speaker shows through the speeds
+ok: the track sits right by the speed's face, over the covered speaker: every detent the speed pill's to the pointer, those over the speaker's slot too
+ok: the speed pill shut, every point of the speaker's slot is the Volume pill's again and the pointer there opens it at once; the pointer back on the speed opens it at once, the Volume pill handing over (shut): never both open
 ok: a click anywhere off an open pill closes it at once and goes on to what it was meant for; a press on the pill keeps it open; the bar keeps no room for an open pill (it opens over the other buttons)
-ok: the track starts 32 DIPs further out (-136 to -40) while the Volume pill is shown (its 24-DIP slot and 8 of margin); hidden in the Views menu, it sits by the face again (-104 to -8)
+ok: the track runs -104 to -8 from the speed's slot, the Volume pill shown (covered while the speed is open) or hidden in the Views menu alike: no inset
 ok: the Volume and Zoom pills are as they were: no CollapsedWidth (the icon's 24 x 22 square), no detents, no track inset

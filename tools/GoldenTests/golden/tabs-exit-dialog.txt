@@ -1,0 +1,27 @@
+# One dialog for every tab holding work: a checked row for each unsaved one (a saved one shown as saved), a name for one never saved, Save only when it can, and the words of each purpose.
+ok: a 640 DIP dialog over HandPeg, as tall as its rows (they scroll past 320 DIPs), never in the taskbar
+ok: a row for each unsaved tab, every one checked
+ok: only the row never saved asks for a name
+ok: Save is off while the checked row never saved has no name
+ok: named: Save is on
+ok: a name of spaces is none
+ok: unchecked, it asks for no name and Save is on for the other two
+ok: with nothing checked there is nothing to save
+ok: four buttons: Save Checked & Close (the default), Keep Suspended for Next Launch, Discard & Close, and Cancel (Esc)
+ok: they fit side by side inside its margins
+ok: unanswered (Esc, the title bar's close) is Cancel: HandPeg stays open
+ok: Save is never taken while it is off
+ok: each button gives its answer
+ok: Close Other Tabs: Save Checked & Close Tabs, Keep Unsaved Tabs Open, Discard & Close Tabs
+ok: the words come from one place for each purpose
+ok: (neither dialog was shown)
+ok: (addenda) a saved tab's row: nothing to save, never checked, no name asked; the unsaved one checked to be saved
+ok: (addenda) drawn: the saved row has no box to tick, a tick and Saved instead (named "Saved One is saved"); the unsaved row has its box
+ok: (addenda) one unsaved and one saved: Save is on for the unsaved one, and the heading counts them
+ok: (addenda) its unsaved row unchecked: nothing to save, Save is off (Discard & Close closes)
+ok: (addenda) two saved tabs are still asked about: keep them for the next start, or close them (Save Checked & Close simply closes: nothing is unsaved)
+ok: (addenda) the heading for all, some and none of the tabs unsaved
+ok: (neither was shown)
+ok: one project opened from Wedding.hproj: no name box, Save & Close saves to Wedding.hproj (not to the video's name)
+ok: work never saved: the name box, filled with the video's name
+ok: (neither was shown)

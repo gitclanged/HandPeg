@@ -1,0 +1,21 @@
+# The quick check (5.5A): the compositor's card and a different Export card only, its command line, never over a current full result, in the background job behind the one gate.
+ok: the Desktop (RX 7900 XTX + Arc A310, the A310 faster across the bus): the quick check measures card(s) 0
+ok: the Plex Server (GTX 1070 alone): the quick check measures card(s) 0
+ok: the XPS 13 (Adreno X1-85, unified memory, a Hexagon NPU): the quick check measures card(s) 0
+ok: an RX 7900 XTX listed twice beside Intel UHD 770: the quick check measures card(s) 0
+ok: a laptop (Intel UHD listed first, RTX 4060): the quick check measures card(s) 1
+ok: a GTX 1070 beside an Arc A380 that also encodes AV1: the quick check measures card(s) 0, 1
+ok: no first listing: nothing measured; roles naming no card: the first listing with the most video memory, and it alone
+ok: with no test clip (no FFmpeg yet): --hw-benchmark --quick --adapters 0 (the bus only)
+ok: with one: --hw-benchmark "<clip>" --quick --adapters 0,2
+ok: ParseAdapters: "0,2" is cards 0 and 2, nothing is none, a word that is not a number is left out
+ok: a quick check never replaces a full result of these same cards and drivers (nor one from before fingerprints)
+ok: it is kept when there is none, when the full one was measured on other cards or drivers, and over an earlier quick one
+ok: the quick check takes Test & Auto-Tune Hardware's own gate: one benchmark at a time
+ok: in the Background lane and the background job (WorkerProcess.RunLinesAsync passes the job class on)
+ok: its worker started from a pool thread: the window's thread never waits on its CreateProcess, its clip or its saving
+ok: saved only where QuickMayReplace allows
+ok: the worker's quick mode decodes on the cards named only (frames per second, no seeks or accuracy frames), with no processor decode and no two-card test
+ok: 5.5A review (B2): the quick check lists the NPUs before its first line (the window shows that line over the estimate's NPU), once
+ok: 5.5A review (B1): the roles listed before measuring, then QuickRoles over the cards that failed after each card measured, each failure and at the end: never Recommend over cards it did not measure
+ok: the window runs the quick check only on the first start (no owner), never opened from Settings

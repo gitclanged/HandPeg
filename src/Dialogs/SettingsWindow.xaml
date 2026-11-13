@@ -355,7 +355,10 @@
 
                     <TextBlock Text="Projects and saving" Style="{StaticResource SectionTitle}" />
                     <CheckBox Content="Prompt to save before closing" IsChecked="{Binding PromptToSaveOnExit}"
-                              ToolTip="When HandPeg is closed while the open video has cuts, clips or settings that were not saved as a project, asks whether to save them first." />
+                              ToolTip="When HandPeg is closed while its project tabs hold cuts, clips or settings that were not saved as a project (or were never saved as one), asks first. One project alone: save it, or close without saving. Two tabs or more: one dialog lists every tab (the saved ones as saved), to save the checked ones, keep every tab for the next time HandPeg starts, or close without saving. When every tab is saved, HandPeg closes with no question. Not asked while the box below is ticked: the tabs are kept instead." />
+                    <CheckBox Content="Keep open project tabs suspended between sessions without prompting on close" IsChecked="{Binding KeepOpenTabsOnClose}"
+                              AutomationProperties.Name="Keep Open Project Tabs Between Sessions"
+                              ToolTip="Off at first. Ticked, closing HandPeg keeps every open project tab, saved or not, exactly as it was (with its undo steps) and asks nothing: the tabs come back the next time HandPeg starts, the one in front last time in front again. Off: closing asks when a tab holds work not saved (when Prompt to save before closing is ticked), and keeping them all for the next start is one of its answers." />
                     <CheckBox Content="Show video &amp; hover previews in Project Manager" IsChecked="{Binding ShowProjectPreviews}" AutomationProperties.Name="Show Video and Hover Previews in Project Manager"
                               ToolTip="The Project Manager shows a 16:9 picture of the video each project was opened with; with the pointer across it, the frames along the video. They are the media browser's pictures, kept in its cache (Caches, below), and made in the background when not kept. Also a box in the Project Manager itself." />
                     <!-- Explorer's previews of projects (ExplorerThumbnails, Pass 5.2D); the hint is shown by the code in a self-contained copy -->
@@ -464,7 +467,7 @@
                     <CheckBox Content="Show the audio beat grid" IsChecked="{Binding ShowBeatGrid}" AutomationProperties.Name="Show Beat Grid"
                               ToolTip="On by default. The beats found in a clip's sound (a clip's menu: Audio &amp; Voice, Detect &amp; Snap to Audio Beats) are drawn as faint ticks along its block." />
                     <CheckBox Content="Enable timeline snapping" IsChecked="{Binding SnapClips}" AutomationProperties.Name="Enable Timeline Snapping"
-                              local:KeyTip.Text="On by default. A dragged or dropped clip's edges catch on the edges of the other clips, the markers, the end of the sequence and the playhead; Shift while dragging places it freely. {key:view.toggleSnap|The Snap button} turns it on or off." />
+                              local:KeyTip.Text="On by default. A dragged or dropped clip's edges catch on the edges of the other clips, the markers, the end of the sequence and the playhead; Shift while dragging places it freely, and Shift on a move onto another track keeps the clip's time exactly. {key:view.toggleSnap|The Snap button} turns it on or off." />
                     <CheckBox Content="Snap to audio beats" IsChecked="{Binding SnapToBeats}" AutomationProperties.Name="Snap to Audio Beats"
                               ToolTip="On by default. With snapping on, edges also catch on the beats found in clips' sound." />
                     <CheckBox Content="Follow the playhead during playback" IsChecked="{Binding TimelineFollowsPlayhead}" AutomationProperties.Name="Follow Playhead During Playback"
@@ -827,6 +830,10 @@
                                     <TextBlock x:Name="BenchmarkButtonText" Text="Test &amp; Auto-Tune Hardware" Margin="7,0,0,0" VerticalAlignment="Center" />
                                 </StackPanel>
                             </Button>
+                            <!-- 5.5.0 (the user's Q10 b): the roles the last test (or the first start's quick check) recommends, set again with one click -->
+                            <Button x:Name="ApplyRolesButton" Content="Apply Recommended Roles" Padding="12,4" Margin="8,0,0,0" Click="ApplyRoles_Click" IsEnabled="False"
+                                    AutomationProperties.Name="Apply Recommended Roles"
+                                    ToolTip="Sets the four GPU roles below to what the last hardware test recommends (or, before any test, what the first start's quick check found), as the test itself does when it ends. Each stays yours to change afterwards. Off until a result for these cards is kept." />
                             <TextBlock x:Name="BenchmarkStatusText" Margin="10,0,0,0" MaxWidth="360" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}"
                                        TextTrimming="CharacterEllipsis" AutomationProperties.AutomationId="BenchmarkStatus" />
                         </StackPanel>
@@ -849,7 +856,7 @@
                         <TextBlock Text="Background GPU:" Style="{StaticResource FieldLabel}" />
                         <ComboBox x:Name="BackgroundGpuBox" MinWidth="260" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Value"
                                   SelectedValue="{Binding BackgroundGpu}" AutomationProperties.Name="Background Graphics Card"
-                                  ToolTip="Background Jobs, Whisper &amp; Analysis GPU: the card background tools decode on (and proxies are encoded on). Auto: a card other than the one the player draws on, when there is one (an Intel Arc beside a Radeon, say), so the player's card is left to the player. Processor Only: no graphics card." />
+                                  ToolTip="Background Jobs, Whisper &amp; Analysis GPU: the card background tools decode on (and proxies are encoded on). Auto: the Compositor GPU (the card the player draws on), never a second card on its own. Pick another card here to move the background work to it, or Processor Only for no graphics card." />
                     </StackPanel>
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Export GPU:" Style="{StaticResource FieldLabel}" />

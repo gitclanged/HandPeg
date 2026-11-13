@@ -1,0 +1,74 @@
+<Window x:Class="HandPegApp.SaveTabsOnExitDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Unsaved Project Tabs" Width="640" SizeToContent="Height" ResizeMode="NoResize"
+        Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <!--
+        Pass 5.5A: every unsaved project tab in one dialog, as HandPeg closes (or as Close Other Tabs closes two or more unsaved tabs): one
+        row per tab (an inspector card: its name, its project file or "Never saved", a box to save it under a name when it was never saved),
+        all checked. Save is offered only while a row is checked and every checked row never saved has a name. Cancel, Esc and the title
+        bar's close all stay. The buttons' words are set by the code (SaveTabsOnExitDialog.Labels), one set for each purpose. The 5.5A
+        addenda: as HandPeg closes, every tab holding work is listed, a saved one shown as saved with nothing to tick (TabExitRow.Saved).
+    -->
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="Visible" />
+    </Window.Resources>
+    <StackPanel Margin="16">
+        <TextBlock x:Name="HeadingText" FontWeight="SemiBold" FontSize="14" TextWrapping="Wrap" />
+        <TextBlock x:Name="DetailText" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,4,0,12" />
+        <ScrollViewer MaxHeight="320" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
+            <ItemsControl x:Name="RowsList" Focusable="False">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Border Background="{DynamicResource InspectorCardBrush}" BorderBrush="{DynamicResource InspectorCardBorderBrush}" BorderThickness="1"
+                                CornerRadius="6" Padding="10,8" Margin="0,0,0,6">
+                            <StackPanel>
+                                <CheckBox x:Name="SaveBox" IsChecked="{Binding IsChecked}" AutomationProperties.Name="{Binding CheckName}" VerticalContentAlignment="Center"
+                                          Visibility="{Binding NeedsSave, Converter={StaticResource Visible}}">
+                                    <StackPanel Margin="4,0,0,0">
+                                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="{Binding Detail}" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
+                                </CheckBox>
+                                <!-- The 5.5A addenda: a saved tab, listed so closing shows every tab it drops, with nothing to tick: a vector tick where the
+                                     box would be, its name and project file, and Saved at the right. -->
+                                <Grid x:Name="SavedRow" Visibility="{Binding Saved, Converter={StaticResource Visible}}" AutomationProperties.Name="{Binding SavedName}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="18" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <Path Data="M0,4 L3.5,7.5 L10,0" Stroke="{DynamicResource MutedTextBrush}" StrokeThickness="1.6" VerticalAlignment="Center"
+                                          HorizontalAlignment="Left" Margin="2,0,0,0" />
+                                    <StackPanel Grid.Column="1" Margin="4,0,0,0">
+                                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="{Binding Detail}" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
+                                    <TextBlock x:Name="SavedText" Grid.Column="2" Text="Saved" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" Margin="10,0,0,0" />
+                                </Grid>
+                                <Grid Margin="22,6,0,0" Visibility="{Binding ShowsName, Converter={StaticResource Visible}}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Save as project:" VerticalAlignment="Center" Margin="0,0,10,0" />
+                                    <TextBox Grid.Column="1" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" VerticalContentAlignment="Center"
+                                             AutomationProperties.Name="{Binding NameBoxName}" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button x:Name="SaveButton" MinWidth="150" IsDefault="True" Click="Save_Click" />
+            <Button x:Name="KeepButton" MinWidth="150" Margin="6,0,0,0" Click="Keep_Click" />
+            <Button x:Name="DiscardButton" MinWidth="120" Margin="6,0,0,0" Click="Discard_Click" />
+            <Button x:Name="CancelButton" Content="Cancel" MinWidth="80" Margin="6,0,0,0" IsCancel="True" AutomationProperties.Name="Cancel"
+                    ToolTip="Go back to HandPeg: nothing is saved, kept or closed." />
+        </StackPanel>
+        <TextBlock x:Name="FooterText" Foreground="{DynamicResource MutedTextBrush}" Margin="0,12,0,0" TextWrapping="Wrap" />
+    </StackPanel>
+</Window>

@@ -55,8 +55,11 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
     private const double ThumbRadius = 5, TrackThickness = 3, IconRoom = 3, ReadoutGap = 6, EndPad = 9, LeastReadout = 26, ReadoutSize = 11;
     private const double IconBox = 16, IconStroke = 1.3;
 
-    /// <summary>A readout face's type size (the bar's text, 12 DIPs) and the least room either side of its words in the slot (5.4.4).</summary>
-    internal const double FaceFontSize = 12, FacePad = 6;
+    /// <summary>
+    /// A readout face's type size (the bar's text, 12 DIPs), the least room either side of its words in the slot, and the least size words
+    /// too wide for the slot are drawn down to (5.5A: the speed pill is the Volume pill's 24 x 22 now, so "0.25x" is drawn smaller to fit).
+    /// </summary>
+    internal const double FaceFontSize = 12, FacePad = 2, FaceLeastSize = 7;
 
     // A detent's dot on the open track (a little wider than the track), and the most detents drawn apart (5.4.4).
     private const double DetentRadius = 2;
@@ -165,6 +168,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
     private FormattedText? _face;
     private string? _faceText;
     private Brush? _faceBrush;
+    private double _faceRoom;
 
     public ExpandablePillSlider()
     {
@@ -311,7 +315,8 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
 
     /// <summary>
     /// The collapsed pill's width, its width in layout (DIPs, 5.4.4); NaN, the icon's square (its height and 2). A readout face
-    /// (<see cref="PillIcon.Readout"/>) sets one its widest words fit at any scale, so nothing beside it moves as the value changes.
+    /// (<see cref="PillIcon.Readout"/>) keeps one width whatever the value, so nothing beside it moves; its words wider than the slot are
+    /// drawn smaller to fit it (5.5A).
     /// </summary>
     public double CollapsedWidth
     {
@@ -1089,15 +1094,17 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         drawing.DrawGeometry(null, _iconPen, _icons[index] ??= IconGeometry(Icon, waves, crossed, new Point((slot.Width - IconBox) / 2, (slot.Height - IconBox) / 2)));
     }
 
-    // A readout face (5.4.4): the value's words in the middle of the slot, made again only when they, their brush or the screen's scale
-    // change. The slot's width is CollapsedWidth, which the widest words fit (the speed pill's 44 DIPs for "0.25x").
+    // A readout face (5.4.4): the value's words in the middle of the slot, made again only when they, their brush, the slot's width or the
+    // screen's scale change. 5.5A: the slot is the Volume pill's 24 DIPs; words wider than it less FacePad either side ("0.25x", "1.25x")
+    // are drawn smaller to fit, "1x" and "2x" at the bar's full size.
     private void DrawFace(DrawingContext drawing, Size slot, Brush brush)
     {
         var words = ReadoutText();
-        if (_face is null || words != _faceText || !ReferenceEquals(brush, _faceBrush))
+        var room = slot.Width - 2 * FacePad;
+        if (_face is null || words != _faceText || !ReferenceEquals(brush, _faceBrush) || room != _faceRoom)
         {
-            _face = FaceText(words, TextElement.GetFontFamily(this), brush, VisualTreeHelper.GetDpi(this).PixelsPerDip);
-            (_faceText, _faceBrush) = (words, brush);
+            _face = FaceText(words, TextElement.GetFontFamily(this), brush, VisualTreeHelper.GetDpi(this).PixelsPerDip, room);
+            (_faceText, _faceBrush, _faceRoom) = (words, brush, room);
         }
 
         drawing.DrawText(_face, new Point(Math.Round((slot.Width - _face.Width) / 2), Math.Round((slot.Height - _face.Height) / 2)));
@@ -1106,10 +1113,23 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
     /// <summary>
     /// A readout face's words as drawn (5.4.4): the bar's text (the window's face, <see cref="FaceFontSize"/> DIPs, whatever the system's text
     /// size; Segoe UI's figures are tabular, every digit one width), in WPF's ideal text layout, so their width in DIPs is the same at any scale.
+    /// 5.5A: words wider than <paramref name="room"/> are drawn smaller to fit it (their width follows the size), never below
+    /// <see cref="FaceLeastSize"/>.
     /// </summary>
-    internal static FormattedText FaceText(string words, FontFamily family, Brush brush, double pixelsPerDip) =>
-        new(words, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, new Typeface(family, FontStyles.Normal, FontWeights.Normal, FontStretches.Normal),
-            FaceFontSize, brush, pixelsPerDip);
+    internal static FormattedText FaceText(string words, FontFamily family, Brush brush, double pixelsPerDip, double room = double.PositiveInfinity)
+    {
+        var text = new FormattedText(words, CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+            new Typeface(family, FontStyles.Normal, FontWeights.Normal, FontStretches.Normal), FaceFontSize, brush, pixelsPerDip);
+        // (Down a tenth of a DIP at a time from the proportional size, looked at again: a scale's glyph metrics need not shrink exactly in step.)
+        var size = FaceFontSize;
+        for (var pass = 0; pass < 4 && room > 0 && double.IsFinite(room) && text.WidthIncludingTrailingWhitespace > room && size > FaceLeastSize; pass++)
+        {
+            size = Math.Max(FaceLeastSize, Math.Min(size - 0.1, Math.Floor(size * room / text.WidthIncludingTrailingWhitespace * 10) / 10));
+            text.SetFontSize(size);
+        }
+
+        return text;
+    }
 
     /// <summary>The speaker's waves for a level (0 to 1 of the range) and whether it is muted: crossed out (no waves) when muted or at the least; else 1 to a third, 2 to two thirds, 3 above.</summary>
     internal static (int Waves, bool Crossed) SpeakerLevel(double fraction, bool muted) =>

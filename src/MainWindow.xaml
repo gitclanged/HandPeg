@@ -979,38 +979,27 @@
                     <!-- How tall the Sequence Overview Scrubber is: no slider here since 4.2B-2; its lower edge (dragged), the border above it (Ctrl-drag) and its tab's right-click menu. -->
                     <!--
                         Monitor volume (5.4.4): an icon that opens into a pill slider under the pointer; a click on the speaker mutes the player.
-                        Raised over the speed pill (ZIndex), so its speaker stays in sight and under the pointer while the speed pill is open over it;
-                        the Tab order stays the order on screen (TabIndex: ZIndex reorders the panel's children for the keyboard too).
+                        The Tab order stays the order on screen (TabIndex: the speed pill's ZIndex reorders the panel's children for the keyboard too).
                     -->
-                    <local:ExpandablePillSlider x:Name="VolumePill" Panel.ZIndex="1" KeyboardNavigation.TabIndex="1" Margin="0,0,8,0" VerticalAlignment="Center" Icon="Speaker" ExpandsLeft="True"
+                    <local:ExpandablePillSlider x:Name="VolumePill" KeyboardNavigation.TabIndex="1" Margin="0,0,8,0" VerticalAlignment="Center" Icon="Speaker" ExpandsLeft="True"
                                                 Minimum="0" Maximum="100" SmallChange="5" LargeChange="20" DefaultValue="100" ReadoutFormat="{}{0:0}%"
                                                 Value="{Binding Volume}" IsIconToggle="True" IsIconChecked="{Binding IsPlayerMuted}"
                                                 AutomationProperties.Name="Volume" IconAutomationName="Mute Player"
                                                 ToolTip="Volume. Click the speaker to mute the player (the export is not affected). Double-click the track to reset."
                                                 Visibility="{Binding PlaybackControls[Volume], Converter={StaticResource BoolToVisibility}}" />
                     <!--
-                        Playback speed (5.4.4, in place of a box whose words were cut): the pill's face is the speed itself ("1x"), 44 DIPs wide
-                        whatever the speed (the widest, "0.25x", fits at any scale, so nothing beside it moves), opening left into a track of the
-                        seven speeds whose thumb snaps to them. Its value is the speed's place in the list (PlaybackSpeedStep, 3 for 1x).
-                        While the Volume pill is shown, the track starts past its slot (TrackInset: its 24 DIPs and 8 of margin), so no speed
-                        lies under the speaker; a pointer crossing the speaker to the track leaves it shut, one resting there opens it.
+                        Playback speed (5.4.4, in place of a box whose words were cut): the pill's face is the speed itself ("1x"), opening left
+                        into a track of the seven speeds whose thumb snaps to them. 5.5A (the user's): the Volume pill's 24 x 22 whatever the speed
+                        (no CollapsedWidth), so nothing beside it moves; "0.25x" and "1.25x" are drawn smaller to fit it, "1x" at the bar's size. Its value is the speed's place in the list (PlaybackSpeedStep, 3 for 1x).
+                        5.5A (the user's): raised over the Volume pill (ZIndex), so the open speed pill pops over the speaker and covers it, its
+                        track right by its face, with no speaker showing through the speeds; the speaker is back the moment it shuts.
                     -->
-                    <local:ExpandablePillSlider x:Name="SpeedPill" KeyboardNavigation.TabIndex="2" Margin="0" VerticalAlignment="Center" Icon="Readout" ExpandsLeft="True" CollapsedWidth="44"
+                    <local:ExpandablePillSlider x:Name="SpeedPill" Panel.ZIndex="1" KeyboardNavigation.TabIndex="2" Margin="0" VerticalAlignment="Center" Icon="Readout" ExpandsLeft="True"
                                                 Minimum="0" Maximum="6" SmallChange="1" LargeChange="1" DefaultValue="3" Detent="1"
                                                 DetentLabels="{Binding PlaybackSpeeds}" Value="{Binding PlaybackSpeedStep}"
                                                 AutomationProperties.Name="Playback Speed"
                                                 ToolTip="Playback Speed. Scroll or drag to change; double-click for 1x."
-                                                Visibility="{Binding PlaybackControls[Speed], Converter={StaticResource BoolToVisibility}}">
-                        <local:ExpandablePillSlider.Style>
-                            <Style TargetType="local:ExpandablePillSlider">
-                                <Style.Triggers>
-                                    <DataTrigger Binding="{Binding PlaybackControls[Volume]}" Value="True">
-                                        <Setter Property="TrackInset" Value="32" />
-                                    </DataTrigger>
-                                </Style.Triggers>
-                            </Style>
-                        </local:ExpandablePillSlider.Style>
-                    </local:ExpandablePillSlider>
+                                                Visibility="{Binding PlaybackControls[Speed], Converter={StaticResource BoolToVisibility}}" />
                 </StackPanel>
             </local:PlaybackRow>
             <!-- The Canvas: the output frame with its clips, to drag into place -->

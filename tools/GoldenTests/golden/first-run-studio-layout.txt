@@ -1,0 +1,46 @@
+# The studio welcome (5.5A): two screens in 940 x 600, the live miniature under the pointer, five swatches, the role cards from Estimated to their figures.
+ok: the window is 940 x 600 HandPeg DIPs (its size over its UI scale), or the work area where that is smaller
+ok: its largest size is the work area in its own DIPs (set after UiScale: never scaled twice), and it is not resized by hand
+ok: it opens on Screen 1, Workspace, Theme & Core Engines (Step 1 of 2); Screen 2 collapsed
+ok: Next is the default button, inside the window; no Back, no Start Editing yet
+ok: five theme swatches, ThemeManager's themes in order, the theme in effect checked: Windows System, OLED Black, Leonardo, Reno, Reno Dark
+ok: the live miniature draws the chosen layout, Standard Editing
+ok: the pointer at the middle of the Standard Editing card hits that card, and the miniature draws that layout's shape
+ok: the pointer at the middle of the Color & Effects card hits that card, and the miniature draws that layout's shape
+ok: the pointer at the middle of the Assembly & Media card hits that card, and the miniature draws that layout's shape
+ok: the pointer at the middle of the Vertical & Shorts Studio card hits that card, and the miniature draws that layout's shape
+ok: the pointer at the middle of the Vertical Creator Split card hits that card, and the miniature draws that layout's shape
+ok: over the Reno swatch the miniature is drawn in Reno; the pointer gone, the chosen layout and theme come back
+ok: a card chosen is the layout drawn when the pointer is elsewhere
+ok: a swatch checked puts its theme into effect at once (Reno), the miniature with it
+ok: the miniature is drawn: a window, its panes, the player's frame, the timeline's Clips
+ok: Next: Screen 2, Hardware Auto-Tune & Default Export (Step 2 of 2)
+ok: Start Editing is the default button, inside the window; Back beside it
+ok: the encoder and audio boxes, Prompt to save, the software fallback and crash reports are on it
+ok: the estimate: five role cards (Compositor, Decode, Background, Export, NPU), each GPU badge Estimated
+ok: the Desktop: the RX 7900 XTX composites; Decode, Background and Export read Auto · the RX 7900 XTX; no NPU
+ok: each card is an inspector card with its automation id (CompositorRole ... NpuRole)
+ok: while the quick check runs, the GPU badges read Measuring...
+ok: the quick check's figures: 870 fps · 9,870 MB/s on the compositor's card, for Decode and Background too; a late estimate changes nothing
+ok: the XPS 13: the Adreno shares the computer's memory, the Hexagon NPU Detected; the bus alone before FFmpeg: 9,870 MB/s
+ok: the RX 7900 XTX's device failing in the quick check: the Compositor card reads Auto · AMD Radeon RX 7900 XTX, Not measured; no role card names the A310
+ok: the quick check's status, decoded: "Measured in the background in 1.4 s: decoding and the bus on the cards that hold a role."
+ok: the quick check's status, the clip did not decode: "The bus measured in the background in 1.4 s; the test clip did not decode in hardware."
+ok: the quick check's status, no FFmpeg yet: "The bus measured in the background; the decoding is measured once FFmpeg is downloaded."
+ok: the quick check's status, nothing measured: "Estimated from the cards: the quick check could not measure them, and a card it could not measure holds no role."
+ok: the quick check's status, Settings, decoded: "A quick check at the first start (decoding and the bus on the cards that hold a role): run the test for the full measurements."
+ok: the quick check's status, Settings, no FFmpeg yet: "A quick check at the first start (the bus on the cards that hold a role): run the test for the full measurements."
+ok: the quick check's status, Settings, nothing measured: "A quick check at the first start could not measure the cards: run the test for the full measurements."
+ok: (5.5.0, Q10 b) the warning line: hidden while nothing failed; a failed quick check: "Warning: the quick hardware check failed (Device removed). The roles below are estimates: run Test & Auto-Tune Hardware in Settings > Export & Hardware > GPU & NPU Roles, then Apply Recommended Roles."
+ok: (5.5.0, Q10 b) shown in the warning colour when the quick check fails (or the cards could not be looked at), hidden again when a later one measures
+ok: (5.5.0, Q10 b) Settings > Export & Hardware > GPU & NPU Roles: Apply Recommended Roles beside the test, for a kept result that holds for these cards (none, a stopped one, or one of other cards: off)
+ok: Prompt to save before closing: asked only when Keep open project tabs suspended between sessions is off (Settings > General > Projects and saving, where that box is); while on, closing keeps every tab
+ok: (5.5A addenda) and that box is off at first, so closing asks: with two tabs or more, in one dialog that can keep every tab for the next start
+ok: (addenda) the first run offers no existing FFmpeg: the component panel's Use Existing button is not there (OffersExistingFfmpeg off)
+ok: (addenda) none of the words the panel shows mentions one
+ok: (addenda) and its messages (a failed look online, a failed download) speak of one only while OffersExistingFfmpeg is on
+ok: (addenda) the label, the hook and the folder picker are gone from the first run
+ok: (addenda) the quick check measures again with decoding only once FFmpeg is installed (DependencyUpdater.Installed), its one call
+ok: (addenda) Settings keeps its way to use a local FFmpeg: the ffmpeg.exe Path box with Browse...
+ok: Back to Screen 1
+ok: closed without Start Editing, the theme in effect before comes back

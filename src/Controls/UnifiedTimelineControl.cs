@@ -299,6 +299,11 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
             SettleMotion();
             _autoScroll.Stop();
             DisarmMenu();
+
+            // 5.5A: a track's header held or dragged is let go (nothing was moved), and the dwell's look again goes with any drag.
+            if (_rowDrag is not null)
+                AbortDrag();
+            StopSettleTimer();
         };
 
         // Hidden (its tab put behind another, its pane closed): a coast stops where it is (5.4C).
@@ -394,7 +399,10 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
     /// </summary>
     public Func<IReadOnlyList<TimelineBlock>, IReadOnlyList<double>>? SnapTimes { get; set; }
 
-    /// <summary>The sequence's frame rate: while Shift is held, drags step from frame to frame of it, with no snapping.</summary>
+    /// <summary>
+    /// The sequence's frame rate: while Shift is held, drags step from frame to frame of it, with no snapping (5.5A: but a move gone more than
+    /// the 6 DIP deadzone up or down keeps its time exactly while Shift is held).
+    /// </summary>
     public Func<double>? FrameRate { get; set; }
 
     /// <summary>What is selected: the block that stands for it (its Clip) is outlined.</summary>
@@ -531,6 +539,10 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
             AbortDrag();
             Raise(() => DragRefused?.Invoke("What was being dragged changed meanwhile (an undo or another edit), so it was let go where it was."));
         }
+
+        // A track's header held or dragged (5.5A) whose row is not among them (the rows were made again): let go, nothing moved.
+        if (_rowDrag is { } rowDrag && !ListsRow(_rows, rowDrag.Row))
+            AbortDrag();
 
         _hovered = null;
         Relayout();
@@ -736,8 +748,9 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         InvalidateVisual();
     }
 
-    /// <summary>Whether a block, a fade, a gain line or a J/L cut is being dragged (the host leaves the rows alone meanwhile).</summary>
-    public bool IsDragging => _drag is not null || _gainDrag is not null || _fadeDrag is not null || _splitDrag is not null || _crossfadeDrag is not null;
+    /// <summary>Whether a block, a fade, a gain line, a J/L cut or (5.5A, once it has begun) a track's header is being dragged (the host leaves the rows alone meanwhile).</summary>
+    public bool IsDragging => _drag is not null || _gainDrag is not null || _fadeDrag is not null || _splitDrag is not null || _crossfadeDrag is not null
+        || _rowDrag is { Started: true };
 
     // ----- Laying out -----
 
@@ -990,6 +1003,18 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         foreach (var row in rows)
         {
             if (row.Blocks.Contains(block) || Contains(row.Children, block))
+                return true;
+        }
+
+        return false;
+    }
+
+    // Whether a row is among these (at any depth of their stacks): the very row, not one made again with its key (5.5A).
+    private static bool ListsRow(List<TimelineRow> rows, TimelineRow row)
+    {
+        foreach (var each in rows)
+        {
+            if (ReferenceEquals(each, row) || ListsRow(each.Children, row))
                 return true;
         }
 

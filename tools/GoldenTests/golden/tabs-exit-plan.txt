@@ -1,0 +1,35 @@
+# Closing HandPeg: kept for the next start (every tab exact, the one in front too), today's way with the prompt off, or asked whenever closing would drop work.
+ok: Keep open project tabs between sessions on: every tab kept for the next start, nothing asked (whatever the prompt says)
+ok: both off (Keep open and Prompt to save before closing): as before, nothing asked (the unsaved tabs behind kept)
+ok: (addenda) the defaults, two tabs or more holding work, one of them or more not saved: asked, in one dialog listing every one of them (the saved shown as saved)
+ok: (5.5.0, Q2 b) every tab holding work saved (two or more, or one), or none holding work: closed with no question
+ok: (addenda) one project alone in front with work not saved (changes, or never saved at all): the classic question (MayClose, SaveOnExitDialog)
+ok: (addenda) one alone with work not saved behind a blank tab in front (or in front, not brought back): the dialog with its one row (the classic question saves only the project in front)
+ok: (addenda) Keep open project tabs is off at first (a settings file without it too) and Prompt to save before closing on: closing asks by default
+ok: (addenda) a Sequence of dropped files never saved as a project, untouched since it was opened: HasUnsavedChanges alone says there is nothing to save (the count before missed it)
+ok: (addenda) it counts as work not saved: in front (its dot from MayHaveUnsavedChanges and HasUnsavedChanges, with no project file) and behind (a clean header with no project file)
+ok: (addenda) a saved project with no changes does not count; one with changes does; an empty tab never does
+ok: (addenda) a settings file a 5.5A preview saved with Keep open on (ViewDefaultsVersion 11) reads with it off, once (version 12)
+ok: (addenda) ticked since (a version 12 file), or in a first start's own file (version 0), it stays on
+ok: the tab in front's crash-recovery file is there, two actions back
+ok: every tab's disk work done
+ok: the session's folder keeps every tab holding work and tabs.json (the blank tab keeps nothing)
+ok: the next start takes them back in tabs.json's order (the order they had on the strip)
+ok: each with its dot: Beta and the tab in front unsaved, Gamma saved
+ok: the tab in front exactly as it was (N, its three steps to undo, nothing to redo): never lagged, its recovery file overwritten
+ok: and the tabs behind exactly as they were, the unsaved one with its saved state's fingerprint
+ok: the close takes its plan from the settings once every tab's disk work is done, the tab in front's dot made exact first whenever it may ask (one project alone too)
+ok: and carries it out: every file forgotten; or the kept tabs written, the rest let go, tabs.json written (marked kept) when tabs are kept for the next start
+ok: MayClose asks nothing more once the tabs answered for the tab in front; one project alone keeps the classic question
+ok: (addenda) the classic question is the plan's (work never saved counted), never HasUnsavedChanges alone; a fault's own question counts it too
+ok: (review) the classic question's Save & Close saves a project with a file to that file, as Ctrl+S does; a name only for work never saved
+ok: (review) a row's detail: its project file or Never saved, after "Recovered 2 actions back" for a tab whose file is a lagged crash-recovery copy
+ok: the tab in front kept exactly as it is (never lagged), on its own queue after its recovery file, a tab not brought back kept as its file is
+ok: one that could not be kept with unsaved changes asks whether to close anyway, staying by default (and keeps no half-written file in front)
+ok: the one dialog: Save Checked & Close (a failed save asks first), Keep Suspended for Next Launch, Discard & Close; Cancel stays
+ok: (addenda) it lists every tab holding work: a saved one as a row shown as saved, an unsaved one checked (with a name when never saved)
+ok: a tab behind saved from its file, the tab in front to its project file or under the row's name (a saved row never); closing after a failed save is never the default
+ok: Close Other Tabs with two or more unsaved: the same dialog in its own words, each tab then closed with no second question (one whose save failed stays)
+ok: (5.5.0, Q3 b) closing one tab (x, Ctrl+W) asks by the exit's rule (UnsavedForExit): a never-saved tab with content asks too, in its own words, and is saved as a first save
+ok: Settings > General > Projects and saving holds the setting under the prompt; the classic question names that page (not a Behavior tab)
+ok: (addenda) its tooltip says it is off at first, and that off, closing asks when a tab holds work not saved (5.5.0)

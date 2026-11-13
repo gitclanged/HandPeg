@@ -24,10 +24,15 @@ namespace HandPegApp.Compositor;
 /// compositor's FFmpeg fallback decodes instead (HandPeg.exe --hw-benchmark &lt;clip&gt; --ffmpeg &lt;path&gt;: its decoders asked
 /// for), and the NPUs (DXCore), nothing measured on them yet.</item>
 /// </list>
+/// The first-run window's two quicker modes (5.5A) are in HardwareBenchmark.Profile.cs: --estimate (the cards, their encoders and
+/// the roles, nothing measured) and --quick (decoding and the bus on the cards that hold a role).
 /// </summary>
-public static unsafe class HardwareBenchmark
+public static unsafe partial class HardwareBenchmark
 {
     public const string Argument = "--hw-benchmark";
+
+    /// <summary>The first-run window's modes (5.5A): the instant estimate, the quick check, and the cards the quick check measures ("0,2").</summary>
+    public const string EstimateOption = "--estimate", QuickOption = "--quick", AdaptersOption = "--adapters";
 
     // The FFmpeg the app uses (--ffmpeg), for the codecs its fallback decodes; empty when none was given.
     private static string _ffmpeg = "";
@@ -42,11 +47,16 @@ public static unsafe class HardwareBenchmark
     public static int Run(string[] args)
     {
         _ = CompositorWorker.SetErrorMode(0x0001 | 0x0002);
-        var clip = args.Length > 1 ? args[1] : "";
+
+        // 5.5A: the clip is optional (the estimate has none, a quick check may have none: the bus only), and the mode picks the body.
+        var clip = args.Length > 1 && !args[1].StartsWith("--", StringComparison.Ordinal) ? args[1] : "";
         _ffmpeg = CompositorWorker.OptionValue(args, CompositorWorker.FfmpegOption);
         _out = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };
         var exitCode = 0;
-        var thread = new Thread(() => exitCode = Measure(clip)) { Name = "Benchmark" };
+        Func<int> body = args.Contains(EstimateOption) ? Estimate
+            : args.Contains(QuickOption) ? () => MeasureQuick(clip, ParseAdapters(CompositorWorker.OptionValue(args, AdaptersOption)))
+            : () => Measure(clip);
+        var thread = new Thread(() => exitCode = body()) { Name = "Benchmark" };
         thread.SetApartmentState(ApartmentState.MTA);
         thread.Start();
         thread.Join();
@@ -63,11 +73,7 @@ public static unsafe class HardwareBenchmark
             _ = Com.CoInitializeEx(0, Com.CoInitMultithreaded);
             result.Adapters = EnumerateAdapters();
             result.Fingerprint = GpuAdapters.Fingerprint;
-            result.Npus = [.. NpuAdapters.Enumerate().Select(n => new HardwareBenchmarkNpu
-            {
-                Name = n.Name, Vendor = n.Vendor, VendorId = n.VendorId, DeviceId = n.DeviceId, DriverVersion = n.DriverVersion,
-                SharedSystemMemoryMb = n.SharedMemoryMb, GenericMl = n.GenericMl, UsedFor = NpuAdapters.UsedFor,
-            })];
+            result.Npus = ListNpus();
             result.MediaFoundationDecodeCodecs = MediaFoundationDecoders();
             result.FfmpegFallbackCodecs = FfmpegFallbackCodecs(result.MediaFoundationDecodeCodecs);
             Report("adapters", -1, 0.1, result.Npus.Count > 0
@@ -77,8 +83,7 @@ public static unsafe class HardwareBenchmark
                 throw new FileNotFoundException("The benchmark clip is missing.", clip);
 
             // A card DXGI lists twice is measured once.
-            foreach (var repeat in result.Adapters.Where(a => a.SameCardAs >= 0))
-                repeat.Note = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"The same card as #{repeat.SameCardAs}, listed twice by Windows.");
+            NoteRepeats(result);
             var hardware = result.Adapters.Where(a => a.Note.Length == 0).ToList();
             var share = 0.75 / Math.Max(hardware.Count + 1, 1);
 
@@ -153,7 +158,12 @@ public static unsafe class HardwareBenchmark
 
     // ----- The cards -----
 
-    internal static List<HardwareBenchmarkAdapter> EnumerateAdapters()
+    /// <summary>
+    /// Every card DXGI lists (but the software renderer), its memory, the decoders its driver offers and the hardware encoders
+    /// Media Foundation has for it. Without <paramref name="decoderProfiles"/> (5.5A, the estimate) no Direct3D 11 device is made, so
+    /// no card's video driver is loaded: the decoders' list is then left empty.
+    /// </summary>
+    internal static List<HardwareBenchmarkAdapter> EnumerateAdapters(bool decoderProfiles = true)
     {
         var adapters = new List<HardwareBenchmarkAdapter>();
         var factory = Dxgi.CreateFactory();
@@ -181,7 +191,8 @@ public static unsafe class HardwareBenchmark
                         UnifiedMemory = MemoryTier.IsUnifiedMemory(DxCore.IsIntegratedCard(desc.Luid), (long)desc.DedicatedVideoMemory, (long)desc.SharedSystemMemory),
                         Vendor = desc.VendorId switch { 0x1002 => "AMD", 0x8086 => "Intel", 0x10DE => "NVIDIA", 0x5143 or 0x4D4F4351 => "Qualcomm", 0x1414 => "Microsoft", _ => $"0x{desc.VendorId:X4}" },
                     };
-                    entry.DecodeCodecs = DecodeProfiles(adapter);
+                    if (decoderProfiles)
+                        entry.DecodeCodecs = DecodeProfiles(adapter);
                     adapters.Add(entry);
                 }
                 finally
@@ -253,7 +264,13 @@ public static unsafe class HardwareBenchmark
         return [.. Profiles.Select(p => p.Codec).Where(codecs.Contains)];
     }
 
-    /// <summary>The hardware encoders Media Foundation has for each card: MFTEnum2 narrowed to its LUID (MFT_ENUM_ADAPTER_LUID).</summary>
+    private static readonly (Guid Subtype, string Codec)[] EncodedCodecs = [(MfGuids.H264, "H.264"), (MfGuids.Hevc, "HEVC"), (MfGuids.Av1, "AV1")];
+
+    /// <summary>
+    /// The hardware encoders Media Foundation has for each card: MFTEnum2 narrowed to its LUID (MFT_ENUM_ADAPTER_LUID). 5.5A: every
+    /// card's every codec listed at once (each listing waits about 20 ms on the drivers' registrations; the first-run estimate's time is
+    /// the slowest one's, not their sum), the codecs then put in their order.
+    /// </summary>
     private static void EncodersByAdapter(List<HardwareBenchmarkAdapter> adapters)
     {
         try
@@ -265,33 +282,36 @@ public static unsafe class HardwareBenchmark
             return;
         }
 
-        foreach (var adapter in adapters)
+        var found = new bool[adapters.Count * EncodedCodecs.Length];
+        Parallel.For(0, found.Length, k => found[k] = HasHardwareEncoder(adapters[k / EncodedCodecs.Length].Luid, EncodedCodecs[k % EncodedCodecs.Length].Subtype));
+        for (var k = 0; k < found.Length; k++)
         {
-            nint attributes;
-            if (Mf.MFCreateAttributes(&attributes, 1) < 0)
-                continue;
-            try
-            {
-                var luid = adapter.Luid;
-                Mf.SetBlob(attributes, MfGuids.EnumAdapterLuid, &luid, sizeof(long));
-                foreach (var (subtype, codec) in new[] { (MfGuids.H264, "H.264"), (MfGuids.Hevc, "HEVC"), (MfGuids.Av1, "AV1") })
-                {
-                    var output = new MftRegisterTypeInfo { MajorType = MfGuids.Video, Subtype = subtype };
-                    if (CountMfts(MfGuids.VideoEncoderCategory, Mf.EnumHardware | Mf.EnumSortAndFilter, null, &output, attributes) > 0
-                        && !adapter.EncodeCodecs.Contains(codec))
-                    {
-                        adapter.EncodeCodecs.Add(codec);
-                    }
-                }
-            }
-            catch (GpuException)
-            {
-                // No encoders known for this card.
-            }
-            finally
-            {
-                Com.Release(ref attributes);
-            }
+            var (adapter, codec) = (adapters[k / EncodedCodecs.Length], EncodedCodecs[k % EncodedCodecs.Length].Codec);
+            if (found[k] && !adapter.EncodeCodecs.Contains(codec))
+                adapter.EncodeCodecs.Add(codec);
+        }
+    }
+
+    /// <summary>Whether Media Foundation lists a hardware encoder to <paramref name="subtype"/> on the card of <paramref name="luid"/>.</summary>
+    private static bool HasHardwareEncoder(long luid, Guid subtype)
+    {
+        nint attributes;
+        if (Mf.MFCreateAttributes(&attributes, 1) < 0)
+            return false;
+        try
+        {
+            Mf.SetBlob(attributes, MfGuids.EnumAdapterLuid, &luid, sizeof(long));
+            var output = new MftRegisterTypeInfo { MajorType = MfGuids.Video, Subtype = subtype };
+            return CountMfts(MfGuids.VideoEncoderCategory, Mf.EnumHardware | Mf.EnumSortAndFilter, null, &output, attributes) > 0;
+        }
+        catch (GpuException)
+        {
+            // No encoders known for this card.
+            return false;
+        }
+        finally
+        {
+            Com.Release(ref attributes);
         }
     }
 
@@ -417,8 +437,11 @@ public static unsafe class HardwareBenchmark
 
     // ----- Decoding -----
 
-    /// <summary>The clip decoded front to back (frames per second), six seeks (median ms), and the frames at the accuracy points.</summary>
-    private static (double Fps, double SeekMs, byte[][]? Frames) DecodeRun(GpuDevice gpu, string clip, bool hardware, out int frameCount)
+    /// <summary>
+    /// The clip decoded front to back (frames per second), six seeks (median ms), and the frames at the accuracy points; with
+    /// <paramref name="quick"/> (5.5A, the first run's quick check) the frames per second only.
+    /// </summary>
+    private static (double Fps, double SeekMs, byte[][]? Frames) DecodeRun(GpuDevice gpu, string clip, bool hardware, out int frameCount, bool quick = false)
     {
         using var decoder = new MfVideoDecoder(gpu, clip, 0, hardware);
         if (hardware && !decoder.Hardware)
@@ -437,6 +460,8 @@ public static unsafe class HardwareBenchmark
 
         Finish(gpu);
         var fps = frameCount / Math.Max(clock.Elapsed.TotalSeconds, 1e-6);
+        if (quick)
+            return (fps, 0, null);
 
         var seeks = new List<double>();
         foreach (var point in SeekPoints)
@@ -667,6 +692,12 @@ public static unsafe class HardwareBenchmark
         roles.Decode = -1;
         roles.Reasons.Add(result.CrossAdapter is { CrossIsFaster: true } cross
             ? $"Decode: Auto, the compositor's card. Card {cross.DecodeAdapter} decoding across the bus measured faster ({cross.CrossDecodeFps:0} against {cross.LocalDecodeFps:0} fps), but a second card is never chosen for you: pick it here if you want it."
+            // 5.5A: the first-run window's estimate measures nothing (the same roles, the decoding measured next), and its quick check
+            // without a test clip (no FFmpeg yet) measures the bus only.
+            : result.Kind == HardwareBenchmarkResult.KindEstimate
+                ? "Decode: Auto, the compositor's card (measured next)."
+            : result.Kind == HardwareBenchmarkResult.KindQuick && !compositor.DecodesInHardware && result.Clip.Length == 0
+                ? "Decode: Auto, the compositor's card (its decoding is measured once FFmpeg is here)."
             : compositor.DecodesInHardware
                 ? $"Decode: Auto, the compositor's card ({compositor.HardwareDecodeFps:0} fps): frames stay in its memory, nothing crosses the bus."
                 : "Decode: Auto (the compositor's card did not decode the test clip in hardware).");

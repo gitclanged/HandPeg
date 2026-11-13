@@ -67,7 +67,8 @@ public partial class MainViewModel
             return;
         }
 
-        if (!Edit(locked ? $"lock {clip.Name} to its clip" : $"unlock {clip.Name} from its clip", edit => edit.SetClipParent(model, parent?.Id)))
+        // Pass 5.5A: a clip its Link switch locks is one of its clip's pieces, as before 5.5A (never tethered: TimelineClip.Tethered).
+        if (!Edit(locked ? $"lock {clip.Name} to its clip" : $"unlock {clip.Name} from its clip", edit => edit.SetClipParent(model, parent?.Id, tethered: false)))
             return;
 
         RefreshLayerRows();

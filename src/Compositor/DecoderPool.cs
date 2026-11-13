@@ -174,6 +174,8 @@ internal sealed partial class DecoderPool : IDisposable
 
     public void BeginFrame(long frame, bool playing, double playhead, bool exactOnly = false)
     {
+        // The clock when the scene came (5.5A review: the play rate's sample, read before any wait below).
+        var arrived = Stopwatch.GetTimestamp();
         _frame = frame;
         _exactOnly = exactOnly;
 
@@ -203,6 +205,27 @@ internal sealed partial class DecoderPool : IDisposable
         // A moving playhead (playing, a seek, a scrub's step) keeps idle work off the lanes for IdleQuietMs (5.4.4).
         if (!exactOnly && (playing || !double.IsNaN(_lastPlayhead) && Math.Abs(playhead - _lastPlayhead) > 1e-9))
             Volatile.Write(ref _activeUntil, Stopwatch.GetTimestamp() + IdleQuietMs * Stopwatch.Frequency / 1000);
+
+        // Cold play (5.5A): a jump whose first picture missed a frame (LastFrameExact still tells of that picture here) is a cold seek and
+        // arms the window, as a change of the sources does (SyncSources); the first playing frame opens it, a pause closes it. An
+        // exact-frame scene (an export, a capture) neither arms, opens nor uses one.
+        if (!exactOnly)
+        {
+            _coldArmed |= _jumpProbe && !LastFrameExact;
+            _jumpProbe = jumped;
+            if (!playing)
+            {
+                Volatile.Write(ref _coldPlayUntil, 0);
+            }
+            else if (_coldArmed)
+            {
+                _coldArmed = false;
+                Volatile.Write(ref _coldPlayUntil, Stopwatch.GetTimestamp() + (long)(ColdPlaySeconds * Stopwatch.Frequency));
+            }
+
+            // 5.5A review: the play rate the window's lead follows (a pause, a jump or new sources start it again at 1).
+            SamplePlayRate(playing, jumped, playhead, arrived);
+        }
 
         // A jump of the playhead (a seek, a click) or a start or stop of playback makes the frames of the old moment stale.
         lock (_gate)
@@ -411,6 +434,11 @@ internal sealed partial class DecoderPool : IDisposable
         if (version != _sourcesVersion)
         {
             _sourcesVersion = version;
+
+            // 5.5A: new sources (a tab brought to the front, a file opened, a fresh worker) are cold: the next play holds far cuts back,
+            // its play rate sampled anew (5.5A review).
+            _coldArmed = true;
+            _rateRestart = true;
             Resync();
             DisposeBuried();
 
@@ -908,6 +936,99 @@ internal sealed partial class DecoderPool : IDisposable
 
         return IdleMayRun(_lastWasPlaying, Stopwatch.GetTimestamp(), Volatile.Read(ref _activeUntil), pending, countLanes ? busy : 0, _gpu.UnifiedMemory);
     }
+
+    // ----- Cold play (5.5A, the user's Q4 b: the playhead's own frames first after a cold start) -----
+
+    /// <summary>
+    /// How long a cold play keeps far cuts off the lanes, seconds: after a tab switch or new sources (SyncSources), or a seek whose
+    /// first picture missed a frame, the first second of playback reads only the playhead's stretch and the cuts within
+    /// <see cref="CutSoon"/>; the cuts further ahead stay demands (no memory taken) and are read after it, earliest first. Every memory tier.
+    /// </summary>
+    internal const double ColdPlaySeconds = 1.0;
+
+    // Armed by new sources or a cold seek, and the last frame's jump (worker thread only: SyncSources, BeginFrame).
+    private bool _coldArmed, _jumpProbe;
+
+    // Until when (Stopwatch ticks, 0 none) the cold play's window is open: written by BeginFrame, read by the lanes.
+    private long _coldPlayUntil;
+
+    /// <summary>
+    /// Whether a cut at Sequence second <paramref name="cutAt"/> waits: <paramref name="playing"/>, <paramref name="now"/> inside the
+    /// window (before <paramref name="coldUntil"/>), and more than <see cref="CutSoon"/> of real time ahead of <paramref name="playhead"/>
+    /// at the play <paramref name="rate"/> (5.5A review: CutSoon x the rate in Sequence seconds, never less than CutSoon, so 2x keeps
+    /// 1.5 s of real lead and a slow play holds no more than 1x). A NaN playhead or rate holds nothing back: never a stall on a value not
+    /// known. Pure: the goldens check the rule itself.
+    /// </summary>
+    internal static bool ColdPlayHoldsBack(bool playing, long now, long coldUntil, double cutAt, double playhead, double rate) =>
+        playing && now < coldUntil && cutAt - playhead > CutSoon * Math.Max(rate, 1);
+
+    // A cut's entry held back by a cold play now (the lanes' thread, under _gate). Never in an exact-frame scene.
+    private bool HeldForColdPlay(Demand demand)
+    {
+        if (demand.HintKind != GpuSeekHintKind.CutEntry || _exactOnly)
+            return false;
+        var until = Volatile.Read(ref _coldPlayUntil);
+        return until != 0 && ColdPlayHoldsBack(_lastWasPlaying, Stopwatch.GetTimestamp(), until, demand.At, _lastPlayhead, Volatile.Read(ref _playRate));
+    }
+
+    /// <summary>The cold play's window (Stopwatch ticks, 0 none) and whether the next play is armed to open one. For the goldens.</summary>
+    internal (long Until, bool Armed) ColdPlayForTests => (Volatile.Read(ref _coldPlayUntil), _coldArmed);
+
+    // ----- The play rate (5.5A review: the cold play's lead kept in real time) -----
+
+    /// <summary>How long a sample of the play rate runs, seconds: a speed changed while playing is caught within one.</summary>
+    internal const double PlayRateSampleSeconds = 0.1;
+
+    // The play rate: the playhead's pace over the clock's across consecutive playing frames (the scene carries no speed). 1 until a
+    // play's first sample, and again after a pause, a jump or new sources. Written by BeginFrame, read by the lanes (HeldForColdPlay).
+    private double _playRate = 1;
+
+    // Where the current sample started (worker thread only: Stopwatch ticks, 0 none, and the playhead then), and new sources seen
+    // by SyncSources (which BeginFrame, TakeHints and TrimSources call) that start it again.
+    private long _rateFromTicks;
+    private double _rateFromPlayhead;
+    private bool _rateRestart;
+
+    /// <summary>
+    /// The play rate from the playhead's move over <paramref name="seconds"/> of the clock: 0.25 to 4 (a loop's wrap or a stall never
+    /// gives a rate past them); 1 when either is not a number or no time passed. Pure: the goldens check it.
+    /// </summary>
+    internal static double PlayRateOf(double playheadMoved, double seconds)
+    {
+        var rate = playheadMoved / seconds;
+        return seconds > 0 && double.IsFinite(rate) ? Math.Max(0.25, Math.Min(rate, 4)) : 1;
+    }
+
+    /// <summary>
+    /// One frame's part of the play rate (the worker's thread, from BeginFrame; never for an exact-frame scene; the goldens call it
+    /// with their own clock). A sample ends once <see cref="PlayRateSampleSeconds"/> have passed since it started (<paramref name="now"/>,
+    /// Stopwatch ticks): the rate is the playhead's move over that stretch of the clock, and the next sample starts there.
+    /// </summary>
+    internal void SamplePlayRate(bool playing, bool jumped, double playhead, long now)
+    {
+        if (!playing || jumped || _rateRestart || double.IsNaN(playhead))
+        {
+            _rateRestart = false;
+            Volatile.Write(ref _playRate, 1.0);
+            (_rateFromTicks, _rateFromPlayhead) = (playing && !double.IsNaN(playhead) ? now : 0, playhead);
+            return;
+        }
+
+        if (_rateFromTicks == 0)
+        {
+            (_rateFromTicks, _rateFromPlayhead) = (now, playhead);
+            return;
+        }
+
+        var seconds = (now - _rateFromTicks) / (double)Stopwatch.Frequency;
+        if (seconds < PlayRateSampleSeconds)
+            return;
+        Volatile.Write(ref _playRate, PlayRateOf(playhead - _rateFromPlayhead, seconds));
+        (_rateFromTicks, _rateFromPlayhead) = (now, playhead);
+    }
+
+    /// <summary>The play rate the cold play's lead uses now (1 until a play's first sample). For the goldens.</summary>
+    internal double PlayRateForTests => Volatile.Read(ref _playRate);
 
     // ----- Demands -----
 

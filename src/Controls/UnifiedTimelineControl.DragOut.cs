@@ -29,11 +29,13 @@ public sealed partial class UnifiedTimelineControl
     internal bool IsDragParked => _dragParked;
 
     /// <summary>
-    /// The pointer of a block's drag at <paramref name="point"/> on the control (<paramref name="laid"/> on the rows): the block follows
-    /// it as before, unless it is outside and the host offers a drop there (5.4.4), which parks it. False when parked (no auto-scroll then).
+    /// The pointer of a block's drag at <paramref name="point"/> on the control (<paramref name="laid"/> on the rows) at <paramref name="nowMs"/>
+    /// (the drags' clock): the block follows it as before, unless it is outside and the host offers a drop there (5.4.4), which parks it.
+    /// False when parked (no auto-scroll then). 5.5A: every move is a sample of the pointer's speed, in the control's own coordinates.
     /// </summary>
-    private bool FollowPointer(BlockDrag drag, Point point, Point laid)
+    private bool FollowPointer(BlockDrag drag, Point point, Point laid, double nowMs)
     {
+        Settle.Sample(point, nowMs);
         if (DragOutside is { } outside && drag is { Kind: BlockEdit.Move, Seam: null } && !new Rect(RenderSize).Contains(point))
         {
             var (row, block, screen, offered) = (drag.Row, drag.Block, ScreenOf(point), false);
@@ -52,7 +54,7 @@ public sealed partial class UnifiedTimelineControl
             LeaveOutside();
         }
 
-        Follow(drag, laid, pointerMoved: true);
+        Follow(drag, laid, pointerMoved: true, nowMs);
         return true;
     }
 

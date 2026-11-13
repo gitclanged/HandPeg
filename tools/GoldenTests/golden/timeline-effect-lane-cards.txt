@@ -1,5 +1,5 @@
 # Overwatch 2's Cutouts: their own Mask and Edges cards have no lanes and no fx badge unless asked for; any other effect has.
-ok: Overwatch 2 Vertical HUD applied to the clip
+ok: Overwatch Vertical applied to the clip
 ok: its three Cutouts (Abilities & Ammo, Health & Name, Killfeed)
 ok: each counts as a Cutout for its lanes; the clip they hang from does not
    Abilities & Ammo: cards builtin.matte.mask, builtin.matte.edges

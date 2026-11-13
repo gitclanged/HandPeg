@@ -1,0 +1,21 @@
+# Fewer than two steps since the last save or open, or an edit under way: the copy is the project as it is; Save never lags.
+ok: one edit since the save
+ok: one fresh step: the copy is the project as it is, its one step to undo and nothing to redo
+ok: three edits, each one step of Undo: a trim, a delete, a trim
+ok: saved after three edits: no fresh step
+ok: one edit after the save
+ok: one step since the save: the copy is the project as it is, never two steps back past the save
+ok: three edits, each one step of Undo: a trim, a delete, a trim
+ok: three edits and an Undo: two fresh steps, the copy is the saved Sequence with nothing to undo
+ok: its Redo gives the first edit, then the second, then the third that was undone (Ctrl+Y in that order)
+ok: three edits, each one step of Undo: a trim, a delete, a trim
+ok: two Undos past the save: no fresh step, the copy as it is
+ok: a new edit there
+ok: one step on the new branch: the copy as it is
+ok: a second new edit
+ok: two steps on the new branch (the saved state left behind on it): the copy lags, to the state the Undos reached
+ok: three edits, each one step of Undo: a trim, a delete, a trim
+ok: an edit open on the Sequence: the copy is the project as it is (no lag while a change is under way)
+ok: once it is closed the copy lags again
+ok: Save with three fresh steps writes the project as it is (N), its three steps to undo, nothing to redo
+ok: and after the save no step is fresh: the next copy is exact until two more steps

@@ -91,6 +91,35 @@ public sealed record ProjectTabHeader
     /// </summary>
     public string? MediaView { get; set; }
 
+    /// <summary>
+    /// How many actions back its file holds the project (Pass 5.5A review): the tab in front's crash-recovery copy written lagged
+    /// (MainViewModel.RecoveryLagSteps: N-2, with N-1 and N on its Redo); 0 for a file written exactly as the project was, which every exact
+    /// write of the tab makes it again. A tab brought back with it says so once (Ctrl+Y brings the last edits back), and the exit dialog's row too.
+    /// Left out of the file while 0 (as are the stamp's two), so a header stays as small as before (under 4 KB with its layout).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public int StepsBack { get; set; }
+
+    /// <summary>
+    /// Its project file's last write (UTC ticks) and length as a tab without unsaved changes was kept (Pass 5.5A review, <see cref="ProjectTabs.Stamped"/>);
+    /// 0 for none (a tab with unsaved changes, one never saved, a header from before). A tab brought back whose file differs since (saved on another
+    /// PC, put back from a backup) opens from its file, not from the cache (<see cref="ProjectTabs.ReadForResume"/>). Pass 5.5A final review: the
+    /// stamp of the file as it was when the project and that file were known to be the same (opened into the tab, read back from it, saved), carried
+    /// in memory with the header (MainWindow.TabCache.cs, StampProjectFileAsync), never looked up again as the header is written.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public long ProjectFileTicks { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public long ProjectFileLength { get; set; }
+
+    /// <summary>
+    /// How many stamps of its project file were asked for (Pass 5.5A fix round 3, S-R1; kept in memory only, never written): taken off the
+    /// tab's queue, two can land out of order, so one lands only while it is still the last asked (MainWindow.TabCache.cs, StampProjectFileAsync).
+    /// </summary>
+    [JsonIgnore]
+    internal int StampsAsked { get; set; }
+
     /// <summary>The window's part of another tab's header (5.4D: a duplicate): its 3D view, camera and layout (with its Media Browser view).</summary>
     public void TakeWindowStateOf(ProjectTabHeader other)
     {
@@ -107,8 +136,37 @@ public sealed record ProjectTabHeader
     public object? WaitingTemplate { get; set; }
 }
 
-/// <summary>The order of the tabs and the one in front, as tabs.json keeps them (for tabs left behind by a session that did not close cleanly).</summary>
-public sealed record ProjectTabManifest(IReadOnlyList<string> Order, string? Active);
+/// <summary>
+/// The order of the tabs and the one in front, as tabs.json keeps them (for tabs left behind by a session that did not close cleanly). Pass 5.5A
+/// final review: <paramref name="Kept"/> when the close that kept them on purpose wrote it (Keep open project tabs, Keep Suspended for Next
+/// Launch: <see cref="ProjectTabs.WriteKeptManifest"/>); only then does the next start bring the one in front forward (AD-1). Left out of
+/// the file while false.
+/// </summary>
+public sealed record ProjectTabManifest(IReadOnlyList<string> Order, string? Active,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool Kept = false);
+
+/// <summary>Where a kept tab's project was read back from to bring it to the front (Pass 5.5A final review, <see cref="ProjectTabs.ReadForResume"/>).</summary>
+public enum TabResumeSource
+{
+    /// <summary>Its cache file: unsaved work, its project file unchanged since it was kept, or no project file there.</summary>
+    Cache,
+
+    /// <summary>Its project file, which changed on the disk since the tab was kept (said on the status line).</summary>
+    ChangedFile,
+
+    /// <summary>Its project file, the tab carrying no stamp to tell whether it changed (as before Pass 5.5A: nothing is said).</summary>
+    File,
+
+    /// <summary>Its cache file, its project file having changed on the disk and not being readable (a newer format, locked, damaged).</summary>
+    CacheFileUnreadable,
+}
+
+/// <summary>
+/// A kept tab's project read back (Pass 5.5A final review, <see cref="ProjectTabs.ReadForResume"/>): its state, its saved state's fingerprint (none
+/// from a project file, nor with a cache whose changed file could not be read: it comes back unsaved), where it came from, the project file's stamp as it was read from it (0 for a read of the cache), and why a changed
+/// project file could not be read (null for any other).
+/// </summary>
+public readonly record struct TabResume(ProjectState State, string? Saved, TabResumeSource From, long FileTicks, long FileLength, string? Why);
 
 /// <summary>
 /// The title bar's project tabs (Pass 5.4A): their order, the one in front, and their files in <c>%Cache%\project-tabs\&lt;session&gt;</c>.
@@ -485,7 +543,114 @@ public sealed class ProjectTabs
             ProjectStore.WriteWhole(SavedFile(id), savedFingerprint);
         else
             TryDelete(SavedFile(id));
-        ProjectStore.WriteWhole(HeaderFile(id), headerJson);
+        ProjectStore.WriteWhole(HeaderFile(id), Stamped(headerJson));
+    }
+
+    /// <summary>
+    /// A header's text with its project file's stamp (Pass 5.5A review; any thread): for a tab without unsaved changes that has a project file,
+    /// the stamp its header carries (<see cref="ProjectTabHeader.ProjectFileTicks"/>); for any other, none. A tab kept clean between sessions then
+    /// knows whether its file changed since (<see cref="ReadForResume"/>). Text that is not a header is left as it is. Pass 5.5A final review: no
+    /// look at the disk (C-4a, C-4c): a stamp taken as the header is written would be of the file as it is then, newer than the project kept if
+    /// the file changed meanwhile (taking a stale cache for current), and a file on a share gone away would stall the close's waited write.
+    /// </summary>
+    public static string Stamped(string headerJson)
+    {
+        if (ReadHeader(headerJson) is not { } header || (!header.Dirty && !header.Empty && header.ProjectPath.Length > 0)
+            || header is { ProjectFileTicks: 0, ProjectFileLength: 0 })
+            return headerJson;
+
+        (header.ProjectFileTicks, header.ProjectFileLength) = (0L, 0L);
+        return HeaderJson(header);
+    }
+
+    /// <summary>A header's text saying how many actions back its file holds the project (Pass 5.5A review, <see cref="ProjectTabHeader.StepsBack"/>; any thread).</summary>
+    public static string WithStepsBack(string headerJson, int steps)
+    {
+        if (ReadHeader(headerJson) is not { } header || header.StepsBack == steps)
+            return headerJson;
+
+        header.StepsBack = steps;
+        return HeaderJson(header);
+    }
+
+    /// <summary>A file's last write (UTC ticks) and length (any thread); (0, 0) when it is not there or cannot be looked at.</summary>
+    public static (long Ticks, long Length) FileStamp(string path)
+    {
+        try
+        {
+            var info = new FileInfo(path);
+            return info.Exists ? (info.LastWriteTimeUtc.Ticks, info.Length) : (0L, 0L);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or System.Security.SecurityException)
+        {
+            return (0L, 0L);
+        }
+    }
+
+    /// <summary>
+    /// Whether a tab kept without unsaved changes finds its project file changed (pure, Pass 5.5A review): a stamp was kept, the file is there
+    /// now, and its last write or length differs. No file there keeps the cache; no stamp kept is <see cref="ReadForResume"/>'s to decide
+    /// (Pass 5.5A final review: the file is read, as before 5.5A).
+    /// </summary>
+    public static bool FileChangedSince(long keptTicks, long keptLength, long ticks, long length) =>
+        keptTicks != 0 && ticks != 0 && (ticks != keptTicks || length != keptLength);
+
+    /// <summary>
+    /// A kept tab's project read back to bring it to the front (Pass 5.5A review; any thread: on its queue, after its writes): its cache file and
+    /// its saved state's fingerprint; or, for a tab kept without unsaved changes (<paramref name="cleanProjectPath"/>, null for any other) whose
+    /// project file changed on the disk since it was kept (<see cref="FileChangedSince"/>: saved on another PC, put back from a backup, written by
+    /// another HandPeg), that file as an open reads it, taken as saved. A cache that cannot be read throws, as <see cref="ReadState"/> does.
+    /// Pass 5.5A final review: a clean tab carrying no stamp (C-4a: none taken yet, a header from before) cannot tell, so it reads its file as
+    /// before 5.5A (<see cref="TabResumeSource.File"/>, said nothing of); a file not there keeps the cache. A changed file that cannot be read
+    /// (C-4b: a newer format, locked, damaged) comes back as the cache with why (<see cref="TabResumeSource.CacheFileUnreadable"/>): the window
+    /// then never ties it to that file, which Save would write over.
+    /// </summary>
+    public TabResume ReadForResume(string id, string? cleanProjectPath)
+    {
+        if (cleanProjectPath is { Length: > 0 } path && KeptStampOf(id, path) is { } kept && FileStamp(path) is { Ticks: not 0 } now
+            && (IsUnstamped(kept.Ticks, kept.Length) || FileChangedSince(kept.Ticks, kept.Length, now.Ticks, now.Length)))
+        {
+            var changed = !IsUnstamped(kept.Ticks, kept.Length);
+            try
+            {
+                var state = ProjectStore.Load(path);
+                AppLog.Write(changed
+                    ? "Project tabs: a tab kept without unsaved changes found its project file changed on the disk since; it opens from that file, not from its cache"
+                    : "Project tabs: a tab kept without unsaved changes carried no stamp of its project file; it opens from that file, as before 5.5A");
+                return new TabResume(state, null, changed ? TabResumeSource.ChangedFile : TabResumeSource.File, now.Ticks, now.Length, null);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidDataException or NotSupportedException or ArgumentException)
+            {
+                AppLog.Write("Project tabs: a tab's project file changed on the disk since it was kept, but could not be read; it opens from its cache, tied to no file", ex);
+                // No saved state's fingerprint: what comes back is in no file now, so it is unsaved whatever an old fingerprint beside it says.
+                var why = ex is NewerProjectFormatException newer ? $"saved in a newer project format by {newer.WrittenBy ?? "a newer version of HandPeg"}" : ex.Message;
+                return new TabResume(ReadState(id), null, TabResumeSource.CacheFileUnreadable, 0L, 0L, why);
+            }
+        }
+
+        return new TabResume(ReadState(id), ReadSaved(id), TabResumeSource.Cache, 0L, 0L, null);
+    }
+
+    /// <summary>A kept stamp of none (pure, Pass 5.5A final review): the tab cannot tell whether its project file changed since.</summary>
+    private static bool IsUnstamped(long ticks, long length) => ticks == 0 && length == 0;
+
+    /// <summary>
+    /// The project file's stamp a tab's header file kept for <paramref name="path"/> (any thread); (0, 0) when it kept none. Pass 5.5A final review:
+    /// null for a header file that is not there, cannot be read, has unsaved changes or names another file: the cache is read (unsaved work wins).
+    /// </summary>
+    private (long Ticks, long Length)? KeptStampOf(string id, string path)
+    {
+        try
+        {
+            return File.Exists(HeaderFile(id)) && ReadHeader(File.ReadAllText(HeaderFile(id))) is { Dirty: false } header
+                   && string.Equals(header.ProjectPath, path, StringComparison.OrdinalIgnoreCase)
+                ? (header.ProjectFileTicks, header.ProjectFileLength)
+                : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -512,7 +677,7 @@ public sealed class ProjectTabs
         if (!HasState(id))
             return;
         ClaimSession();
-        ProjectStore.WriteWhole(HeaderFile(id), headerJson);
+        ProjectStore.WriteWhole(HeaderFile(id), Stamped(headerJson));
     }
 
     /// <summary>A project's frame as Project Settings draws it (pure): a vertical project's natural frame turned tall.</summary>
@@ -554,15 +719,35 @@ public sealed class ProjectTabs
         TryDelete(SavedFile(id));
     }
 
-    /// <summary>The order and the tab in front, as tabs.json keeps them.</summary>
-    public string ManifestJson() => JsonSerializer.Serialize(new ProjectTabManifest(_tabs.Select(t => t.Id).ToList(), Active.Id), HeaderOptions);
+    /// <summary>The order and the tab in front, as tabs.json keeps them (<paramref name="kept"/>: written by the close that keeps them, <see cref="WriteKeptManifest"/>).</summary>
+    public string ManifestJson(bool kept = false) => JsonSerializer.Serialize(new ProjectTabManifest(_tabs.Select(t => t.Id).ToList(), Active.Id, kept), HeaderOptions);
 
     /// <summary>tabs.json written (any thread: the text is made on the window's, <see cref="ManifestJson"/>), in this session's folder.</summary>
-    public void WriteManifest(string json)
+    public void WriteManifest(string json) => WriteManifest(json, kept: false);
+
+    /// <summary>
+    /// tabs.json written by the close that keeps the tabs on purpose (Pass 5.5A final review, AD-1: Keep open project tabs, Keep Suspended for
+    /// Next Launch; the window's thread, as the session ends): marked kept, so the next start brings the tab in front forward. A session that
+    /// ended any other way (a crash, a power cut, the tabs behind kept with the prompt off) leaves its tabs behind the start-up tab, as before.
+    /// It is the session's last word: an earlier write still on its way never lands over it.
+    /// </summary>
+    public void WriteKeptManifest() => WriteManifest(ManifestJson(kept: true), kept: true);
+
+    private void WriteManifest(string json, bool kept)
     {
         ClaimSession();
-        ProjectStore.WriteWhole(ManifestFile, json);
+        lock (_manifestGate)
+        {
+            if (_manifestKept && !kept)
+                return;
+            ProjectStore.WriteWhole(ManifestFile, json);
+            _manifestKept = kept;
+        }
     }
+
+    // Whether tabs.json was written by the close that keeps the tabs (WriteKeptManifest), under its own lock: a write is never beside another.
+    private readonly Lock _manifestGate = new();
+    private bool _manifestKept;
 
     // ----- The session's folder -----
 
@@ -676,8 +861,22 @@ public sealed class ProjectTabs
     /// folder whose every project file came across is deleted; one that kept any (never deleted: 5.4A review) stays, with its lock file,
     /// for the next start. The headers come back for the window to <see cref="Adopt"/>.
     /// </summary>
-    public List<ProjectTabHeader> TakeLeftBehind(IReadOnlyCollection<string> known)
+    public List<ProjectTabHeader> TakeLeftBehind(IReadOnlyCollection<string> known) => TakeLeftBehind(known, out _);
+
+    /// <summary>
+    /// <see cref="TakeLeftBehind(IReadOnlyCollection{string})"/>, and the id of the tab that was in front as the session that left them ended
+    /// (Pass 5.5A addenda, <paramref name="front"/>; null when none was taken): of the session whose taken files were written last, the tab
+    /// its tabs.json named in front (<see cref="FrontOf"/>; Pass 5.5A fix round 3, S-R2: none when that tab was not taken, a blank one never
+    /// kept). Pass 5.5A final review (AD-1): only of a session whose close kept its tabs on purpose (its tabs.json marked kept:
+    /// <see cref="WriteKeptManifest"/>); the tabs of one that crashed are taken all the same, with no front, so they stay behind the start-up
+    /// tab and none is opened before the user picks it (a project that brought HandPeg down is never opened again unasked, nor its
+    /// crash-recovery copy let go as it opens).
+    /// </summary>
+    public List<ProjectTabHeader> TakeLeftBehind(IReadOnlyCollection<string> known, out string? front)
     {
+        front = null;
+        var newest = DateTime.MinValue;
+        var keptSeen = false;
         var taken = new List<ProjectTabHeader>();
         List<string> folders;
         try
@@ -711,17 +910,28 @@ public sealed class ProjectTabs
             bool whole;
             using (held)
             {
+                // The tab its tabs.json named in front, read before the sweep lets go of the file (Pass 5.5A addenda), and whether its close
+                // kept the tabs on purpose (Pass 5.5A final review).
+                var manifest = ReadManifest(folder);
+                var named = manifest?.Active;
                 var here = new HashSet<string>(StringComparer.Ordinal);
+                var takenHere = new List<ProjectTabHeader>();
                 foreach (var tab in LeftBehind(folder, []))
                 {
                     if (!ids.Contains(tab.Id) && TryMoveIn(folder, tab))
                     {
                         taken.Add(tab);
+                        takenHere.Add(tab);
                         ids.Add(tab.Id);
                         here.Add(tab.Id);
                     }
                 }
 
+                // Several sessions left tabs (a crash, then another): the front of the one that wrote last (a move keeps a file's last write), of
+                // those that kept their tabs on purpose only. Pass 5.5A fix round 3 (S-R2): that session's word stands when it names no tab taken
+                // (a blank tab was in front, never kept): none is brought forward, never an older session's nor another of its own.
+                if (manifest is { Kept: true } && takenHere.Count > 0 && LastWrittenOf(takenHere) is var written && (!keptSeen || written > newest))
+                    (front, newest, keptSeen) = (FrontOf(takenHere, named), written, true);
                 whole = SweepTaken(folder, here);
             }
 
@@ -732,6 +942,35 @@ public sealed class ProjectTabs
         }
 
         return taken;
+    }
+
+    /// <summary>
+    /// The tab that was in front as a session ended, of those taken from its folder (pure, Pass 5.5A addenda: project-tabs-restored-front):
+    /// the one its tabs.json named in front (<paramref name="named"/>) when that one was taken. Pass 5.5A fix round 3 (S-R2): else none (a blank
+    /// tab was in front, and a blank tab is never kept): the start-up tab stays in front, never another tab in its place (the one last in front
+    /// by its header's count was taken before, which opened a crash's leftover adopted the session before, unasked).
+    /// </summary>
+    internal static string? FrontOf(IReadOnlyList<ProjectTabHeader> taken, string? named) =>
+        named is not null && taken.Any(t => string.Equals(t.Id, named, StringComparison.Ordinal)) ? named : null;
+
+    /// <summary>When the newest of these tabs' project files (moved into this session's folder) was last written; MinValue when none can be read.</summary>
+    private DateTime LastWrittenOf(IReadOnlyList<ProjectTabHeader> taken)
+    {
+        var newest = DateTime.MinValue;
+        foreach (var tab in taken)
+        {
+            try
+            {
+                var written = File.GetLastWriteTimeUtc(StateFile(tab.Id));
+                if (written > newest)
+                    newest = written;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+            {
+            }
+        }
+
+        return newest;
     }
 
     /// <summary>

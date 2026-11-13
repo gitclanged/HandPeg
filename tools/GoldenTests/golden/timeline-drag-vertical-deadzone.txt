@@ -1,0 +1,17 @@
+# A move changes rows only 6 DIPs past the row it is on; Shift keeps a move's time exactly once it leaves its lane, while a slide along its lane steps by frames.
+ok: pressed 3 DIPs into the lower row, moved 2 DIPs past its top (into the row above): within the deadzone, still on its own row
+ok: 7 DIPs past its top: past the 6 DIP deadzone, the row above is the target
+ok: back 3 DIPs into the lower row: the row it is over holds it the same way (within 6 DIPs past that row's edge)
+ok: 8 DIPs in: its own row again
+ok: let go where it began: nothing moved, nothing committed
+ok: Shift on a slide along its row (4 DIPs down: within the deadzone): the block follows the pointer 1.5 s on, its time not held
+ok: Shift on a move up onto the row above: its time held exactly where it began (1.00 s), the pointer 1.5 s along
+ok: back on its own row, Shift still held: still held (for the rest of the drag while Shift is)
+ok: Shift let go: the block follows the pointer again (2 s on)
+ok: let go on the row above with Shift: onto it at exactly its own time
+ok: Shift on a slide along its lane, the hand 7 DIPs low: on frame 76 (2.5333 s, 2.53 s stepped to the frame), its time not held
+ok: the hand 10 DIPs high, still on its lane: on frame 74 (2.4667 s), still not held
+ok: let go: placed on its own row at that frame
+ok: then on with Shift onto the row above: its time held exactly (1.00 s, not the frame it was on), the row above the target
+ok: back over its own lane, Shift still held: still held
+ok: let go on the row above: onto it at exactly its own time

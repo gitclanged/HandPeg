@@ -384,6 +384,17 @@ public sealed class TimelineBlock
     /// <summary>What letting go of the block at a seam does (see <see cref="CanMoveToNewTrack"/>): the row's data, above or below it, the left edge.</summary>
     public Action<object, bool, double>? MoveToNewTrack { get; init; }
 
+    /// <summary>
+    /// Whether the block, its left edge at these pixels, may be let go as a child of the given block's clip (5.5A, the clip tether: a move
+    /// dropped on the bottom edge of a clip it overlaps on another lane, or anywhere on it with Alt pressed during the drag): the parent's
+    /// name for the tether's pill (from the host: a picture block's own Name is empty), or null when it may not. Null for a block that never
+    /// becomes another's child by a drag.
+    /// </summary>
+    public Func<TimelineBlock, double, string?>? CanAttachTo { get; init; }
+
+    /// <summary>What letting go of the block on a tether does (see <see cref="CanAttachTo"/>): the parent's block and the block's left edge in pixels.</summary>
+    public Action<TimelineBlock, double>? AttachTo { get; init; }
+
     /// <summary>The block's sound by time, for the unified timeline (4.4): drawn in place of <see cref="Peaks"/> when given.</summary>
     public WaveWindow? SoundWindow { get; init; }
 

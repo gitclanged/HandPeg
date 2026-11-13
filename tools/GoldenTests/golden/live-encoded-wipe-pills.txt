@@ -1,0 +1,41 @@
+# The wipe's pills never vanish: each slides off the picture's edge with the line, clipped to the picture as the player shows it; ENCODED keeps its whole words while they fit and says ENCODED when they do not.
+ok: the sweep, wipe 0 to 1 in 101 steps over a fitted 1920 x 1080 picture: both pills move right with the line at every step (never hidden, never parked)
+ok: the pills' clip is the picture within the player (0,0 1024 x 576) and their top 14 DIPs below the picture's, on a device pixel (14.4 at 125 %)
+ok: ENCODED's whole words (160.25 DIPs) until the room right of the line runs out, then the short ones: one change only, at wipe 0.83 (the line at 849.92 DIPs: 1024 - 4 - 859.92 < 160.25)
+ok: wipe 0: RAW still placed (-43.2 DIPs), wholly left of the picture's edge, so clipped away rather than hidden
+ok: wipe 0.02: RAW part on the picture, part past its edge (-23.2 to 10.3 DIPs): it slides off, cut by the clip
+ok: wipe 1: ENCODED (its short words) placed at 1033.6 DIPs, wholly right of the picture, so clipped away rather than hidden
+ok: wipe 0.5 (the line at 512): RAW ends 10 DIPs left of it (468.8 + 33.5) and ENCODED starts 10 right of it (521.6), each on a device pixel; whole words
+ok: a portrait picture pillarboxed: the clip is the picture alone (350 to 674 at 100 %), and at wipe 0 RAW slides into the pillarbox (306), clipped there, not drawn over the bars
+ok: the same picture at wipe 0.5 (the line at 512): 148 DIPs to the picture's edge, too few for the whole words (160.25): ENCODED
+ok: zoomed 2x, panned a quarter: the picture at 0,-288, 2048 x 1152; the clip is the player (0,0 1024 x 576), the pills 14 DIPs below the player's top; the line at 819.2: whole words
+ok: the line at 921.6: the whole words would fit before the zoomed picture's right edge (1112.4 DIPs) but not before the player's (88.4): the visible edge decides, ENCODED
+ok: at 100, 125, 150 and 200 %, over a fitted, a pillarboxed, a zoomed and an odd-sized picture: every pill's left, their top and the clip's edges lie on device pixels
+ok: a picture panned wholly off the player: an empty clip (never a rectangle of negative size), nothing of the pills shown
+ok: a display scale not known (NaN): placed as at 100 %
+ok: "ENCODED · HEVC QSV · 12 Mbps" short: "ENCODED"
+ok: "ENCODED · x264 veryslow · CRF 22" short: "ENCODED"
+ok: "ENCODED · HEVC · STAND-IN · 12 Mbps" short: "ENCODED"
+ok: "ENCODED · HEVC QSV · STARTING" short: "STARTING"
+ok: "ENCODED · x264 veryslow · STARTING" short: "STARTING"
+ok: "RAW WHILE PLAYING · x264 veryslow" short: "RAW WHILE PLAYING"
+ok: "ENCODER FAILED 0x80004005" short: "ENCODER FAILED"
+ok: "NO ENCODER" short: "NO ENCODER"
+ok: "NO DECODER" short: "NO DECODER"
+ok: "NO LOOPBACK" short: "NO LOOPBACK"
+ok: "ENCODED" short: "ENCODED"
+ok: the settings' own pill words ("ENCODED · HEVC QSV · 12 Mbps") shorten to ENCODED
+ok: a starting encoder's words ("ENCODED · HEVC QSV · STARTING") shorten to STARTING; a running stand-in's ("ENCODED · HEVC · STAND-IN · 12 Mbps") to ENCODED
+ok: a paused-only encoder: "RAW WHILE PLAYING · x264 veryslow" while playing, "ENCODED · x264 veryslow · CRF 22" when paused
+ok: real pills at wipes 0, 0.02, 0.5, 0.9 and 1: both Visible every time, each at its planned left and top
+ok: the label shows the whole words where the plan has room and ENCODED where it has not (both seen across the wipes)
+ok: the pills' layer is clipped by a frozen RectangleGeometry equal to the plan's rectangle, made once while the picture stays where it is
+ok: a picture that moved (a portrait canvas): a new frozen clip, the picture's own rectangle
+ok: other words (NO ENCODER) shown as they are, the pills still visible
+ok: PillWidth (the words' FormattedText in the label's own font, plus 16) agrees with the pill's own measured width within 1 DIP, for four texts at 100 % and 150 %
+ok: PlaceLoopbackWipe plans and applies the pills; the only Collapsed left is the wipe layer's own (the preview off, or not the wipe)
+ok: the whole words' width is measured from the words kept, never the label's current (maybe short) text
+ok: the pills live in a layer of their own (no ClipToBounds: its clip is the picture), between the divider and the handle, which it never clips; ENCODED made with the words kept
+ok: SetEncodedPill compares with the whole words kept (no full/short flicker each second) and places the pills again at once
+ok: no pill hides for want of room any more (RawPillRoom and EncodedPillRoom gone)
+ok: play and pause set the ENCODED pill's words at once (LoopbackViewModel_PropertyChanged handles IsPlaying while the preview is on), not on the next 1 s status tick

@@ -1,0 +1,28 @@
+# The tether mark goes with the link: Undo and Redo, a split, copy and paste, the Link switch; a project saved and read keeps it, and one written before the mark (an undo step too) has its tethers found as it is read, its pieces left pieces.
+ok: the webcam tethered to the opened file's clip: marked
+ok: Undo: no link, no mark
+ok: Redo: linked and marked again
+ok: the webcam split at 3 s: both halves tethered to the clip
+ok: the opened file's clip split at 3 s: the webcam split with it, each half tethered to a half of it
+ok: the opened file's clip copied with its family, pasted at 30 s
+ok: its webcam pasted with it on a lane under its track, tethered to the pasted clip and none of its pieces
+ok: the webcam alone pasted at 1 s, inside its parent: still tethered to it
+ok: pasted at 40 s, outside it: its link and its mark let go together
+ok: the webcam's Link switch unlocked: no link, no mark
+ok: Undo: linked and marked again
+ok: a Game Preset on the clip: its one Cutout, the webcam left as it was
+ok: its Cutout dragged onto V4 (a top-level track) at 0 s: still the clip's piece
+ok: V3 nested under Track 1
+ok: V3's clip locked by its Link switch: one of the clip's pieces, not tethered
+ok: saved and read: the webcam still tethered, V3's clip and the moved Cutout still pieces; "tethered" written once, no "tethersMarked"
+ok: a project written before the mark: the webcam (a picture child off its parent's track) read as tethered; V3's clip (under its parent's track) and the Cutout (of its parent's own file) read as pieces
+ok: read and written again, it is the file this version writes
+ok: an undo step written before the mark (a project's history): its tether found the same way as it is read
+ok: V3's locked clip dragged onto V5 (a top-level track) at 0 s: still a piece
+ok: saved and read: the file carries "tethersMarked", so that piece is read as a piece and the webcam as a tether
+ok: without it (as a file before the mark is read), that piece would be taken for a tether: why it is written
+ok: in the recycle bin, saved and read: the webcam still tethered, V5's piece still a piece (the file says "binTethersMarked": a piece lies where a tether would)
+ok: a bin written before the mark: the webcam's tether found as it is read (its track, or the track it lay under, off its parent's track)
+ok: an undo step's bin: the mark kept, and found as an older step is read
+ok: folded away (a seam's stretch): the webcam still tethered, saved and read, and found as an older file is read
+ok: a clip marked tethered with no link is a problem ("Video 3, clip 2: tethered, but to no clip."); the document itself holds together

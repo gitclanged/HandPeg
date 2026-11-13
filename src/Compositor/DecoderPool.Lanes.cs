@@ -51,6 +51,20 @@ internal sealed partial class DecoderPool
                             continue;
                     }
 
+                    // Nor for a far cut a cold play's window opened on while this lane waited for the draw (5.5A review): no decoder opened
+                    // and none sought for it. The open it counted on is undone and the demand stays (not done), picked again once the window
+                    // closes or the cut comes within the cold play's lead.
+                    bool held;
+                    lock (_gate)
+                    {
+                        held = HeldForColdPlay(demand);
+                        if (held)
+                            demand.Source.Opening = Math.Max(demand.Source.Opening - 1, 0);
+                    }
+
+                    if (held)
+                        continue;
+
                     decoder = OpenFor(demand.Source, lane);
                     lock (_gate)
                         demand.Decoder = decoder;
@@ -181,6 +195,11 @@ internal sealed partial class DecoderPool
             // Idle work (5.4.4: a tab's pre-roll, a drop's file) only while the player is quiet: never while playing or scrubbing, while a
             // frame shown or played ahead is still to decode, or within IdleQuietMs of the playhead's last move.
             if (demand.Kind == DemandKind.Idle && !(idleMayRun ??= IdleMayRunNow(countLanes: true)))
+                continue;
+
+            // Cold play (5.5A, the user's Q4 b): for ColdPlaySeconds after a cold start, a cut more than CutSoon ahead waits; it stays
+            // a demand (no memory taken) and is read after, earliest first.
+            if (HeldForColdPlay(demand))
                 continue;
 
             // The most urgent kind first; among hints of one kind, the one wanted soonest (the earliest cut); then the oldest.
@@ -384,7 +403,7 @@ internal sealed partial class DecoderPool
     }
 
     /// <summary>How soon (sequence seconds) a cut into a file the playback reads may have a decoder opened or sought for it.</summary>
-    private const double CutSoon = 1.5;
+    internal const double CutSoon = 1.5;
 
     /// <summary>Whether the playback reads a file now: a lane on a frame shown or played ahead, or a decoder parked at one (under the lock).</summary>
     private bool PlaybackReads(SourceState source)
@@ -586,6 +605,15 @@ internal sealed partial class DecoderPool
     {
         decoder.KeepingAhead = demand.Kind != DemandKind.Visible;
         WaitWhileDrawing();
+
+        // A far cut a cold play's window opened on while this lane waited (5.5A review): no seek for it; it stays a demand, taken up
+        // again by a later pick (the loop below gives way the same way once a read is under way).
+        lock (_gate)
+        {
+            if (HeldForColdPlay(demand))
+                return;
+        }
+
         decoder.Prepare(StartOf(demand, decoder, target));
         var frames = 0;
 
@@ -618,6 +646,11 @@ internal sealed partial class DecoderPool
                 // Idle work (5.4.4) gives way before every frame once the player moved or plays, and after each frame it decoded to anything
                 // else waiting (its first frame always: a pick that decoded nothing would only be picked again).
                 if (demand.Kind == DemandKind.Idle && (!IdleMayRunNow(countLanes: false) || frames > 0 && MoreUrgentWaiting(demand, decoder)))
+                    return;
+
+                // A far cut's read gives way at once to a cold play's own frames (5.5A): it stays a demand, not done, and is taken up
+                // again where it stopped once the window closes or the cut comes within CutSoon.
+                if (HeldForColdPlay(demand))
                     return;
 
                 // Something more urgent that no lane serves (and that this read does not pass on its way): give way, after
@@ -800,6 +833,10 @@ internal sealed partial class DecoderPool
         foreach (var d in _demands)
         {
             if (d.Lane >= 0 || d.Done || d.Cancelled || d.Rank >= demand.Rank || d.Source.Failed)
+                continue;
+
+            // A cut a cold play holds back (5.5A) is not waiting: no pick would take it, so nothing gives way to it.
+            if (HeldForColdPlay(d))
                 continue;
             if (d.Source == demand.Source && Delivers(demand, decoder, d.Target))
                 continue;

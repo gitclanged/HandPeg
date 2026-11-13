@@ -446,7 +446,7 @@ internal sealed partial class TimelineTransaction
 
     /// <summary>
     /// Whether two clips that meet are one clip cut in two, as a split's halves are: the same thing from the same file and
-    /// streams at the same speed, its file running on from one into the other, the same switches, sound and parent, and
+    /// streams at the same speed, its file running on from one into the other, the same switches, sound and parent (its tether mark too, 5.5A), and
     /// nothing at the cut (a fade, a crossfade, a J or L cut). Their looks are <see cref="JoinLook"/>'s to compare.
     /// </summary>
     private static bool Joinable(TimelineClip a, TimelineClip b) =>
@@ -454,7 +454,7 @@ internal sealed partial class TimelineTransaction
         && a.VideoStreamIndex == b.VideoStreamIndex && a.AudioStreamIndex == b.AudioStreamIndex && a.Speed == b.Speed
         && a.SourceDuration == b.SourceDuration && a.AudioLinked == b.AudioLinked && a.AudioSlipSeconds == b.AudioSlipSeconds
         && a.GainDb == b.GainDb && a.IsHidden == b.IsHidden && a.IsMuted == b.IsMuted && a.ProxyChoice == b.ProxyChoice
-        && a.ParentClipId == b.ParentClipId && a.FadeOutSeconds == 0 && b.FadeInSeconds == 0 && b.TransitionIn == 0
+        && a.ParentClipId == b.ParentClipId && a.Tethered == b.Tethered && a.FadeOutSeconds == 0 && b.FadeInSeconds == 0 && b.TransitionIn == 0
         && a.AudioTailOutSeconds == 0 && b.AudioLeadInSeconds == 0
         && (!a.PlaysFile || Math.Abs(b.MediaOffset - a.MediaEnd) <= TimelineDocument.FileSlack(a));
 
@@ -655,7 +655,7 @@ internal sealed partial class TimelineTransaction
         if (child.ParentClipId is null)
             return;
         Remember(child);
-        child.ParentClipId = null;
+        (child.ParentClipId, child.Tethered) = (null, false);
     }
 
     /// <summary>

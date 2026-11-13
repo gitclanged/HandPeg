@@ -1,0 +1,9 @@
+# A clip swept past a + New Track seam never wakes it; resting on it 75 ms (or arriving slowly) does; let go mid-sweep, it goes onto the row under it.
+ok: swept 37 DIPs up in 20 ms into the band of the seam between the rows: Transit, the seam asleep; the row under the pointer is the target as before
+ok: 40 ms after the sweep stopped: still asleep
+ok: 75 ms after it stopped (the dwell's look again): settled, the + New Track seam wakes, the row target goes
+ok: a drift of 3 DIPs in 30 ms within its band (100 DIP/s, under Transit): the seam stays awake (the hysteresis)
+ok: swept on 41 DIPs in 10 ms into the band of the seam over the top row: that seam asleep, the row under the pointer the target
+ok: let go mid-sweep: onto the row under it, never onto a new track
+ok: a slow approach (50 DIP/s, slow for 75 ms and more): the seam wakes on the very move that enters its band (13.5 DIPs into the lower row), no rest needed
+ok: let go there: onto a new track above the lower row, once

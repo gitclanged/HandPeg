@@ -131,8 +131,9 @@ public partial class MainViewModel
 
                     // A Cutout copied without its clip stays its clip's only where it lands within that clip's span; elsewhere it is a clip of its own.
                     var (root, rootFrom, _, _) = clips[0];
+                    // Pass 5.5A: a tethered clip keeps its mark where it keeps its link, and loses both together.
                     if (root.ParentClipId is { } over && !(Document.FindClip(over) is { } parentClip && root.Start >= parentClip.Start - 1e-6 && root.End <= parentClip.End + 1e-6))
-                        root.ParentClipId = null;
+                        (root.ParentClipId, root.Tethered) = (null, false);
                     var track = PasteTrack(edit, root, rootFrom, newTracks);
                     edit.PlaceClip(track, root, allowCrossfadeOverlap: false);
                     placed.Add(root.Id);

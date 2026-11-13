@@ -2,22 +2,31 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:HandPegApp"
-        Title="Welcome to HandPeg" Width="820" SizeToContent="Height" ResizeMode="NoResize"
+        Title="Welcome to HandPeg" Width="940" Height="600" ResizeMode="NoResize"
         Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
         WindowStartupLocation="CenterScreen">
+    <!--
+        5.5A: the studio welcome, two screens in a window of 940 x 600 (HandPeg's DIPs, as UiScale sizes every dialog; kept inside the
+        work area by FitToWorkArea, each screen's body scrolling only where the room runs short): 1. the workspace, its theme and the core
+        engines, beside a live miniature of the layout and theme under the pointer; 2. the GPU and NPU roles from the hardware profile
+        (estimated at once, measured in the background) and the defaults exports start with.
+    -->
     <Window.Resources>
         <!-- A choice as a card: outlined in the accent colour while it is the one chosen. -->
         <Style x:Key="ChoiceCard" TargetType="RadioButton">
             <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
             <Setter Property="Cursor" Value="Hand" />
-            <Setter Property="Padding" Value="18,16" />
+            <Setter Property="Padding" Value="12,8" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="RadioButton">
-                        <Border x:Name="card" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}"
-                                BorderThickness="2" CornerRadius="{DynamicResource CardCornerRadius}" Padding="{TemplateBinding Padding}">
-                            <ContentPresenter />
-                        </Border>
+                        <!-- The whole card takes the pointer (the live miniature follows it: HoverAt), whatever the theme's brushes. -->
+                        <Grid Background="Transparent">
+                            <Border x:Name="card" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}"
+                                    BorderThickness="2" CornerRadius="{DynamicResource CardCornerRadius}" Padding="{TemplateBinding Padding}">
+                                <ContentPresenter />
+                            </Border>
+                        </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="card" Property="BorderBrush" Value="{DynamicResource AccentHoverBrush}" />
@@ -31,195 +40,344 @@
                 </Setter.Value>
             </Setter>
         </Style>
-        <!-- The smaller cards of the workspace layouts: two to a row. -->
+        <!-- The cards of the workspace layouts: two to a row. -->
         <Style x:Key="LayoutCard" TargetType="RadioButton" BasedOn="{StaticResource ChoiceCard}">
-            <Setter Property="Padding" Value="14,10" />
-            <Setter Property="Margin" Value="0,0,12,12" />
+            <Setter Property="Padding" Value="12,6" />
+            <Setter Property="Margin" Value="0,0,8,6" />
             <Setter Property="GroupName" Value="Workspace" />
         </Style>
-        <Style x:Key="SectionTitle" TargetType="TextBlock">
-            <Setter Property="FontSize" Value="15" />
-            <Setter Property="FontWeight" Value="SemiBold" />
-            <Setter Property="Margin" Value="0,22,0,2" />
+        <!-- A theme's swatch: its window, a panel, its accent and its text, painted from the theme's own colours (FillThemeSwatches). -->
+        <Style x:Key="SwatchCard" TargetType="RadioButton" BasedOn="{StaticResource ChoiceCard}">
+            <Setter Property="Padding" Value="4" />
+            <Setter Property="Margin" Value="0,0,8,0" />
+            <Setter Property="GroupName" Value="Theme" />
         </Style>
-        <Style x:Key="SectionText" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
-            <Setter Property="TextWrapping" Value="Wrap" />
-            <Setter Property="Margin" Value="0,0,0,10" />
+        <Style x:Key="SectionTitle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="0,14,0,6" />
         </Style>
         <Style x:Key="CardTitle" TargetType="TextBlock">
-            <Setter Property="FontSize" Value="17" />
+            <Setter Property="FontSize" Value="14" />
             <Setter Property="FontWeight" Value="SemiBold" />
-            <Setter Property="TextWrapping" Value="Wrap" />
-            <Setter Property="Margin" Value="0,0,0,6" />
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
         </Style>
         <Style x:Key="LayoutTitle" TargetType="TextBlock">
             <Setter Property="FontWeight" Value="SemiBold" />
-            <Setter Property="Margin" Value="0,0,0,3" />
+            <Setter Property="Margin" Value="0,0,0,2" />
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
         </Style>
+        <!-- A card's words: two lines at most, the whole of them in the tooltip. -->
         <Style x:Key="CardText" TargetType="TextBlock">
             <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
+            <Setter Property="FontSize" Value="11.5" />
             <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+            <Setter Property="MaxHeight" Value="31" />
+            <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}" />
+        </Style>
+        <!-- A layout card's words: one line (the miniature shows the rest), the whole of them in the tooltip. -->
+        <Style x:Key="LayoutText" TargetType="TextBlock" BasedOn="{StaticResource CardText}">
+            <Setter Property="TextWrapping" Value="NoWrap" />
         </Style>
         <Style x:Key="CardBadge" TargetType="TextBlock">
             <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
             <Setter Property="FontWeight" Value="SemiBold" />
-            <Setter Property="Margin" Value="0,0,0,6" />
+            <Setter Property="FontSize" Value="11.5" />
         </Style>
+        <Style x:Key="MutedText" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+        </Style>
+        <!-- Back: the neutral face, beside the accent's Next and Start Editing. -->
+        <Style x:Key="NeutralButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Background" Value="{DynamicResource NeutralButtonBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource NeutralButtonBorderBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+        </Style>
+
+        <!-- A GPU or NPU role (5.5A): an inspector card, the role, the card that holds it, why, and the badge of its measurement. -->
+        <DataTemplate x:Key="RoleCardTemplate" DataType="{x:Type local:FirstRunRoleCard}">
+            <Border Background="{DynamicResource InspectorCardBrush}" BorderBrush="{DynamicResource InspectorCardBorderBrush}" BorderThickness="1"
+                    CornerRadius="6" Padding="12,7" Margin="0,0,0,6"
+                    AutomationProperties.AutomationId="{Binding AutomationId}" AutomationProperties.Name="{Binding Role}">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="92" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <TextBlock Text="{Binding Role}" Foreground="{DynamicResource MutedTextBrush}" FontSize="11.5" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="{Binding Card}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                               ToolTip="{Binding Card}" />
+                    <Border Grid.Column="2" x:Name="badge" Margin="8,0,0,0" Padding="8,1" CornerRadius="8" VerticalAlignment="Center"
+                            Background="{DynamicResource ControlBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1">
+                        <TextBlock x:Name="badgeText" Text="{Binding Badge}" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" />
+                    </Border>
+                    <TextBlock Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Text="{Binding Detail}" Foreground="{DynamicResource MutedTextBrush}"
+                               FontSize="11.5" TextTrimming="CharacterEllipsis" Margin="0,2,0,0" ToolTip="{Binding Detail}" />
+                </Grid>
+            </Border>
+            <DataTemplate.Triggers>
+                <DataTrigger Binding="{Binding Measured}" Value="True">
+                    <Setter TargetName="badgeText" Property="Foreground" Value="{DynamicResource AccentBrush}" />
+                    <Setter TargetName="badgeText" Property="FontWeight" Value="SemiBold" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Badge}" Value="">
+                    <Setter TargetName="badge" Property="Visibility" Value="Collapsed" />
+                </DataTrigger>
+            </DataTemplate.Triggers>
+        </DataTemplate>
     </Window.Resources>
 
-    <!-- Scrolls on a screen too short for all of it; the window is never taller than the work area. -->
-    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
-    <StackPanel Margin="24">
-        <TextBlock Text="Welcome to HandPeg" FontSize="22" FontWeight="SemiBold" />
-        <TextBlock Style="{StaticResource SectionText}" Margin="0,4,0,0"
-                   Text="A few choices before you start. Every one of them can be changed later, in Settings or from the Layout button." />
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
 
-        <!-- ===== Theme and the workspace the window starts with ===== -->
-        <TextBlock Text="Theme &amp; Starting Workspace" Style="{StaticResource SectionTitle}" />
-        <TextBlock Style="{StaticResource SectionText}"
-                   Text="The theme changes at once, so you can see it. The workspace is how the window's panes are arranged when HandPeg opens." />
-        <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
-            <TextBlock Text="Theme:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <ComboBox x:Name="ThemeBox" MinWidth="190" Margin="0" SelectionChanged="ThemeBox_SelectionChanged" AutomationProperties.Name="Theme"
-                      ToolTip="Windows System follows Windows' own light or dark mode and accent colour; the others always look the same. The window changes at once so you can see it." />
-        </StackPanel>
-        <UniformGrid Columns="2" Margin="0,0,-12,-12">
-            <RadioButton x:Name="StandardLayoutCard" Style="{StaticResource LayoutCard}" Tag="Standard Editing" IsChecked="True"
-                         AutomationProperties.Name="Standard Editing Workspace" Checked="Workspace_Checked">
-                <StackPanel>
-                    <TextBlock Text="Standard Editing" Style="{StaticResource LayoutTitle}" />
-                    <TextBlock Style="{StaticResource CardText}" Text="The player at the top left, the Canvas and effects beside it, media at the right; the timeline below, the first of the settings tabs." />
-                </StackPanel>
-            </RadioButton>
-            <RadioButton x:Name="ColorLayoutCard" Style="{StaticResource LayoutCard}" Tag="Color &amp; Effects"
-                         AutomationProperties.Name="Color and Effects Workspace" Checked="Workspace_Checked">
-                <StackPanel>
-                    <TextBlock Text="Color &amp; Effects" Style="{StaticResource LayoutTitle}" />
-                    <TextBlock Style="{StaticResource CardText}" Text="A large player with tall effect, keyframe and media columns beside it, and the timeline below." />
-                </StackPanel>
-            </RadioButton>
-            <RadioButton x:Name="AssemblyLayoutCard" Style="{StaticResource LayoutCard}" Tag="Assembly &amp; Media"
-                         AutomationProperties.Name="Assembly and Media Workspace" Checked="Workspace_Checked">
-                <StackPanel>
-                    <TextBlock Text="Assembly &amp; Media" Style="{StaticResource LayoutTitle}" />
-                    <TextBlock Style="{StaticResource CardText}" Text="A wide media column beside the player, for gathering clips; the timeline, the settings tabs and the effects side by side below." />
-                </StackPanel>
-            </RadioButton>
-            <RadioButton x:Name="ShortsLayoutCard" Style="{StaticResource LayoutCard}" Tag="Vertical &amp; Shorts Studio"
-                         AutomationProperties.Name="Vertical and Shorts Studio Workspace" Checked="Workspace_Checked">
-                <StackPanel>
-                    <TextBlock Text="Vertical &amp; Shorts Studio" Style="{StaticResource LayoutTitle}" />
-                    <TextBlock Style="{StaticResource CardText}" Text="For 9:16 shorts: the effects, keyframes, Canvas and Subtitle Studio as tabs at the left, a tall player, the media as a filmstrip, and the timeline below." />
-                </StackPanel>
-            </RadioButton>
-            <!-- 5.4D: the Vertical Creator Split, the fifth built-in layout. -->
-            <RadioButton x:Name="VerticalCreatorLayoutCard" Style="{StaticResource LayoutCard}" Tag="Vertical Creator Split"
-                         AutomationProperties.Name="Vertical Creator Split Workspace" Checked="Workspace_Checked">
-                <StackPanel>
-                    <TextBlock Text="Vertical Creator Split" Style="{StaticResource LayoutTitle}" />
-                    <TextBlock Style="{StaticResource CardText}" Text="For 9:16 creators: the player the whole height at the left, the effects, Subtitle Studio and timeline in the middle, the media as a filmstrip at the right." />
-                </StackPanel>
-            </RadioButton>
-        </UniformGrid>
-
-        <!-- ===== The components: nothing ships with HandPeg, so this is where they are fetched. Two packages of them. ===== -->
-        <TextBlock Text="Required Components" Style="{StaticResource SectionTitle}" />
-        <TextBlock Style="{StaticResource SectionText}"
-                   Text="HandPeg plays and exports video with free open-source engines, downloaded once and checked against their published checksums. Pick a package; anything left out can be added later in Settings." />
-        <Grid>
+        <!-- ===== The header: where the user is, and the two steps ===== -->
+        <Grid Margin="24,10,24,4">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="16" />
-                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-            <RadioButton x:Name="MinimalTier" GroupName="Tier" Style="{StaticResource ChoiceCard}" IsChecked="True"
-                         AutomationProperties.Name="Core Video and Playback Engine" Checked="Tier_Checked">
-                <StackPanel>
-                    <TextBlock Text="Core Video &amp; Playback Engine" Style="{StaticResource CardTitle}" />
-                    <TextBlock Text="Required" Style="{StaticResource CardBadge}" />
-                    <TextBlock Style="{StaticResource CardText}"
-                               Text="FFmpeg, the engine that reads, inspects and exports your media, and yt-dlp, for importing a video from a link. Everything editing and exporting needs; the preview plays on the graphics card with no download." />
-                    <TextBlock Style="{StaticResource CardText}" Margin="0,10,0,0" Text="About 120 MB" />
-                </StackPanel>
-            </RadioButton>
-            <RadioButton Grid.Column="2" x:Name="EditorTier" GroupName="Tier" Style="{StaticResource ChoiceCard}"
-                         AutomationProperties.Name="Core Engine and Local AI Auto-Captions" Checked="Tier_Checked">
-                <StackPanel>
-                    <TextBlock Text="Core Engine + Local AI Auto-Captions" Style="{StaticResource CardTitle}" />
-                    <TextBlock Text="Recommended" Style="{StaticResource CardBadge}" />
-                    <TextBlock Style="{StaticResource CardText}"
-                               Text="The core engine, plus the whisper.cpp speech-to-text engine, silence detection and two speech models (Base and Medium) for automatic subtitles on the timeline. Runs on this PC; nothing is uploaded." />
-                    <TextBlock Style="{StaticResource CardText}" Margin="0,10,0,0" Text="About 1.6 GB" />
-                </StackPanel>
-            </RadioButton>
+            <StackPanel>
+                <TextBlock Text="Welcome to HandPeg" Foreground="{DynamicResource MutedTextBrush}" />
+                <TextBlock x:Name="ScreenTitle" Text="Workspace, Theme &amp; Core Engines" FontSize="21" FontWeight="SemiBold"
+                           AutomationProperties.AutomationId="ScreenTitle" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBlock x:Name="StepText" Text="Step 1 of 2" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" Margin="0,0,10,0"
+                           AutomationProperties.AutomationId="StepText" />
+                <Ellipse x:Name="StepDot1" Width="9" Height="9" Fill="{DynamicResource AccentBrush}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                <Ellipse x:Name="StepDot2" Width="9" Height="9" Fill="{DynamicResource ControlBorderBrush}" VerticalAlignment="Center" />
+            </StackPanel>
         </Grid>
 
-        <local:DependencyPanel x:Name="Dependencies" Margin="0,10,0,0" OffersExistingFfmpeg="True" />
+        <!-- ===== The body: the two screens in one cell, one of them shown (GoToScreen) ===== -->
+        <Grid Grid.Row="1" x:Name="ScreenHost" ClipToBounds="True">
+            <!-- ===== Screen 1: Workspace, Theme & Core Engines ===== -->
+            <ScrollViewer x:Name="Screen1Panel" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False"
+                          AutomationProperties.AutomationId="Screen1">
+                <Grid Margin="24,2,24,6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="372" />
+                        <ColumnDefinition Width="24" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
 
-        <!-- ===== The encoders: the hardware ones are always looked for before this window closes ===== -->
-        <TextBlock Text="Video Encoder" Style="{StaticResource SectionTitle}" />
-        <TextBlock Style="{StaticResource SectionText}"
-                   Text="The encoder exports start with. HandPeg looks for the graphics card's own encoders (NVENC, QuickSync, AMF) as soon as FFmpeg is here, lists the ones that work first, and chooses the best." />
-        <StackPanel Orientation="Horizontal">
-            <ComboBox x:Name="EncoderBox" MinWidth="300" Margin="0" SelectionChanged="EncoderBox_SelectionChanged" AutomationProperties.Name="Default Video Encoder"
-                      ToolTip="The video encoder selected when HandPeg starts. It can be changed for any export on the Export tab." />
-            <ProgressBar x:Name="ProbeBar" Width="70" Height="8" Margin="14,0,0,0" IsIndeterminate="True" VerticalAlignment="Center" Visibility="Collapsed"
-                         AutomationProperties.Name="Hardware Encoder Check Progress" />
-            <TextBlock x:Name="EncoderStatusText" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{DynamicResource MutedTextBrush}"
-                       AutomationProperties.AutomationId="EncoderStatus" />
-        </StackPanel>
-        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-            <TextBlock Text="Audio Encoder:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <ComboBox x:Name="AudioEncoderBox" MinWidth="170" Margin="0" AutomationProperties.Name="Default Audio Encoder"
-                      ToolTip="The audio codec HandPeg starts with. Editing sound (moving it, silencing part of it, mixing in another clip or a voiceover) needs it encoded, so Copy is not offered here; it can still be chosen for any export." />
-            <ComboBox x:Name="AudioBitrateBox" MinWidth="90" Margin="8,0,0,0" AutomationProperties.Name="Default Audio Bitrate" ToolTip="The bitrate that goes with it." />
-        </StackPanel>
-        <TextBlock x:Name="CopyWarningText" Visibility="Collapsed" Foreground="{DynamicResource WarningTextBrush}" TextWrapping="Wrap" Margin="0,8,0,0"
-                   Text="Warning: a 'Copy' export writes one file's picture as it is: effects, looks, filters and the other clips are left out unless the encoder is changed in the project settings." />
+                    <!-- The live miniature: the layout and the theme under the pointer, else the chosen ones; the themes under it. -->
+                    <StackPanel>
+                        <TextBlock Text="Live Preview" Style="{StaticResource SectionTitle}" Margin="0,2,0,5" />
+                        <local:SettingsStagePreview x:Name="StagePreview" AutomationProperties.AutomationId="WorkspacePreview" />
+                        <TextBlock Text="Theme" Style="{StaticResource SectionTitle}" />
+                        <ItemsControl x:Name="ThemeSwatches" Focusable="False" AutomationProperties.Name="Theme">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <UniformGrid Rows="1" Margin="0,0,-8,0" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                        </ItemsControl>
+                    </StackPanel>
 
-        <!-- ===== The graphics cards: Test & Auto-Tune Hardware (5.0-0) sets the four GPU roles; Settings shows the measurements ===== -->
-        <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
-            <Button x:Name="BenchmarkButton" Padding="12,4" Click="Benchmark_Click" AutomationProperties.Name="Test &amp; Auto-Tune Hardware"
-                    ToolTip="Measures each graphics card in a few seconds (hardware decoding speed, seeking, accuracy, and how fast frames cross between cards) and gives each of the four GPU roles (compositor, timeline decoding, background work, exports) to the card that suits it. Needs FFmpeg for its test clip. Optional: Auto works without it, and it can be run any time from Settings, Export &amp; Hardware, which also draws the results. Press again to stop it.">
-                <StackPanel Orientation="Horizontal">
-                    <TextBlock Text="&#xE945;" FontFamily="Segoe MDL2 Assets" FontSize="12" VerticalAlignment="Center" />
-                    <TextBlock x:Name="BenchmarkButtonText" Text="Test &amp; Auto-Tune Hardware" Margin="7,0,0,0" VerticalAlignment="Center" />
+                    <StackPanel Grid.Column="2">
+                        <TextBlock Text="Starting Workspace" Style="{StaticResource SectionTitle}" Margin="0,2,0,5" />
+                        <UniformGrid Columns="2" Margin="0,0,-8,-6">
+                            <RadioButton x:Name="StandardLayoutCard" Style="{StaticResource LayoutCard}" Tag="Standard Editing" IsChecked="True"
+                                         AutomationProperties.Name="Standard Editing Workspace" Checked="Workspace_Checked">
+                                <StackPanel>
+                                    <TextBlock Text="Standard Editing" Style="{StaticResource LayoutTitle}" />
+                                    <TextBlock Style="{StaticResource LayoutText}" Text="The player at the top left, the Canvas and effects beside it, media and the settings tabs at the right; the timeline alone below." />
+                                </StackPanel>
+                            </RadioButton>
+                            <RadioButton x:Name="ColorLayoutCard" Style="{StaticResource LayoutCard}" Tag="Color &amp; Effects"
+                                         AutomationProperties.Name="Color and Effects Workspace" Checked="Workspace_Checked">
+                                <StackPanel>
+                                    <TextBlock Text="Color &amp; Effects" Style="{StaticResource LayoutTitle}" />
+                                    <TextBlock Style="{StaticResource LayoutText}" Text="A large player with tall effect, keyframe and media columns beside it, and the timeline below." />
+                                </StackPanel>
+                            </RadioButton>
+                            <RadioButton x:Name="AssemblyLayoutCard" Style="{StaticResource LayoutCard}" Tag="Assembly &amp; Media"
+                                         AutomationProperties.Name="Assembly and Media Workspace" Checked="Workspace_Checked">
+                                <StackPanel>
+                                    <TextBlock Text="Assembly &amp; Media" Style="{StaticResource LayoutTitle}" />
+                                    <TextBlock Style="{StaticResource LayoutText}" Text="A wide media column beside the player, for gathering clips; the timeline, the settings tabs and the effects side by side below." />
+                                </StackPanel>
+                            </RadioButton>
+                            <RadioButton x:Name="ShortsLayoutCard" Style="{StaticResource LayoutCard}" Tag="Vertical &amp; Shorts Studio"
+                                         AutomationProperties.Name="Vertical and Shorts Studio Workspace" Checked="Workspace_Checked">
+                                <StackPanel>
+                                    <TextBlock Text="Vertical &amp; Shorts Studio" Style="{StaticResource LayoutTitle}" />
+                                    <TextBlock Style="{StaticResource LayoutText}" Text="For 9:16 shorts: the effects, keyframes, Canvas and Subtitle Studio as tabs at the left, a tall player, the media as a filmstrip, and the timeline below." />
+                                </StackPanel>
+                            </RadioButton>
+                            <!-- 5.4D: the Vertical Creator Split, the fifth built-in layout. -->
+                            <RadioButton x:Name="VerticalCreatorLayoutCard" Style="{StaticResource LayoutCard}" Tag="Vertical Creator Split"
+                                         AutomationProperties.Name="Vertical Creator Split Workspace" Checked="Workspace_Checked">
+                                <StackPanel>
+                                    <TextBlock Text="Vertical Creator Split" Style="{StaticResource LayoutTitle}" />
+                                    <TextBlock Style="{StaticResource LayoutText}" Text="For 9:16 creators: the player the whole height at the left, the effects, Subtitle Studio and timeline in the middle, the media as a filmstrip at the right." />
+                                </StackPanel>
+                            </RadioButton>
+                        </UniformGrid>
+
+                        <!-- The core engines: nothing ships with HandPeg, so this is where they are fetched, a package at one click. -->
+                        <TextBlock Text="Core Engines" Style="{StaticResource SectionTitle}" Margin="0,8,0,5" />
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="8" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <RadioButton x:Name="MinimalTier" GroupName="Tier" Style="{StaticResource ChoiceCard}" IsChecked="True"
+                                         AutomationProperties.Name="Core Video and Playback Engine" Checked="Tier_Checked">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Grid.ColumnSpan="2" Text="Core Video &amp; Playback Engine" Style="{StaticResource CardTitle}" />
+                                    <TextBlock Grid.Row="1" Text="Required" Style="{StaticResource CardBadge}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                    <Button Grid.Row="1" Grid.Column="1" x:Name="MinimalDownloadButton" Content="Download" Margin="8,4,0,4" Padding="12,3"
+                                            Click="TierDownload_Click" AutomationProperties.Name="Download Core Video and Playback Engine"
+                                            ToolTip="Downloads FFmpeg and yt-dlp now, each checked against its published checksum." />
+                                    <TextBlock Grid.Row="2" Grid.ColumnSpan="2" Style="{StaticResource CardText}"
+                                               Text="About 120 MB: FFmpeg, the engine that reads, inspects and exports your media, and yt-dlp, for importing a video from a link. The preview plays on the graphics card with no download." />
+                                </Grid>
+                            </RadioButton>
+                            <RadioButton Grid.Column="2" x:Name="EditorTier" GroupName="Tier" Style="{StaticResource ChoiceCard}"
+                                         AutomationProperties.Name="Full Engine and Local AI Auto-Captions" Checked="Tier_Checked">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Grid.ColumnSpan="2" Text="Full Engine + AI Captions" Style="{StaticResource CardTitle}" ToolTip="The full engine, with local AI Auto-Captions" />
+                                    <TextBlock Grid.Row="1" Text="Recommended" Style="{StaticResource CardBadge}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                    <Button Grid.Row="1" Grid.Column="1" x:Name="FullDownloadButton" Content="Download" Margin="8,4,0,4" Padding="12,3"
+                                            Click="TierDownload_Click" AutomationProperties.Name="Download Full Engine and Local AI Auto-Captions"
+                                            ToolTip="Downloads the core engine, whisper.cpp, silence detection and the Base and Medium speech models now, each checked against its published checksum." />
+                                    <TextBlock Grid.Row="2" Grid.ColumnSpan="2" Style="{StaticResource CardText}"
+                                               Text="About 1.6 GB: the core engine, plus the whisper.cpp speech-to-text engine, silence detection and two speech models (Base and Medium) for automatic subtitles. Runs on this PC; nothing is uploaded." />
+                                </Grid>
+                            </RadioButton>
+                        </Grid>
+
+                        <!-- The 5.5A addenda (the user's call): no way here to point at an FFmpeg already on the PC; that stays in Settings (its
+                             ffmpeg.exe Path box), and the panel's own words follow (OffersExistingFfmpeg off, as it comes). -->
+                        <local:DependencyPanel x:Name="Dependencies" />
+                    </StackPanel>
+                </Grid>
+            </ScrollViewer>
+
+            <!-- ===== Screen 2: Hardware Auto-Tune & Default Export ===== -->
+            <ScrollViewer x:Name="Screen2Panel" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False"
+                          Visibility="Collapsed" AutomationProperties.AutomationId="Screen2">
+                <Grid Margin="24,2,24,6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="11*" />
+                        <ColumnDefinition Width="24" />
+                        <ColumnDefinition Width="9*" />
+                    </Grid.ColumnDefinitions>
+
+                    <!-- The GPU and NPU roles: estimated at once (out of process), then measured in the background on the first start. -->
+                    <StackPanel>
+                        <TextBlock Text="GPU &amp; NPU Roles" Style="{StaticResource SectionTitle}" Margin="0,4,0,2" />
+                        <TextBlock x:Name="ProfileStatusText" Style="{StaticResource MutedText}" FontSize="11.5" Margin="0,0,0,8"
+                                   Text="Looking at the graphics cards..." AutomationProperties.AutomationId="ProfileStatus" />
+                        <!-- 5.5.0 (the user's Q10 b): said plainly when the quick hardware check fails (collapsed otherwise) -->
+                        <TextBlock x:Name="ProfileWarningText" Visibility="Collapsed" Foreground="{DynamicResource WarningTextBrush}" TextWrapping="Wrap" FontSize="11.5"
+                                   Margin="0,-4,0,8" AutomationProperties.AutomationId="ProfileWarning" />
+                        <ItemsControl x:Name="RoleCards" Focusable="False" ItemTemplate="{StaticResource RoleCardTemplate}"
+                                      AutomationProperties.Name="GPU and NPU Roles" />
+                        <TextBlock Style="{StaticResource MutedText}" FontSize="11.5" Margin="0,4,0,0"
+                                   Text="The full test (seeking, accuracy, every card and the bus between two) is Test &amp; Auto-Tune Hardware in Settings › Export &amp; Hardware." />
+                    </StackPanel>
+
+                    <!-- The defaults every export starts with, and what happens on closing and after a failed hardware encode. -->
+                    <StackPanel Grid.Column="2">
+                        <TextBlock Text="Default Export" Style="{StaticResource SectionTitle}" Margin="0,4,0,6" />
+                        <TextBlock Text="Video encoder" Margin="0,0,0,4" />
+                        <StackPanel Orientation="Horizontal">
+                            <ComboBox x:Name="EncoderBox" MinWidth="250" Margin="0" SelectionChanged="EncoderBox_SelectionChanged" AutomationProperties.Name="Default Video Encoder"
+                                      ToolTip="The video encoder selected when HandPeg starts. It can be changed for any export on the Export tab." />
+                            <ProgressBar x:Name="ProbeBar" Width="60" Height="6" Margin="10,0,0,0" IsIndeterminate="True" VerticalAlignment="Center" Visibility="Collapsed"
+                                         AutomationProperties.Name="Hardware Encoder Check Progress" />
+                        </StackPanel>
+                        <TextBlock x:Name="EncoderStatusText" Style="{StaticResource MutedText}" FontSize="11.5" Margin="0,4,0,0"
+                                   AutomationProperties.AutomationId="EncoderStatus" />
+                        <TextBlock Text="Audio encoder" Margin="0,10,0,4" />
+                        <StackPanel Orientation="Horizontal">
+                            <ComboBox x:Name="AudioEncoderBox" MinWidth="160" Margin="0" AutomationProperties.Name="Default Audio Encoder"
+                                      ToolTip="The audio codec HandPeg starts with. Editing sound (moving it, silencing part of it, mixing in another clip or a voiceover) needs it encoded, so Copy is not offered here; it can still be chosen for any export." />
+                            <ComboBox x:Name="AudioBitrateBox" MinWidth="86" Margin="8,0,0,0" AutomationProperties.Name="Default Audio Bitrate" ToolTip="The bitrate that goes with it." />
+                        </StackPanel>
+                        <TextBlock x:Name="CopyWarningText" Visibility="Collapsed" Foreground="{DynamicResource WarningTextBrush}" TextWrapping="Wrap" Margin="0,8,0,0" FontSize="11.5"
+                                   Text="Warning: a 'Copy' export writes one file's picture as it is: effects, looks, filters and the other clips are left out unless the encoder is changed in the project settings." />
+
+                        <TextBlock Text="Behaviour" Style="{StaticResource SectionTitle}" />
+                        <CheckBox x:Name="PromptBox" Content="Prompt to save before closing"
+                                  ToolTip="Asks, as HandPeg closes, whether to save the projects open in its tabs that hold work not saved as a project; with two tabs or more, one dialog lists them all and can keep every tab for the next start instead. Every tab saved: no question. Asked only when Keep open project tabs suspended between sessions is off (Settings &gt; General &gt; Projects and saving), as it is at first: while that is on, closing keeps every tab, saved or not, for the next start." />
+                        <CheckBox x:Name="FallbackBox" Content="Allow software encoding fallback" Margin="0,6,0,0"
+                                  ToolTip="If an encode fails on a hardware encoder (NVENC, QuickSync, AMF), try once more with the matching software encoder." />
+
+                        <!-- Crash reports (written here, kept on this PC), what they cost and what is in them. -->
+                        <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                            <CheckBox x:Name="CrashReportsBox" Content="Save anonymous crash reports" VerticalAlignment="Center"
+                                      AutomationProperties.Name="Send Crash Reports"
+                                      ToolTip="When HandPeg falls over, a crash report is written to the crash reports folder: the error, the parts of HandPeg that were running, its last few steps, the kind of media open (container, codecs, resolution) and the computer (processor, memory, graphics cards, display, engine versions), with no file names, paths, names, serial numbers or words from your media. Reports stay on this PC; HandPeg never sends them. Can be changed later in Settings, General tab, or in the Privacy Policy." />
+                            <TextBlock VerticalAlignment="Center" Margin="12,0,0,0">
+                                <Hyperlink Click="PrivacyPolicy_Click" Foreground="{DynamicResource AccentBrush}" AutomationProperties.Name="Privacy Policy">Privacy Policy</Hyperlink>
+                            </TextBlock>
+                        </StackPanel>
+                        <TextBlock Style="{StaticResource MutedText}" FontSize="11.5" Margin="22,3,0,0"
+                                   Text="Uses 0% CPU during normal editing, 20 KB of shared memory, and a ~6.8 MB idle background sentinel process." />
+                    </StackPanel>
+                </Grid>
+            </ScrollViewer>
+        </Grid>
+
+        <!-- ===== The footer: Back, the download as it goes (on either screen), and Next or Start Editing ===== -->
+        <Border Grid.Row="2" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="0,1,0,0">
+            <Grid Margin="24,8,24,10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Button x:Name="BackButton" Content="Back" Style="{StaticResource NeutralButton}" MinWidth="96" Visibility="Hidden" Click="Back_Click"
+                        VerticalAlignment="Center" AutomationProperties.Name="Back" />
+                <StackPanel Grid.Column="1" x:Name="FooterProgressPanel" Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center"
+                            Visibility="Collapsed">
+                    <TextBlock x:Name="FooterProgressText" Text="Downloading the core engines" Foreground="{DynamicResource MutedTextBrush}" FontSize="11.5"
+                               VerticalAlignment="Center" Margin="0,0,10,0" AutomationProperties.AutomationId="FooterProgressText" />
+                    <ProgressBar x:Name="FooterProgress" Width="150" Height="4" Minimum="0" Maximum="1" VerticalAlignment="Center"
+                                 AutomationProperties.Name="Core Engines Download Progress" />
                 </StackPanel>
-            </Button>
-            <TextBlock x:Name="BenchmarkStatusText" VerticalAlignment="Center" Margin="10,0,0,0" MaxWidth="520" TextTrimming="CharacterEllipsis"
-                       Foreground="{DynamicResource MutedTextBrush}" AutomationProperties.AutomationId="BenchmarkStatus"
-                       Text="Optional: gives each graphics card the work it does best." />
-        </StackPanel>
-
-        <!-- ===== Behaviour ===== -->
-        <StackPanel Orientation="Horizontal" Margin="0,18,0,0">
-            <CheckBox x:Name="PromptBox" Content="Prompt to save before closing"
-                      ToolTip="Asks whether to save the project when HandPeg is closed with changes that were not saved." />
-            <CheckBox x:Name="FallbackBox" Content="Allow software encoding fallback" Margin="32,0,0,0"
-                      ToolTip="If an encode fails on a hardware encoder (NVENC, QuickSync, AMF), try once more with the matching software encoder." />
-        </StackPanel>
-
-        <!-- Crash reports (written here, kept on this PC), what they cost and what is in them, beside the button that starts HandPeg -->
-        <DockPanel Margin="0,22,0,0">
-            <StackPanel DockPanel.Dock="Right" VerticalAlignment="Center">
-                <Button x:Name="StartButton" Content="Start HandPeg" MinWidth="140" Padding="18,8" IsDefault="True" Click="Start_Click" HorizontalAlignment="Right" />
-                <TextBlock x:Name="StartStatusText" Foreground="{DynamicResource MutedTextBrush}" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Right"
-                           Visibility="Collapsed" AutomationProperties.AutomationId="StartStatus" />
-            </StackPanel>
-            <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
-                <StackPanel Orientation="Horizontal">
-                    <CheckBox x:Name="CrashReportsBox" Content="Save anonymous crash reports" VerticalAlignment="Center"
-                              AutomationProperties.Name="Send Crash Reports"
-                              ToolTip="When HandPeg falls over, a crash report is written to the crash reports folder: the error, the parts of HandPeg that were running, its last few steps, the kind of media open (container, codecs, resolution) and the computer (processor, memory, graphics cards, display, engine versions), with no file names, paths, names, serial numbers or words from your media. Reports stay on this PC; HandPeg never sends them. Can be changed later in Settings, General tab, or in the Privacy Policy." />
-                    <TextBlock VerticalAlignment="Center" Margin="12,0,0,0">
-                        <Hyperlink Click="PrivacyPolicy_Click" Foreground="{DynamicResource AccentBrush}" AutomationProperties.Name="Privacy Policy">Privacy Policy</Hyperlink>
-                    </TextBlock>
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock x:Name="StartStatusText" Foreground="{DynamicResource MutedTextBrush}" FontSize="12" Margin="0,0,12,0" VerticalAlignment="Center"
+                               Visibility="Collapsed" AutomationProperties.AutomationId="StartStatus" />
+                    <Button x:Name="NextButton" Content="Next" MinWidth="120" Padding="18,7" IsDefault="True" Click="Next_Click" AutomationProperties.Name="Next" />
+                    <Button x:Name="StartButton" Content="Start Editing" MinWidth="170" Padding="26,9" FontSize="15" FontWeight="SemiBold"
+                            Visibility="Collapsed" Click="Start_Click" AutomationProperties.Name="Start Editing" />
                 </StackPanel>
-                <TextBlock Foreground="{DynamicResource MutedTextBrush}" FontSize="12" Margin="22,3,0,0" TextWrapping="Wrap"
-                           Text="Uses 0% CPU during normal editing, 20 KB of shared memory, and a ~6.8 MB idle background sentinel process." />
-            </StackPanel>
-        </DockPanel>
-    </StackPanel>
-    </ScrollViewer>
+            </Grid>
+        </Border>
+    </Grid>
 </Window>

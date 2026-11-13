@@ -427,7 +427,7 @@
                         <Button x:Name="RedoButton" Style="{StaticResource Tool}" local:OverflowStrip.Priority="90" Content="&#xE7A6;" Tag="Redo" Click="Tool_Click" Visibility="Collapsed"
                                 AutomationProperties.Name="Redo" local:KeyTip.Action="edit.redo" local:KeyTip.Text="Redo{keys}: does again what was just undone." />
                         <ToggleButton Style="{StaticResource ToolToggle}" local:OverflowStrip.Priority="75" Margin="6,0,3,0" IsChecked="{Binding SnapClips}" AutomationProperties.Name="Snap"
-                                      local:KeyTip.Action="view.toggleSnap" local:KeyTip.Text="Snap{keys}: a dragged or dropped clip's edges catch on the edges of the other clips, the markers, the end of the sequence and the playhead. Hold Shift while dragging to place it freely, a frame at a time; Ctrl on an edge ripples.">
+                                      local:KeyTip.Action="view.toggleSnap" local:KeyTip.Text="Snap{keys}: a dragged or dropped clip's edges catch on the edges of the other clips, the markers, the end of the sequence and the playhead. Hold Shift while dragging to place it freely, a frame at a time; Shift on a move onto another track keeps the clip's time exactly; Ctrl on an edge ripples.">
                             <Path Width="14" Height="13" Stretch="None" StrokeThickness="1.3" StrokeLineJoin="Round"
                                   Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
                                   Data="M 2,1 L 2,7 A 5,5 0 0 0 12,7 L 12,1 L 9,1 L 9,7 A 2,2 0 0 1 5,7 L 5,1 Z M 2,4 L 5,4 M 9,4 L 12,4" />

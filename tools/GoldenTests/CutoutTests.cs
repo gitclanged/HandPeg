@@ -169,8 +169,8 @@ public static class CutoutTests
         var vm = Opened(file, width, height, "h264");
         vm.RefreshStylePresets();
         var view = vm.Layers.First(l => l.ClipId != Guid.Empty);
-        if (!vm.ApplyGamePreset([view], "Overwatch 2 Vertical HUD"))
-            throw new InvalidOperationException("Overwatch 2 Vertical HUD could not be applied");
+        if (!vm.ApplyGamePreset([view], "Overwatch Vertical"))
+            throw new InvalidOperationException("Overwatch Vertical could not be applied");
         var parent = vm.ClipOf(view)!;
         return new PresetFamily(vm, view, parent, vm.Document.ChildrenOf(parent).Where(c => c.Track.Kind == TimelineTrackKind.Video).Select(c => c.Clip).ToList());
     }
@@ -278,8 +278,8 @@ public static class CutoutTests
 
         var names = GamePresetLibrary.All.Select(b => b.Name).ToList();
         text.Append("built-ins: ").AppendJoin(", ", names).Append('\n');
-        Expect(names.SequenceEqual(["Overwatch 2 Vertical HUD", "Marvel Rivals Vertical HUD", "Valorant Vertical HUD", "CS2 Vertical HUD", "Apex Legends Vertical HUD", "The Finals Vertical HUD"]),
-            "six games, Overwatch 2 first");
+        Expect(names.SequenceEqual(["Overwatch Vertical", "Fortnite Vertical", "Marvel Rivals Vertical HUD", "Valorant Vertical HUD", "CS2 Vertical HUD", "Apex Legends Vertical HUD", "The Finals Vertical HUD"]),
+            "seven games, Overwatch Vertical first (5.5.0: the user's own name for it), then the user's own Fortnite Vertical");
 
         foreach (var preset in GamePresetLibrary.All)
         {
@@ -302,8 +302,13 @@ public static class CutoutTests
         }
 
         var overwatch = GamePresetLibrary.Build(GamePresetLibrary.All[0])!;
-        Expect(overwatch.Layout!.Layers.Sum(l => MaskStore.ParseShapes(l.MaskShapes).Count) == 12, "Overwatch 2: the twelve islands of the user's own mask");
-        Expect(overwatch.Layout.Layers.Select(l => (l.FeatherRadius, l.MaskGrow)).SequenceEqual([(16, 19), (4, 2), (2, 0)]), "Overwatch 2: feathered and grown as the user's own Game Preset");
+        Expect(overwatch.Layout!.Layers.Sum(l => MaskStore.ParseShapes(l.MaskShapes).Count) == 12, "Overwatch Vertical: the twelve islands of the user's own mask");
+        Expect(overwatch.Layout.Layers.Select(l => (l.FeatherRadius, l.MaskGrow)).SequenceEqual([(16, 19), (4, 2), (2, 0)]), "Overwatch Vertical: feathered and grown as the user's own Game Preset");
+        var fortnite = GamePresetLibrary.Build(GamePresetLibrary.All[1])!.Layout!.Layers;
+        Expect(fortnite.Select(l => (l.Name, MaskStore.ParseShapes(l.MaskShapes).Count)).SequenceEqual([("Inventory", 7), ("Health", 1), ("Minimap", 2)])
+               && fortnite.Select(l => (l.PositionX, l.PositionY, l.SizeWidth)).SequenceEqual([(0.5363, 0.8265, 0.4337), (0.03, 0.8478, 0.4863), (0.261, 0.03, 0.4781)])
+               && fortnite.All(l => l is { FeatherRadius: 1, MaskGrow: 0, CornerRadius: 0 }),
+            "Fortnite Vertical: the user's own pieces (inventory slots, health, minimap), placed as they placed them");
 
         // Written where missing, never over a file; the user's drop-overlay list keeps its own first.
         var settings = AppSettings.Current;
@@ -314,25 +319,50 @@ public static class CutoutTests
         var theirs = Path.Combine(AppPaths.Styles, "CS2 Vertical HUD.hpstyle");
         File.WriteAllText(theirs, """{"Layout":{"CenterZoom":1.3,"Layers":[]}}""");
         var written = GamePresetLibrary.WriteMissingAsync().GetAwaiter().GetResult();
-        Expect(written.Count == 5 && !written.Contains("CS2 Vertical HUD.hpstyle"), $"five written, the one already there left alone ({string.Join(", ", written)})");
+        Expect(written.Count == 6 && !written.Contains("CS2 Vertical HUD.hpstyle"), $"six written, the one already there left alone ({string.Join(", ", written)})");
         Expect(File.ReadAllText(theirs).Contains("1.3"), "a file of a built-in's name is never written over");
         Expect(written.All(f => File.GetLastWriteTime(Path.Combine(AppPaths.Styles, f)) < File.GetLastWriteTime(mine)), "the built-ins are older than the user's own, which stay first in the lists");
         GamePresetLibrary.Seeded();
-        Expect(settings.SplashStylePresets.SequenceEqual(["Mine.hpstyle", "Overwatch 2 Vertical HUD.hpstyle"]) && settings.BuiltInGamePresetsVersion == GamePresetLibrary.Version,
-            "the drop overlay keeps the user's own first and gets Overwatch 2 after them");
-        Expect(StyleFile.ForLaunch().Select(s => s.Name).SequenceEqual(["Mine", "Overwatch 2 Vertical HUD"]), "both on the drop overlay");
+        Expect(settings.SplashStylePresets.SequenceEqual(["Overwatch Vertical.hpstyle", "Mine.hpstyle"]) && settings.BuiltInGamePresetsVersion == GamePresetLibrary.Version,
+            "the drop overlay gets Overwatch Vertical first, its left-most target (5.5.0, the user's call), the user's own after it");
+        Expect(StyleFile.ForLaunch().Select(s => s.Name).SequenceEqual(["Overwatch Vertical", "Mine"]), "both on the drop overlay");
         Expect(GamePresetLibrary.WriteMissingAsync().GetAwaiter().GetResult().Count == 0, "written once per version");
         File.Delete(Path.Combine(AppPaths.Styles, "Valorant Vertical HUD.hpstyle"));
         Expect(GamePresetLibrary.WriteMissingAsync().GetAwaiter().GetResult().Count == 0, "a built-in the user deleted stays deleted");
+
+        // 5.5.0: the 5.1 Overwatch file under its old name. Untouched (still dated as it was written), it takes the new name and its place on
+        // the overlay becomes the new one's, first; one the user saved over keeps its name, and the new one is written beside it.
+        var (oldFile, newFile) = (Path.Combine(AppPaths.Styles, GamePresetLibrary.OldOverwatchFile), Path.Combine(AppPaths.Styles, "Overwatch Vertical.hpstyle"));
+        File.Delete(newFile);
+        File.WriteAllText(oldFile, """{"Layout":{"CenterZoom":1.7,"Layers":[]}}""");
+        File.SetLastWriteTime(oldFile, new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Local));
+        (settings.BuiltInGamePresetsVersion, settings.SplashStylePresets) = (1, ["Mine.hpstyle", GamePresetLibrary.OldOverwatchFile]);
+        written = GamePresetLibrary.WriteMissingAsync().GetAwaiter().GetResult();
+        Expect(written.Contains("Overwatch Vertical.hpstyle") && !File.Exists(oldFile) && File.ReadAllText(newFile).Contains("\"Layers\":[]"),
+            "an untouched Overwatch 2 Vertical HUD file takes the name Overwatch Vertical (moved, not written again)");
+        GamePresetLibrary.Seeded();
+        Expect(settings.SplashStylePresets.SequenceEqual(["Overwatch Vertical.hpstyle", "Mine.hpstyle"]), "its overlay entry becomes Overwatch Vertical, first");
+        File.Delete(newFile);
+        File.WriteAllText(oldFile, """{"Layout":{"CenterZoom":1.5,"Layers":[]}}""");
+        (settings.BuiltInGamePresetsVersion, settings.SplashStylePresets) = (1, ["Mine.hpstyle", GamePresetLibrary.OldOverwatchFile]);
+        written = GamePresetLibrary.WriteMissingAsync().GetAwaiter().GetResult();
+        GamePresetLibrary.Seeded();
+        Expect(File.ReadAllText(oldFile).Contains("1.5") && written.Contains("Overwatch Vertical.hpstyle") && File.Exists(newFile)
+               && settings.SplashStylePresets.SequenceEqual(["Overwatch Vertical.hpstyle", "Mine.hpstyle", GamePresetLibrary.OldOverwatchFile]),
+            "one the user saved over keeps its name and place; the new one is written and goes first");
+        Expect(GamePresetLibrary.SeededList([], _ => true).SequenceEqual(GamePresetLibrary.All.Select(p => p.FileName))
+               && GamePresetLibrary.SeededList(["A.hpstyle", "Overwatch Vertical.hpstyle", "B.hpstyle"], _ => true).SequenceEqual(["Overwatch Vertical.hpstyle", "A.hpstyle", "B.hpstyle"])
+               && GamePresetLibrary.SeededList(["A.hpstyle"], f => f != "Overwatch Vertical.hpstyle").SequenceEqual(["A.hpstyle"]),
+            "an empty list takes every built-in in order; a list of the user's gets Overwatch Vertical moved or put first; none when its file is not there");
 
         // On a clip: the Overwatch 2 file applied as the Timeline's list and the clip menu do.
         const int W = 2560, H = 1440;
         const string main = "D:/media/overwatch.mkv";
         var vm = Opened(main, W, H, "hevc");
         vm.RefreshStylePresets();
-        Expect(vm.StylePresets.Contains("Overwatch 2 Vertical HUD") && vm.StylePresets.Contains("The Finals Vertical HUD"), "in the Game Presets, the Timeline's list");
+        Expect(vm.StylePresets.Contains("Overwatch Vertical") && vm.StylePresets.Contains("Fortnite Vertical") && vm.StylePresets.Contains("The Finals Vertical HUD"), "in the Game Presets, the Timeline's list");
         var clip = vm.Layers.First(l => l.ClipId != Guid.Empty);
-        Expect(vm.ApplyGamePreset([clip], "Overwatch 2 Vertical HUD"), "applied to a clip");
+        Expect(vm.ApplyGamePreset([clip], "Overwatch Vertical"), "applied to a clip");
         var pieces = vm.CutoutLayers.Select(l => l.Name).Order().ToList();
         Expect(pieces.SequenceEqual(["Abilities & Ammo", "Health & Name", "Killfeed"]), $"its three Cutouts are the clip's, and the Studio's to edit ({string.Join(", ", pieces)})");
         Expect(vm.UseVerticalResolution && Math.Abs(ZoomOf(vm) - GamePresetLibrary.DefaultZoom) < 1e-6, "on a tall frame, the video zoomed");

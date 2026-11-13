@@ -1,12 +1,18 @@
 # The built-in Game Presets (5.1-Release): made as the Studio makes one, written where missing and never over a file, on a clip.
-built-ins: Overwatch 2 Vertical HUD, Marvel Rivals Vertical HUD, Valorant Vertical HUD, CS2 Vertical HUD, Apex Legends Vertical HUD, The Finals Vertical HUD
-ok: six games, Overwatch 2 first
-Overwatch 2 Vertical HUD: Killfeed src 0.656,0.011 0.338x0.261 at -0.169,0.013 w 1.15 | Health & Name src 0.001,0.777 0.253x0.209 at -0.01,0.743 w 0.559 | Abilities & Ammo src 0.728,0.766 0.272x0.234 at 0.468,0.742 w 0.583
-ok: Overwatch 2 Vertical HUD: tall, the video zoomed, a Cutout each, the blur fill
-ok: Overwatch 2 Vertical HUD: every Cutout masked by its outlines, so the Cutout Studio opens and edits it
-ok: Overwatch 2 Vertical HUD: a mask of its own per Cutout, its outlines alone: no picture, no Base64 in the file
-ok: Overwatch 2 Vertical HUD: every Cutout cut from inside the frame and given a size
-ok: Overwatch 2 Vertical HUD: each Cutout's outlines lie inside the box it is cut from
+built-ins: Overwatch Vertical, Fortnite Vertical, Marvel Rivals Vertical HUD, Valorant Vertical HUD, CS2 Vertical HUD, Apex Legends Vertical HUD, The Finals Vertical HUD
+ok: seven games, Overwatch Vertical first (5.5.0: the user's own name for it), then the user's own Fortnite Vertical
+Overwatch Vertical: Killfeed src 0.656,0.011 0.338x0.261 at -0.169,0.013 w 1.15 | Health & Name src 0.001,0.777 0.253x0.209 at -0.01,0.743 w 0.559 | Abilities & Ammo src 0.728,0.766 0.272x0.234 at 0.468,0.742 w 0.583
+ok: Overwatch Vertical: tall, the video zoomed, a Cutout each, the blur fill
+ok: Overwatch Vertical: every Cutout masked by its outlines, so the Cutout Studio opens and edits it
+ok: Overwatch Vertical: a mask of its own per Cutout, its outlines alone: no picture, no Base64 in the file
+ok: Overwatch Vertical: every Cutout cut from inside the frame and given a size
+ok: Overwatch Vertical: each Cutout's outlines lie inside the box it is cut from
+Fortnite Vertical: Inventory src 0.733,0.765 0.247x0.177 at 0.536,0.827 w 0.434 | Health src 0.02,0.856 0.277x0.1 at 0.03,0.848 w 0.486 | Minimap src 0.795,0.028 0.189x0.236 at 0.261,0.03 w 0.478
+ok: Fortnite Vertical: tall, the video zoomed, a Cutout each, the blur fill
+ok: Fortnite Vertical: every Cutout masked by its outlines, so the Cutout Studio opens and edits it
+ok: Fortnite Vertical: a mask of its own per Cutout, its outlines alone: no picture, no Base64 in the file
+ok: Fortnite Vertical: every Cutout cut from inside the frame and given a size
+ok: Fortnite Vertical: each Cutout's outlines lie inside the box it is cut from
 Marvel Rivals Vertical HUD: Killfeed src 0.731,0.071 0.26x0.213 at 0.134,0.03 w 0.732 | Hero & Ammo src 0.017,0.819 0.174x0.144 at 0.03,0.824 w 0.389 | Abilities & Ultimate src 0.746,0.849 0.238x0.135 at 0.439,0.828 w 0.531
 ok: Marvel Rivals Vertical HUD: tall, the video zoomed, a Cutout each, the blur fill
 ok: Marvel Rivals Vertical HUD: every Cutout masked by its outlines, so the Cutout Studio opens and edits it
@@ -37,15 +43,20 @@ ok: The Finals Vertical HUD: every Cutout masked by its outlines, so the Cutout 
 ok: The Finals Vertical HUD: a mask of its own per Cutout, its outlines alone: no picture, no Base64 in the file
 ok: The Finals Vertical HUD: every Cutout cut from inside the frame and given a size
 ok: The Finals Vertical HUD: each Cutout's outlines lie inside the box it is cut from
-ok: Overwatch 2: the twelve islands of the user's own mask
-ok: Overwatch 2: feathered and grown as the user's own Game Preset
-ok: five written, the one already there left alone (Overwatch 2 Vertical HUD.hpstyle, Marvel Rivals Vertical HUD.hpstyle, Valorant Vertical HUD.hpstyle, Apex Legends Vertical HUD.hpstyle, The Finals Vertical HUD.hpstyle)
+ok: Overwatch Vertical: the twelve islands of the user's own mask
+ok: Overwatch Vertical: feathered and grown as the user's own Game Preset
+ok: Fortnite Vertical: the user's own pieces (inventory slots, health, minimap), placed as they placed them
+ok: six written, the one already there left alone (Overwatch Vertical.hpstyle, Fortnite Vertical.hpstyle, Marvel Rivals Vertical HUD.hpstyle, Valorant Vertical HUD.hpstyle, Apex Legends Vertical HUD.hpstyle, The Finals Vertical HUD.hpstyle)
 ok: a file of a built-in's name is never written over
 ok: the built-ins are older than the user's own, which stay first in the lists
-ok: the drop overlay keeps the user's own first and gets Overwatch 2 after them
+ok: the drop overlay gets Overwatch Vertical first, its left-most target (5.5.0, the user's call), the user's own after it
 ok: both on the drop overlay
 ok: written once per version
 ok: a built-in the user deleted stays deleted
+ok: an untouched Overwatch 2 Vertical HUD file takes the name Overwatch Vertical (moved, not written again)
+ok: its overlay entry becomes Overwatch Vertical, first
+ok: one the user saved over keeps its name and place; the new one is written and goes first
+ok: an empty list takes every built-in in order; a list of the user's gets Overwatch Vertical moved or put first; none when its file is not there
 ok: in the Game Presets, the Timeline's list
 ok: applied to a clip
 ok: its three Cutouts are the clip's, and the Studio's to edit (Abilities & Ammo, Health & Name, Killfeed)

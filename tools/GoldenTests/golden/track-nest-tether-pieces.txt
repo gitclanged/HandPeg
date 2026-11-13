@@ -1,0 +1,33 @@
+# A tether is a tether wherever it lies (the Tethered mark): nested under its parent's track either way round, moved onto a lane under it, its parent moved, its lane following; each time it survives a preset replace and is copied under no new clip. A Cutout moved off its lane and a clip its Link switch locks stay pieces.
+ok: 1. the webcam on V2 tethered to the opened file's clip on Track 1: marked tethered, none of its pieces
+ok: 1. then V2 nested under Track 1: made, the webcam on a lane under its parent's own track and still a tether
+   1: Video 1: game | Video 2<Video 1: webcam~ | Video 3: fourth
+ok: 1: a Game Preset on the parent, then again (a replace): its one Cutout, the webcam still there, still tethered to it and none of its pieces
+ok: 1: a clip moved onto the parent's track takes its template, one Cutout of its own file and no copy of the webcam; the document holds together
+ok: 2. V2 nested under Track 1, then its webcam tethered to the opened file's clip: made, marked tethered, none of its pieces
+   2: Video 1: game | Video 2<Video 1: webcam~ | Video 3: fourth
+ok: 2: a Game Preset on the parent, then again (a replace): its one Cutout, the webcam still there, still tethered to it and none of its pieces
+ok: 2: a clip moved onto the parent's track takes its template, one Cutout of its own file and no copy of the webcam; the document holds together
+ok: 3. the webcam tethered to the opened file's clip; V3 (another file, 12-16 s) nested under Track 1
+ok: 3. the webcam's block dragged onto V3 at 0 s, a lane under its parent's track: still tethered, none of its pieces
+   3: Video 1: game | Video 2<Video 1: webcam~,other | Video 3: fourth
+ok: 3: a Game Preset on the parent, then again (a replace): its one Cutout, the webcam still there, still tethered to it and none of its pieces
+ok: 3: a clip moved onto the parent's track takes its template, one Cutout of its own file and no copy of the webcam; the document holds together
+ok: 4. the webcam on V3 tethered to B (another file on V2, 10-14 s); V3 nested under Track 1
+ok: 4. Track 1 given a Track Preset Node, then B dragged onto it at 10 s: B takes the node's preset (one Cutout) in that step, the webcam still tethered to it
+   4: Video 1: game,second | Video 2<Video 1: webcam~ | Video 3<Video 1: game*,second* | Video 4: fourth
+ok: 4: a Game Preset on the parent, then again (a replace): its one Cutout, the webcam still there, still tethered to it and none of its pieces
+ok: 4: a clip moved onto the parent's track takes its template, one Cutout of its own file and no copy of the webcam; the document holds together
+ok: 5. V3 nested under V2 (B, another file, 10-14 s), its webcam tethered to the opened file's clip on Track 1
+ok: 5. B dragged onto Track 1: V3 follows its clips' parent under Track 1, the webcam still tethered, none of the clip's pieces
+   5: Video 1: game,second | Video 2<Video 1: webcam~ | Video 3: fourth
+ok: 5: a Game Preset on the parent, then again (a replace): its one Cutout, the webcam still there, still tethered to it and none of its pieces
+ok: 5: a clip moved onto the parent's track takes its template, one Cutout of its own file and no copy of the webcam; the document holds together
+ok: 6. a Game Preset on the opened file's clip: its one Cutout, on a lane under Track 1
+ok: 6. the Cutout's block dragged onto V3 (a top-level track) at 0 s: still the clip's piece, a preset chosen with it selected goes on its clip
+ok: 6. the preset again: that Cutout replaced like any piece (none left behind, one Cutout in all)
+ok: 7. V2 nested under Track 1: the webcam's Link switch shown unlocked (there is a clip to lock it to)
+ok: 7. its Link switch locked: the opened file's clip's child and one of its pieces, not tethered
+ok: 8. a Game Preset on B, alone on V2: its Cutout on a lane over V2
+ok: 8. B dragged down onto Track 1 at 10 s: its Cutout lane follows it, just over Track 1 (never under it)
+   8: Video 1: game,second | Video 2<Video 1: second*

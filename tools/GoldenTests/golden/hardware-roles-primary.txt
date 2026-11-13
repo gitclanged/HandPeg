@@ -1,0 +1,24 @@
+# The GPU roles (5.5A): Decode and Background always Auto (the compositor's card), the estimate's roles the measurement's, WriteRoles against the profile's own cards.
+ok: the Desktop (RX 7900 XTX + Arc A310, the A310 faster across the bus): Compositor 0, Decode Auto, Background Auto, Export Auto
+ok: the Desktop (RX 7900 XTX + Arc A310, the A310 faster across the bus): the estimate (nothing measured) gives the same four roles, its decode reason "measured next"
+ok: the Plex Server (GTX 1070 alone): Compositor 0, Decode Auto, Background Auto, Export Auto
+ok: the Plex Server (GTX 1070 alone): the estimate (nothing measured) gives the same four roles, its decode reason "measured next"
+ok: the XPS 13 (Adreno X1-85, unified memory, a Hexagon NPU): Compositor 0, Decode Auto, Background Auto, Export Auto
+ok: the XPS 13 (Adreno X1-85, unified memory, a Hexagon NPU): the estimate (nothing measured) gives the same four roles, its decode reason "measured next"
+ok: an RX 7900 XTX listed twice beside Intel UHD 770: Compositor 0, Decode Auto, Background Auto, Export Auto
+ok: an RX 7900 XTX listed twice beside Intel UHD 770: the estimate (nothing measured) gives the same four roles, its decode reason "measured next"
+ok: a laptop (Intel UHD listed first, RTX 4060): Compositor 1, Decode Auto, Background Auto, Export Auto
+ok: a laptop (Intel UHD listed first, RTX 4060): the estimate (nothing measured) gives the same four roles, its decode reason "measured next"
+ok: a GTX 1070 beside an Arc A380 that also encodes AV1: Compositor 0, Decode Auto, Background Auto, Export 1
+ok: a GTX 1070 beside an Arc A380 that also encodes AV1: the estimate (nothing measured) gives the same four roles, its decode reason "measured next"
+ok: the Desktop's A310 measured faster, and still never chosen for Decode or Background (CLAUDE.md 8: the 0x116 TDR)
+ok: a card Windows lists twice is given no role by its second listing
+ok: a quick check with no test clip (no FFmpeg yet) measured the bus only, and says the decoding comes once FFmpeg is here
+ok: WriteRoles(roles, settings, cards here): the Desktop's roles written as Compositor 0 and Decode, Background and Export Auto, over a second card chosen before
+ok: a card that is not here (3) is written as Auto, Background's Processor Only (-2) is kept, a card here (Export 1) is written
+ok: a saved result from before 5.4.4 naming the A310 (1) for Decode and Background: the first-run roles write them Auto, the Compositor (0) and Export (1) as shown
+ok: the Desktop, its RX 7900 XTX's device failing in the quick check: Recommend alone would give the never-measured A310 the Compositor; QuickRoles leaves it Auto (Decode, Background, Export Auto)
+ok: a GTX 1070 and an Export A380: the A380 failing leaves Export Auto and the Compositor the 1070; the 1070 failing leaves the Compositor Auto and Export, measured, the A380
+ok: every card measured: the roles Recommend gives (the listing's own)
+ok: QuickMeasured: decoding and the bus; the bus alone when the test clip (named in the result) did not decode, which is not decoded for the re-run; nothing when no card gave a number
+ok: a result saved before 5.5A reads as the full test (Kind ""); a quick one is written with "kind":"quick"

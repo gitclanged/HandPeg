@@ -1,0 +1,14 @@
+# A save of the tab in front lets its crash-recovery file go at once, even while playing; the tick drops a stale one first and waits out a press.
+ok: three edits, each one step of Undo: a trim, a delete, a trim
+ok: the tab in front's crash-recovery file written two actions back
+ok: a save made while playing: the recovery file and its header are gone (deleted on its queue, after any write of it)
+ok: and the tick's last look is let go: the next tick looks afresh
+ok: (a recovery file written again, the project saved)
+ok: the tick, while playing, with nothing unsaved since: the file goes before playback holds the tick back
+ok: an edit after the save
+ok: (its recovery file written)
+ok: with unsaved changes, the tick while playing keeps the file (nothing taken on the window's thread)
+ok: MainViewModel.ProjectSaved is raised by Save, Save As, a portable save and a converted project written back (four places), never by the autosave
+ok: the window lets the tab in front's recovery file go on it
+ok: the tick: a stale file dropped first (O(1)); the recovery copy never while playing, scrubbing, dragging or switching, nor while held
+ok: held: the left button down or the mouse captured anywhere (the player's handles, the 3D view, a slider), a modal dialog up, or a close under way

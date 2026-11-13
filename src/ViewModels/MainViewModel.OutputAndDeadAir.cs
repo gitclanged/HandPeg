@@ -287,7 +287,7 @@ public partial class MainViewModel
     /// (4.3D). What counts as silence (how quiet, for how long) is in the settings, set from the Remove Dead Air dialog.
     /// </summary>
     [RelayCommand(CanExecute = nameof(CanStartOperation))]
-    private Task RemoveDeadAirAsync() => RunOperationAsync("Removing dead air", WorkLane.Interactive, async cancellationToken =>
+    private Task RemoveDeadAirAsync() => RunOperationAsync("Removing dead air", WorkLane.Interactive, loadsDocument: true, operation: async cancellationToken =>
     {
         // How, on what and by what: set by RunDeadAir; left alone, it is the classic way on the listened sound, by its silences.
         var (mode, target, by) = (_deadAirMode, _deadAirTarget, _deadAirSource);

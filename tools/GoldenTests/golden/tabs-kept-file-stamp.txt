@@ -1,0 +1,31 @@
+# A tab kept with nothing unsaved keeps its project file's stamp; brought back after that file changed on the disk, it opens from the file.
+ok: a stamp kept and the file there with another last write or length: changed, it opens from its file
+ok: the same last write and length: unchanged, it opens from its cache
+ok: no stamp kept: no change seen (a clean tab with none reads its file all the same: ReadForResume, below)
+ok: its project file not there any more: its cache
+ok: (final review) a clean tab's header keeps the stamp it carries, even for a file not there: nothing is looked up as it is written
+ok: (final review) none for a tab with unsaved changes, one with no project file, or an empty one
+ok: (final review) every header written for a tab (put behind, kept for the next start, renamed) goes through Stamped, which makes no file call: the close's waited write never touches a share
+ok: a clean tab with a project file is kept with the stamp it carries (its file's last write and length as it was opened) in its header
+ok: a tab with unsaved changes keeps no stamp in its file (whatever it carries)
+ok: its file unchanged since: it comes back from its cache
+ok: (final review) its file saved over after the open, before the clean close's write: that write keeps the open's stamp, and it opens from the file (taken as saved, its stamp the one read)
+ok: (final review) a clean tab behind renamed after its file changed: it opens from the file, not from the stale cache
+ok: (final review) a clean tab with no stamp: read from its file (as before 5.5A; nothing said), with the stamp that read took
+ok: a tab with unsaved changes always comes back from its cache (unsaved work wins), even asked as a clean one
+ok: (final review) its file saved since in a newer format: the cache (no saved state: it comes back unsaved), with why ("saved in a newer project format by HandPeg 9.9.9")
+ok: (final review) its file changed and cannot be read (damaged, locked): the cache, with what the read said
+ok: (final review) the status line names the project and why, and says Save asks for a name
+ok: its file gone: it comes back from its cache
+ok: a tab brought back: only a clean one with a project file is looked at (on the tab's queue), opened as a project is, its stamp the one read (one read from its cache keeps its own); (final review) one whose changed file could not be read opens unsaved and tied to no file, and says why
+ok: the new header fields are left out of the file while 0 (a header stays as small as before) and read back when set
+ok: (fix round 3) a save of the tab in front: it carries the stamp of the file just written, taken off its queue (it lands while a write of the tab is still under way there), its header's file the saved one
+ok: (final review) the file changed afterwards: the stamp is still the save's (it is never taken again as the header is written)
+ok: (fix round 3) an open into the tab that fails (a damaged file) takes no stamp
+ok: (review) an open whose file stamp comes back while a close is asking opens nothing, and says so
+ok: (fix round 3) a project opened into the tab: its stamp is the file's before the open read it, so a save from another PC during the open (after the read) leaves it older: changed, the tab reads its file as it comes back, never the stale cache
+ok: (final review) a stamp for another file than the tab's by then is dropped: the tab carries none (it reads its file as it comes back)
+ok: (fix round 3) a stamp no longer the last asked for the tab (another asked since: a save, an open, the tab read back) never lands
+ok: (final review) the tab in front's file followed: kept for the same file, let go for another (a stamp is only ever of the header's own file)
+ok: (final review) a tab behind saved from its cache: stamped, and its header file written again with the stamp
+ok: (final review) wired: every save of the tab in front, the two opens into a tab, and a save of a tab behind take the stamp; the tab in front's header follows its file (another file's stamp let go); (fix round 3) an open's stamp taken before its read, a save's off the tab's queue, only the last asked landing (a tab read back drops one on its way), the count never written

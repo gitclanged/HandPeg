@@ -228,6 +228,10 @@ public partial class MainViewModel
         internal List<(string What, byte[] State)> Undo { get; init; } = [];
         internal List<(string What, byte[] State)> Redo { get; init; } = [];
         internal bool TouchedSinceSaved { get; init; }
+
+        /// <summary>How many of its undo steps predate its last save or open (Pass 5.5A: what its recovery copy may lag through).</summary>
+        internal int SavedDepth { get; init; }
+
         internal string AutosavedFingerprint { get; init; } = "";
         internal object? TemplateToCome { get; init; }
         internal byte[]? Thumbnail { get; set; }
@@ -281,6 +285,7 @@ public partial class MainViewModel
             Undo = [.. _undo],
             Redo = [.. _redo],
             TouchedSinceSaved = _touchedSinceSaved,
+            SavedDepth = _savedDepth,
             AutosavedFingerprint = _autosavedFingerprint,
             TemplateToCome = _templateToCome,
             Thumbnail = Volatile.Read(ref _thumbnail),
@@ -415,6 +420,7 @@ public partial class MainViewModel
         ForgetHistory();
         _undo.AddRange(tab.Undo);
         _redo.AddRange(tab.Redo);
+        _savedDepth = Math.Min(tab.SavedDepth, _undo.Count);
         (_savedFingerprint, _touchedSinceSaved, _autosavedFingerprint) = (tab.SavedFingerprint, tab.TouchedSinceSaved, tab.AutosavedFingerprint);
         if (tab.MarkSavedOnAttach)
             MarkSaved();

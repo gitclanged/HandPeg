@@ -52,6 +52,12 @@ public sealed record ProjectEntry(string FilePath, string Name, string SourceNam
 // entry there is only what is made of a stream place in the output. Source.Path and
 // Source.LocalPath stay what they are: the file last opened (its Info, Streams and Download panes, the default output name),
 // which plays only through clips of it on the timeline.
+//
+// Pass 5.5A keeps format 6 too. A clip tethered to another by the Timeline's drag carries "tethered": true (left out while false),
+// and the timeline carries "tethersMarked": true only when it holds a piece that lies where a tether would (TimelineDocument.TethersMarked).
+// A timeline read without that has its tethers found as it is read (TimelineDocument's OnDeserialized: every file written before the
+// mark, a 5.5A preview's too); a project of 5.4.4 whose pieces lie under their clips' tracks (as its templates put them) is read and
+// written back as it was.
 
 /// <summary>A project as it is written to disk.</summary>
 public sealed class ProjectFile
@@ -303,6 +309,13 @@ public sealed class ProjectSequence
 
     /// <summary>The recycle bin: clips deleted from the timeline, as they were, with the track each was on.</summary>
     public List<DeletedClip> Deleted { get; set; } = [];
+
+    /// <summary>
+    /// Whether the bin's tethers are to be read as written (5.5.0, the user's Q6; as TimelineDocument.TethersMarked for the timeline):
+    /// true only when the bin holds a piece that lies where a reader of an older file finds a tether, so every other file is as it was.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool BinTethersMarked { get; set; }
 
     public string CaptionAudioPath { get; set; } = "";
     public bool CaptionUseExternalAudio { get; set; }
@@ -859,6 +872,7 @@ public static class ProjectStore
 
                 // The bin's clips are the file's own copies too, as the timeline is.
                 Deleted = [.. state.Deleted.Where(d => d?.Clip is not null).Select(d => d with { Clip = CopyOf(d.Clip) })],
+                BinTethersMarked = state.Timeline.LooseIn(state.Deleted).Exists(c => !c.Tethered),
                 CaptionAudioPath = state.CaptionAudioPath,
                 CaptionUseExternalAudio = state.CaptionUseExternalAudio ?? false,
                 CaptionAudioTrack = state.CaptionAudioTrackIndex,
@@ -1054,6 +1068,13 @@ public static class ProjectStore
             ThumbnailJpeg = ThumbnailOf(file.ThumbnailJpeg),
             Workspace = file.Workspace,
         };
+
+        // 5.5.0 (the user's Q6): a bin written before tethers were marked has its tethers found as it is read, as the timeline's are.
+        if (!sequence.BinTethersMarked)
+        {
+            foreach (var clip in timeline.LooseIn(state.Deleted))
+                clip.Tethered = true;
+        }
 
         // Opened (not only listed): its video files are made ready to be seeked in now, before the first graph is built, and
         // the undo history it carries is read (4.4).

@@ -829,8 +829,20 @@ public sealed partial class AppSettings
     /// <summary>The default encoding settings are put back after a style preset is applied, where the style set something else (a vertical frame, say).</summary>
     public bool DefaultsOverrideStyles { get; set; }
 
-    /// <summary>Asks whether to save the project when HandPeg is closed with changes that have not been saved.</summary>
+    /// <summary>
+    /// Asks whether to save the project when HandPeg is closed with changes that have not been saved (the 5.5A addenda: or work never saved
+    /// as a project; with two project tabs or more holding work, one dialog lists them all, and keeping them for the next start is one of
+    /// its answers). Not asked while <see cref="KeepOpenTabsOnClose"/> is on.
+    /// </summary>
     public bool PromptToSaveOnExit { get; set; } = true;
+
+    /// <summary>
+    /// Closing HandPeg keeps every open project tab, saved or not, in the session cache with no prompt (Pass 5.5A): they come back at the
+    /// next start, the one in front last time in front again. Off as HandPeg comes (the 5.5A addenda, the user's call; ViewDefaultsVersion
+    /// 12 turns it off once in a file a 5.5A preview saved it on in): closing then asks (<see cref="PromptToSaveOnExit"/>) whether to save
+    /// the tabs, keep them for the next start or close them.
+    /// </summary>
+    public bool KeepOpenTabsOnClose { get; set; }
 
     /// <summary>The Project Manager shows a picture of the video each project was opened with, scrubbed by the pointer (4.1.1-B).</summary>
     public bool ShowProjectPreviews { get; set; } = true;
@@ -1189,6 +1201,16 @@ public sealed partial class AppSettings
                         settings.BackgroundGpu = -1;
                     if (settings.DecodeGpuAdapter >= 0)
                         settings.DecodeGpuAdapter = -1;
+                }
+
+                // Keep open project tabs between sessions is off as HandPeg comes since 5.5A's addenda (the user's call: closing asks whether
+                // to save the tabs, keep them or close them), and the 5.5A previews saved it on: it goes off once. A first start's file
+                // (version 0) is its own choice, as above.
+                if (settings.ViewDefaultsVersion < 12)
+                {
+                    settings.ViewDefaultsVersion = 12;
+                    if (viewDefaults >= 1)
+                        settings.KeepOpenTabsOnClose = false;
                 }
 
                 // (4.1.1 brought Editor Mode's saved views to its own once, by the mode a file named. Every file written since

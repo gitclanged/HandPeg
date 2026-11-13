@@ -232,15 +232,20 @@ public partial class MainViewModel
         if (ReferenceEquals(from, to) || !Document.Tracks.Contains(from))
             return;
 
-        // The lanes that followed: over the old track, stacked just over the new one in their order; under it, just under it.
+        // The lanes that followed: over the old track, stacked just over the new one in their order; under it, just under it. Pass 5.5A
+        // review: both sides are told apart before either moves (a lane put over the new track lower down was then taken for one under).
         var (over, under) = (0, 0);
-        foreach (var lane in followed.Where(l => l.ParentTrackId == to.Id && !l.IsLocked && Document.Tracks.IndexOf(l) > Document.Tracks.IndexOf(from)).ToList())
+        var placed = followed.Where(l => l.ParentTrackId == to.Id && !l.IsLocked).ToList();
+        var oldAt = Document.Tracks.IndexOf(from);
+        var overLanes = placed.Where(l => Document.Tracks.IndexOf(l) > oldAt).ToList();
+        var underLanes = placed.Where(l => Document.Tracks.IndexOf(l) < oldAt).Reverse().ToList();
+        foreach (var lane in overLanes)
         {
             var parent = Document.Tracks.IndexOf(to);
             edit.MoveTrack(lane, (Document.Tracks.IndexOf(lane) < parent ? parent - 1 : parent) + ++over);
         }
 
-        foreach (var lane in followed.Where(l => l.ParentTrackId == to.Id && !l.IsLocked && Document.Tracks.IndexOf(l) < Document.Tracks.IndexOf(from)).Reverse().ToList())
+        foreach (var lane in underLanes)
         {
             var parent = Document.Tracks.IndexOf(to);
             edit.MoveTrack(lane, (Document.Tracks.IndexOf(lane) < parent ? parent - 1 : parent) - under++);

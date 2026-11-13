@@ -451,6 +451,20 @@ public partial class MainWindow
                     _viewModel.MoveClipToNewTrack(live, track, above, StartOf(built, left, at, perPixel));
                 },
 
+                // Let go on the bottom edge of a clip it overlaps on another lane (5.5A, the tether; with Alt pressed during the drag, anywhere
+                // on it): that clip's child, at the time it was let go. The pill names the parent (a picture block's own Name is empty).
+                CanAttachTo = model is null || clip.IsLoading ? null : (parentBlock, at) =>
+                    parentBlock.Clip is Layer parentView && LiveClip(clip, built, quiet: true) is { } live && LiveClip(parentView, quiet: true) is { } parent
+                    && _viewModel.CanAttachClip(live, parent, StartOf(built, left, at, perPixel)) ? parent.Name : null,
+                AttachTo = model is null || clip.IsLoading ? null : (parentBlock, at) =>
+                {
+                    if (parentBlock.Clip is not Layer parentView || LiveClip(clip, built) is not { } live || LiveClip(parentView) is not { } parent)
+                        return;
+
+                    CrashReporter.Note("timeline", "drag: attached as a child");
+                    _viewModel.AttachClip(live, parent, StartOf(built, left, at, perPixel));
+                },
+
                 // A J/L cut: its sound reaching out past its picture's edges; Alt on the lower half of an edge makes or changes one.
                 AudioSplit = split is { } cut && (Math.Abs(cut.LeadIn) > 1e-6 || Math.Abs(cut.TailOut) > 1e-6) ? cut : null,
                 AudioSplitEdit = split is null || clip.IsLoading ? null : (lead, tail) =>

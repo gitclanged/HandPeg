@@ -32,16 +32,28 @@ public partial class MainViewModel
     /// <summary>What was selected on the Timeline, for a preset chosen from its list (the window's; nothing while nothing is selected).</summary>
     public Func<IReadOnlyList<Layer>>? TimelineSelection { get; set; }
 
-    /// <summary>The clips of a template's pictures: what lies over a clip as its child and is drawn, not the sound of its stream lanes.</summary>
+    /// <summary>
+    /// The clips of a template's pictures: what lies over a clip as its child and is drawn, not the sound of its stream lanes. 5.5A: only
+    /// its pieces (<see cref="IsPiece"/>), never a clip tethered to it.
+    /// </summary>
     private List<(TimelineTrackModel Track, TimelineClip Clip)> TemplateChildrenOf(TimelineClip clip) =>
-        Document.ChildrenOf(clip).Where(c => c.Track.Kind is not (TimelineTrackKind.Audio or TimelineTrackKind.Subtitle)).ToList();
+        Document.ChildrenOf(clip).Where(c => c.Track.Kind is not (TimelineTrackKind.Audio or TimelineTrackKind.Subtitle) && IsPiece(c.Clip)).ToList();
+
+    /// <summary>
+    /// Whether a child is one of its parent's template pieces (Pass 5.5A, the Tethered mark): every child is, wherever it lies, but one the
+    /// Timeline's drag tethered to it (<see cref="TimelineClip.Tethered"/>). A tethered child follows its parent in time, but no Game Preset,
+    /// Track Preset or Cutouts put on the parent deletes, copies or moves it, and a preset chosen with it selected goes on it, never on the
+    /// clip it hangs from. Where a lane lies never decides it: a tether nested under its parent's track, or a piece moved off its lane, stays
+    /// what it is.
+    /// </summary>
+    private static bool IsPiece(TimelineClip child) => !child.Tethered;
 
     /// <summary>Whether a clip can be a template's base: a video from a file.</summary>
     private static bool CanBaseTemplate(TimelineClip clip) => clip.ContentKind == LayerKind.VideoFile;
 
     /// <summary>
-    /// The clips a preset goes on for a selection: each selected video, or for a selected Cutout the clip it is cut from. Nothing else
-    /// (a sound, a caption) and no clip twice.
+    /// The clips a preset goes on for a selection: each selected video, or for a selected Cutout (a template's piece, wherever it lies) the
+    /// clip it is cut from. Nothing else (a sound, a caption, a picture tethered to a clip: 5.5A) and no clip twice.
     /// </summary>
     public IReadOnlyList<Layer> GamePresetTargets(IEnumerable<Layer> selected)
     {
@@ -49,7 +61,8 @@ public partial class MainViewModel
         foreach (var layer in selected)
         {
             var clip = ClipOf(layer);
-            for (var depth = 0; depth < 64 && clip is { ParentClipId: { } parent } && (!CanBaseTemplate(clip) || IsCutout(clip)) && Document.FindClip(parent) is { } over; depth++)
+            for (var depth = 0; depth < 64 && clip is { ParentClipId: { } parent } && (!CanBaseTemplate(clip) || IsCutout(clip)) && IsPiece(clip)
+                 && Document.FindClip(parent) is { } over; depth++)
                 clip = over;
 
             if (clip is not null && CanBaseTemplate(clip) && !IsCutout(clip) && ViewOf(clip) is { } view && !targets.Contains(view))
@@ -213,7 +226,7 @@ public partial class MainViewModel
             try
             {
                 var lane = LaneFor(edit, track, view, start, end, piece.Under, ref above);
-                edit.SetClipParent(edit.PlaceClip(lane, made, allowCrossfadeOverlap: false), clip.Id);
+                edit.SetClipParent(edit.PlaceClip(lane, made, allowCrossfadeOverlap: false), clip.Id, tethered: false);
             }
             catch (TimelineEditException)
             {

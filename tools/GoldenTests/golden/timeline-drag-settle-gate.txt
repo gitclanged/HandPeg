@@ -1,0 +1,11 @@
+# The drags' settle (DragSettle): Transit Mode over 160 DIP/s, settled after 75 ms under 60 DIP/s or still, a zone awake stays awake until Transit.
+ok: the pins: Transit over 160 DIP/s, settled under 60 DIP/s for 75 ms, the speed over the newest 50 ms, under 0.5 DIP is still
+ok: a sweep of 300 DIPs in 20 ms (15000 DIP/s): Transit Mode
+ok: 40 ms after it stops: not settled, no zone wakes; 10 ms after it, even a zone awake before sleeps (still in Transit)
+ok: 55 ms after the last move Transit is over: a zone already awake stays so, a new one does not wake yet
+ok: 75 ms after the last move: settled, a new zone wakes (the dwell)
+ok: a drift at 50 DIP/s from the press: settled at 80 ms (the first move 75 ms or more on), still moving
+ok: a drift at 100 DIP/s (between 60 and 160): a zone awake stays awake, a new one never wakes
+ok: a jitter of 0.3 DIP every 5 ms for 100 ms: still, settled 75 ms after the press
+ok: after a rest of 1 s, a move of 40 DIPs: 40 DIP/s (over the time since the move before it), never Transit
+ok: a sample stamped earlier than the last is taken as at the last (the clock never goes back)

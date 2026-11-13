@@ -180,6 +180,14 @@ public static class Program
         results.AddRange(TabsDockTransportTests.All());
         // Pass 5.4.4-Final: the Live Encoded Preview's full export fidelity (routing, pill, size, software command, P010) and the player's menu.
         results.AddRange(LiveEncodedFidelityTests.All());
+        // Pass 5.5A: the Timeline's velocity-gated drags and child parenting, the wipe's pills and the cold play's held cuts (A), the
+        // two-screen first run and its hardware profile (B), the lagged recovery copy and closing HandPeg with tabs (C).
+        results.AddRange(TimelineParentingTests.All());
+        results.AddRange(WipePillTests.All());
+        results.AddRange(ColdPlayTests.All());
+        results.AddRange(FirstRunStudioTests.All());
+        results.AddRange(LaggedRecoveryTests.All());
+        results.AddRange(TabExitTests.All());
         // Last of all: its tour needs the WPF Application it makes, and a view model works otherwise once there is one (its command
         // and its undo steps go through the dispatcher, which nothing here pumps), so no test after it would see what it saw alone.
         results.AddRange(UiScaleTests.All());
@@ -200,6 +208,13 @@ public static class Program
         results.AddRange(WaveTilesZoomTests.Live());
         results.AddRange(PlayerAndLibraryUiTests.Live());
         results.AddRange(TabsDockTransportTests.Live());
+        // Pass 5.5A's cases on the WPF Application made above.
+        results.AddRange(TimelineParentingTests.Live());
+        results.AddRange(WipePillTests.Live());
+        results.AddRange(ColdPlayTests.Live());
+        results.AddRange(FirstRunStudioTests.Live());
+        results.AddRange(LaggedRecoveryTests.Live());
+        results.AddRange(TabExitTests.Live());
         if (filter is not null)
             results = results.Where(r => r.Golden.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
 

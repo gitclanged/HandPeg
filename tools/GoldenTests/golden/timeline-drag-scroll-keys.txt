@@ -1,0 +1,5 @@
+# A drag placed again while the view moves under a still pointer (the auto-scroll, a wheel scroll or zoom) takes the keys as they are now (a source check: no key is pressed without a window).
+ok: the auto-scroll's tick: the view moved, then the keys as they are now, then the drag placed again
+ok: a wheel scroll or zoom under a still drag (FollowHeldDrag): the keys as they are now, then the drag placed again
+ok: a move of the pointer: the keys as they are now, as before
+ok: the rest tick (a test seam given its keys) keeps the keys it is given

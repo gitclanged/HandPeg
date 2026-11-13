@@ -3,6 +3,55 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v5.5.0 — Tethers and Nesting on the Timeline, a Two-Screen Welcome, Crash-Safe Tabs, and Overwatch & Fortnite Vertical Presets
+
+### User-Facing Highlights
+- **Overwatch Vertical and Fortnite Vertical Game Presets.** Two built-in vertical Game Presets made from real hand-built ones:
+  Overwatch Vertical (killfeed, health and name, abilities and ammo, each feathered and placed for a 9:16 frame) and the new
+  Fortnite Vertical (inventory slots, health and the minimap). Overwatch Vertical is the drop overlay's first, left-most target
+  and the top of the list in Settings. An untouched "Overwatch 2 Vertical HUD" from an earlier version takes the new name; one you
+  changed keeps its name.
+- **Tether a clip to another clip.** Drop a clip on the bottom band of a clip on another track to tether it: it follows its parent
+  in time wherever it lies. A tethered clip (a webcam, say) is never one of the parent's Game Preset pieces: applying or replacing
+  a preset never deletes or copies it, even after the tracks are nested or the clips moved.
+- **Nest tracks by dragging their headers.** Drag a track's header onto the lower half of another track's header to nest it under
+  that track as a Sub-Lane, or onto a seam between tracks to move it there. Esc puts a header drag back.
+- **Calmer clip drags.** A fast sweep passes over tracks without catching on them, a short rest (75 ms) drops the clip onto the
+  track under the pointer, a small side-to-side nudge never pulls it off its own track, and holding Shift on a move onto another
+  track keeps the clip's time exactly.
+- **A two-screen welcome.** The first start is a centred 940 x 600 two-screen Studio Welcome. It names your graphics cards and
+  NPUs in under a tenth of a second, measures them in the background in about a second and a half, and shows which card does what.
+  If that quick check fails, a warning line says so; Settings > Export & Hardware > GPU & NPU Roles has a new **Apply Recommended
+  Roles** button that sets the four GPU roles from the last test (or the first start's check) in one click. The first run no
+  longer offers "Use Existing Local Folder..." for FFmpeg (Settings keeps the ffmpeg.exe path box).
+- **Closing HandPeg asks only when something is unsaved.** "Keep open project tabs suspended between sessions" is now off by
+  default (settings saved by earlier builds are set back once). Closing then asks only when a tab holds work that was not saved:
+  one project alone gets the classic Save / Don't Save question; with several tabs, one dialog lists them all (the saved ones shown
+  as saved) to save the checked ones, keep every tab for the next launch, or discard. When every tab is saved, HandPeg simply closes.
+  Closing a single tab (x or Ctrl+W) now also asks about a project that was never saved.
+- **Tabs come back the way you left them.** Tabs you kept for the next launch come back with the one that was in front in front,
+  and no extra blank tab. Tabs left by a crash still come back behind a blank tab, so a project that crashed HandPeg is never
+  reopened on its own.
+- **Crash-safe editing.** While the project in front has unsaved changes, HandPeg keeps a recovery copy of it every 20 seconds, two
+  actions behind your latest edit (those two stay on Redo), also while an export, the queue or captions run. After a crash it comes
+  back where you were, and Ctrl+Y brings the last two edits back.
+- **Live Encoded Preview pills slide off the picture.** When the split line nears the edge, "ENCODED · HEVC QSV · 12 Mbps"
+  shortens to "ENCODED", and both pills slide off the edge of the picture instead of vanishing. Software encoders show "RAW WHILE
+  PLAYING" while playing and re-encode the frame as soon as you pause.
+- **The speed pill pops over the volume button.** Playback Speed now opens over the speaker, at the same size as the volume button.
+
+### Under the Hood & Fixes
+- A tab kept for the next launch remembers its project file's date and size. If that file was saved somewhere else since (another
+  PC, a backup), the tab opens from the file, not from its older copy; if the changed file cannot be read (a newer version's format,
+  a locked or damaged file), the tab comes back unsaved with no file, so Save asks for a name rather than overwriting it.
+- The first second of playback after a tab switch keeps the decoders on what you are about to see (cut-entry pre-decoding beyond
+  1.5 s waits), scaled by the playback speed.
+- Tethers are kept in the recycle bin, in folded stretches and in the undo history, and projects from earlier builds have their
+  tethers found as they are opened.
+- Fixed: moving a clip down onto a lower track could put its Cutout lanes under the track, hiding its HUD.
+- Tested on the reference desktop (Ryzen 9 7950X3D, RX 7900 XTX + Arc A310, 500 Hz): 0 late frames of 1,044 in the seek test,
+  start-up to the first window in 440 ms (median), 55 MB idle.
+
 ## HandPeg v5.4.4 — Smooth Playback All Session, a Live Encoded Preview of Your Exact Encoder, a Headerless Timeline and a Fix for Dual-GPU Freezes
 
 ### User-Facing Highlights
