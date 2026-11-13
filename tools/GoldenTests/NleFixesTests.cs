@@ -437,7 +437,7 @@ public static class NleFixesTests
             && Route(true, true, wav, onMediaBin: true) == MainWindow.DropRoute.AddToProjectMedia,
             "media from Explorer onto the Media Browser pane: into Project Media (a video, a picture, a sound)");
         expect(Route(false, true, mp4, onMediaBin: true) == MainWindow.DropRoute.AddToProjectMedia, "a project open with no clips yet: into Project Media too");
-        expect(Route(true, true, mp4, fromBrowser: true, onMediaBin: true) == MainWindow.DropRoute.AddAtPlayhead, "a tile dragged from the browser and let go over it: at the playhead, as before");
+        expect(Route(true, true, mp4, fromBrowser: true, onMediaBin: true) == MainWindow.DropRoute.None, "a tile dragged from the browser and let go over it: no drop (5.4.4, the user's self-drop cancel)");
         expect(Route(true, true, ["C:/clips/a.mp4", "C:/clips/edit.hproj"], onMediaBin: true) == MainWindow.DropRoute.AddToProjectMedia
             && Route(true, true, project, onMediaBin: true) == MainWindow.DropRoute.OpenProject,
             "a video with a project over the bin: the video into Project Media; a project alone: opened in a Project Tab");
@@ -448,8 +448,8 @@ public static class NleFixesTests
                && Route(false, false, ["C:/clips/a.mp4", "C:/clips/b.mov"], onMediaBin: true) == MainWindow.DropRoute.AddToProjectMedia
                && Route(false, false, project, onMediaBin: true) == MainWindow.DropRoute.OpenOrReplace
                && Route(false, false, ["C:/clips/notes.txt"], onMediaBin: true) == MainWindow.DropRoute.OpenOrReplace
-               && Route(false, false, mp4, fromBrowser: true, onMediaBin: true) == MainWindow.DropRoute.OpenOrReplace,
-            "with nothing open (5.4D), media over the Media Browser goes into Project Media too (the blank window keeps it); a project alone, a file that is not media and a tile from the browser are opened as before");
+               && Route(false, false, mp4, fromBrowser: true, onMediaBin: true) == MainWindow.DropRoute.None,
+            "with nothing open (5.4D), media over the Media Browser goes into Project Media too (the blank window keeps it); a project alone and a file that is not media are opened as before; a tile from the browser let go over it is no drop (5.4.4)");
 
         var replaced = 0;
         foreach (var busy in new[] { false, true })

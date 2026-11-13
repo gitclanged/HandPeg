@@ -27,7 +27,7 @@ namespace HandPegGoldenTests;
 /// front's capture written as a never-saved copy. project-tabs-header-frame: a header's frame and frame rate round-trip and keep it under a
 /// kilobyte (under 4 KB with its window layout, 5.4D), an older header reads them as unknown, the card's line. project-tabs-menu: the
 /// right-click menu's lines and keys, the rename rules, the tooltip and saved line, and the hover card (an inspector card, placed by
-/// UiScale.PlaceAgainst). titlebar-tab-drag: a real strip in a window with the main window's chrome, a tab dragged along it: the order and
+/// UiScale.PlaceAgainst, taking the pointer since 5.4.4). titlebar-tab-drag: a real strip in a window with the main window's chrome, a tab dragged along it: the order and
 /// events, and afterwards the gaps are still the caption, nothing has a background and the tab's margin is as the layout counts it.
 /// project-tabs-tabperf-review (Pass 5.4D-TabPerf review, the window's side): a TabWrite claimed by one writer at a time (eight threads at
 /// once), a failed one still wanted and tried again, a written or cancelled one never; a session let go refuses every write after it (its
@@ -352,13 +352,14 @@ public static class ProjectTabsPolishTests
         front.IsDirty = true;
         expect(front.SavedText.StartsWith("Unsaved changes\n", StringComparison.Ordinal), "or unsaved changes, with its file");
 
-        // The hover card: in the strip's XAML, an inspector card that takes no clicks, placed against its tab.
+        // The hover card: in the strip's XAML, an inspector card placed against its tab. 5.4.4: it takes the pointer (scrubbed across, clicked
+        // to bring its tab to the front: tab-hover-scrub).
         var src = Path.Combine(RepositoryRoot(), "src");
         var strip = XDocument.Load(Path.Combine(src, "Controls", "ProjectTabStrip.xaml"));
         var card = Named(strip, "HoverCard");
         var surface = card?.Descendants().FirstOrDefault(e => e.Name.LocalName == "Border" && Attr(e, "Background") == "{DynamicResource InspectorCardBrush}");
-        expect(card is { Name.LocalName: "Popup" } && Attr(card, "IsHitTestVisible") == "False" && Attr(card, "AllowsTransparency") == "True",
-            "ProjectTabStrip.xaml: HoverCard is a Popup that takes no clicks");
+        expect(card is { Name.LocalName: "Popup" } && Attr(card, "IsHitTestVisible") is null && Attr(card, "AllowsTransparency") == "True",
+            "ProjectTabStrip.xaml: HoverCard is a Popup that takes the pointer (5.4.4: scrubbed across, clicked to bring its tab to the front)");
         expect(surface is not null && Attr(surface, "BorderBrush") == "{DynamicResource InspectorCardBorderBrush}" && Attr(surface, "BorderThickness") == "1"
                && Attr(surface, "CornerRadius") == "6" && Attr(surface, "Padding") is null,
             "its surface is an inspector card (the theme's card brushes, a 1 px border, 6 px corners), nothing inside its edge");
@@ -643,8 +644,9 @@ public static class ProjectTabsPolishTests
         expect(close.Split("ForgetLiveStill();").Length == 3 && !close.Contains("(_liveStill, _liveStillMark) = (null, default);", StringComparison.Ordinal),
             "closing the tab in front drops a still being taken, as putting it behind does (a switch generation)");
         expect(Ordered(MemberOf(window, "private bool AttachHydrated("), "StillFits(live.StillMark.PositionMs, live.StillMark.Shown3D, tab.PlayheadMs, tab.ExplodedOpen, tab.FrameRate)",
-                   "ShowTabStill(live.Still);", "HideTabStill();", "_viewModel.AttachTab(project)", "(_liveStill, _liveStillMark) = stillFits ? (live.Still, live.StillMark) : (null, default);"),
-            "a tab kept live shows its still only when it fits, and keeps it only then");
+                   "ShowTabStill(live.Still);", "ShowTabStill(tab.ExplodedOpen ? null : FallbackStill(live, tab.PlayheadMs));", "_viewModel.AttachTab(project)",
+                   "(_liveStill, _liveStillMark) = stillFits ? (live.Still, live.StillMark) : (null, default);"),
+            "a tab kept live shows its still when it fits, else (flat, 5.4.3) its overview picture at its playhead, and keeps a still only when it fits");
         expect(Ordered(MemberOf(window, "private static long ApproxBytesOf("), "view.Filmstrip, view.Waveform", "project.TrackWaveforms.Values", "project.TimelineWaveform", "live.Still", "live.ProgramSheet?.Picture"),
             "the valve counts a kept tab's views' filmstrips and waveforms, its tracks' and the timeline's waveforms, its still and sheet");
 

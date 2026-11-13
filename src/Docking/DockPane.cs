@@ -40,6 +40,13 @@ public sealed class DockPane
 
     public PaneHandle Handle { get; init; } = PaneHandle.TitleSlot;
 
+    /// <summary>
+    /// Alone in its group (5.4.4, the Timeline): no title row at all, the pane up to its part's top edge; it is grabbed by the tab that
+    /// comes up when the pointer rests on its top-left corner (<see cref="PaneHandle.Hover"/>'s). With another pane in the group, its
+    /// tabs are shown as <see cref="Handle"/> has them.
+    /// </summary>
+    public bool HeaderlessAlone { get; init; }
+
     /// <summary>As tall as what is in it, in a column of panes (the Sequence Overview Scrubber, the playback controls...), rather than a share of the room.</summary>
     public bool FitsContent { get; init; }
 

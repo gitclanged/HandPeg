@@ -45,8 +45,8 @@ public partial class MainViewModel
 
     /// <summary>
     /// The export's settings as the loopback takes them (the one place that reads the Export tab's members for it: the video encoder's
-    /// name, the rate control, the bitrate in force, the CRF, the preset and the export's frame rate); null and why for a codec it
-    /// cannot preview.
+    /// name, the rate control, the bitrate in force, the CRF, the preset and the export's frame rate; 5.4.4-Final: the export's frame size,
+    /// 10-bit, and for a software encoder the export's own video arguments); null and why for a codec it cannot preview.
     /// </summary>
     public ExportLoopbackSettings? CurrentLoopbackSettings(out string? whyNot)
     {
@@ -57,7 +57,28 @@ public partial class MainViewModel
         }
 
         var constantBitrate = RateControl?.Contains("CBR", StringComparison.Ordinal) == true;
-        return ExportLoopbackSettings.From(VideoEncoder?.Name ?? "", IsConstantQuality, constantBitrate, EffectiveBitrateKbps, Crf,
-            EncoderPreset ?? "", GetOutputFrameRate(), out whyNot);
+        if (ExportLoopbackSettings.From(VideoEncoder?.Name ?? "", IsConstantQuality, constantBitrate, EffectiveBitrateKbps, Crf,
+                EncoderPreset ?? "", GetOutputFrameRate(), out whyNot) is not { } settings)
+            return null;
+
+        return settings with
+        {
+            EncodedWidth = FrameWidth,
+            EncodedHeight = FrameHeight,
+            TenBit = TenBit && HasTenBit && (VideoEncoder is null || !VideoEncoder.IsHardware || CanTenBit),
+            SoftwareArguments = settings.Family == ExportLoopbackSettings.FamilySoftware ? BuildVideoCodecArguments() : "",
+        };
     }
+
+    /// <summary>
+    /// The Export tab's members whose change sends the Live Encoded Preview new settings (5.4.4-Final, the user's list: the encoder, its
+    /// preset, the rate control, the bitrate typed or worked out, the target size, the CRF, 10-bit, the frame size, the turn, the preset).
+    /// </summary>
+    public static readonly IReadOnlySet<string> LoopbackSettingNames = new HashSet<string>(StringComparer.Ordinal)
+    {
+        nameof(VideoEncoder), nameof(EncoderPreset), nameof(RateControl), nameof(TargetBitrate), nameof(EffectiveBitrateKbps), nameof(TargetFileSize),
+        nameof(Crf), nameof(TenBit), nameof(ResolutionPreset), nameof(OutputWidth), nameof(OutputHeight), nameof(UseVerticalResolution),
+        nameof(SelectedPreset), nameof(FrameWidth), nameof(FrameHeight), nameof(Framerate), nameof(CustomFramerate), nameof(Tune), nameof(Profile),
+        nameof(Level), nameof(ExtraVideoArguments),
+    };
 }

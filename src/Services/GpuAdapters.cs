@@ -20,6 +20,9 @@ public sealed record GpuAdapter(int Index, string Name)
     /// <summary>Its own video memory in MB (DXGI's DedicatedVideoMemory); 0 for a card that shares the computer's.</summary>
     public long DedicatedVideoMemoryMb { get; init; }
 
+    /// <summary>The card's LUID as DXGI gives it (its low and high parts in one long): what Media Foundation's MFTEnum2 narrows to (5.4.4).</summary>
+    public long Luid { get; init; }
+
     public bool IsNvidia => VendorId == 0x10DE;
 
     public bool IsAmd => VendorId == 0x1002;
@@ -74,9 +77,31 @@ public static partial class GpuAdapters
     // (DecodeArguments, the "-hwaccel auto" of the dead Enable Hardware Decoding switch, went with it, 5.4B: no export read it.)
 
     /// <summary>
-    /// The card background tools decode on (and proxies are encoded on), as Settings says: a card chosen there;
-    /// with Auto, a card other than the one the player draws on (DXGI's first, the one driving the main display),
-    /// when there is one; null for the processor, or when there is only the player's card (that is FFmpeg's choice).
+    /// The DXGI number of the card the player's compositor draws on, once its worker said so (GpuPreviewEngine); -1 until then.
+    /// What Auto means for the background card (5.4.4).
+    /// </summary>
+    public static int CompositorIndex { get; set; } = -1;
+
+    /// <summary>
+    /// The card the player's compositor draws on: the Compositor GPU chosen in Settings, else the one its worker reported
+    /// (<see cref="CompositorIndex"/>, Windows' high-performance card); null while neither is known (a worker started on Auto then
+    /// takes the high-performance card itself, the compositor's).
+    /// </summary>
+    public static GpuAdapter? CompositorAdapter
+    {
+        get
+        {
+            var chosen = AppSettings.Current.CompositorGpuAdapter;
+            var index = chosen >= 0 && All.Any(a => a.Index == chosen) ? chosen : CompositorIndex;
+            return index >= 0 ? All.FirstOrDefault(a => a.Index == index) : null;
+        }
+    }
+
+    /// <summary>
+    /// The card background tools decode on (and proxies are encoded on), as Settings says: a card chosen there; with Auto
+    /// (5.4.4: the Desktop's 0x116 VIDEO_TDR_FAILURE, the program strip and filmstrip workers on its Arc A310 beside the RX 7900 XTX),
+    /// the Compositor GPU (<see cref="CompositorAdapter"/>), never a second card on its own; null for the processor, or while the
+    /// compositor's card is not known yet (the strip workers then start on the Compositor GPU's setting, Auto the high-performance card).
     /// </summary>
     public static GpuAdapter? BackgroundAdapter
     {
@@ -85,25 +110,29 @@ public static partial class GpuAdapters
             var choice = AppSettings.Current.BackgroundGpu;
             if (choice == -2)
                 return null;
-            if (choice >= 0)
-                return All.FirstOrDefault(a => a.Index == choice);
-
-            var player = All.FirstOrDefault();
-            return All.FirstOrDefault(a => player is not null && (a.VendorId, a.DeviceId) != (player.VendorId, player.DeviceId));
+            if (choice >= 0 && All.FirstOrDefault(a => a.Index == choice) is { } chosen)
+                return chosen;
+            return CompositorAdapter;
         }
     }
 
     /// <summary>Whether background work has a card of its own: the background card is not the one the player draws on.</summary>
     public static bool HasSeparateBackgroundCard =>
-        BackgroundAdapter is { } card && All.FirstOrDefault() is { } player && (card.VendorId, card.DeviceId) != (player.VendorId, player.DeviceId);
+        BackgroundAdapter is { } card && (CompositorAdapter ?? All.FirstOrDefault()) is { } player && (card.VendorId, card.DeviceId) != (player.VendorId, player.DeviceId);
 
     /// <summary>
     /// The options a background tool decodes with: Direct3D 11 on the background card; whatever FFmpeg finds when
-    /// the choice is left to it and there is no second card; nothing (the processor) when Settings says so.
+    /// the card is not known yet; nothing (the processor) when Settings says so.
     /// </summary>
     public static IReadOnlyList<string> BackgroundDecodeArguments => AppSettings.Current.BackgroundGpu == -2 ? []
         : BackgroundAdapter is { } card ? ["-hwaccel", "d3d11va", "-hwaccel_device", card.Index.ToString(CultureInfo.InvariantCulture)]
         : ["-hwaccel", "auto"];
+
+    /// <summary>
+    /// The card of a hardware encoder family (5.4.4, the Live Encoded Preview's encoder): Intel's for QuickSync, AMD's for AMF,
+    /// NVIDIA's for NVENC; the first of that vendor DXGI lists. Null when there is none (or the family names no vendor).
+    /// </summary>
+    public static GpuAdapter? OfVendor(uint vendorId) => vendorId == 0 ? null : All.FirstOrDefault(a => a.VendorId == vendorId);
 
     /// <summary>The thread option a background tool is given (Settings, "Threads per background tool"); none for Auto.</summary>
     public static IReadOnlyList<string> BackgroundThreadArguments => AppSettings.Current.BackgroundToolThreads > 0
@@ -138,9 +167,10 @@ public static partial class GpuAdapters
     public static string Fingerprint => string.Join(";", All.Select(a => string.Create(CultureInfo.InvariantCulture, $"{a.VendorId:X4}:{a.DeviceId:X4}:{a.DriverVersion}")));
 
     // DXGI_ADAPTER_DESC: the name (128 UTF-16 characters), then the vendor, device, subsystem and revision numbers, then
-    // the dedicated video memory (a SIZE_T).
+    // the dedicated video memory, the dedicated system memory and the shared system memory (three SIZE_Ts), then the LUID.
     private const int DescriptionBytes = 256;
     private const int DedicatedVideoMemoryOffset = DescriptionBytes + 16;
+    private const int LuidOffset = DedicatedVideoMemoryOffset + 24;
     private const int DescriptionSize = 320;
 
     // The software renderer Windows lists after the real cards.
@@ -183,6 +213,7 @@ public static partial class GpuAdapters
                         DeviceId = device,
                         DriverVersion = driver,
                         DedicatedVideoMemoryMb = (long)((ulong)Marshal.ReadIntPtr(description, DedicatedVideoMemoryOffset) / (1024 * 1024)),
+                        Luid = IntPtr.Size == 8 ? Marshal.ReadInt64(description, LuidOffset) : 0,
                     });
                 }
                 finally

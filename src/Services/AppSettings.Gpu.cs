@@ -55,4 +55,12 @@ public sealed partial class AppSettings
     /// Read when the player's compositor starts: a change applies after a restart.
     /// </summary>
     public int GpuDecodeThreads { get; set; }
+
+    /// <summary>
+    /// Dynamic Preview Scaling (5.4.3, Settings > Timeline &amp; Player > Player): while playing or scrubbing, the player's picture may be
+    /// drawn smaller and stretched over it. On battery, or on a card that shares the PC's memory with more than one project tab open, it
+    /// starts at "1:1 DIP" (5.4.4: the player's size at Windows' monitor scale, at most 720 pixels on the picture's short side); otherwise
+    /// whole; frames that come late step it down from there (GpuPreviewEngine.Scaling.cs). Paused, always whole. Read on every frame.
+    /// </summary>
+    public bool DynamicPreviewScaling { get; set; } = true;
 }

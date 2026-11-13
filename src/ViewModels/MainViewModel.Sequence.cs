@@ -484,7 +484,7 @@ public partial class MainViewModel
 
     // ----- The playback bar -----
 
-    /// <summary>Which controls the playback bar shows, chosen with its settings button.</summary>
+    /// <summary>Which controls the playback bar shows, chosen in the Views menu's Playback Bar column (5.4.4).</summary>
     public PlaybackControlSet PlaybackControls { get; } = new();
 
     /// <summary>Playback starts again at the end: of the selected cut segment, or of the whole sequence.</summary>

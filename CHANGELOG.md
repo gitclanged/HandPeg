@@ -3,6 +3,76 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v5.4.4 — Smooth Playback All Session, a Live Encoded Preview of Your Exact Encoder, a Headerless Timeline and a Fix for Dual-GPU Freezes
+
+### User-Facing Highlights
+- **No more freezes on PCs with two graphics cards.** With Background Graphics Card on Auto, HandPeg used to send the filmstrip
+  and overview strip workers to a second card (on a test PC, an Intel Arc A310 beside a Radeon RX 7900 XTX), where its driver
+  could reset the display (VIDEO_TDR_FAILURE) and freeze the desktop. Auto now always means the card the player draws on. Settings
+  saved with a background or decode card are set back to Auto once, and Test & Auto-Tune Hardware never picks a second card for
+  you (you can still choose one in Settings).
+- **The Live Encoded Preview uses the exact encoder you chose.** QuickSync runs on the Intel card, AMF on the AMD card, NVENC on
+  the NVIDIA card and Media Foundation on the player's card. Software encoders (x264, x265, SVT-AV1, VP9) are previewed for real
+  through FFmpeg, one paused frame at a time, with your preset, CRF or bitrate and options. The preview also follows the rate
+  control (CBR, VBR or CQ/CRF), the preset, a smaller (or larger) export resolution, which shows against the full-resolution
+  picture, and 10-bit.
+- **Paused previews update straight away.** Changing an Export setting while paused re-encodes the frame already drawn within a
+  few milliseconds of the encoder's answer, with no scene redraw. Both the encoder and the decoder are flushed, so the encoded
+  picture shows without a scrub or a play. The ENCODED pill names the encoder and its rate ("ENCODED · HEVC QSV · 12 Mbps",
+  "ENCODED · x264 veryslow · CRF 22"), and says when another card stands in or when a software encoder shows the plain picture
+  while playing.
+- **Standard Editing: Export beside Media, the Timeline on its own.** Export and the other settings tabs are now tabs beside
+  Media at the top right. The Timeline has the whole bottom to itself with no title row, so its tracks start right at the top
+  edge. Rest the pointer on its top-left corner for its tab to move it; drag another pane in beside it and its tab row comes back.
+  Existing Standard Editing layouts are updated once.
+- **A right-click menu on the player.** Export Frame as Image..., Copy Frame to Clipboard, Ping-to-Mark Highlight Here, Full
+  Screen Preview (F11), 3D Exploded View, Live Encoded Preview, Safe Margins and Reset Player Zoom & Pan.
+- **A tidier Views menu.** Playback Bar and Timeline sit side by side, with one two-column list of every tab and pane below them.
+- **Fewer stray speakers on the Timeline.** The mute switch shows only on tracks that are heard, not on Cutouts, masks or silent
+  videos.
+- **Dropping a Media Browser item back on the Media Browser does nothing** (before, it added the file to the Timeline).
+- **The simple playback row's volume is a pill slider**, as on the playback bar.
+- **Waveforms stop at their clip's end again.** A closed sound stack's bar drew the waveform's last tile, up to a second more,
+  past the end of its clip; every waveform is now cut to its own clip.
+- **Playback stays smooth all session.** On some laptops playback got slower every time you played: by the sixth play only a third
+  to a half of the frames arrived on time. Each pause let the player run a few more frames ahead of the screen, and the graphics
+  card's queue backed up behind them. The player now waits its turn for every frame it shows, so the sixth play is as smooth as the
+  first (94-100% of frames on time on a 60 Hz Snapdragon laptop).
+- **Lighter background tabs on laptops.** On unified memory or battery, a tab put behind keeps only its playhead picture and closes
+  its decoders. Tab pre-rolls and other speculative decoding never run while the tab in front plays, scrubs or waits for a frame,
+  and the clip filmstrip and overview strip workers pause while you play or scrub.
+- **Fullscreen preview.** A button at the player's top-right corner (or F11) shows the player fullscreen on its monitor, with a
+  transport bar that appears when you move the pointer and hides after a moment. Esc, F11 or the Exit button leave it.
+- **Drag a clip to the Clip Library.** Dragging a clip from the Timeline over the Clip Library shows "+ Save Clip to Personal Clip
+  Library..."; letting go there opens the save dialog and leaves the Timeline untouched.
+- **Pill sliders.** Monitor Volume, Playback Speed and Timeline Zoom are now compact pills that open into a slider with a readout
+  under the pointer, over the buttons beside them; a click anywhere else closes them. Click the speaker to mute; double-click a
+  slider to reset it. The speed pill shows its value at a glance (never cut off) and snaps to 0.25x-2x.
+- **One Views button.** The playback bar's settings button is merged into the Views menu (a Playback Bar column, plus Dynamic
+  Preview Scaling), and the transport row's buttons match the Timeline toolbar's size.
+- **A wider tab hover card you can scrub.** The card is wider, scrubs across its whole width (also on compact tabs), stays open
+  as you move from the tab onto it, and a click on it switches to that tab.
+- **Dynamic Preview Scaling at your screen's real scale.** On battery, or on unified memory with more than one tab, playback starts
+  at one pixel per DIP (at most 720 lines), steps down only when frames run slow, and is sharp again 80 ms after you pause or stop
+  scrubbing. Paused frames and stills are always full resolution.
+- **Waveforms stay put while zooming.** While the Timeline zooms, waveforms are drawn from the nearest ready detail level and made
+  sharp once the zoom settles.
+
+### Under the Hood & Fixes
+- Same-shape dock layouts that differ only in pane sizes or front tabs are applied in place (no rebuild).
+- The player stays steady when a tab is switched mid-play: frames kept for tabs behind never squeeze the front tab's frame cache,
+  and a tab switch no longer hands the worker's working textures back to Windows straight away.
+- Every source file is under 1,800 lines (DecoderPool, MainWindow, the view model, Layer and the Timeline renderer were split).
+- From 5.4.3: decoding for pre-rolls never seeks a file the playback reads; a tab coming back shows its overview picture until its
+  frame is drawn; touchpad panning in the Cutout Studio; the layout and theme card previews are prepared while idle.
+- Picture and sound line up on high-refresh displays: the player measures how long the screen takes to show each frame (the swap
+  chain's frame statistics) and draws each frame for the moment it will be seen. On a 500 Hz display that is three or four refreshes,
+  not one. The AvSync test tool now matches presents over 128 frames, not 8.
+- An experimental "draw ahead" playback mode (the next frame drawn while the current one is on screen) can be tried with
+  HANDPEG_DRAW_AHEAD=1. It is off by default: on a Snapdragon laptop it did not yet skip fewer frames than the normal mode.
+- Preview builds always carry their tracing (native GPU call breadcrumbs, the flight recorder and the encoder logs); official
+  releases keep it off unless asked for.
+
 ## HandPeg v5.4.2 — All Tabs Warm, Tab Hover Scrubbing and a Playhead That Keeps Up With the Pointer
 
 ### User-Facing Highlights

@@ -99,8 +99,9 @@ public partial class MainWindow
         if (_viewModel.HasSource || _viewModel.IsBusy)
             return;
 
-        // A file on its way to a Game Preset: what its drop will need is made ready while it is carried (on a fast drive).
-        if (Dragged(e.Data).File is { } carried)
+        // A file on its way to a Game Preset: what its drop will need is made ready while it is carried (on a fast drive). Not one dragged
+        // out of HandPeg's own Media Browser or Clip Library (5.4.4: an internal drag is on its way to the timeline).
+        if (Dragged(e.Data).File is { } carried && !IsInternalDrag(e.Data))
             PrewarmDrop(carried, carried: true);
 
         // Made at launch, once the window was idle (see PrepareDropTargets): only made again when the mode or the
@@ -143,10 +144,13 @@ public partial class MainWindow
         if (sender is UIElement target)
             target.Opacity = 0.7;
 
-        // Over a Game Preset: its drop is near.
-        if (sender is FrameworkElement { DataContext: DropTargetItem { Target: StyleFile } } && Dragged(e.Data).File is { } carried)
+        // Over a Game Preset: its drop is near (a drag from Explorer; never one out of HandPeg's own Media Browser or Clip Library, 5.4.4).
+        if (sender is FrameworkElement { DataContext: DropTargetItem { Target: StyleFile } } && Dragged(e.Data).File is { } carried && !IsInternalDrag(e.Data))
             PrewarmDrop(carried, carried: true);
     }
+
+    /// <summary>A drag that began in HandPeg's own Media Browser or Clip Library (MediaBrowserPane.DragFormat), not in Explorer.</summary>
+    private static bool IsInternalDrag(IDataObject data) => data.GetDataPresent(Views.MediaBrowserPane.DragFormat);
 
     private void DropTarget_DragLeave(object sender, DragEventArgs e)
     {
@@ -181,6 +185,7 @@ public partial class MainWindow
     /// </summary>
     private void PrewarmDrop(string path, bool carried)
     {
+        HandPegApp.Services.GpuNativeBreadcrumbs.Mark("PrewarmDrop", (carried ? "carried " : "") + Path.GetFileName(path));
         if (string.IsNullOrWhiteSpace(path) || MainViewModel.IsWebAddress(path))
             return;
 
@@ -211,9 +216,9 @@ public partial class MainWindow
         if (carried)
             _ = Task.Run(() => FfmpegRunner.GetIFramesAsync(path, CancellationToken.None));
 
-        // Opened in the Sequence Overview Scrubber's worker (started when it is not running) and in the player's.
-        if (GpuProgramStrip.IsWanted && (_viewModel.ShowTimelineThumbnails || _viewModel.ShowHoverPreviews))
-            ProgramStrip().Prewarm(path);
+        // Opened in the player's worker. 5.4.4: no longer in the Sequence Overview Scrubber's worker as well (GpuProgramStrip, started ahead of the
+        // drop when it was not running): on the Desktop that worker was on the Arc A310 and its start under a drag over the Game Presets
+        // ended in 0x116 VIDEO_TDR_FAILURE. It opens the file after the drop, as it always did for a drop on the timeline.
         _gpu?.Prewarm(path);
     }
 
@@ -498,8 +503,12 @@ public partial class MainWindow
             return;
         }
 
+        // Nothing to do (5.4.4: a Media Browser drag let go over the Media Browser among it): the drag is over, and whatever it made ready let go.
         if (route == DropRoute.None)
+        {
+            UnPrewarm();
             return;
+        }
 
         var file = files[0];
         switch (route)
@@ -630,6 +639,9 @@ public partial class MainWindow
             return DropRoute.TimelinePlace;
         if (onAudioTab)
             return DropRoute.AudioTab;
+        // 5.4.4 (the user's): a drag out of the Media Browser let go over the Media Browser is no drop at all (it never went anywhere).
+        if (onMediaBin && fromBrowser)
+            return DropRoute.None;
         // 5.4D (Q4 b): even with nothing open, a drop on the Media Browser pools its media; a blank window keeps the pool for the project
         // its first file starts.
         if (onMediaBin && !fromBrowser && PlayheadFiles(files, fromBrowser: false).Length > 0)

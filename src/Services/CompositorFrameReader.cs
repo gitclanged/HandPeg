@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using HandPegApp.Compositor;
 using HandPegApp.Compositor.Native;
 
@@ -254,6 +255,78 @@ public sealed unsafe class CompositorFrameReader : IDisposable
         finally
         {
             context.Unmap(_staging, 0);
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// A part of the presented frame brought back to the processor at once (5.4.3: a project tab put behind with no still of its playhead):
+    /// <paramref name="region"/> gives the rectangle (left, top, right, bottom) for the frame's content size, every <paramref name="step"/>-th
+    /// pixel of it is kept (a still, never full size), and the staging texture is let go after. False for a frame read back for a capture
+    /// (never the player's picture) or no frame.
+    /// </summary>
+    internal bool TryReadStill(Func<int, int, (int Left, int Top, int Right, int Bottom)> region, Func<int, int, int> step, out byte[] bgra, out int width, out int height)
+    {
+        bgra = [];
+        (width, height) = (0, 0);
+        if (!Open())
+            return false;
+
+        ref var control = ref _client.Memory.Control;
+        var index = Volatile.Read(ref control.PresentedIndex);
+        var (texture, mutex) = _opened[index];
+        if (Dxgi.AcquireSync(mutex, 0, 16) != 0)
+            return false;
+        var context = _gpu!.Context;
+        nint staging = 0;
+        int left, top, every;
+        try
+        {
+            if (ReadbackIn(index))
+                return false;
+            var content = ContentSize(index);
+            var (l, t, r, b) = region(content.Width, content.Height);
+            (left, top) = (Math.Clamp(l, 0, content.Width), Math.Clamp(t, 0, content.Height));
+            var (right, bottom) = (Math.Clamp(r, left, content.Width), Math.Clamp(b, top, content.Height));
+            if (right - left < 2 || bottom - top < 2)
+                return false;
+            every = Math.Max(step(right - left, bottom - top), 1);
+            (width, height) = ((right - left) / every, (bottom - top) / every);
+            if (width < 1 || height < 1)
+                return false;
+            staging = _gpu.CreateStaging(right - left, bottom - top, DxgiFormat.B8G8R8A8Unorm);
+            var box = new Box { Left = (uint)left, Top = (uint)top, Front = 0, Right = (uint)right, Bottom = (uint)bottom, Back = 1 };
+            context.CopySubresourceRegion(staging, 0, 0, 0, texture, 0, &box);
+        }
+        finally
+        {
+            _ = Dxgi.ReleaseSync(mutex, 0);
+        }
+
+        try
+        {
+            Com.Check(context.Map(staging, 0, D3D11.MapRead, 0, out var mapped), "Map");
+            try
+            {
+                bgra = new byte[width * height * 4];
+                var pixels = MemoryMarshal.Cast<byte, uint>(bgra.AsSpan());
+                for (var y = 0; y < height; y++)
+                {
+                    var row = new ReadOnlySpan<uint>((void*)(mapped.Data + (long)y * every * mapped.RowPitch), width * every);
+                    var into = pixels.Slice(y * width, width);
+                    for (var x = 0; x < width; x++)
+                        into[x] = row[x * every];
+                }
+            }
+            finally
+            {
+                context.Unmap(staging, 0);
+            }
+        }
+        finally
+        {
+            Com.Release(ref staging);
         }
 
         return true;

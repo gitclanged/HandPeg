@@ -424,24 +424,61 @@ public sealed class GpuResourceBroker : IDisposable
     /// resource, their ids are found again by their content's hash (a Game Preset's masks are the next project's too), and the table
     /// lets the least recently used go as it fills.
     /// </summary>
-    public void ReleaseAll()
+    public void ReleaseAll() => ReleaseAllBut(NoIds);
+
+    private static readonly HashSet<int> NoIds = [];
+
+    /// <summary>
+    /// <see cref="ReleaseAll"/> but for the ids in <paramref name="keep"/> (5.4.4, a project tab put behind: the sources the tabs' pre-roll
+    /// named stay in the worker's table, with their decoders and frames, for the tab brought to the front; <see cref="ReleaseKeptUnasked"/>
+    /// lets go of those nothing asked for since).
+    /// </summary>
+    public void ReleaseAllBut(IReadOnlySet<int> keep)
     {
         for (var id = 0; id < _sources.Length; id++)
         {
-            if (_sources[id] is null)
+            if (_sources[id] is not { } slot || keep.Contains(id))
                 continue;
-            _sources[id] = null;
-            try
-            {
-                _client?.ClearSource(id);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException)
-            {
-                AppLog.Write("The GPU engine's source table could not let a file go", ex);
-            }
+            Release(id, slot);
         }
 
-        _sourceIds.Clear();
+        _keptAcross = [.. keep.Where(id => id >= 0 && id < _sources.Length && _sources[id] is not null)];
+        _keptAt = _tick;
+    }
+
+    // The sources the last ReleaseAllBut kept, and the table's tick then (5.4.4): ReleaseKeptUnasked lets go of those not asked for since.
+    private int[] _keptAcross = [];
+    private long _keptAt;
+
+    /// <summary>
+    /// Lets go of the sources the last <see cref="ReleaseAllBut"/> kept that nothing has asked for since (5.4.4: the first plan after a tab
+    /// put behind; the sources kept for a pre-roll that its plan does not use), as <see cref="ReleaseAll"/> lets go of them, once. Sources
+    /// asked for since stay: the plan's, and those a pre-roll or a drop's file named after the switch (new ones, or kept ones named again).
+    /// </summary>
+    public void ReleaseKeptUnasked()
+    {
+        foreach (var id in _keptAcross)
+        {
+            if (_sources[id] is { } slot && slot.LastUsed <= _keptAt)
+                Release(id, slot);
+        }
+
+        _keptAcross = [];
+    }
+
+    // One source let go of: out of the tables here, cleared in the worker's.
+    private void Release(int id, SourceSlot slot)
+    {
+        _sources[id] = null;
+        _sourceIds.Remove(slot.Key);
+        try
+        {
+            _client?.ClearSource(id);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException)
+        {
+            AppLog.Write("The GPU engine's source table could not let a file go", ex);
+        }
     }
 
     // ----- The tables' room -----

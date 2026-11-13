@@ -1,0 +1,25 @@
+# A tab put behind on unified memory or on battery keeps only its playhead's frames; its pre-roll is idle work.
+ok: ControlBlock.UnifiedMemory at 3212 and TabParkingRequest at 3216, the block's size and the protocol's version as they were
+ok: a tab's pre-roll and a drop's file are their own hint kind (TabRoll, 6)
+ok: the player's engine asks its worker (and the standby, which shares the block) to park lean where it should
+ok: lean, a tab put behind paused: of its ten frames only the one its playhead showed is kept, parked under its file
+ok: the tab brought back: its serial taken back, the exact frame at its playhead found at once, its frames ordinary again
+ok: drawn playing, two layers of one file: each layer's frame and the one after it are kept (four of ten)
+ok: a client that asks for nothing: the tab's frames forgotten as before (only the earlier lean park stays)
+ok: the request for lean parking (2): the playhead's frame alone kept, parked
+ok: a file its playhead did not show: forgotten, not parked
+ok: the kept frames' cap: 96 MB under a 768 MB budget, an eighth of it above (256 MB of 2 GB)
+ok: nine tabs behind of one 4K frame each over the 96 MB cap: the oldest tab's frame let go of, the other eight kept and parked
+ok: a low-memory Clear still lets every kept frame go (the safety floor)
+ok: the hints taken: the pointer's play-ahead a Hover demand, a tab's pre-roll an Idle one (Hover,Idle)
+ok: the hint writer passes a tab's pre-roll through unchanged
+ok: idle work, playing: waits
+ok: idle work, paused, the playhead moved 0.2 s ago: waits
+ok: idle work, paused and still, a frame on screen still to decode: waits
+ok: idle work, paused and still, one idle read under way on unified memory: waits
+ok: idle work, paused and still, one idle read under way on a card of its own: runs
+ok: idle work, paused and still for 400 ms, nothing else waiting: runs
+ok: the tabs' pre-roll is named to the worker only paused, not scrubbing, and 400 ms after the last seek
+ok: a lean machine decodes a hovered tab ahead after 200 ms of rest, only while still hovered, paused, not scrubbing and not switching
+ok: a lean machine pre-rolls nothing on a switch (the list emptied), and a hovered tab only from its rest timer
+ok: a decoder whose source retired is disposed at once by its lane, never under the pool's lock

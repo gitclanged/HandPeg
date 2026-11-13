@@ -66,7 +66,8 @@ public sealed partial class GpuPreviewEngine : IDisposable
     // changes the hints and wakes the pump without it (no frame drawn for a hover).
     private int _sceneDirty = 1;
 
-    // The scrub's heading: where the last seeks went and when (a paused drag of the playhead).
+    // The scrub's heading: where the last seeks went and when (a paused drag of the playhead). The time is written by Seek (the UI thread)
+    // and read by the pump, through Volatile (5.4.4: the quiet window of the tabs' pre-roll).
     private double _lastSeekAt = double.NaN;
     private long _lastSeekTicks;
     private double _scrubVelocity;
@@ -77,6 +78,10 @@ public sealed partial class GpuPreviewEngine : IDisposable
     private GpuPreviewEngine(CompositorClient client, WasapiAudioEngine audio, nint surface)
     {
         (_client, _audio) = (client, audio);
+
+        // The player's tabs put behind are parked lean on unified memory or on battery (5.4.4): asked of the worker and its standby alike
+        // (they share the control block); strip, export, bench and test clients never ask.
+        client.TabParking = 1;
         _viewport = new GpuViewportControl(client, surface);
         _broker = new GpuResourceBroker(client);
 
@@ -130,6 +135,10 @@ public sealed partial class GpuPreviewEngine : IDisposable
                 }
 
                 AppLog.Write(string.Create(System.Globalization.CultureInfo.InvariantCulture, $"GPU engine started in {clock.ElapsedMilliseconds} ms: {client.Message}"));
+
+                // The card it draws on is what Auto means for the background card (5.4.4: never a second card on its own). Not WARP's.
+                if (client.Memory.Control.IsSoftwareDevice == 0 && client.Memory.Control.AdapterIndex >= 0)
+                    GpuAdapters.CompositorIndex = client.Memory.Control.AdapterIndex;
                 return (client, WasapiAudioEngine.Create(settings.AudioOutputDeviceId));
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
@@ -202,6 +211,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
         try
         {
             var plan = GpuScenePlan.Create(state, _broker);
+            ReleaseUnusedKeptSources();
             Volatile.Write(ref _plan, plan);
             _state = state;
             Volatile.Write(ref _canvasFps, state.Timeline.FrameRate.IsValid ? state.Timeline.FrameRate.Fps : 0);
@@ -267,11 +277,15 @@ public sealed partial class GpuPreviewEngine : IDisposable
     /// No clear is sent from here: a full cache let go of texture by texture is the worker's time, never the switch's. The engine, its
     /// worker and the audio device stay up for the tab that comes to the front, which gives it a state again (SetState). Nothing here
     /// waits for the worker: the calls leave counted requests.
+    /// <para>5.4.4: the sources the tabs' pre-roll named are kept (the tab brought to the front finds the frames and decoders its pre-roll
+    /// made; the first SetState after lets go of those it does not use), and the worker keeps its working set when a scene follows the trim
+    /// (CompositorWorker: the tab brought to the front draws with it at once).</para>
     /// </summary>
     public void Suspend()
     {
+        var prewarmed = Volatile.Read(ref _tabPrewarm) is { } tabs && Stopwatch.GetTimestamp() < tabs.Until ? tabs : null;
         Empty();
-        _broker.ReleaseAll();
+        ReleaseSourcesForSwitch(prewarmed);
         _client.TrimWorker();
         _audio.ReleaseIdleDecoders();
         var audio = _audio;
@@ -294,6 +308,12 @@ public sealed partial class GpuPreviewEngine : IDisposable
     /// <summary>Whether the newest scene presented showed every video's exact frame (not a stand-in from the cache).</summary>
     public bool PresentedExact => Volatile.Read(ref _client.Memory.Control.PresentedExact) != 0;
 
+    /// <summary>
+    /// Whether the worker's card shares the PC's memory (5.4.4: an integrated or ARM64 GPU; false until the worker is Ready). Read from
+    /// any thread: the worker wrote it once, with its device.
+    /// </summary>
+    public bool UnifiedMemory => _client.UnifiedMemory;
+
     // Scene marks (5.4.2A): the newest asked for (UI thread), the one the pump's turn read before it read the plan and the playhead (pump
     // thread), and the newest a published scene was made after, with that scene's number (written by the pump, the number first).
     private long _sceneMark, _turnMark, _markPublished, _markedScene;
@@ -310,10 +330,10 @@ public sealed partial class GpuPreviewEngine : IDisposable
     }
 
     /// <summary>
-    /// Whether the worker has presented a scene the pump made after <paramref name="mark"/> (<see cref="MarkScene"/>): one of the state as it
+    /// Whether the viewport has put on the screen (IDXGISwapChain::Present, 5.4.3; the worker's drawing it is not enough) a scene the pump made after <paramref name="mark"/> (<see cref="MarkScene"/>): one of the state as it
     /// was then or newer, never a scene of before it still on its way (the frame of the tab put behind, 5.4.2A's one-frame jump on a switch).
     /// </summary>
-    public bool PresentedSince(long mark) => mark > 0 && Volatile.Read(ref _markPublished) >= mark && PresentedScene >= Volatile.Read(ref _markedScene);
+    public bool PresentedSince(long mark) => mark > 0 && Volatile.Read(ref _markPublished) >= mark && _viewport.PresentedSequence >= Volatile.Read(ref _markedScene);
 
     /// <summary>
     /// The captions the player shows (UI thread): line by line on the sequence clock, their style and text scale (as the
@@ -435,9 +455,10 @@ public sealed partial class GpuPreviewEngine : IDisposable
             var source = _broker.SourceFor(path, stream);
             if (source >= 0 && double.IsFinite(media))
             {
+                // Idle work for the worker (5.4.4): after everything else, and only while the player is quiet.
                 hints.Add(new GpuSeekHint
                 {
-                    SourceId = source, Kind = (int)GpuSeekHintKind.HoverRoll, PathHash = _broker.PathHashOf(source),
+                    SourceId = source, Kind = (int)GpuSeekHintKind.TabRoll, PathHash = _broker.PathHashOf(source),
                     MediaSeconds = Math.Max(media, 0), Span = (float)TabPreRollSeconds,
                 });
             }
@@ -462,11 +483,21 @@ public sealed partial class GpuPreviewEngine : IDisposable
             var elapsed = (now - _lastSeekTicks) / (double)Stopwatch.Frequency;
             if (elapsed is > 0.001 and < 0.25)
                 _scrubVelocity = 0.6 * _scrubVelocity + 0.4 * ((seconds - _lastSeekAt) / elapsed);
+            if (elapsed < ScrubbingFor)
+            {
+                Volatile.Write(ref _scrubMovedTicks, now);
+
+                // A scrub's move holds background work back a moment (5.4.4: the strip workers stop between pictures meanwhile).
+                WorkScheduler.HoldBackground(ScrubHold);
+            }
             else
+            {
                 _scrubVelocity = 0;
+            }
         }
 
-        (_lastSeekAt, _lastSeekTicks) = (seconds, now);
+        _lastSeekAt = seconds;
+        Volatile.Write(ref _lastSeekTicks, now);
         Volatile.Write(ref _pausedAt, seconds);
         _audio.Seek(seconds);
         Invalidate();
@@ -487,6 +518,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
         _primingScene = 0;
         if (_primingSince == 0)
             _audio.Play();
+        BeginPlaySession();
         _playing = true;
         Invalidate();
     }
@@ -532,6 +564,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
         _playing = false;
         Volatile.Write(ref _pausedAt, Math.Clamp(at, 0, Math.Max(SequenceSeconds, 0)));
         _audio.Seek(Volatile.Read(ref _pausedAt));
+        EndPlaySession();
         Invalidate();
     }
 
@@ -559,6 +592,9 @@ public sealed partial class GpuPreviewEngine : IDisposable
                 // A one-off picture of the frame (Export Frame): drawn and read back here, the one thread that writes scenes.
                 if (Interlocked.Exchange(ref _capture, null) is { } capture)
                     Capture(capture);
+
+                // The picture on screen read back for a project tab put behind (5.4.3), before anything new is drawn over it.
+                TakeSnapshot();
 
                 // A project's thumbnail (a save, Pass 5.2D): drawn small the same way, and never while playing.
                 if (Interlocked.Exchange(ref _thumbnail, null) is { } thumbnail)
@@ -595,7 +631,19 @@ public sealed partial class GpuPreviewEngine : IDisposable
                     // The marks asked for so far, read before the plan and the playhead: the scene made of them comes after them (PresentedSince).
                     _turnMark = Volatile.Read(ref _sceneMark);
                     var plan = Volatile.Read(ref _plan);
-                    var at = _audio.Position + _refresh * Math.Max(_rate, 0);
+
+                    // Drawing ahead (5.4.4-Final, the user's Q2 a; unified memory, the XPS): the frame drawn during the last refresh shown now,
+                    // and the next one handed to the worker at once, drawn while this one is on the screen (DrawAheadTurn).
+                    if (DrawsAhead)
+                    {
+                        DrawAheadTurn(plan, now, hints, ref owedTurn, ref presentedLast);
+                        continue;
+                    }
+
+                    // The frame is drawn for the moment it will be on the screen (5.4.4-Final, the user's Q4 a): the swap chain's measured lead
+                    // from this turn to the vblank that shows it (GpuViewportControl.DisplayLeadSeconds), else one refresh as before.
+                    _viewport.FrameOrigin = now;
+                    var at = _audio.Position + GpuViewportControl.PlayingLead(_refresh, _viewport.DisplayLeadSeconds) * Math.Max(_rate, 0);
                     if (_rate >= 0 && at >= plan.SequenceSeconds - 1e-3 || _rate < 0 && at <= 0)
                     {
                         Pause();
@@ -629,7 +677,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
                     // The cuts ahead (rewritten only when one is passed or another comes into the horizon).
                     LeaveHints(plan, at, playing: true, hints);
                     if (sequence > 0)
-                        _ = _client.WaitForFrame(sequence, Math.Max(12, (int)(_refresh * 1000)));
+                        CountFrame(late: NoteFrame(!_client.WaitForFrame(sequence, Math.Max(12, (int)(_refresh * 1000)))));
                     owedTurn = !(_viewport.PresentNewest(vsync: true) || _viewport.PresentNewest(vsync: true, force: true));
                     presentedLast = !owedTurn;
                     PresentMirrors();
@@ -637,6 +685,8 @@ public sealed partial class GpuPreviewEngine : IDisposable
                 }
 
                 _lastPlayedFrame = long.MinValue;
+                _viewport.FrameOrigin = 0; // (a paused present measures no lead: its frame's moment is not a turn's)
+                _aheadSequence = 0; // (a frame drawn ahead for a play that stopped is never shown)
 
                 // Paused with the camera moving (the 3D exploded view orbiting or opening): drawn every refresh, as playing.
                 var moving = false;
@@ -668,6 +718,13 @@ public sealed partial class GpuPreviewEngine : IDisposable
                 _turnMark = Volatile.Read(ref _sceneMark);
                 var pausedPlan = Volatile.Read(ref _plan);
                 var pausedAt = Volatile.Read(ref _pausedAt);
+
+                // A scrub that ended on a picture drawn smaller (Dynamic Preview Scaling): drawn whole again.
+                if (CrispOwed())
+                {
+                    woke = 0;
+                    Volatile.Write(ref _sceneDirty, 1);
+                }
                 if (woke == 0 && Interlocked.Exchange(ref _sceneDirty, 0) != 0)
                     PublishAt(pausedPlan, pausedAt, playing: false);
                 LeaveHints(pausedPlan, pausedAt, playing: false, hints);
@@ -718,6 +775,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
         header.IsPlaying = playing ? 1 : 0;
         (header.OutputWidth, header.OutputHeight) = (width, height);
         header.Flags |= FrameSceneHeader.FlagLetterbox;
+        header.PreviewScale = PreviewScaleFor(playing, width, height, header.CanvasWidth > 0 ? header.CanvasWidth : 1920, header.CanvasHeight > 0 ? header.CanvasHeight : 1080);
         if (!_sourceView)
             WriteAudioBands(ref header, seconds, playing);
         (header.ViewScale, header.ViewPanX, header.ViewPanY) = (_viewScale, _viewPanX, _viewPanY);
@@ -733,6 +791,10 @@ public sealed partial class GpuPreviewEngine : IDisposable
         }
 
         var sequence = _client.Publish();
+
+        // A scene drawn smaller (5.4.4): no still is read until a newer frame is on screen (TakeSnapshot).
+        if (sequence > 0 && _lastScale < 1)
+            _scaledSequence = sequence;
         if (sequence > 0 && _turnMark > _markPublished)
         {
             Volatile.Write(ref _markedScene, sequence);
@@ -1079,7 +1141,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
 
         var now = Stopwatch.GetTimestamp();
         var (scrubAhead, pointer, resting) = (double.NaN, double.NaN, false);
-        var scrubbing = !playing && (now - _lastSeekTicks) * 1.0 / Stopwatch.Frequency < ScrubbingFor;
+        var scrubbing = !playing && (now - Volatile.Read(ref _lastSeekTicks)) * 1.0 / Stopwatch.Frequency < ScrubbingFor;
         if (scrubbing)
         {
             if (Math.Abs(_scrubVelocity) > 0.5)
@@ -1091,13 +1153,16 @@ public sealed partial class GpuPreviewEngine : IDisposable
             resting = (now - Volatile.Read(ref _pointerMoved)) * 1.0 / Stopwatch.Frequency >= GpuHintWriter.HoverRest;
         }
 
-        // A file opened ahead of a drop: its first frames; the project tabs likely next (5.4.2A): their playheads' half second. After
-        // everything else the worker does (never while playing).
+        // A file opened ahead of a drop: its first frames; the project tabs likely next (5.4.2A): their playheads' half second. Idle work
+        // (5.4.4: GpuSeekHintKind.TabRoll, after everything else the worker does), named only while the player is quiet: not playing, not
+        // scrubbing, and the playhead at rest DecoderPool.IdleQuietMs since its last seek.
         Span<GpuSeekHint> extras = stackalloc GpuSeekHint[MostExtras];
         var extraCount = 0;
-        if (!playing && Volatile.Read(ref _prewarm) is { } file && now < file.Until)
-            extras[extraCount++] = new GpuSeekHint { SourceId = file.Source, Kind = (int)GpuSeekHintKind.HoverRoll, PathHash = file.PathHash, Span = 0.2f };
-        if (!playing && Volatile.Read(ref _tabPrewarm) is { } tabs && now < tabs.Until)
+
+        var quiet = ExtrasMayBeWritten(playing, scrubbing, (now - Volatile.Read(ref _lastSeekTicks)) * 1000.0 / Stopwatch.Frequency);
+        if (quiet && Volatile.Read(ref _prewarm) is { } file && now < file.Until)
+            extras[extraCount++] = new GpuSeekHint { SourceId = file.Source, Kind = (int)GpuSeekHintKind.TabRoll, PathHash = file.PathHash, Span = 0.2f };
+        if (quiet && Volatile.Read(ref _tabPrewarm) is { } tabs && now < tabs.Until)
         {
             foreach (var hint in tabs.Hints)
             {
@@ -1140,9 +1205,13 @@ public sealed partial class GpuPreviewEngine : IDisposable
                 wait = Math.Min(wait, rest);
         }
 
-        var scrub = ScrubbingFor - (now - _lastSeekTicks) * 1.0 / Stopwatch.Frequency;
+        var scrub = ScrubbingFor - (now - Volatile.Read(ref _lastSeekTicks)) * 1.0 / Stopwatch.Frequency;
         if (scrub > 0)
             wait = Math.Min(wait, scrub);
+
+        // A picture drawn smaller for a scrub: drawn whole CrispAfter after its last move (Dynamic Preview Scaling).
+        if (_lastScale < 1)
+            wait = Math.Min(wait, Math.Max(CrispAfter - (now - Volatile.Read(ref _scrubMovedTicks)) * 1.0 / Stopwatch.Frequency, 0.001));
         return Math.Clamp((int)Math.Ceiling(wait * 1000), 1, 250);
     }
 

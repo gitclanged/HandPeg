@@ -313,9 +313,11 @@ internal static class Session
                 if (now >= nextStatistics && (nextStatistics = now + Stopwatch.Frequency / 2000) > 0
                     && Native.FrameStatistics(_swapChain(), out var shownId, out var shownAt) && shownId != lastSeen)
                 {
-                    // Only the present it names: one the report skipped over (a vblank not read in time) is not known exactly.
+                    // Only the present it names: one the report skipped over (a vblank not read in time) is not known exactly. 5.4.4-Final
+                    // (the user's Q4 a): matched over the last 128 presents, not 8 (at 500 Hz a frame is shown 3 or 4 refreshes after its
+                    // Present, and the 8-present window missed it: the first vblank was assumed, and a late picture measured as on time).
                     lastSeen = shownId;
-                    for (var i = _frames - 1; i >= 0 && i >= _frames - 8; i--)
+                    for (var i = _frames - 1; i >= 0 && i >= _frames - 128; i--)
                     {
                         if (_shownTicks[i] == 0 && _presentIds[i] == shownId)
                             _shownTicks[i] = shownAt;

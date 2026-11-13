@@ -514,8 +514,8 @@ public sealed partial class AppSettings
     public bool PauseBackgroundWhileExporting { get; set; } = true;
 
     /// <summary>
-    /// The graphics card background tools decode on (and proxies are encoded on): -1 Auto (a card other than the
-    /// one the player draws on, when there is one), -2 none (the processor), otherwise its DXGI number.
+    /// The graphics card background tools decode on (and proxies are encoded on): -1 Auto (5.4.4: the Compositor GPU, the card the
+    /// player draws on; never a second card on its own), -2 none (the processor), otherwise its DXGI number.
     /// </summary>
     public int BackgroundGpu { get; set; } = -1;
 
@@ -1177,6 +1177,18 @@ public sealed partial class AppSettings
                 {
                     settings.ViewDefaultsVersion = 10;
                     settings.ShowStatusBar = false;
+                }
+
+                // 5.4.4 (the Desktop's 0x116 VIDEO_TDR_FAILURE in the Arc A310's driver): Auto is the Compositor GPU for the background and
+                // decode roles now, never a second card. A card saved for either (a hardware test's pick, most often the second card) goes
+                // back to Auto once; Processor Only (-2) is the user's own and stays.
+                if (settings.ViewDefaultsVersion < 11)
+                {
+                    settings.ViewDefaultsVersion = 11;
+                    if (settings.BackgroundGpu >= 0)
+                        settings.BackgroundGpu = -1;
+                    if (settings.DecodeGpuAdapter >= 0)
+                        settings.DecodeGpuAdapter = -1;
                 }
 
                 // (4.1.1 brought Editor Mode's saved views to its own once, by the mode a file named. Every file written since

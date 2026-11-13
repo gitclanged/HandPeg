@@ -35,6 +35,10 @@ public partial class MainWindow
 
     // The two sides named on the picture (5.4.1-M1): RAW left of the line, ENCODED right of it, never taking the pointer.
     private Border? _loopbackRawPill, _loopbackEncodedPill;
+
+    // The wipe's divider, drawn here too (5.4.4): the worker draws it only once an encoded picture is back, so with an encoder that
+    // failed or never answered the handle and pills stood over a picture with no line. Over the worker's own line, pixel for pixel.
+    private Border? _loopbackDivider;
     private const double WipePillGap = 10, WipePillTop = 14, RawPillRoom = 56, EncodedPillRoom = 76;
     private Border? _loopbackWipeHandle;
     private DispatcherTimer? _loopbackTimer;
@@ -43,11 +47,11 @@ public partial class MainWindow
     private string? _loopbackWhyNot;
     private int _loopbackTicks;
 
-    // The settings whose change sends the preview new ones (the Export tab's video members, EffectiveBitrateKbps the bitrate in force).
-    private static readonly HashSet<string> LoopbackSettingNames = new(StringComparer.Ordinal)
-    {
-        "VideoEncoder", "RateControl", "TargetBitrate", "EffectiveBitrateKbps", "Crf", "EncoderPreset", "Framerate", "CustomFramerate", "TargetFileSize",
-    };
+    // The settings whose change sends the preview new ones (5.4.4-Final: MainViewModel.LoopbackSettingNames, every Export tab member that
+    // shapes the encode), gathered for 25 ms (a box typed in, a slider dragged) and then sent at once: the paused frame is encoded again from
+    // the scene the worker has, not drawn again (GpuPreviewEngine.SetLoopback).
+    private DispatcherTimer? _loopbackSettingsTimer;
+    private const int LoopbackSettingsGatherMs = 25;
 
     private void HookLoopback()
     {
@@ -96,11 +100,41 @@ public partial class MainWindow
             case nameof(ViewModels.MainViewModel.ExportQualityPreviewLoupe):
                 SyncLoopbackLoupe();
                 break;
-            case { } name when LoopbackSettingNames.Contains(name):
+            case { } name when ViewModels.MainViewModel.LoopbackSettingNames.Contains(name):
                 if (_viewModel.IsExportQualityPreview)
-                    ApplyLoopback();
+                    GatherLoopbackSettings();
                 break;
         }
+    }
+
+    // A setting changed: sent 25 ms after the last of a run of changes (5.4.4-Final), never more than once a gather.
+    private void GatherLoopbackSettings()
+    {
+        if (_loopbackSettingsTimer is null)
+        {
+            _loopbackSettingsTimer = new DispatcherTimer(DispatcherPriority.Input) { Interval = TimeSpan.FromMilliseconds(LoopbackSettingsGatherMs) };
+            _loopbackSettingsTimer.Tick += (_, _) =>
+            {
+                _loopbackSettingsTimer.Stop();
+                PushLoopbackSettings();
+            };
+        }
+
+        _loopbackSettingsTimer.Stop();
+        _loopbackSettingsTimer.Start();
+    }
+
+    /// <summary>
+    /// The Export tab's settings as they are now, to the engine (5.4.4-Final): the worker encodes the paused frame again from the scene it drew
+    /// (no layer drawn again), and the status and ENCODED pill say the new encoder and rate at once.
+    /// </summary>
+    private void PushLoopbackSettings()
+    {
+        if (!_viewModel.IsExportQualityPreview || _explodedUi)
+            return;
+        _loopbackSettings = _viewModel.CurrentLoopbackSettings(out _loopbackWhyNot);
+        _gpu?.SetLoopback(_loopbackSettings);
+        UpdateLoopbackStatus();
     }
 
     /// <summary>The preview's state to the engine: its settings (or off), what it shows, the wipe's handle and the status timer.</summary>
@@ -182,10 +216,12 @@ public partial class MainWindow
         {
             var codec = ExportLoopbackSettings.CodecName(settings.Codec);
             var status = engine.LoopbackStatus;
+            var where = status.OnAskedCard ? "" : $" (no {ExportLoopbackSettings.FamilyShort(settings.Family)} encoder here: a stand-in)";
+            var paused = status.PausedOnly ? " Paused frames only: the plain picture while playing." : "";
             text = status.State switch
             {
                 ExportLoopbackState.Running => string.Create(CultureInfo.InvariantCulture,
-                    $"{codec}, {settings.RateControlName}: an approximation by {status.EncoderName}, {status.RoundTripMs:0} ms a round trip{(status.LateFrames > 0 ? $", {status.LateFrames} frames late" : "")}."),
+                    $"{settings.ShortName}, {settings.RateControlName}{(settings.TenBit ? ", 10-bit" : "")}: {status.EncoderName}{where}, {status.RoundTripMs:0} ms a round trip{(status.LateFrames > 0 ? $", {status.LateFrames} frames late" : "")}.{paused}"),
                 ExportLoopbackState.Starting => $"Starting {(status.EncoderName.Length > 0 ? status.EncoderName : "the " + codec + " encoder")}...",
                 ExportLoopbackState.NoEncoder => $"No {codec} hardware encoder on this PC: the plain picture is shown.",
                 ExportLoopbackState.NoDecoder => settings.Codec == 1
@@ -200,6 +236,31 @@ public partial class MainWindow
 
         if (_viewModel.ExportQualityPreviewStatus != text)
             _viewModel.ExportQualityPreviewStatus = text;
+        SetEncodedPill(settings is null ? "NO LOOPBACK" : _gpu is not { } shown ? "ENCODED" : EncodedPillText(settings, shown.LoopbackStatus, _viewModel.IsPlaying));
+    }
+
+    /// <summary>
+    /// The ENCODED pill's words (5.4.4-Final, the user's: the encoder and its rate, "ENCODED \u00B7 HEVC QSV \u00B7 12 Mbps", "ENCODED \u00B7 x264 veryslow \u00B7 CRF 22");
+    /// a stand-in on another card says so; a software encoder while playing says the picture is the plain one; else the state. Pure, for the golden test.
+    /// </summary>
+    internal static string EncodedPillText(ExportLoopbackSettings settings, ExportLoopbackStatus status, bool playing) => status switch
+    {
+        { State: ExportLoopbackState.Running, PausedOnly: true } when playing => $"RAW WHILE PLAYING \u00B7 {settings.ShortName}",
+        { State: ExportLoopbackState.Running, OnAskedCard: false } => $"ENCODED \u00B7 {ExportLoopbackSettings.CodecName(settings.Codec)} \u00B7 STAND-IN \u00B7 {settings.RateShort}",
+        { State: ExportLoopbackState.Running } => settings.PillText,
+        { State: ExportLoopbackState.Starting } => $"ENCODED \u00B7 {settings.ShortName} \u00B7 STARTING",
+            { State: ExportLoopbackState.NoEncoder } => "NO ENCODER",
+            { State: ExportLoopbackState.NoDecoder } => "NO DECODER",
+            { State: ExportLoopbackState.Unsupported } => "NO LOOPBACK",
+            { State: ExportLoopbackState.Failed } failed => string.Create(CultureInfo.InvariantCulture, $"ENCODER FAILED 0x{failed.HResult:X8}"),
+            _ => "ENCODED",
+        };
+
+    // The ENCODED pill names a failure too (5.4.4): what the flyout's status says, where the encoded picture should be.
+    private void SetEncodedPill(string text)
+    {
+        if (_loopbackEncodedPill?.Child is TextBlock label && label.Text != text)
+            label.Text = text;
     }
 
     // ----- The player bar's toggle and its flyout -----
@@ -209,13 +270,14 @@ public partial class MainWindow
         if (_loopbackToggle is not null)
             return;
 
-        // 5.4D: the eye (View), the preview's own glyph (5.4.1A: the one canonical encode preview; Render Preview is retired).
+        // 5.4D: the eye (View), the preview's own glyph (5.4.1A: the one canonical encode preview; Render Preview is retired). 5.4.4: the
+        // row's own toggle look (TransportRow's BarToggle: Segoe MDL2 13, as tall as the Timeline's tools), it and its arrow one pair.
+        var barToggle = (Style)TransportRow.Resources["BarToggle"];
         _loopbackToggle = new ToggleButton
         {
+            Style = barToggle,
             Content = LoopbackGlyph,
-            FontFamily = new FontFamily("Segoe MDL2 Assets"),
-            FontSize = 14,
-            Padding = new Thickness(12, 7, 8, 7),
+            Padding = new Thickness(7, 4, 5, 4),
             Margin = new Thickness(3, 0, 0, 0),
             ToolTip = LoopbackName + ": the picture as the export's encoder would leave it, live (this PC's hardware encoder of the export's codec, at its rate control and bitrate). The arrow beside chooses Encoded, Split Wipe or the Artifact Heatmap x10, and the Magnifier.",
         };
@@ -226,12 +288,13 @@ public partial class MainWindow
         _loopbackToggle.SetBinding(IsEnabledProperty, new Binding(nameof(ViewModels.MainViewModel.IsVideoExport)));
         ToolTipService.SetShowOnDisabled(_loopbackToggle, true);
 
+        // The arrow: a smaller glyph, padded to the toggle's height (9 + 6 + 6 = 13 + 4 + 4).
         var more = new ToggleButton
         {
+            Style = barToggle,
             Content = "\uE70E",
-            FontFamily = new FontFamily("Segoe MDL2 Assets"),
             FontSize = 9,
-            Padding = new Thickness(5, 7, 5, 7),
+            Padding = new Thickness(4, 6, 4, 6),
             Margin = new Thickness(0, 0, 3, 0),
             ToolTip = LoopbackName + " options: what is shown, the Magnifier, and what the preview is doing.",
         };
@@ -367,6 +430,8 @@ public partial class MainWindow
         _loopbackWipeLayer = new Canvas { ClipToBounds = true, Visibility = Visibility.Collapsed, RenderTransform = _loopbackWipeUnzoom };
         _loopbackRawPill = WipePill("RAW");
         _loopbackEncodedPill = WipePill("ENCODED");
+        _loopbackDivider = new Border { IsHitTestVisible = false, Background = Frozen(Color.FromRgb(0xF2, 0xF2, 0xF2)) };
+        _loopbackWipeLayer.Children.Add(_loopbackDivider);
         _loopbackWipeLayer.Children.Add(_loopbackRawPill);
         _loopbackWipeLayer.Children.Add(_loopbackEncodedPill);
         _loopbackWipeLayer.Children.Add(_loopbackWipeHandle);
@@ -404,7 +469,17 @@ public partial class MainWindow
 
         // The pills: 10 DIPs either side of the line, 14 below the picture's top (or the player's, the picture zoomed past it); each
         // hidden where it would not fit between the line and the picture's edge.
-        var (left, top, width, _) = _gpu.PictureRect(viewWidth, viewHeight);
+        var (left, top, width, height) = _gpu.PictureRect(viewWidth, viewHeight);
+
+        // The divider (5.4.4): always with the handle, 2 device pixels wide on the worker's line, the picture's height within the player.
+        if (_loopbackDivider is { } divider)
+        {
+            var (from, to) = (Math.Max(top, 0), Math.Min(top + height, viewHeight));
+            divider.Width = 2 / scale;
+            divider.Height = Math.Max(to - from, 0);
+            Canvas.SetLeft(divider, (Math.Round(x * scale) - 1) / scale);
+            Canvas.SetTop(divider, from);
+        }
         var pillTop = Math.Round((Math.Max(top, 0) + WipePillTop) * scale) / scale;
         if (_loopbackRawPill is { } raw)
         {
@@ -416,7 +491,12 @@ public partial class MainWindow
 
         if (_loopbackEncodedPill is { } encoded)
         {
-            encoded.Visibility = left + width - x < EncodedPillRoom ? Visibility.Collapsed : Visibility.Visible;
+            // 5.4.4-Final: the pill names the encoder and its rate, so it is measured: shown while it fits right of the line.
+            // (Its text measured, not the pill: a collapsed pill measures as nothing. 16: its padding and border.)
+            var words = encoded.Child as UIElement;
+            words?.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            var pillWidth = (words?.DesiredSize.Width ?? 0) + 16;
+            encoded.Visibility = left + width - x < Math.Max(EncodedPillRoom, pillWidth + WipePillGap + 4) ? Visibility.Collapsed : Visibility.Visible;
             Canvas.SetLeft(encoded, Math.Round((x + WipePillGap) * scale) / scale);
             Canvas.SetTop(encoded, pillTop);
         }

@@ -1,0 +1,8 @@
+# The sources a tab's pre-roll named stay across the switch it was made for; the next plan lets go of the rest.
+ok: three files in the source table
+ok: a switch lets go of the tab's own files but keeps those the pre-roll named
+ok: the tab brought to the front finds its pre-rolled file at the same id (its decoders and frames in the worker)
+ok: its first plan lets go of the kept file it does not use
+ok: ReleaseAll still lets go of everything
+ok: Suspend keeps the pre-roll's sources (read before Empty lets go of it); the first SetState after lets go of those its plan does not use
+ok: the tabs' pre-roll and a drop's file are TabRoll hints

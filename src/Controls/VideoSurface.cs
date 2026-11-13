@@ -483,7 +483,9 @@ public sealed partial class VideoSurface : HwndHost
         if (place != _placed)
         {
             _placed = place;
+            var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("PlaceOverlay.SetWindowPos", $"{place.X},{place.Y} {place.Width}x{place.Height}");
             SetWindowPos(handle, IntPtr.Zero, place.X, place.Y, place.Width, place.Height, SwpNoZOrder | SwpNoActivate);
+            crumb.Leave();
         }
 
         if (clip != _clip)
@@ -522,9 +524,11 @@ public sealed partial class VideoSurface : HwndHost
     {
         if (window == IntPtr.Zero)
             return;
+        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("PlaceOverlay.SetWindowRgn", $"{clip.X},{clip.Y} {clip.Width}x{clip.Height}");
         if (clip.IsEmpty)
         {
             SetWindowRgn(window, IntPtr.Zero, true);
+            crumb.Leave();
             return;
         }
 
@@ -532,5 +536,6 @@ public sealed partial class VideoSurface : HwndHost
         var region = CreateRectRgn(clip.X, clip.Y, clip.X + clip.Width, clip.Y + clip.Height);
         if (region != IntPtr.Zero && SetWindowRgn(window, region, true) == 0)
             DeleteObject(region);
+        crumb.Leave();
     }
 }

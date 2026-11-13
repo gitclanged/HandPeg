@@ -436,7 +436,8 @@ public partial class MainWindow
                 var jpeg = kept ?? ProjectThumbnail.ReadFromProject(stateFile) ?? (projectPath.Length > 0 ? ProjectThumbnail.ReadFromProject(projectPath) : null);
                 return jpeg is null ? null : ProjectThumbnail.Decode(jpeg, decodeHeight);
             });
-            if (ReferenceEquals(ProjectTabStrip.HoverItem, item))
+            // 5.4.4: never over a picture the pointer has scrubbed to meanwhile.
+            if (ReferenceEquals(ProjectTabStrip.HoverItem, item) && !item.IsScrubbing)
                 item.Preview = picture;
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)

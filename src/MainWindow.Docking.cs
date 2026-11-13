@@ -57,12 +57,12 @@ public partial class MainWindow
         // room to move in a 1280 DIP window; the sums of these are what pin a column (DockManager.MinWidthOf).
         void Add(string id, string title, FrameworkElement content, PaneHandle handle = PaneHandle.TitleSlot, bool fits = false,
             Func<bool>? shown = null, Action? close = null, Func<double>? minWidth = null, double minHeight = 60, Panel? hoverHost = null, Action<double>? resize = null,
-            Action<PaneShape>? reshape = null, bool joinsBelow = false, bool floats = false, Action? resetSize = null) =>
+            Action<PaneShape>? reshape = null, bool joinsBelow = false, bool floats = false, Action? resetSize = null, bool headerlessAlone = false) =>
             _dock.Register(new DockPane
             {
                 Id = id, Title = title, Content = () => content, Handle = handle, FitsContent = fits, IsShown = shown ?? (() => true), Close = close,
                 MinWidth = minWidth ?? (() => 180), MinHeight = minHeight, HoverHost = hoverHost, ResizeBy = resize, ResetSize = resetSize, Reshape = reshape,
-                JoinsPaneBelow = joinsBelow, Floats = floats,
+                JoinsPaneBelow = joinsBelow, Floats = floats, HeaderlessAlone = headerlessAlone,
             });
 
         // The player floats over its place (DockPane.Floats): the panes are laid out again around it, and its video never blinks. Its least width
@@ -77,9 +77,10 @@ public partial class MainWindow
         // A double-click on the border under it puts its height back (5.4D), as one on its own grip does (OverviewGrip_ResetRequested).
         Add("Timeline", ScrubberTitle, TimelinePane, PaneHandle.Hover, fits: true, shown: () => AppSettings.Current.ShowMasterTimeline, minWidth: () => 300, resize: ResizeMasterTimeline,
             resetSize: OverviewGrip_ResetRequested);
-        // The timeline: every track on one drawn surface (4.4). Always shown; its tab is in its own title row. 300: its track headers and a
-        // stretch of the ruler.
-        Add(TimelinePaneId, "Timeline", UnifiedTimelinePanel, minWidth: () => 300, minHeight: 140);
+        // The timeline: every track on one drawn surface (4.4). Always shown; its tab is in its own title row while it shares its group, and
+        // alone in it (5.4.4, Standard Editing's bottom) it has no title row: the tracks start at the part's top edge, and the tab comes up
+        // when the pointer rests on its top-left corner (DockPane.HeaderlessAlone). 300: its track headers and a stretch of the ruler.
+        Add(TimelinePaneId, "Timeline", UnifiedTimelinePanel, minWidth: () => 300, minHeight: 140, headerlessAlone: true);
         // The Canvas: the output frame the layers are arranged on. Its id stays "Layout" (its name until 4.2), so saved
         // arrangements and layouts keep it where they had it. 180 (5.4D; 200 before).
         Add("Layout", "Canvas", LayoutPane, shown: () => _viewModel.IsArrangeActive, close: () => _viewModel.IsArrangeActive = false);
@@ -384,6 +385,44 @@ public partial class MainWindow
             PutTimelineFirst(state, tabIds);
         if (from < 4)
             StackCanvasWithEffects(state, tabIds);
+        if (from < 5)
+            MoveExportBesideMedia(state, tabIds);
+    }
+
+    /// <summary>
+    /// 4 to 5 (5.4.4, the user's): Standard Editing as version 4 had it (the settings tabs in the timeline's group at the bottom) gets those
+    /// tabs beside the Media tab under the header, Media still shown, and the timeline alone at the bottom, shown (its title row then hidden:
+    /// DockPane.HeaderlessAlone). Only that shape (with the Master Meter, or without it: a 4.4 arrangement just brought up, the Meter put in
+    /// afterwards by DockManager.PlaceAsDefault); any arrangement the user made is left as it is. The splits' shares do not move.
+    /// </summary>
+    private static void MoveExportBesideMedia(DockLayoutState state, IReadOnlyList<string> tabIds)
+    {
+        // Told by its shape with the settings tabs and the Meter left out: a 5.3 arrangement still holds the retired Summary tab (dropped by
+        // DockManager.Validate after this step), another may lack a tab added since; neither is the user's own arrangement.
+        if (ShapeWithoutTabs(state.Main) != ShapeWithoutTabs(StandardLayoutV4(tabIds).Main)
+            || state.Main.GroupOf(TimelinePaneId) is not { } bottom || state.Main.GroupOf("Media") is not { } media || ReferenceEquals(bottom, media)
+            || !bottom.Panes.Any(p => p.StartsWith("Tab:", StringComparison.Ordinal)))
+            return;
+
+        var tabs = bottom.Panes.Where(p => p != TimelinePaneId).ToList();
+        bottom.Panes.RemoveAll(p => p != TimelinePaneId);
+        bottom.Active = TimelinePaneId;
+        media.Panes.AddRange(tabs.Where(p => !media.Panes.Contains(p)));
+        media.Active = "Media";
+
+        // The top row's shares as version 4 started them (never dragged): today's, which give the Media column (now the Export tab's too,
+        // 300 DIPs at least) the room its border needs at 1280 DIPs.
+        if (state.Main is { IsGroup: false, Children: [{ IsGroup: false, Vertical: false, Sizes: [56.0, 22.0, 22.0] } top, ..] })
+            top.Sizes = [.. StandardTopShares];
+    }
+
+    // A tree's shape (DockManager.Shape) with every settings tab and the Master Meter left out.
+    private static string ShapeWithoutTabs(DockNode root)
+    {
+        var copy = new DockLayoutState { Main = root }.Copy().Main;
+        foreach (var group in copy.AllGroups())
+            group.Panes.RemoveAll(p => p.StartsWith("Tab:", StringComparison.Ordinal) || p == "Meter");
+        return DockManager.Shape(copy);
     }
 
     /// <summary>

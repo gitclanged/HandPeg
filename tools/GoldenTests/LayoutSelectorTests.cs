@@ -321,7 +321,7 @@ public static class LayoutSelectorTests
             expect(firstRun.Contains("AppSettingsJsonContext.Default.DockLayoutState", StringComparison.Ordinal) && firstRun.Contains("s.DefaultStartupLayout", StringComparison.Ordinal),
                 "TakeFirstRunLayout serialises through the generated metadata and makes the first-run choice the Default layout too");
             var reset = Method(layouts, "private void ResetToDefaultLayout()");
-            var main = Read("MainWindow.xaml.cs");
+            var main = Read("MainWindow.xaml.cs") + Read("MainWindow.PresetsAndKeyframes.cs") + Read("MainWindow.ViewsMenu.cs");
             expect(reset.Contains("_dock.Reset(choice?.Layout);", StringComparison.Ordinal) && Method(main, "private void ResetPanesLayout_Click(").Contains("ResetToDefaultLayout();", StringComparison.Ordinal)
                    && docking.Contains("ResetLayout = () => ResetPanesLayout_Click(", StringComparison.Ordinal),
                 "Reset Layout (the Views menu, and a tab's menu) puts back the Default layout, not always Standard Editing");
@@ -399,7 +399,7 @@ public static class LayoutSelectorTests
         expect(retired.All(n => Named(xaml, n) is null), "the click's menu is retired from MainWindow.xaml: " + string.Join(", ", retired));
 
         var layouts = Read("MainWindow.Layouts.cs");
-        var main = Read("MainWindow.xaml.cs");
+        var main = Read("MainWindow.xaml.cs") + Read("MainWindow.PresetsAndKeyframes.cs") + Read("MainWindow.ViewsMenu.cs");
         var docking = Read("MainWindow.Docking.cs");
         string[] gone = ["OpenLayoutMenu", "CloseLayoutMenu", "FillLayoutRows", "LayoutFlyout_KeyDown", "_layoutMenuFrom", "TakeUpLayout", "LayoutFlyout"];
         expect(gone.All(g => !layouts.Contains(g, StringComparison.Ordinal) && !main.Contains(g, StringComparison.Ordinal) && !docking.Contains(g, StringComparison.Ordinal)),
@@ -728,8 +728,9 @@ public static class LayoutSelectorTests
             expect(Math.Abs(mediaColumn.ActualWidth - mediaColumn.MinWidth) < 1 && header.ActualWidth >= natural - 0.5 && headerRight <= columnRight + 0.5,
                 $"Standard Editing, the Media column dragged to its least ({Num(mediaColumn.ActualWidth)}): the joined header whole ({Num(header.ActualWidth)} of its {Num(natural)} DIPs) and inside it (the strip of tabs beside it gives way)");
 
-            // The Media Browser's Filmstrip view raises its column's least width in place: no layout again, the same grid.
-            dock.Apply(dock.Prepared(MainWindow.StandardLayout(TabIds)));
+            // The Media Browser's Filmstrip view raises its column's least width in place: no layout again, the same grid. (5.4.4-Final: on
+            // version 4's Standard Editing, the Media Browser alone under the header; today's has the Export tab's 300 beside it.)
+            dock.Apply(dock.Prepared(MainWindow.StandardLayoutV4(TabIds)));
             Idle();
             DependencyObject at = media;
             (Grid Grid, ColumnDefinition Column)? column = null;
@@ -752,7 +753,7 @@ public static class LayoutSelectorTests
             media.ViewMode = MediaBrowserView.Grid;
             var back2 = column?.Column.MinWidth ?? 0;
             expect(column is not null && least == MediaLeast(dock, 180) && filmstrip == MediaLeast(dock, 280) && filmstrip == 280 && back2 == least && inPlace,
-                $"Standard Editing: the Media column's least {Num(least)}; the Media Browser switched to Filmstrip, {Num(filmstrip)} at once, in place (the same grid and borders); back to Grid, {Num(back2)}");
+                $"Standard Editing (version 4's, the Media Browser alone): the Media column's least {Num(least)}; the Media Browser switched to Filmstrip, {Num(filmstrip)} at once, in place (the same grid and borders); back to Grid, {Num(back2)}");
 
             // A drag keeps the window counted as laid out from the arrangement (its sizes in it), so the arrangement from before the drag,
             // loaded again (a project tab brought back), lays the window out again: its columns as they were, not the dragged ones.

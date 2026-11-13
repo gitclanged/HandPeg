@@ -146,6 +146,8 @@ public static class KeybindManager
         new("view.toggleSnap", "Toggle Snap", View, "\uE80A", ["Caps"]),
         // The player as the GPU engine's 3D exploded layer stack, and back (5.0D). Unbound: the left hand's keys are all taken.
         new("view.exploded3d", "3D Exploded View", View, "\uE81E", []),
+        // The player over its whole monitor, and back (5.4.4, MainWindow.Fullscreen.cs): F11, as in a browser or a video player. Esc also comes back.
+        new("view.fullscreen", "Fullscreen Preview", View, "\uE740", ["F11"]),
 
         new("nav.forward", "Zoom In Under the Pointer", Navigation, "\uE8A3", ["W"], KeyActionFlags.Continuous),
         new("nav.back", "Zoom Out Under the Pointer", Navigation, "\uE71F", ["S"], KeyActionFlags.Continuous),

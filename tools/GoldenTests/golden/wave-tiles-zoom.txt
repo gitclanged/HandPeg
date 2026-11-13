@@ -1,0 +1,12 @@
+# The Timeline's waveforms through a zoom (5.4.4): stand-ins while the scale moves, the crisp tiles made once it rests.
+ok: the first render makes its tiles at once, as before (not a zoom): its step's tiles in view, and the sound is drawn
+ok: twelve zoom steps in across an octave make no tile while the scale moves (0 made)
+ok: and the sound is drawn after every step (the coarser step's tiles stand in, stretched and cut to each tile)
+ok: the zoom's rest makes the final step's tiles in one render, exactly those in view, and the sound is drawn crisp
+ok: a second rest makes none
+ok: twenty-four zoom steps out across two octaves make no tile while the scale moves (0 made): the finer steps stand in
+ok: and the sound is drawn after every step
+ok: at rest the final step's tiles are made once, exactly those in view
+ok: the tiles kept never pass the cap (WaveTileCapacity)
+ok: the rest is a Background timer made at the first zoom and stopped by its own tick (it never keeps the control alive)
+ok: every wave is clipped to its band and its sound's own stretch before its tiles are drawn (whole tiles never show past the clip's end), and the clip popped after them

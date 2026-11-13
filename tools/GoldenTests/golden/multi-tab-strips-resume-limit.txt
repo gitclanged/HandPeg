@@ -1,0 +1,9 @@
+# Background work stopped between its pieces goes on within its lane's limit after a play, before work not started yet.
+ok: the strips stopped between their pieces while the player plays give their slots back
+ok: after the play, the stopped strips and the work that waited never run more than the lane's limit at once
+ok: the stopped strips go on first; the work asked for meanwhile waits for their room
+ok: every slot accounted for once all of it ended (none given back twice, none kept)
+ok: work cancelled while it is stopped ends with its slot accounted for once
+ok: the setting turned off mid-play: the stopped strips go on while the player still plays, and the work asked for meanwhile runs in their room
+ok: the scheduler serves stopped work going on before work not started yet, and keeps its room meanwhile
+ok: saved Settings reach work stopped between its pieces (ApplySettings: Pump, then PauseChanged)

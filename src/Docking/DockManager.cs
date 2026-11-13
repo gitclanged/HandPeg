@@ -288,10 +288,7 @@ public sealed partial class DockManager
             ShowInItsGroup(_state, showFirst, sides);
         TakeSides(sides);
         ApplySideWindows();
-        if (Signature() == _builtSignature)
-            Rebind();
-        else
-            Rebuild();
+        RebindOrRebuild();
     }
 
     /// <summary>
@@ -340,57 +337,6 @@ public sealed partial class DockManager
 
         _sides.Clear();
         _sides.AddRange(kept);
-    }
-
-    /// <summary>
-    /// The arrangement taken up again is the one laid out (a copy of it, read back from the settings): the windows stay
-    /// as they are. The hosts are told which groups of the new tree they show, and a group that should show another
-    /// pane shows it.
-    /// </summary>
-    private void Rebind()
-    {
-        for (var i = 0; i < _groupHosts.Count; i++)
-        {
-            var (host, old, side) = _groupHosts[i];
-            if (old.Panes.FirstOrDefault() is not { } first || (side is null ? _state.Main : side.State.Tree)?.GroupOf(first) is not { } fresh)
-                continue;
-
-            var wanted = fresh.Active;
-            fresh.Active = old.Active;
-            _groupHosts[i] = (host, fresh, side);
-            if (_joined is { } joined && ReferenceEquals(joined.Under, old))
-                _joined = joined with { Under = fresh };
-            if (host is TabGroupHost tabs)
-                tabs.Group = fresh;
-            if (wanted is not null && wanted != old.Active && _panes.TryGetValue(wanted, out var pane) && pane.IsShown())
-                Activate(wanted);
-            else
-                fresh.Active = wanted;
-        }
-
-        // 5.4D: the splits laid out are the new tree's too (the same places in it: the tree is the same), so a border dragged next writes
-        // its sizes into the arrangement that is saved, not into the one laid out before; and their least sizes are taken again. Each
-        // shows the new tree's sizes too, so a tree taken up in place always shows its own shares, whatever was dragged on screen before.
-        foreach (var view in _splitViews)
-        {
-            if ((view.Side is null ? _state.Main : view.Side.State.Tree) is { } root && NodeAt(root, view.Path) is { IsGroup: false } fresh)
-            {
-                view.Split = fresh;
-                ShowShares(view);
-            }
-        }
-
-        RefreshMinSizes();
-    }
-
-    /// <summary>A split's shares as its tree has them, given to its grid's columns or rows in place (5.4D, Rebind): those as wide or as tall as their content keep their Auto size.</summary>
-    private static void ShowShares(SplitView view)
-    {
-        foreach (var (element, index, fits) in view.Parts)
-        {
-            if (!fits && index < view.Split.Sizes.Count)
-                SetDips(view.Grid, element, view.Split.Vertical, view.Split.Sizes[index] > 0 ? view.Split.Sizes[index] : 1);
-        }
     }
 
     /// <summary>
@@ -468,12 +414,9 @@ public sealed partial class DockManager
 
         _state = Validate(layout?.Copy() ?? _defaults(), [.. _sides.Select(s => s.State)]);
 
-        // As Load and Apply take a tree up: one laid out already (Reset twice) is taken up in place, so the borders and tabs change the
-        // tree that is saved, not the one it replaced.
-        if (Signature() == _builtSignature)
-            Rebind();
-        else
-            Rebuild();
+        // As Load and Apply take a tree up: one laid out already (Reset twice; 5.4.4: or one that differs only in its shares and front tabs) is
+        // taken up in place, so the borders and tabs change the tree that is saved, not the one it replaced.
+        RebindOrRebuild();
         Changed?.Invoke();
         RaiseSideChanged();
     }
@@ -893,10 +836,11 @@ public sealed partial class DockManager
             SetShape(pane, PaneShape.Row);
 
         // Right under the header, which joins it: a row of boxed tabs, as the main tab bar has, with the header at its end.
+        // A pane headerless when alone (5.4.4, the Timeline) is one with a hover tab while it is: no title row, nothing over its top edge.
         var joined = ReferenceEquals(node, _joinUnder);
         var host = joined || shown.Any(p => _panes[p].Handle == PaneHandle.Tab) || (shown.Count > 1 && shown.Any(p => _panes[p].Handle == PaneHandle.Hover))
             ? RenderTabs(node, shown, active, side, joined)
-            : shown.Count == 1 && _panes[active].Handle == PaneHandle.Hover
+            : shown.Count == 1 && (_panes[active].Handle == PaneHandle.Hover || _panes[active].HeaderlessAlone)
                 ? RenderHover(node, active)
                 : RenderPlain(active);
         _groupHosts.Add((host, node, side ? _renderingFor : null));
@@ -1534,9 +1478,9 @@ public sealed partial class DockManager
 
     /// <summary>
     /// A split's sizes just written from its borders (TakeSizes, KeepShares), the screen already showing them: when the windows were as the
-    /// arrangement said just before, they still are (5.4D), so a later Load, Apply or Reset back to the sizes from before the drag lays the
-    /// windows out again rather than taking the tree up in place. Not for a split a layout has replaced since (a canceled drag's end can come
-    /// after a rebuild), nor when a layout was still to come.
+    /// arrangement said just before, they still are (5.4D), so a later Load, Apply or Reset back to the sizes from before the drag sees what
+    /// differs: its shares, set again in place (5.4.4, RebindOrRebuild; the whole layout again before). Not for a split a layout has replaced
+    /// since (a canceled drag's end can come after a rebuild), nor when a layout was still to come.
     /// </summary>
     private void StillBuilt(SplitView view, bool wasBuilt)
     {

@@ -276,8 +276,10 @@ public sealed partial class UnifiedTimelineControl
             return;
         }
 
+        // (Outside, over a place that takes the block, it is parked where it began and the view stays still: 5.4.4.)
         _lastPointer = laid;
-        Follow(drag, laid, pointerMoved: true);
+        if (!FollowPointer(drag, point, laid))
+            return;
 
         // Near an end of the time area, the view moves along by itself while the pointer stays there.
         var seen = point.X - _headerWidth;
@@ -944,7 +946,7 @@ public sealed partial class UnifiedTimelineControl
     private void AutoScroll_Tick(object? sender, EventArgs e)
     {
         var width = TimeAreaWidth;
-        if (_drag is not { } drag || Mouse.LeftButton != MouseButtonState.Pressed || width <= 0)
+        if (_drag is not { } drag || _dragParked || Mouse.LeftButton != MouseButtonState.Pressed || width <= 0)
         {
             _autoScroll.Stop();
             return;
@@ -1203,8 +1205,9 @@ public sealed partial class UnifiedTimelineControl
         {
             FollowGain(gain, laid);
         }
-        else if (_drag is { } drag)
+        else if (_drag is { } drag && !_dragParked)
         {
+            // (A block parked over a place outside that takes it stays where it began, whatever the view does under it: 5.4.4.)
             _lastPointer = laid;
             Follow(drag, laid, pointerMoved: false);
         }

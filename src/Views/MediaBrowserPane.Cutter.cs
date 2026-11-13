@@ -465,9 +465,8 @@ public partial class MediaBrowserPane
         data.SetData(DragFormat, true);
         if (cutter.HasRange)
             data.SetData(SubClipFormat, FormatSubClip(cutter.InSeconds, cutter.OutSeconds));
+        // (5.4.4: an internal drag makes nothing ready ahead of its drop: the drop opens what it needs, MainWindow.IsInternalDrag.)
         StopStripOnDemand();
-        if (item.IsVideo)
-            PrewarmRequested?.Invoke(item.Path, true);
         using (WorkScheduler.HoldBackground())
             DragDrop.DoDragDrop(cutter, data, DragDropEffects.Copy);
     }

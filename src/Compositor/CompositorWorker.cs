@@ -104,6 +104,7 @@ public static unsafe partial class CompositorWorker
             control.AdapterLuid = gpu.AdapterLuid;
             control.AdapterIndex = gpu.AdapterIndex;
             control.IsSoftwareDevice = gpu.IsWarp ? 1 : 0;
+            control.UnifiedMemory = gpu.UnifiedMemory ? 1 : 0;
             Note(shared, $"{gpu.AdapterName}{(gpu.IsWarp ? " (WARP)" : "")}, {shaders.Count} shaders");
             Volatile.Write(ref control.WorkerState, (int)CompositorWorkerState.Ready);
 
@@ -125,8 +126,10 @@ public static unsafe partial class CompositorWorker
             var idleTrimmed = false;
             var nextPublish = 0L;
 
-            // An asked-for trim served but for its last part (GiveBack), which waits for the worker to be left alone a moment.
+            // An asked-for trim served but for its last part (GiveBack), which waits for the worker to be left alone a moment; and whether a
+            // new scene came after it (5.4.4: another tab brought to the front, whose working set that last part would throw away).
             var giveBackWaiting = false;
+            var sceneAfterTrim = false;
             while (true)
             {
                 // A decode lane stuck inside a driver for 8 s: the beat stops, and the client takes over (10 s).
@@ -169,8 +172,8 @@ public static unsafe partial class CompositorWorker
                 if (trims != trimsSeen)
                 {
                     trimsSeen = trims;
-                    TrimMemory(ref control, gpu, decoders, renderer, asked: true);
-                    (giveBackWaiting, idleTrimmed, nextPublish) = (true, true, Stopwatch.GetTimestamp() + PublishMemoryTicks);
+                    TrimSources(ref control, decoders, asked: true);
+                    (giveBackWaiting, sceneAfterTrim, idleTrimmed, nextPublish) = (true, false, true, Stopwatch.GetTimestamp() + PublishMemoryTicks);
                 }
 
                 // The client's frame cache budget and seek hints (Instant Seek): read when they change, no frame drawn for them.
@@ -182,6 +185,7 @@ public static unsafe partial class CompositorWorker
                 decoders.Cache.CheckWindowsBudget(Stopwatch.GetTimestamp());
 
                 var slot = shared.TakeLatest(out var isNew);
+                sceneAfterTrim |= giveBackWaiting && isNew;
                 ref var header = ref shared.SceneHeader(slot);
                 if ((isNew || redraw) && header.FrameSequenceNumber > 0 && header.CanvasWidth > 0 && header.CanvasHeight > 0)
                 {
@@ -235,9 +239,17 @@ public static unsafe partial class CompositorWorker
                 // nothing plays. IDXGIDevice3::Trim takes tens of milliseconds (75 ms on the Adreno X1-85 after a 1080p tab), which every
                 // switch of a quick run would pay, and the new tab's first frames behind it; a run of switches gives back once, when it
                 // ends. Then the trim is echoed (every one asked for meanwhile).
+                // 5.4.4: when a new scene came after the trim (another tab brought to the front, a play likely to follow at once), its working
+                // set (the free frames, the pool's textures, the renderer's kept ones) and the driver's allocations are that tab's: kept, and
+                // given back by the idle trim once the player has rested IdleTrimSeconds. Nothing in front (the trim alone): all of it now.
                 if (giveBackWaiting && GiveBackDue(now, askedLast, decoders.Playing))
                 {
-                    GiveBack(ref control, gpu, decoders.Cache);
+                    if (!sceneAfterTrim)
+                    {
+                        ReleaseWorkingSet(gpu, decoders, renderer, asked: true);
+                        GiveBack(ref control, gpu, decoders.Cache);
+                    }
+
                     Volatile.Write(ref control.TrimsDone, trimsSeen);
                     (giveBackWaiting, nextPublish) = (false, now + PublishMemoryTicks);
                 }
@@ -378,12 +390,21 @@ public static unsafe partial class CompositorWorker
     /// </summary>
     private static void TrimMemory(ref ControlBlock control, GpuDevice gpu, DecoderPool decoders, SceneRenderer renderer, bool asked)
     {
+        TrimSources(ref control, decoders, asked);
+        ReleaseWorkingSet(gpu, decoders, renderer, asked);
+        PublishMemory(ref control, decoders.Cache);
+    }
+
+    /// <summary>
+    /// A trim's first part, at once (5.4.4: all an asked-for trim does on the worker's next turn): the sources the client let go of retired,
+    /// the frames emptied when <see cref="TrimEmptiesCache"/> says, and the readback's staging and an HDR export's picture let go of (never
+    /// on the player's path). Then its memory is published.
+    /// </summary>
+    private static void TrimSources(ref ControlBlock control, DecoderPool decoders, bool asked)
+    {
         decoders.SyncSources();
         if (TrimEmptiesCache(asked, decoders.Cache.BigCard, SystemCommit.TryRead(out _, out _, out var available) && available < AvailableFloorBytes))
             decoders.Cache.Clear();
-        decoders.Cache.DropFree();
-        gpu.Textures.ReleaseFree();
-        renderer.ReleaseIdleTextures(history: asked);
         ReleaseReadback();
         _p010Picture?.Dispose();
         _p010Picture = null;
@@ -391,10 +412,22 @@ public static unsafe partial class CompositorWorker
     }
 
     /// <summary>
+    /// What the player's next frames draw with: the cache's free list, the pool's free working textures and the renderer's kept ones. Let
+    /// go of by the idle trim, and by an asked-for one only when no scene came after it (5.4.4: the tab brought to the front would make them
+    /// all again on its first frames, and its first play would pay for it).
+    /// </summary>
+    private static void ReleaseWorkingSet(GpuDevice gpu, DecoderPool decoders, SceneRenderer renderer, bool asked)
+    {
+        decoders.Cache.DropFree();
+        gpu.Textures.ReleaseFree();
+        renderer.ReleaseIdleTextures(history: asked);
+    }
+
+    /// <summary>
     /// A trim's last part, handing what was let go of back to Windows: the driver's kept allocations (GpuDevice.Trim: tens of milliseconds)
     /// and a compacting collection of this process's own heap (FFmpeg decoders' pictures: the worker has no UI, and nothing plays here
-    /// while it runs). At once for the idle trim; for an asked-for one once the worker is left alone (<see cref="GiveBackDue"/>). Then its
-    /// memory is published.
+    /// while it runs). At once for the idle trim; for an asked-for one once the worker is left alone (<see cref="GiveBackDue"/>), and only
+    /// when no scene came after it (5.4.4). Then its memory is published.
     /// </summary>
     private static void GiveBack(ref ControlBlock control, GpuDevice gpu, FrameCache cache)
     {

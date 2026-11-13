@@ -316,28 +316,31 @@ public partial class MainWindow
         ];
     }
 
-    /// <summary>The Views menu is opening: its Tabs and Panes lists made as things are now.</summary>
+    /// <summary>
+    /// The Views menu is opening: its one list of tabs and panes (5.4.4-Final: Tabs and Panes merged, two columns) made as things are now,
+    /// the settings tabs first. UI Automation names them as before ("Export Tab", "Keyframes Pane").
+    /// </summary>
     private void FillViewsLists()
     {
-        static void Fill(Panel list, IEnumerable<ViewToggle> toggles)
+        ViewsPaneList.Children.Clear();
+        void Fill(IEnumerable<ViewToggle> toggles, bool tabs)
         {
-            list.Children.Clear();
             foreach (var toggle in toggles)
             {
-                var box = new CheckBox { Content = toggle.Name, IsChecked = toggle.IsOn(), Margin = new Thickness(0, 2, 16, 2), ToolTip = toggle.About, IsEnabled = toggle.Enabled?.Invoke() ?? true };
-                var kind = list.Name == nameof(ViewsTabList) ? " Tab" : toggle.Name.EndsWith("Pane", StringComparison.Ordinal) || toggle.Name.EndsWith("Bar", StringComparison.Ordinal)
+                var box = new CheckBox { Content = toggle.Name, IsChecked = toggle.IsOn(), Margin = new Thickness(0, 2, 24, 2), ToolTip = toggle.About, IsEnabled = toggle.Enabled?.Invoke() ?? true };
+                var kind = tabs ? " Tab" : toggle.Name.EndsWith("Pane", StringComparison.Ordinal) || toggle.Name.EndsWith("Bar", StringComparison.Ordinal)
                     || toggle.Name == ScrubberTitle ? "" : " Pane";
                 AutomationProperties.SetName(box, toggle.Name + kind);
 
                 // Checked and Unchecked, not Click: the keyboard and UI Automation change a box without a click.
                 box.Checked += (_, _) => toggle.Set(true);
                 box.Unchecked += (_, _) => toggle.Set(false);
-                list.Children.Add(box);
+                ViewsPaneList.Children.Add(box);
             }
         }
 
-        Fill(ViewsTabList, TabToggles());
-        Fill(ViewsPaneList, PaneToggles());
+        Fill(TabToggles(), tabs: true);
+        Fill(PaneToggles(), tabs: false);
     }
 
     /// <summary>A tab's right-click menu (DockManager.ExtendTabMenu): Tabs and Panes, as in the Views menu.</summary>

@@ -8,7 +8,7 @@ ok: under it the Sequence Overview Scrubber across the window, the Preset Bar, t
 ok: the Master Meter and the other studios are left out (the meter goes in with the effects when shown)
 ok: tidying leaves it as it is (the playback row under the inner split survives)
 ok: it is still named Vertical & Shorts Studio among the five built-in layouts (5.4D: the Vertical Creator Split the fifth)
-ok: Standard Editing holds no studio and the arrangement version is still 4
+ok: Standard Editing holds no studio and the arrangement version is 5 (5.4.4-Final: the settings tabs beside Media)
 ok: its choice describes the Subtitle Studio and sets the Media Browser to Filmstrip (ShowShortsMedia)
 ok: Then runs when a layout is kept from the Layout Selector, put back as the Default by Reset Layout, chosen in the first-run window, and opened in at start-up
 ok: never while a card is only previewed, nor when the preview is undone

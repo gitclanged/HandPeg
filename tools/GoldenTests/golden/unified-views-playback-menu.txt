@@ -1,0 +1,18 @@
+# One icon-only Views button for the views and the playback bar; the transport row as tall as the Timeline's row of tools, its buttons in that row's styles.
+ok: the transport row is 26 DIPs tall, as the Timeline's row of tools (ToolbarRow) is, with no band above it
+ok: the row's BarButton and BarToggle, keyed in its own resources, set exactly what the Timeline's Tool and ToolToggle set (Segoe MDL2 13, Padding 7,4, centred)
+ok: Play / Pause in BarPlay (PlayPauseButton at 13, Padding 14,4); the window's TransportButton and PlayPauseButton unchanged (the simple bar and the studios use them)
+ok: all 22 buttons of the row are in BarButton, BarToggle or BarPlay, none with a larger type or more padding, picture icons at most 16 tall (16 + 8 + 2 = 26)
+ok: the speed is a pill, 22 DIPs tall as the volume pill is, inside the row, its face the speed; no box (ComboBox) left on the row
+ok: no gear (E713) on the row
+ok: ViewsButton keeps its name, its place (TimelineOptionsBar) and UI Automation's "Views", in BarToggle: one 16 x 14 picture (three sliders), no text
+ok: the playback bar's settings button (PlaybackSettingsButton, "Playback Controls Settings") is gone, from the XAML and from the code
+ok: one list of the bar's controls (PlaybackControls.Options, under their headings): ViewsBarControls, the Views menu's top-left column (5.4.4-Final), wrapping at 400 DIPs
+ok: its column's heading: Playback Bar, what this bar shows, in this mode
+ok: under the list, Dynamic Preview Scaling (ViewsPreviewScalingBox), set from code as the menu opens, as the Layout Selector's per-tab box is
+ok: the Views menu: Playback Bar (left) and Timeline (right) side by side, then one flat two-column list of tabs and panes (ViewsTabList gone) and Reset Panes Layout, no Arrange text
+ok: FillViewsLists puts the tabs, then the panes, in the one list (each still named "... Tab" / "... Pane" for UI Automation)
+ok: ViewsPopup has no placement of its own (UiScale.PlaceAgainst places it over its button)
+ok: the box shows the setting as the menu opens and saves it at once when clicked (the Settings window's setting: the player reads it as it draws)
+ok: the row keeps room for the icon-only button (34 DIPs until it is laid out); the menu is placed over it
+ok: the Live Encoded Preview toggle and its arrow, made in code, take the row's BarToggle (13, as tall as the other toggles)

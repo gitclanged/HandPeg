@@ -43,6 +43,12 @@ internal sealed class CachedFrame
     public int Pins;
 
     /// <summary>
+    /// A frame at the playhead of a project tab put behind, kept for its return (5.4.4, FrameCache.KeepOnly: lean parking): let go of last
+    /// of all within FrameCache.KeptShare of the budget, first of all beyond it. Cleared when the tab's file is registered again (Unkeep), and on reuse.
+    /// </summary>
+    public bool Kept;
+
+    /// <summary>
     /// Whether <see cref="Until"/> is known for sure: the next frame of its run was read (FrameCache.CloseGap), FFmpeg gave its
     /// length to the next picture, or the stream ended after it. Open, the end is the container's word for it (a sample's duration).
     /// </summary>
@@ -387,7 +393,7 @@ internal sealed unsafe class FrameCache : IDisposable
                 {
                     _free.RemoveAt(i);
                     _freeBytes -= free.Bytes;
-                    free.KeyFrame = free.Ahead = false;
+                    free.KeyFrame = free.Ahead = free.Kept = false;
                     free.Pins = 0;
                     return free;
                 }
@@ -659,6 +665,89 @@ internal sealed unsafe class FrameCache : IDisposable
         }
     }
 
+    // The bytes of the frames kept at the playheads of tabs put behind (5.4.4, KeepOnly), under the gate.
+    private long _keptBytes;
+
+    /// <summary>What the frames kept at the playheads of tabs put behind hold (bytes, 5.4.4: <see cref="KeepOnly"/>).</summary>
+    public long KeptBytes => Volatile.Read(ref _keptBytes);
+
+    /// <summary>
+    /// What the frames kept at the playheads of tabs put behind may hold of a <paramref name="budget"/> before they go first (bytes, 5.4.4):
+    /// max(96 MB, an eighth of it), never more than a quarter of it, so a budget that falls leaves the tab in front most of it.
+    /// </summary>
+    internal static long KeptShare(long budget) => Math.Min(Math.Max(96L << 20, budget / 8), budget / 4);
+
+    /// <summary>
+    /// Lean parking (5.4.4, a project tab put behind on unified memory or on battery): of a source's frames only those that cover the moments
+    /// of <paramref name="spans"/> stay (each span's first <paramref name="mostPerSpan"/> frames from its start), marked
+    /// <see cref="CachedFrame.Kept"/> (let go of last of all); every other frame of it goes at once. Returns the bytes kept (0: none was).
+    /// </summary>
+    public long KeepOnly(int source, ReadOnlySpan<(double From, double To)> spans, int mostPerSpan = 3)
+    {
+        lock (_gate)
+        {
+            if (!_bySource.TryGetValue(source, out var list))
+                return 0;
+
+            var keep = new HashSet<CachedFrame>(ReferenceEqualityComparer.Instance);
+            foreach (var (from, to) in spans)
+            {
+                var taken = 0;
+                for (var i = Math.Max(IndexAtOrBefore(list, from + 1e-6), 0); i < list.Count && taken < mostPerSpan; i++)
+                {
+                    var frame = list[i];
+                    if (frame.Time > to + 1e-6)
+                        break;
+                    if (frame.Until <= from + 1e-6)
+                        continue;
+                    keep.Add(frame);
+                    taken++;
+                }
+            }
+
+            var kept = 0L;
+            for (var i = list.Count - 1; i >= 0; i--)
+            {
+                var frame = list[i];
+                if (keep.Contains(frame))
+                {
+                    if (!frame.Kept)
+                        (frame.Kept, _keptBytes) = (true, _keptBytes + frame.Bytes);
+                    kept += frame.Bytes;
+                    continue;
+                }
+
+                list.RemoveAt(i);
+                Retire(frame);
+            }
+
+            if (list.Count == 0)
+                _bySource.Remove(source);
+            return kept;
+        }
+    }
+
+    /// <summary>A parked source taken back (5.4.4: its tab brought back): its kept frames are ordinary frames again.</summary>
+    public void Unkeep(int source)
+    {
+        lock (_gate)
+        {
+            if (!_bySource.TryGetValue(source, out var list))
+                return;
+            foreach (var frame in list)
+                Unmark(frame);
+        }
+    }
+
+    // A frame no longer kept for a tab put behind (under the gate).
+    private void Unmark(CachedFrame frame)
+    {
+        if (!frame.Kept)
+            return;
+        frame.Kept = false;
+        _keptBytes -= frame.Bytes;
+    }
+
     /// <summary>
     /// Every frame goes (Settings' Clear, a project closed; a tab put behind but on a big card), but for those being drawn, which go when
     /// let go of; the free list is emptied, and the budget is back at its baseline (5.4D-TabPerf: the next project shows what it needs; on
@@ -812,12 +901,22 @@ internal sealed unsafe class FrameCache : IDisposable
             return;
 
         var scored = new List<(double Score, CachedFrame Frame, List<CachedFrame> List, double Near)>();
+        List<(double Score, CachedFrame Frame, List<CachedFrame> List, double Near)>? kept = null;
+        var unwanted = 0;
         foreach (var (source, list) in _bySource)
         {
             foreach (var frame in list)
             {
                 if (frame.Pins > 0)
                     continue;
+
+                // The frames kept at the playheads of tabs put behind (5.4.4), the longest unused first: placed after the others below.
+                if (frame.Kept)
+                {
+                    (kept ??= []).Add((-3 - 1.0 / (1 + (_use - frame.LastUsed)), frame, list, double.PositiveInfinity));
+                    continue;
+                }
+
                 var (distance, near) = (double.PositiveInfinity, double.PositiveInfinity);
                 foreach (var (interestSource, seconds, weight) in _interests)
                 {
@@ -829,17 +928,33 @@ internal sealed unsafe class FrameCache : IDisposable
                 }
 
                 // Unwanted sources go first, the least recently used of them; key frames stay four times longer; a held
-                // stretch's frames last of all.
+                // stretch's frames last.
                 var score = double.IsPositiveInfinity(distance) ? 1e9 + (_use - frame.LastUsed) : distance;
                 if (frame.KeyFrame)
                     score /= 4;
                 if (_held.Count > 0 && IsHeldStretch(source, frame))
                     score = -1 - 1 / (1 + score);
+                else if (double.IsPositiveInfinity(distance))
+                    unwanted++;
                 scored.Add((score, frame, list, near));
             }
         }
 
         scored.Sort(static (a, b) => b.Score.CompareTo(a.Score));
+
+        // The kept frames (5.4.4) go after everything else only within KeptShare of the budget as it is now: those beyond it, the longest
+        // unused first, go right after the frames no plan wants (sorted first: 1e9 up, key frames a quarter of it) and before every wanted
+        // one, so a budget that fell after the tabs were put behind (other programs took the memory) never leaves the tab in front without
+        // room for its own frames, and a playhead frame never goes while a dead frame stays. Within the share, a tab brought back still finds it.
+        if (kept is not null)
+        {
+            kept.Sort(static (a, b) => b.Score.CompareTo(a.Score));
+            var (over, first) = (_keptBytes - KeptShare(_budget), 0);
+            for (; first < kept.Count && over > 0; first++)
+                over -= kept[first].Frame.Bytes;
+            scored.InsertRange(unwanted, kept.Take(first));
+            scored.AddRange(kept.Skip(first));
+        }
 
         // Thrash (5.4D-TabPerf): what would go was decoded a moment ago or lies by a moment being shown or sought. The project needs
         // more than the budget: a step of growth instead, when allowed; then only what still exceeds the grown budget goes.
@@ -854,6 +969,7 @@ internal sealed unsafe class FrameCache : IDisposable
             list.Remove(frame);
             _bytes -= frame.Bytes;
             Evictions++;
+            Unmark(frame);
             FreeLocked(frame);
         }
 
@@ -882,6 +998,7 @@ internal sealed unsafe class FrameCache : IDisposable
     private void Retire(CachedFrame frame)
     {
         _bytes -= frame.Bytes;
+        Unmark(frame);
         if (frame.Pins > 0)
         {
             // Still pinned by a render: let go of it later (the renderer unpins, the next trim disposes the orphans).
@@ -969,7 +1086,7 @@ internal sealed unsafe class FrameCache : IDisposable
             foreach (var frame in _orphans)
                 frame.Dispose();
             _orphans.Clear();
-            (_bytes, _freeBytes) = (0, 0);
+            (_bytes, _freeBytes, _keptBytes) = (0, 0, 0);
         }
 
         Com.Release(ref _adapter3);

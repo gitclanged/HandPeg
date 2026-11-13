@@ -149,6 +149,8 @@ public partial class MainWindow
             ["view.fit"] = (source, () => FitTimeline()),
             ["view.toggleSnap"] = (always, ToggleSnap),
             ["view.exploded3d"] = (() => CanToggleExplodedView, ToggleExplodedView),
+            // In and out of the Fullscreen Preview (5.4.4): in only with a picture in the player.
+            ["view.fullscreen"] = (() => _fullscreen is not null || VideoView.IsVisible, ToggleFullscreen),
 
             ["key.toggle"] = (source, () => ToggleKeyframe_Click(this, new RoutedEventArgs())),
             ["key.prev"] = (source, () => StepKeyframe(-1)),
@@ -386,19 +388,32 @@ public partial class MainWindow
 
         if (key == Key.Escape)
         {
-            if (_dialPopup is { IsOpen: true })
+            // 5.4.4: the dial, the tour, then (unless a text box, a drop-down or a flyout has the keyboard) a 3D drag under way and the
+            // Fullscreen Preview; Interactive Crop and the 3D view after the text box's keys (EndCropOnEscape, ExplodedWindow_PreviewKeyDown).
+            var focused = Keyboard.FocusedElement;
+            var focusKeepsIt = focused is TextBoxBase or PasswordBox or ComboBox or ComboBoxItem
+                || (focused is DependencyObject element && PresentationSource.FromDependencyObject(element)?.RootVisual is { } root && root is not Window);
+            switch (EscapeTakerFor(_dialPopup is { IsOpen: true }, _tour is { IsRunning: true }, focusKeepsIt, _explodedDrag != ExplodedDragKind.None,
+                        _fullscreen is not null, _viewModel.IsInteractiveCropActive, _explodedUi))
             {
-                CloseLightningDial();
-                e.Handled = true;
-                return true;
+                case EscapeTaker.Dial:
+                    CloseLightningDial();
+                    break;
+                case EscapeTaker.Tour:
+                    _tour?.Stop(finished: true);
+                    break;
+                case EscapeTaker.ExplodedDrag:
+                    EndExplodedDrag(cancelled: true);
+                    break;
+                case EscapeTaker.Fullscreen:
+                    ExitFullscreen();
+                    break;
+                default:
+                    return false;
             }
 
-            if (_tour is { IsRunning: true })
-            {
-                _tour.Stop(finished: true);
-                e.Handled = true;
-                return true;
-            }
+            e.Handled = true;
+            return true;
         }
 
         return false;

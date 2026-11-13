@@ -1,0 +1,30 @@
+# Live Encoded Preview, full export fidelity (5.4.4-Final): routing, pill, size, software command, P010, watched settings, player menu.
+ok: FamilyOf: *_qsv QuickSync, *_amf AMF, *_nvenc NVENC, *_mf Media Foundation, lib* software
+ok: VendorOf: QuickSync on the Intel card, AMF on the AMD card, NVENC on the NVIDIA card, Media Foundation on none (the compositor's)
+ok: hevc_qsv on the Desktop: the Arc's LUID first (the card asked for), then the compositor's card, then any card (stand-ins)
+ok: hevc_amf there: the AMD card (the compositor's too) once, then any card
+ok: Media Foundation / Auto: the compositor's card first (asked for), then any card
+ok: NVENC with no NVIDIA card: the compositor's card and any card, both stand-ins
+ok: GpuAdapters.OfVendor(0): no card for a family that names no vendor
+ok: the pill names the encoder and its rate: "ENCODED · HEVC QSV · 12 Mbps", "ENCODED · H.264 AMF · CBR 6.5 Mbps"
+ok: a software encoder by its library and preset ("ENCODED · x264 veryslow · CRF 22", "SVT-AV1 6"); a hardware CQ as CQ (CQ 28)
+ok: EncodedPillText: running on the card asked for, the settings' pill; a stand-in says so; a software encoder while playing says the picture is the plain one
+ok: bitrates in words: 800 kbps, 35 Mbps
+ok: no export size, or the canvas's: encoded at the canvas's size
+ok: a 720p export of a 1080p or 1440p Sequence: encoded at 1280 x 720
+ok: a turned export (720 x 1280) of a landscape canvas: its short side (720) taken, the canvas's shape kept
+ok: sides even, at least 64
+ok: the export's arguments split as a command line (a quoted value kept whole); the encoder named after -c:v
+ok: one frame: NV12 of the encoded size in, the export's own arguments, Annex B out; no filter named (Law 4): -hide_banner -nostats -loglevel error -f rawvideo -pix_fmt nv12 -video_size 1280x720 -framerate 59.94 -i pipe:0 -frames:v 1 -an -sn -dn -c:v libx264 -preset veryslow -tune film -crf 22 -x264-params keyint=60 bframes=0 -f h264 pipe:1
+ok: raw bitstreams: h264 and hevc (Annex B), AV1 as OBUs, VP9 in IVF
+ok: VP9's frame taken out of its IVF file; anything else is no frame
+ok: the arguments packed for the control block: at most 255 bytes, cut between two arguments (254 bytes), trimmed
+ok: into a 10-bit encoder: each 8-bit value at the top of its 16 bits (16 -> 0x1000, 235 -> 0xEB00)
+ok: out of a 10-bit decoder: each sample's top byte, rounded (0xEB80 -> 236), 0xFFC0 held at 255
+ok: 10-bit is part of the settings: turning it on or off sends new ones (and makes the encoder anew)
+ok: every Export tab member the user listed sends the preview new settings (all watched)
+ok: a run of changes is gathered for 25 ms, then sent once (PushLoopbackSettings)
+ok: new settings while on keep the content stamp (no scene drawn again) and raise the settings' own stamp
+ok: the worker draws the scene again only when it may have changed, drains the decoder on a paused frame held back, and the encoder at once
+ok: a right-click within the drag distance opens the player's menu; one that moved does not
+ok: its items, in the user's order, a separator after Ping-to-Mark

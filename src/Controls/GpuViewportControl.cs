@@ -13,7 +13,9 @@ namespace HandPegApp;
 /// out, the overlay window above it (gizmos, crop, the key map) and its place through dock rebuilds.
 /// <para>One thread uses it (the GPU engine's frame pump): the reader's device and the swap chain belong to that thread.
 /// The swap chain has a frame-latency waitable object (one frame queued at most), so <see cref="WaitForTurn"/> paces the
-/// pump at the display's refresh while playing and a picture is never more than a frame old when it is shown.</para>
+/// pump at the display's refresh while playing and a picture is never more than a frame old when it is shown. Every frame queued takes
+/// a turn of it, the paused pump's too (5.4.4, <see cref="FrameLatencyTurns"/>): a present without one let the playing pump run that many
+/// frames ahead of the display for the rest of the session.</para>
 /// <para>A lost device (a TDR) or a worker of a new generation on another card makes the reader's device anew; the
 /// swap chain follows it on the next present.</para>
 /// <para>Resized (5.4.1A), it never stretches: the player's swap chain is made with DXGI_SCALING_NONE, its buffers follow the window
@@ -42,12 +44,20 @@ internal sealed unsafe partial class GpuViewportControl : IDisposable
     // A mirror (5.4C) shares the player's reader, and so its device: it never disposes it.
     private readonly bool _ownsReader = true;
 
+    // The swap chain's frame-latency turns (5.4.4): every frame queued takes one, waited for or owed. The wait given to them.
+    private FrameLatencyTurns _turns;
+    private readonly Func<int, bool> _takeTurn;
+
+    // The last present queued nothing (DXGI_STATUS_OCCLUDED and the like, 5.4.4): the playing pump's next turn is paced by the clock.
+    private bool _nothingQueued;
+
     public GpuViewportControl(CompositorClient client, nint window)
     {
         _client = client;
         _reader = new CompositorFrameReader(client);
         _window = window;
         _scaling = Dxgi.ScalingNone;
+        _takeTurn = TakeTurn;
     }
 
     /// <summary>
@@ -62,6 +72,7 @@ internal sealed unsafe partial class GpuViewportControl : IDisposable
         _window = window;
         _ownsReader = false;
         _scaling = Dxgi.ScalingStretch;
+        _takeTurn = TakeTurn;
     }
 
     /// <summary>The native window it presents into.</summary>
@@ -78,20 +89,48 @@ internal sealed unsafe partial class GpuViewportControl : IDisposable
         }
     }
 
+    /// <summary>
+    /// Windows' scale of the monitor the window is on now (2.0 at 200 %; 1 when the window is gone), asked at every call: a fullscreen player
+    /// can be on another monitor than the main window (5.4.4, Dynamic Preview Scaling's "1:1 DIP"). Not HandPeg's own content scale, which
+    /// follows its UI Scale. Any thread.
+    /// </summary>
+    public double MonitorScale => GetDpiForWindow(_window) is var dpi and > 0 ? dpi / 96.0 : 1;
+
     /// <summary>Frames presented on the screen (diagnostics).</summary>
     public long Presents { get; private set; }
 
+    // The scene (its sequence number) in the frame last handed to IDXGISwapChain::Present (5.4.3): what is on the screen, not only drawn.
+    private long _presentedSequence;
+
+    /// <summary>The scene of the frame last presented on the swap chain (any thread; the worker's PresentedSequence is only drawn).</summary>
+    public long PresentedSequence => Volatile.Read(ref _presentedSequence);
+
     /// <summary>
-    /// Waits until the swap chain can take another frame (its frame-latency object), at most <paramref name="milliseconds"/>.
-    /// Without a swap chain yet, it waits that long.
+    /// The frame on the screen now as a still (5.4.3, a project tab put behind with no still of its playhead): read back on the presenting
+    /// thread (its device's context), cropped and sampled by <paramref name="region"/> and <paramref name="step"/>. False when there is none.
+    /// </summary>
+    internal bool TryReadStill(Func<int, int, (int Left, int Top, int Right, int Bottom)> region, Func<int, int, int> step, out byte[] bgra, out int width, out int height)
+    {
+        (bgra, width, height) = ([], 0, 0);
+        return Presents > 0 && _reader.TryReadStill(region, step, out bgra, out width, out height);
+    }
+
+    /// <summary>
+    /// Waits until the swap chain can take another frame (its frame-latency object), at most <paramref name="milliseconds"/>: the turns
+    /// owed by frames queued without one taken back first (5.4.4, <see cref="FrameLatencyTurns.Wait"/>). Without a swap chain yet, or
+    /// after a present that queued nothing (an occluded window: minimised, a locked session; its turn is still held, so the wait would not
+    /// wait at all and the playing pump would spin), it is paced by the clock: a refresh at 60 Hz, at most that long.
     /// </summary>
     public void WaitForTurn(int milliseconds)
     {
-        if (_waitable != 0)
-            _ = WaitForSingleObject(_waitable, (uint)milliseconds);
-        else
+        if (_waitable == 0 || _nothingQueued)
             Thread.Sleep(Math.Min(milliseconds, 16));
+        if (_waitable != 0)
+            _ = _turns.Wait(_takeTurn, milliseconds);
     }
+
+    // One turn of the frame-latency object, waited for at most that long (5.4.4: FrameLatencyTurns' wait).
+    private bool TakeTurn(int milliseconds) => _waitable != 0 && WaitForSingleObject(_waitable, (uint)milliseconds) == 0;
 
     /// <summary>
     /// Whether the worker presented a frame this viewport has not shown yet, or the window changed size since the last present (5.4.1A:
@@ -155,7 +194,18 @@ internal sealed unsafe partial class GpuViewportControl : IDisposable
                 return false;
             }
 
+            // A frame queued takes its turn, the paused pump's (no wait before it) too (5.4.4).
+            if (hr == 0)
+            {
+                _turns.Queued(_takeTurn);
+                if (vsync)
+                    MeasureLead();
+            }
+
+            _nothingQueued = hr > 0;
             Presents++;
+            if (hr >= 0)
+                Volatile.Write(ref _presentedSequence, _reader.Sequence);
             return hr >= 0;
         }
         catch (GpuException ex)
@@ -166,6 +216,82 @@ internal sealed unsafe partial class GpuViewportControl : IDisposable
             return false;
         }
     }
+
+    // ----- The display's lead (5.4.4-Final, the user's Q4 a) -----
+    // How long after the pump chose a playing frame's moment (FrameOrigin: its turn) that frame is on the screen: the swap chain's own report
+    // (GetFrameStatistics: the present shown at a vblank, and that vblank's QPC) matched to the presents made, over the last 128 (5.4.4: the
+    // 500 Hz Desktop shows a frame 6-9 ms after its Present, three or four refreshes, where the pump had counted one: the picture ran late of
+    // the sound by the difference). The median of the last LeadSamples is DisplayLeadSeconds; the pump draws each frame for that moment.
+
+    private const int LeadRing = 128, LeadSamples = 31;
+    private readonly uint[] _leadIds = new uint[LeadRing];
+    private readonly long[] _leadOrigins = new long[LeadRing];
+    private int _leadNext;
+    private readonly double[] _leads = new double[LeadSamples];
+    private int _leadCount, _leadAt;
+    private uint _leadSeen;
+    private double _displayLead = double.NaN;
+
+    /// <summary>The pump's turn that chose the frame presented next (QPC): set by the pump before it presents a playing frame.</summary>
+    public long FrameOrigin { get; set; }
+
+    /// <summary>
+    /// The measured time from the pump's turn to the frame on the screen, in seconds (the median of the last 31 matched presents); NaN until
+    /// enough are known (a swap chain DWM does not report on: the pump then counts one refresh, as before).
+    /// </summary>
+    public double DisplayLeadSeconds => Volatile.Read(ref _displayLead);
+
+    // After a vsync'd present: its count and the turn that made it kept; the swap chain asked which present the last vblank showed.
+    private void MeasureLead()
+    {
+        if (FrameOrigin == 0)
+            return;
+        var id = Dxgi.LastPresentCount(_swapChain);
+        if (id == 0)
+            return;
+        _leadIds[_leadNext] = id;
+        _leadOrigins[_leadNext] = FrameOrigin;
+        _leadNext = (_leadNext + 1) % LeadRing;
+        if (!Dxgi.FrameStatistics(_swapChain, out var shown, out var shownAt) || shown == _leadSeen)
+            return;
+        _leadSeen = shown;
+        for (var i = 0; i < LeadRing; i++)
+        {
+            if (_leadIds[i] != shown)
+                continue;
+            if (LeadOf(_leadOrigins[i], shownAt, System.Diagnostics.Stopwatch.Frequency) is { } lead)
+            {
+                _leads[_leadAt] = lead;
+                _leadAt = (_leadAt + 1) % LeadSamples;
+                _leadCount = Math.Min(_leadCount + 1, LeadSamples);
+                if (_leadCount >= 5)
+                    Volatile.Write(ref _displayLead, Median(_leads.AsSpan(0, _leadCount)));
+            }
+
+            break;
+        }
+    }
+
+    /// <summary>A turn and the vblank that showed its frame as a lead in seconds; null when out of reason (before the turn, or over 150 ms). Pure.</summary>
+    internal static double? LeadOf(long origin, long shownAt, long frequency) =>
+        shownAt > origin && frequency > 0 && (shownAt - origin) / (double)frequency is var seconds and < 0.15 ? seconds : null;
+
+    /// <summary>The median of some values (the middle one of an odd count, the mean of the middle two of an even one). Pure.</summary>
+    internal static double Median(ReadOnlySpan<double> values)
+    {
+        Span<double> sorted = stackalloc double[values.Length];
+        values.CopyTo(sorted);
+        sorted.Sort();
+        var middle = sorted.Length / 2;
+        return sorted.Length == 0 ? double.NaN : sorted.Length % 2 == 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+    }
+
+    /// <summary>
+    /// The lead the pump draws a playing frame for (5.4.4-Final): the measured one while it is known and within reason (at least a refresh,
+    /// at most 100 ms), else one refresh (the frame drawn now is on the screen at the next one). Pure, for the golden test.
+    /// </summary>
+    internal static double PlayingLead(double refresh, double measured) =>
+        double.IsFinite(measured) && measured >= refresh && measured <= 0.1 ? measured : refresh;
 
     /// <summary>
     /// Where a frame of one size goes in a target of another (5.4.1A, the player while it is resized): 1:1, never scaled, in whole
@@ -271,6 +397,8 @@ internal sealed unsafe partial class GpuViewportControl : IDisposable
             }
 
             Presents++;
+            if (hr >= 0)
+                Volatile.Write(ref _presentedSequence, _reader.Sequence);
             return hr >= 0;
         }
         catch (GpuException ex)
@@ -286,6 +414,12 @@ internal sealed unsafe partial class GpuViewportControl : IDisposable
         DropSwapChain();
         _swapChain = Dxgi.CreateSwapChain(device.DevicePointer, _window, width, height, _scaling);
         _waitable = Dxgi.FrameLatencyWaitable(_swapChain);
+        _turns.Reset();
+        _nothingQueued = false;
+
+        // A new swap chain counts its presents from 1 again: the presents kept for the lead are another's (the lead measured stays).
+        Array.Clear(_leadIds);
+        _leadSeen = 0;
         (_device, _buffers) = (device, (width, height));
     }
 
@@ -347,6 +481,9 @@ internal sealed unsafe partial class GpuViewportControl : IDisposable
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool IsWindow(nint window);
+
+    [LibraryImport("user32.dll")]
+    private static partial uint GetDpiForWindow(nint window);
 
     [LibraryImport("kernel32.dll")]
     private static partial uint WaitForSingleObject(nint handle, uint milliseconds);

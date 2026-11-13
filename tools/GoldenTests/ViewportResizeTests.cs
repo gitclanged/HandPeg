@@ -136,7 +136,7 @@ public static class ViewportResizeTests
                && release < Method(viewport, "private void Resize(").IndexOf("Dxgi.ResizeBuffers", StringComparison.Ordinal)
                && Method(viewport, "private void DropSwapChain()").Contains("Com.Release(ref _backRtv);", StringComparison.Ordinal),
             "the back buffer's view is let go before every ResizeBuffers and with the swap chain");
-        var main = Read("MainWindow.xaml.cs");
+        var main = Read("MainWindow.xaml.cs") + Read("MainWindow.PresetsAndKeyframes.cs") + Read("MainWindow.ViewsMenu.cs");
         expect(!main.Contains("VideoView.SizeChanged += (_, _) => ScheduleGpuState();", StringComparison.Ordinal),
             "a resize no longer plans the whole Sequence again (the mpv era's VideoView.SizeChanged => ScheduleGpuState is gone)");
         var surface = Read("Controls", "VideoSurface.cs");

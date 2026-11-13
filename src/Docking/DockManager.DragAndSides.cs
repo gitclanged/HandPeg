@@ -30,8 +30,15 @@ public sealed partial class DockManager
                 continue;
             }
 
-            // On one line: the pane shown always has room; the others give theirs up first, into a menu at the end.
+            // On one line: the pane shown always has room; the others give theirs up first, into a menu at the end. A pane headerless when
+            // alone (5.4.4, the Timeline) that is alone has no title at all: its hover tab moves it (Render's RenderHover).
             var shown = entry.Group.Panes.Where(p => _panes[p].IsShown()).ToList();
+            if (shown.Count == 1 && _panes[pane].HeaderlessAlone)
+            {
+                (slot.Content, slot.Visibility) = (null, Visibility.Collapsed);
+                continue;
+            }
+
             var tabs = new Dictionary<UIElement, string>();
             var strip = new OverflowStrip { ClipToBounds = true };
             foreach (var mate in shown)
@@ -729,14 +736,12 @@ public sealed partial class DockManager
     /// <summary>
     /// Takes an arrangement up for good, the side windows left as they are, and saves it. 5.4D: one laid out already (the card previewed,
     /// then kept) is taken up in place, as Load does (Rebind): the windows stay, and its tree is the one the borders and tabs now change.
+    /// 5.4.4: one that differs from what is laid out only in its shares and front tabs too (RebindOrRebuild).
     /// </summary>
     public void Apply(DockLayoutState layout)
     {
         _state = KeepingSideWindow(layout);
-        if (Signature() == _builtSignature)
-            Rebind();
-        else
-            Rebuild();
+        RebindOrRebuild();
         Changed?.Invoke();
     }
 

@@ -16,11 +16,35 @@ public partial class MainWindow
     /// <summary>
     /// The frames of the next tab in Ctrl+Tab's order and of <paramref name="hovered"/> (null: none) decoded ahead, at their playheads. Only tabs
     /// kept live (their Sequence in memory: every open tab, 5.4.2A, while memory allows); nothing while playing.
+    /// <para>On a lean machine (5.4.4, GpuPreviewEngine.LeanTabs: unified memory or on battery) nothing is decoded ahead on a switch, and a
+    /// hovered tab's frames only once the pointer has rested on it (or its card) <see cref="TabHoverRestMs"/> with the player paused and no
+    /// scrub or switch under way, for that tab alone.</para>
     /// </summary>
     private void PrewarmLikelyTabs(ProjectTabHeader? hovered)
     {
         if (_gpu is not { IsPlaying: false } engine || _tabs.Active is not { } front)
             return;
+
+        if (engine.LeanTabs)
+        {
+            _tabRestWarm?.Stop();
+            if (hovered is null || ReferenceEquals(hovered, front))
+            {
+                engine.PrewarmTabs([]);
+                return;
+            }
+
+            // Made at the first hover (never before Frame 1); each hover restarts it.
+            if (_tabRestWarm is null)
+            {
+                _tabRestWarm = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(TabHoverRestMs) };
+                _tabRestWarm.Tick += (_, _) => TabRested();
+            }
+
+            _tabRestFor = hovered;
+            _tabRestWarm.Start();
+            return;
+        }
 
         var frames = new List<(string Path, int Stream, double MediaSeconds)>();
         foreach (var tab in new[] { _tabs.Next(front, 1), hovered }.Distinct())
@@ -30,6 +54,31 @@ public partial class MainWindow
         }
 
         engine.PrewarmTabs(frames);
+    }
+
+    /// <summary>How long the pointer rests on a tab behind (or its card) before its frames are decoded ahead on a lean machine, ms (5.4.4).</summary>
+    internal const int TabHoverRestMs = 200;
+
+    // The lean machine's rest timer (made at the first hover) and the tab it is for.
+    private System.Windows.Threading.DispatcherTimer? _tabRestWarm;
+    private ProjectTabHeader? _tabRestFor;
+
+    /// <summary>
+    /// Whether a lean machine decodes a hovered tab's frames ahead now (5.4.4, pure: the goldens): the pointer still on that tab or its card,
+    /// the player paused, no scrub held and no switch under way.
+    /// </summary>
+    internal static bool LeanPrewarmDue(bool stillHovered, bool playing, bool scrubbing, bool switching) => stillHovered && !playing && !scrubbing && !switching;
+
+    /// <summary>The pointer rested on a tab behind (a lean machine): that tab's frames at its playhead decoded ahead, if all still holds.</summary>
+    private void TabRested()
+    {
+        _tabRestWarm?.Stop();
+        if (_tabRestFor is not { } tab || _gpu is not { } engine)
+            return;
+        var hovered = ProjectTabStrip.HoverItem is { } item && item.Id == tab.Id;
+        if (!LeanPrewarmDue(hovered, _viewModel.IsPlaying || engine.IsPlaying, IsScrubHeld, _switchingTab) || !_hydrated.TryGetValue(tab.Id, out var live))
+            return;
+        engine.PrewarmTabs(VideoFramesAt(live.Project.Document, tab.PlayheadMs / 1000, MostPreRollVideos));
     }
 
     /// <summary>
@@ -58,24 +107,5 @@ public partial class MainWindow
         }
 
         return frames;
-    }
-
-    /// <summary>The pointer across a tab behind with its card open: its overview sheet's picture there, when it keeps one in memory.</summary>
-    private void ScrubTabCard(ProjectTabItem item, double fraction)
-    {
-        if (!_hydrated.TryGetValue(item.Id, out var live) || live.ProgramSheet is not { Count: > 0 } sheet)
-            return;
-
-        var index = Math.Clamp((int)(fraction * sheet.Count), 0, sheet.Count - 1);
-        if (!ReferenceEquals(item, ProjectTabStrip.HoverItem))
-            return;
-        if (item.IsScrubbing && Math.Clamp((int)(item.ScrubFraction * sheet.Count), 0, sheet.Count - 1) == index)
-        {
-            item.ScrubFraction = fraction;
-            return;
-        }
-
-        item.Preview = sheet.Cell(index);
-        item.ScrubFraction = fraction;
     }
 }

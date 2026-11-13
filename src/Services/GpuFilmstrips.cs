@@ -261,7 +261,7 @@ public static class GpuFilmstrips
 
             var lead = video.FrameRate > 0 ? Math.Min(0.25 / video.FrameRate, 0.004) : 0.002;
             var targets = keys is null ? worker : SnapToKeyFrames(worker, keys, durationSeconds / layout.Count, lead);
-            sheet = new Sheet(videoPath, imagePath, layout, targets, complete, token);
+            sheet = new Sheet(videoPath, imagePath, layout, targets, complete, token) { Pause = WorkScheduler.PausePoint() };
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
@@ -313,20 +313,30 @@ public static class GpuFilmstrips
     // A sheet through the queue, a few decoding sessions at a time.
     private static async Task<bool> RunAsync(Sheet sheet, string videoPath, CancellationToken token)
     {
-        // A few decoding sessions at a time on the card, whatever asked for them (see WorkScheduler.GpuDecodeGate). A still (5.4.1-M3:
-        // Priority 0, a poster in sight) never waits there behind strips: it is one frame, drawn by the one worker the queue already has.
-        if (!sheet.IsStill)
-            await WorkScheduler.GpuDecodeGate.WaitAsync(token);
         Result result;
-        try
+        while (true)
         {
-            using (token.Register(() => sheet.Done.TrySetResult(new Result(Outcome.Cancelled, ""))))
-                result = await Enqueue(sheet);
-        }
-        finally
-        {
+            // A few decoding sessions at a time on the card, whatever asked for them (see WorkScheduler.GpuDecodeGate). A still (5.4.1-M3:
+            // Priority 0, a poster in sight) never waits there behind strips: it is one frame, drawn by the one worker the queue already has.
             if (!sheet.IsStill)
-                WorkScheduler.GpuDecodeGate.Release();
+                await WorkScheduler.GpuDecodeGate.WaitAsync(token);
+            try
+            {
+                using (token.Register(() => sheet.Done.TrySetResult(new Result(Outcome.Cancelled, ""))))
+                    result = await Enqueue(sheet);
+            }
+            finally
+            {
+                if (!sheet.IsStill)
+                    WorkScheduler.GpuDecodeGate.Release();
+            }
+
+            // Stopped between pictures (5.4.4): its permit and its lane's slot given back until the player pauses or the scrub is over, then
+            // drawn again from its start (the pictures of one strip: at most one strip's work lost).
+            if (result.Outcome != Outcome.Paused)
+                break;
+            await WorkScheduler.WhenBackgroundMayRunAsync(token);
+            sheet = sheet.Again();
         }
 
         switch (result.Outcome)
@@ -419,6 +429,9 @@ public static class GpuFilmstrips
 
         /// <summary>The worker did not start or did not answer: counted, three in a row and every strip is FFmpeg's.</summary>
         EngineFault,
+
+        /// <summary>Stopped between pictures (5.4.4: the player plays, or a scrub holds background work back): drawn again once that is over.</summary>
+        Paused,
     }
 
     private readonly record struct Result(Outcome Outcome, string Why);
@@ -429,6 +442,15 @@ public static class GpuFilmstrips
 
         /// <summary>One frame (a poster, a still: <see cref="TryStillAsync"/>): drawn ahead of every strip waiting (5.4.1-M3, Priority 0).</summary>
         public bool IsStill { get; init; }
+
+        /// <summary>
+        /// Whether the strip stops between its pictures now (5.4.4, WorkScheduler.PausePoint, captured in the work that asked for it): null
+        /// never (a still, a strip asked for outside background work).
+        /// </summary>
+        public Func<bool>? Pause { get; init; }
+
+        /// <summary>The same strip asked for again after it stopped: its own completion, the rest as it was.</summary>
+        public Sheet Again() => new(VideoPath, ImagePath, Layout, Targets, IFrames, Token) { IsStill = IsStill, Pause = Pause };
     }
 
     private static readonly object Gate = new();
@@ -560,6 +582,7 @@ public static class GpuFilmstrips
     private static CompositorClient? Start()
     {
         var adapter = GpuAdapters.BackgroundAdapter?.Index ?? AppSettings.Current.CompositorGpuAdapter;
+        GpuNativeBreadcrumbs.Mark("Filmstrips.Start", $"worker on adapter {adapter} ({GpuAdapters.BackgroundAdapter?.Name ?? "the compositor's"})");
         CompositorClient? client = null;
         try
         {
@@ -590,6 +613,9 @@ public static class GpuFilmstrips
         var stride = layout.Width * 4;
         try
         {
+            // The player plays or a scrub is held (5.4.4): not started meanwhile.
+            if (!MayGoOn(sheet))
+                return new Result(Outcome.Paused, "");
             client ??= Start();
             if (client is null)
                 return new Result(Outcome.EngineFault, "the compositor did not start");
@@ -617,6 +643,10 @@ public static class GpuFilmstrips
                 {
                     if (sheet.Token.IsCancellationRequested || sheet.Done.Task.IsCompleted)
                         return new Result(Outcome.Cancelled, "");
+
+                    // Between pictures (5.4.4): stopped while the player plays or a scrub is held (the source let go of below).
+                    if (!MayGoOn(sheet))
+                        return new Result(Outcome.Paused, "");
 
                     WriteScene(client, width, height, sheet.Targets[i], pathHash, clipKey, picture: true);
                     var sequence = client.Publish();
@@ -648,6 +678,35 @@ public static class GpuFilmstrips
         {
             return new Result(Outcome.EngineFault, $"{ex.GetType().Name}: {ex.Message}");
         }
+    }
+
+    /// <summary>How long a strip stopped between its pictures waits where it is before it lets go of its place in the queue, ms (5.4.4).</summary>
+    private const int PausedInPlaceMs = 1500;
+
+    /// <summary>
+    /// Whether a strip goes on with its next picture (5.4.4): yes unless it is paused (Sheet.Pause); paused, it waits in place up to
+    /// <see cref="PausedInPlaceMs"/> (a short scrub, a moment of play) and goes on if that is over, else stops (false), at once when a still
+    /// waits behind it or it is cancelled.
+    /// </summary>
+    private static bool MayGoOn(Sheet sheet)
+    {
+        if (sheet.Pause is not { } pause || !pause())
+            return true;
+        var clock = Stopwatch.StartNew();
+        while (clock.ElapsedMilliseconds < PausedInPlaceMs)
+        {
+            lock (Gate)
+            {
+                if (StillsWaiting.Count > 0)
+                    return false;
+            }
+
+            if (sheet.Token.IsCancellationRequested || !pause())
+                return !sheet.Token.IsCancellationRequested;
+            Thread.Sleep(20);
+        }
+
+        return !pause();
     }
 
     /// <summary>

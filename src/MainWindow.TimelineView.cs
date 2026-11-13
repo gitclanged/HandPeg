@@ -31,7 +31,7 @@ public partial class MainWindow
     // The rulers, scroll bars and zoom sliders that show the view (the timeline pane's: RegisterTimelineChrome).
     private readonly List<TimelineRuler> _rulers = [];
     private readonly List<ScrollBar> _timelineScrollBars = [];
-    private readonly List<Slider> _zoomSliders = [];
+    private readonly List<ExpandablePillSlider> _zoomSliders = [];
     private bool _showingView;
 
     /// <summary>How far the time bars reach, in seconds: the sequence, and room after it to drop and drag clips into.</summary>
@@ -256,7 +256,7 @@ public partial class MainWindow
     /// Has a ruler, a scroll bar and a zoom slider show the view and move it (the timeline pane's, once, as the window is
     /// made): the ruler seeks, zooms, pans and opens a marker's menu; the bar moves along; the slider zooms about the playhead.
     /// </summary>
-    private void RegisterTimelineChrome(TimelineRuler ruler, ScrollBar bar, Slider zoom)
+    private void RegisterTimelineChrome(TimelineRuler ruler, ScrollBar bar, ExpandablePillSlider zoom)
     {
         _rulers.Add(ruler);
         ruler.SeekRequested += seconds => ScrubPlayheadTo(seconds * 1000);
@@ -274,6 +274,9 @@ public partial class MainWindow
         bar.Scroll += TimelineScroll_Scroll;
         _zoomSliders.Add(zoom);
         zoom.ValueChanged += TimelineZoomSlider_ValueChanged;
+
+        // The open pill reads the zoom as the status line does ("2.4x"), not its own 0 to 1 (5.4.4).
+        zoom.ReadoutFor = _ => ZoomReadout(TimelineExtent, ViewSpan);
 
         // Touch-to-stop across the pane (5.4C): each stops its own coast on a press; a press on the one stops the other's, and a press on
         // the scroll bar stops both (handled presses too: the bar's thumb and buttons answer theirs).
@@ -378,9 +381,9 @@ public partial class MainWindow
         ZoomAboutPlayhead(ViewSpan / span);
     }
 
-    private void TimelineZoomIn_Click(object sender, RoutedEventArgs e) => ZoomAboutPlayhead(1.6);
-
-    private void TimelineZoomOut_Click(object sender, RoutedEventArgs e) => ZoomAboutPlayhead(1 / 1.6);
+    /// <summary>The zoom pill's readout (5.4.4): how many times closer than the whole timeline the view is ("2.4x"); "1x" while there is none.</summary>
+    internal static string ZoomReadout(double extent, double span) =>
+        string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{(extent > 0 && span > 0 ? extent / span : 1):0.#}x");
 
     private void TimelineZoomFit_Click(object sender, RoutedEventArgs e) => FitTimeline();
 

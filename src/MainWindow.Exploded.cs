@@ -993,7 +993,7 @@ public partial class MainWindow
     private static partial bool GetCurrentInputMessageSource(out InputMessageSource source);
 
     /// <summary>Whether the input message being handled now came from a touchpad (Windows 8.1 and later say so; a mouse's never does).</summary>
-    private static bool FromTouchpad() => GetCurrentInputMessageSource(out var source) && (source.DeviceType & ImdtTouchpad) != 0;
+    internal static bool FromTouchpad() => GetCurrentInputMessageSource(out var source) && (source.DeviceType & ImdtTouchpad) != 0;
 
     // ----- Touch (5.3-Stage3) -----
 

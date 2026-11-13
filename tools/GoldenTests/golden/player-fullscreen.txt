@@ -1,0 +1,35 @@
+# The Fullscreen Preview: the hover button and the bar coming and going, the order Esc goes in, F11, the bar's parts bound to the player's state, the borderless window, and the surface lifted out of its pane and given back with the dock untouched.
+ok: the Fullscreen button stays up while the pointer moved over the player less than 1.5 s ago, or while it is on the button
+ok: the fullscreen bar stays up 1.8 s after the last move, and for as long as the pointer is on it or something of it is held
+   Esc with everything at once: Dial
+   Esc with the dial, a text box with the keyboard: Dial
+   Esc with the tour and all below it: Tour
+   Esc with a text box with the keyboard, fullscreen: None
+   Esc with a 3D drag, fullscreen, crop, 3D: ExplodedDrag
+   Esc with fullscreen, crop, 3D: Fullscreen
+   Esc with crop, 3D: Crop
+   Esc with 3D: Exploded
+   Esc with nothing: None
+ok: Esc goes to the dial, the tour, (nothing past them while a text box, a drop-down or a flyout has the keyboard) a 3D drag, the Fullscreen Preview, Interactive Crop, then the 3D view
+ok: view.fullscreen, Fullscreen Preview in the View keys, is F11 by default (listed in Settings > Keybinds by itself)
+ok: every key preset has it on F11, and none gives F11 to anything else
+ok: the bar on a 1600 x 300 picture: 900 wide (its most), centred, 16 above the bottom (350, 248, 36 tall), dark and rounded as the wipe's pills
+   the bar: Play, Volume, Playhead, (time), 3D Exploded View, Live Encoded Preview, Exit Fullscreen Preview
+ok: Play / Pause, the Volume pill, the scrubber (all the room left), the time (held still: a TimeReadout), the 3D and Live Encoded Preview toggles, Exit
+ok: none of its buttons or its scrubber takes the keyboard: Space stays Play / Pause, the arrows step frames
+ok: its Volume is the pill, the playback bar's volume and mute (a notch of the wheel: 42 to 47; its speaker mutes), opening to the right over the scrubber, above it; open, the bar is held up
+ok: in a light theme its speaker is drawn light on the dark bar, and opened, the pill is dark (the HUD's colours, not the theme's near-black text and pale well)
+ok: its Live Encoded Preview toggle is the preview's own switch (on, off), greyed out for an Audio Only export
+ok: Play / Pause takes the playback bar's own style (its glyph turns to Pause while playing) in the bar's look
+   the scrubber said: sought 7000; scrubbed 8000; let go at 8000
+ok: told the time, the scrubber and the readout show it and say nothing back
+ok: a press beside its playhead seeks; a drag scrubs and is let go where it ends; the playhead coming back during the drag does not pull it back
+ok: Exit (Back to Window) names F11 as its key; the 3D toggle names its own
+ok: the Fullscreen button: top right, 10 in, the Full Screen glyph, F11 in its tip; made hidden, taking clicks only while shown
+ok: the window: borderless, not resizable, opaque black, out of the taskbar, no WindowChrome; its content scaled, its size the monitor's
+ok: closed by anything but its owner (Alt+F4) it stays and asks to be left; let close, it closes
+ok: MainWindow.xaml: the player's surface holds PlayerHud, which holds only PlayerOverlay (zoomed with the picture, hidden in 3D); the HUD itself is made in code
+ok: MainWindow.Fullscreen.cs never touches the dock, and puts the surface straight back into its pane (VideoBorder.Child = VideoView)
+ok: PlayerFullscreenWindow.cs: no WindowChrome, FrameHook or WM_NCCALCSIZE
+ok: Law 1: before the first frame only a ContentRendered hook; the HUD's own hooks at the first idle moment after it, the rest at first use
+ok: MainWindow.Keybinds.cs: F11 goes in (with a picture) and out; Esc asks EscapeTakerFor

@@ -1573,11 +1573,10 @@ public partial class MediaBrowserPane : UserControl
 
         // For as long as it is dragged (the drag is a loop of its own on this thread, which the pane's work would stall)
         // background work is held back and its tools stopped where they are, the pane's own work waits between files, and
-        // a strip being made for the pointer is stopped (4.3E). The drop's own work holds it from there (MainWindow.Drops).
+        // a strip being made for the pointer is stopped (4.3E). The drop's own work holds it from there (MainWindow.Drops). 5.4.4: an internal
+        // drag makes nothing ready ahead of its drop (MainWindow.IsInternalDrag); a tile rested on still does (PrewarmRequested, not carried).
         StopStripOnDemand();
         _restTimer?.Stop();
-        if (pressed.IsVideo)
-            PrewarmRequested?.Invoke(pressed.Path, true);
         using (WorkScheduler.HoldBackground())
             DragDrop.DoDragDrop(Items, data, DragDropEffects.Copy);
     }

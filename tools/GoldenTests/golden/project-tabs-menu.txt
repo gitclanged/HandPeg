@@ -8,7 +8,7 @@ ok: a saved project renamed stays where it is under the new name, its extension 
 ok: the tab in front keeps its text tooltip; a tab behind has none (its hover card instead)
 ok: the card's last line: not saved yet, or saved with its file
 ok: or unsaved changes, with its file
-ok: ProjectTabStrip.xaml: HoverCard is a Popup that takes no clicks
+ok: ProjectTabStrip.xaml: HoverCard is a Popup that takes the pointer (5.4.4: scrubbed across, clicked to bring its tab to the front)
 ok: its surface is an inspector card (the theme's card brushes, a 1 px border, 6 px corners), nothing inside its edge
 ok: its picture fills the card (5.4C), the tab's still or thumbnail
 ok: in its own shape: 16:9 is 318 x 179, 9:16 191 x 340 (never cropped to 16:9), square 318 x 318; with no picture the card is 318 wide

@@ -90,6 +90,10 @@ public sealed partial class WorkItem : ObservableObject
     internal readonly List<int> Processes = [];
     internal bool Suspended;
 
+    // Its lane's slot given back while what it draws in pieces is stopped between them (5.4.4, WorkScheduler.WhenBackgroundMayRunAsync);
+    // taken back through WorkScheduler.Pump, within the lane's limit. Under WorkScheduler's gate.
+    internal bool SlotGivenBack;
+
     public string Title { get; }
     public WorkLane Lane { get; }
     public string? Key { get; }
@@ -208,7 +212,8 @@ public sealed partial class WorkSummary : ObservableObject
 ///   - Idle (indexing, purges, the encoder probe, update checks): 1.
 /// Background and Idle work waiting to start waits while the player plays and while foreground work runs (both
 /// Settings, on by default), and while the user has paused its lane in the progress flyout; work already running
-/// carries on. While a file is dragged and dropped (4.3E, <see cref="HoldBackground()"/>) it waits too, and the tools of
+/// carries on, but for work drawn in pieces, which stops between them (5.4.4: <see cref="PausePoint"/>, also while a scrub holds background
+/// work back). While a file is dragged and dropped (4.3E, <see cref="HoldBackground()"/>) it waits too, and the tools of
 /// the background and idle work running are stopped where they are until the drop's own work is done. Urgent work (what
 /// a user's action waits on this moment) starts at once, whatever is waiting and whatever the limits. Work asked for
 /// twice under one key is done once. The tools started for a piece of work go into the job for its lane (see
@@ -278,7 +283,18 @@ public static class WorkScheduler
     {
         var settings = AppSettings.Current;
         JobObjects.Configure(settings.EffectiveReservedCores, settings.BackgroundPriority == AppSettings.PriorityIdle);
+        TakeSettings();
+    }
+
+    /// <summary>
+    /// Work that may start now does; then work stopped between its pieces looks again whether it may go on (5.4.4): "Pause background work
+    /// while playing" turned off mid-play lets the stopped strips go on and gives back the room kept for them, which nothing else does until
+    /// the play ends. Outside the gate: a stopped piece's look only completes a task whose continuation runs on the pool (never inline).
+    /// </summary>
+    internal static void TakeSettings()
+    {
         Pump();
+        RaisePauseChanged();
     }
 
     /// <summary>How much of a lane's work may run at once.</summary>
@@ -327,6 +343,150 @@ public static class WorkScheduler
             _playing = value;
             Pump();
             ApplySuspensions();
+            RaisePauseChanged();
+        }
+    }
+
+    // ----- Background work stopped between its pieces (5.4.4: the strip workers while the player plays or a scrub is held) -----
+    // Work already running carried on through playback (only work waiting to start waited). Background and idle work that draws in pieces
+    // (GpuProgramStrip's pictures, GpuFilmstrips' strips) asks between pieces whether to stop: while the player plays (the "Pause
+    // background work while playing" setting, on by default) and while background work is held back (a scrub's moves, a drag and drop).
+    // Stopped, it gives back its lane's slot and its decoding permit and waits for PauseChanged; work the user waits on never stops.
+
+    /// <summary>Whether background work that can stop between its pieces stops now: the player plays (as Settings asks) or background work is held back.</summary>
+    public static bool BackgroundPaused => IsHeld || (_playing && AppSettings.Current.PauseBackgroundWhilePlaying);
+
+    /// <summary>Raised (on any thread) when <see cref="BackgroundPaused"/> may have changed: play or pause, a hold begun or ended.</summary>
+    public static event Action? PauseChanged;
+
+    private static void RaisePauseChanged()
+    {
+        try
+        {
+            PauseChanged?.Invoke();
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            AppLog.Write("Background work's pause", ex);
+        }
+    }
+
+    /// <summary>
+    /// The question background work asks between its pieces, captured inside the work (5.4.4): true while it should stop (it is background
+    /// or idle work the user does not wait on, and <see cref="BackgroundPaused"/>). Outside any work (the goldens, tools) it is always false.
+    /// </summary>
+    internal static Func<bool> PausePoint()
+    {
+        if (Current.Value is not { } item || item.Lane < WorkLane.Background || item.BypassPause)
+            return static () => false;
+        return () => !item.BypassPause && BackgroundPaused;
+    }
+
+    /// <summary>
+    /// Waits (inside background work that stopped between its pieces) until <see cref="BackgroundPaused"/> is over; meanwhile the work's lane
+    /// slot is given back (5.4.4: nothing held while it waits). The slot is taken back only when the lane has room (Pump: before any work not
+    /// started yet, which never starts in the room kept for it), so work that started meanwhile never takes the lane over its limit; several
+    /// pieces of one work stopped at once give back and take back its one slot. Cancelled, it throws with the slot still given back (the
+    /// work's end does not give it back twice). Returns at once when nothing pauses it.
+    /// </summary>
+    public static async Task WhenBackgroundMayRunAsync(CancellationToken token)
+    {
+        if (!BackgroundPaused)
+            return;
+
+        var item = Current.Value is { Lane: >= WorkLane.Background } running ? running : null;
+        if (item is not null)
+        {
+            lock (Gate)
+            {
+                if (!item.SlotGivenBack)
+                {
+                    item.SlotGivenBack = true;
+                    Running[(int)item.Lane]--;
+                    Stopped[(int)item.Lane]++;
+                }
+            }
+
+            Pump();
+        }
+
+        var resumed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void Look()
+        {
+            if (!BackgroundPaused)
+                resumed.TrySetResult();
+        }
+
+        PauseChanged += Look;
+        try
+        {
+            using (token.Register(() => resumed.TrySetCanceled(token)))
+            {
+                Look();
+                await resumed.Task.ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            PauseChanged -= Look;
+        }
+
+        if (item is null)
+            return;
+
+        // The lane's room back (5.4.4), unless another piece of the same work took it back already.
+        var room = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (Gate)
+        {
+            if (!item.SlotGivenBack)
+                return;
+            Resuming.Add((item, room));
+        }
+
+        Pump();
+        using (token.Register(() =>
+        {
+            lock (Gate)
+                Resuming.RemoveAll(r => ReferenceEquals(r.Room, room));
+            room.TrySetCanceled(token);
+        }))
+        {
+            await room.Task.ConfigureAwait(false);
+        }
+    }
+
+    // Work stopped between its pieces that may go on, each piece waiting for its lane's room (5.4.4): Pump serves them first. Under the gate.
+    private static readonly List<(WorkItem Item, TaskCompletionSource Room)> Resuming = [];
+
+    // By lane, the work whose slot is given back while it is stopped between its pieces (5.4.4): room kept for it once the pause is over.
+    private static readonly int[] Stopped = new int[4];
+
+    /// <summary>The goldens: a lane's work holding its slots, and the work stopped between its pieces with its slot given back. Never called by HandPeg.</summary>
+    internal static (int Running, int Stopped) LaneForTests(WorkLane lane)
+    {
+        lock (Gate)
+            return (Running[(int)lane], Stopped[(int)lane]);
+    }
+
+    /// <summary>
+    /// Work stopped between its pieces holds its lane's slot again (<paramref name="counted"/>; not when it ended stopped) and every piece of
+    /// it waiting for the room goes on (5.4.4). Under the gate.
+    /// </summary>
+    private static void GoOnLocked(WorkItem item, bool counted)
+    {
+        if (!item.SlotGivenBack)
+            return;
+        item.SlotGivenBack = false;
+        Stopped[(int)item.Lane]--;
+        if (counted)
+            Running[(int)item.Lane]++;
+        for (var i = Resuming.Count - 1; i >= 0; i--)
+        {
+            if (ReferenceEquals(Resuming[i].Item, item))
+            {
+                Resuming[i].Room.TrySetResult();
+                Resuming.RemoveAt(i);
+            }
         }
     }
 
@@ -516,6 +676,7 @@ public static class WorkScheduler
     {
         ApplySuspensions();
         Pump();
+        RaisePauseChanged();
     }
 
     private sealed class Hold(long until) : IDisposable
@@ -658,12 +819,19 @@ public static class WorkScheduler
             foreach (var lane in Enum.GetValues<WorkLane>())
             {
                 var index = (int)lane;
+
+                // Work stopped between its pieces goes on first, within the lane's limit as the rest (urgent work past it) (5.4.4).
+                while (Resuming.Find(r => r.Item.Lane == lane && (r.Item.Urgent || Running[index] < LaneLimit(lane))).Item is { } resumed)
+                    GoOnLocked(resumed, counted: true);
+
                 while (Running[index] < LaneLimit(lane))
                 {
-                    // The tab in front's work first (5.4.1-M3); then the tabs behind's, in the order asked for.
+                    // The tab in front's work first (5.4.1-M3); then the tabs behind's, in the order asked for. The room of work stopped
+                    // between its pieces is kept for it (5.4.4): only work that does not wait for a pause starts in it meanwhile.
                     var front = FrontTab;
-                    var next = Waiting.FirstOrDefault(i => i.Lane == lane && (i.Tab is null || i.Tab == front) && !UserPaused[index] && (i.BypassPause || !PausedByRule(lane)))
-                        ?? Waiting.FirstOrDefault(i => i.Lane == lane && !UserPaused[index] && (i.BypassPause || !PausedByRule(lane)));
+                    var kept = Running[index] + Stopped[index] >= LaneLimit(lane);
+                    var next = Waiting.FirstOrDefault(i => i.Lane == lane && (i.Tab is null || i.Tab == front) && !UserPaused[index] && (i.BypassPause || !kept && !PausedByRule(lane)))
+                        ?? Waiting.FirstOrDefault(i => i.Lane == lane && !UserPaused[index] && (i.BypassPause || !kept && !PausedByRule(lane)));
                     if (next is null)
                         break;
 
@@ -696,7 +864,11 @@ public static class WorkScheduler
         {
             lock (Gate)
             {
-                Running[lane]--;
+                // Its slot given back already when it ended stopped between its pieces (5.4.4: cancelled while it waited), never twice.
+                if (item.SlotGivenBack)
+                    GoOnLocked(item, counted: false);
+                else
+                    Running[lane]--;
                 Live.Remove(item);
             }
 

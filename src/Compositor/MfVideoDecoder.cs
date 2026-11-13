@@ -671,7 +671,9 @@ internal sealed unsafe class MfVideoDecoder : IDisposable
                 Com.Check(Mf.GetBufferByIndex(sample, 0, out buffer), "GetBufferByIndex");
                 if (Hardware && Com.Query(buffer, Iid.MfDxgiBuffer) is var dxgi and not 0)
                 {
+                    var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("MF.CopyHardwareFrame");
                     CopyHardwareFrame(dxgi, ref frame);
+                    crumb.Leave();
                 }
                 else
                 {
@@ -1022,7 +1024,12 @@ internal sealed unsafe class MfVideoDecoder : IDisposable
         ReleaseFrame();
     }
 
-    public void Dispose() => Close();
+    public void Dispose()
+    {
+        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("MF.Dispose", System.IO.Path.GetFileName(Path));
+        Close();
+        crumb.Leave();
+    }
 }
 
 /// <summary>

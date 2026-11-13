@@ -1,0 +1,4 @@
+# A worker keeps its working set across a tab switch, and gives it back after a trim with nothing in front.
+ok: a trim followed by a scene (a tab switch): the next frames draw with the working set kept, no texture made
+ok: a trim with nothing after it: the working set handed back, the next frame makes its textures again
+ok: the driver's allocations and the heap are handed back after an asked-for trim only when no scene followed it (the idle trim does it later)

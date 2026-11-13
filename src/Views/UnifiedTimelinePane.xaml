@@ -540,20 +540,18 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
-                <StackPanel x:Name="ZoomCorner" Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center" TextElement.FontSize="11">
-                    <Button Style="{StaticResource ZoomTool}" Content="&#xE71F;" Tag="ZoomOut" Click="Tool_Click"
-                            AutomationProperties.Name="Zoom Timeline Out" local:KeyTip.Action="view.zoomOut"
-                            local:KeyTip.Text="Zoom out{keys}: the tracks show more of the sequence. Holding {key:nav.back|the zoom-out key} zooms out smoothly about the pointer, and so does the wheel over the ruler." />
-                    <Slider x:Name="ZoomSlider" Width="44" Margin="4,0" VerticalAlignment="Center" Minimum="0" Maximum="1" SmallChange="0.02" LargeChange="0.1"
-                            AutomationProperties.Name="Timeline Zoom" ToolTip="Timeline zoom: left shows the whole sequence, right a fraction of a second across." />
-                    <Button Style="{StaticResource ZoomTool}" Content="&#xE8A3;" Tag="ZoomIn" Click="Tool_Click"
-                            AutomationProperties.Name="Zoom Timeline In" local:KeyTip.Action="view.zoomIn"
-                            local:KeyTip.Text="Zoom in{keys}: the tracks show less of the sequence, larger. Holding {key:nav.forward|the zoom-in key} zooms in smoothly about the pointer, and so does the wheel over the ruler." />
+                <StackPanel x:Name="ZoomCorner" Panel.ZIndex="1" Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center" TextElement.FontSize="11">
                     <Button Style="{StaticResource ZoomTool}" Content="&#xE9A6;" Margin="3,0,0,0" Tag="ZoomFit" Click="Tool_Click"
                             AutomationProperties.Name="Fit Timeline" local:KeyTip.Action="view.fit" local:KeyTip.Text="Fit{keys}: the tracks show the whole sequence, with room after its end to drop clips into." />
                     <!-- The tracks' height (5.1-Polish, the user's directive): dragged up or down, the wheel, a double-click for the usual one. -->
                     <local:TrackHeightPill Margin="5,0,0,0" VerticalAlignment="Center" Value="{Binding LayerTrackHeight}"
                                            ToolTip="Track height: drag up for taller tracks, down for lower ones (or use the wheel here, or Alt + Shift + the wheel over the tracks, or drag a track's lower edge in its header). A double-click puts the usual height back." />
+                    <!-- The zoom (5.4.4): a magnifier after Fit and the track height, opening into a pill slider to the right (over the corner's
+                         empty end and, raised by the corner's ZIndex, the ruler's first DIPs; never over Fit or the track height), its readout the zoom ("2.4x"). -->
+                    <local:ExpandablePillSlider x:Name="ZoomSlider" Margin="4,0,0,0" VerticalAlignment="Center" Icon="Magnifier"
+                                                Minimum="0" Maximum="1" SmallChange="0.04" LargeChange="0.1" DefaultValue="0" TrackLength="64"
+                                                AutomationProperties.Name="Timeline Zoom"
+                                                local:KeyTip.Text="Timeline zoom: left shows the whole sequence, right a fraction of a second across. The wheel here steps it, {key:view.zoomIn|the zoom-in key} and {key:view.zoomOut|the zoom-out key} zoom about the playhead (held, {key:nav.forward|the zoom-in key} and {key:nav.back|the zoom-out key} zoom smoothly about the pointer, as the wheel over the ruler does), and a double-click on the track fits." />
                 </StackPanel>
                 <local:TimelineRuler x:Name="Ruler" Background="{DynamicResource InsetBrush}" BorderBrush="{DynamicResource WellBorderBrush}" BorderThickness="{DynamicResource WellEdgeThickness}"
                                      LowerBorderBrush="{DynamicResource WellBorderLowerBrush}" Cursor="Hand" ClipToBounds="True" Margin="0,0,0,2"

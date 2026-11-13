@@ -141,16 +141,20 @@
         </Popup>
         <!--
             A tab behind's hover card (Pass 5.4B): its paused still or saved thumbnail, its frame and frame rate, and whether it is saved.
-            Placed under the tab by UiScale.PlaceAgainst; it takes no clicks. An inspector card's surface (the outer border's panel brush
-            shows only while a theme has no card brushes). 5.4C (the user's): the picture fills the whole card in its own shape (a vertical
-            project's card is tall), cut to its corners, and the text lies over its foot on a dark band that fades up into the picture; with no picture the card is the text alone, in the
-            theme's colours.
+            Placed under the tab by UiScale.PlaceAgainst. An inspector card's surface (the outer border's panel brush shows only while a
+            theme has no card brushes). 5.4C (the user's): the picture fills the whole card in its own shape (a vertical project's card is
+            tall), cut to its corners, and the text lies over its foot on a dark band that fades up into the picture; with no picture the card
+            is the text alone, in the theme's colours. 5.4.4 (the user's): the card takes the pointer: across it, it scrubs the tab's whole
+            Sequence (HoverSurface's handlers), a click on it brings the tab to the front, and it stays open while the pointer is over the
+            tab or the card and a moment across the gap between them (HoverCardHold).
         -->
-        <Popup x:Name="HoverCard" StaysOpen="True" AllowsTransparency="True" IsHitTestVisible="False" Focusable="False">
-            <Border Background="{DynamicResource PanelBrush}" CornerRadius="6">
+        <Popup x:Name="HoverCard" StaysOpen="True" AllowsTransparency="True" Focusable="False">
+            <Border x:Name="HoverSurface" Background="{DynamicResource PanelBrush}" CornerRadius="6"
+                    MouseEnter="HoverCard_MouseEnter" MouseLeave="HoverCard_MouseLeave" MouseMove="HoverCard_MouseMove"
+                    MouseLeftButtonDown="HoverCard_MouseLeftButtonDown" MouseLeftButtonUp="HoverCard_MouseLeftButtonUp">
                 <Border Background="{DynamicResource InspectorCardBrush}" BorderBrush="{DynamicResource InspectorCardBorderBrush}" BorderThickness="1"
                         CornerRadius="6">
-                    <Grid Width="{Binding CardWidth}">
+                    <Grid x:Name="HoverBody" Width="{Binding CardWidth}">
                         <!-- The picture in its own shape (5.4C: a tall project's card is tall), its corners cut to the card's by the border. -->
                         <Border x:Name="HoverPicture" Height="{Binding PictureHeight}" CornerRadius="5">
                             <Border.Background>
@@ -203,7 +207,7 @@
                                 <TextBlock Text="{Binding SavedText}" FontSize="11" Opacity="0.8" Margin="0,4,0,0" TextWrapping="Wrap" />
                             </StackPanel>
                         </Border>
-                        <!-- 5.4.2A: where the pointer is scrubbing along the tab, as a thin bar at the picture's foot (none while not scrubbing). -->
+                        <!-- 5.4.2A: where the pointer is scrubbing (5.4.4: along the tab or across the card), as a thin bar at the picture's foot (none while not scrubbing). -->
                         <Border x:Name="HoverScrubBar" VerticalAlignment="Bottom" HorizontalAlignment="Left" Height="2" Width="{Binding ScrubWidth}"
                                 Background="{DynamicResource AccentBrush}" Visibility="{Binding IsScrubbing, Converter={StaticResource Visible}}" />
                     </Grid>

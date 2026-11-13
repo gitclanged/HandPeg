@@ -140,6 +140,7 @@ internal sealed unsafe class GpuDevice : IDisposable
                 var desc = Dxgi.Describe(used);
                 AdapterLuid = desc.Luid;
                 AdapterName = Dxgi.Name(desc);
+                HandPegApp.Services.GpuNativeBreadcrumbs.Adapter = desc.Luid; // the card the process's breadcrumbs name (5.4.4)
                 VendorId = desc.VendorId;
                 IsWarp |= (desc.Flags & AdapterDesc1.FlagSoftware) != 0;
                 DedicatedVideoMemory = IsWarp ? 0 : (long)desc.DedicatedVideoMemory;

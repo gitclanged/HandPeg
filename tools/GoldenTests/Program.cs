@@ -170,6 +170,16 @@ public static class Program
         results.AddRange(ViewportResizeTests.All());
         // Pass 5.4.2B: zero-lag scrubbing (the playhead's lines and the player on the raw move, its value once per frame).
         results.AddRange(ScrubTests.All());
+        // Pass 5.4.4: tabs behind that cost the front tab nothing (A), the preview's scale at high DPI and the waveform tiles through a zoom
+        // (A2), a clip dragged to the Clip Library, the pill sliders and the fullscreen preview (B), the tab card's scrub, the dock's
+        // rebind and the one Views button (C).
+        results.AddRange(MultiTabIsolationTests.All());
+        results.AddRange(PreviewScalingTests.All());
+        results.AddRange(WaveTilesZoomTests.All());
+        results.AddRange(PlayerAndLibraryUiTests.All());
+        results.AddRange(TabsDockTransportTests.All());
+        // Pass 5.4.4-Final: the Live Encoded Preview's full export fidelity (routing, pill, size, software command, P010) and the player's menu.
+        results.AddRange(LiveEncodedFidelityTests.All());
         // Last of all: its tour needs the WPF Application it makes, and a view model works otherwise once there is one (its command
         // and its undo steps go through the dispatcher, which nothing here pumps), so no test after it would see what it saw alone.
         results.AddRange(UiScaleTests.All());
@@ -184,6 +194,12 @@ public static class Program
         results.AddRange(TabPerfTests.Live());
         results.AddRange(WorkerMemoryTests.Live());
         results.AddRange(MemoryHygieneTests.Live());
+        // Pass 5.4.4's cases on the WPF Application made above.
+        results.AddRange(MultiTabIsolationTests.Live());
+        results.AddRange(PreviewScalingTests.Live());
+        results.AddRange(WaveTilesZoomTests.Live());
+        results.AddRange(PlayerAndLibraryUiTests.Live());
+        results.AddRange(TabsDockTransportTests.Live());
         if (filter is not null)
             results = results.Where(r => r.Golden.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
 

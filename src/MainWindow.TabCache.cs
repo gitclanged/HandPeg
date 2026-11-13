@@ -22,7 +22,7 @@ public partial class MainWindow
     // at most. A bounded watch of a few frames, only after a switch.
 
     private Image? _tabStill;
-    private DispatcherTimer? _stillTimer;
+    private bool _stillWatching;
     private long _stillSince, _stillMark;
     private int _stillSeen;
 
@@ -58,7 +58,7 @@ public partial class MainWindow
 
     private void HideTabStill()
     {
-        _stillTimer?.Stop();
+        StopStillWatch();
         if (_tabStill is not { Visibility: Visibility.Visible })
             return;
         _tabStill.Source = null;
@@ -72,23 +72,31 @@ public partial class MainWindow
             return;
 
         (_stillMark, _stillSince, _stillSeen) = (_gpu?.MarkScene() ?? 0, Environment.TickCount64, 0);
-        if (_stillTimer is null)
+        if (!_stillWatching)
         {
-            // Looked at a frame's time apart (5.4.1-M3): the still goes within two frames of the engine's first of the tab.
-            _stillTimer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(16) };
-            _stillTimer.Tick += (_, _) =>
-            {
-                var waited = Environment.TickCount64 - _stillSince;
-                var drawn = _gpu is { } engine && engine.PresentedSince(_stillMark) && (engine.PresentedExact || waited > StillExactWaitMs);
-
-                // Seen on two turns running, so the viewport has presented it too.
-                _stillSeen = drawn ? _stillSeen + 1 : 0;
-                if (_stillSeen >= 2 || waited > StillLongestMs || _viewModel.IsPlaying)
-                    HideTabStill();
-            };
+            // Looked at on every frame WPF renders while the still is up (5.4.3; a 16 ms timer before): hooked only for this watch.
+            _stillWatching = true;
+            CompositionTarget.Rendering += StillWatch_Rendering;
         }
+    }
 
-        _stillTimer.Start();
+    // The still goes one render tick after the viewport put the tab's frame on the swap chain (5.4.3: IDXGISwapChain::Present, so the
+    // desktop has composed it by then), its exact frames or, after a moment, whatever it has.
+    private void StillWatch_Rendering(object? sender, EventArgs e)
+    {
+        var waited = Environment.TickCount64 - _stillSince;
+        var presented = _gpu is { } engine && engine.PresentedSince(_stillMark) && (engine.PresentedExact || waited > StillExactWaitMs);
+        _stillSeen = presented ? _stillSeen + 1 : 0;
+        if (_stillSeen >= 2 || waited > StillLongestMs || _viewModel.IsPlaying)
+            HideTabStill();
+    }
+
+    private void StopStillWatch()
+    {
+        if (!_stillWatching)
+            return;
+        _stillWatching = false;
+        CompositionTarget.Rendering -= StillWatch_Rendering;
     }
 
     // ----- Tabs kept live in memory (Pass 5.4D-TabPerf) -----
@@ -116,8 +124,9 @@ public partial class MainWindow
     private bool _crashWritesHooked, _letGoing, _memoryHooked;
     private DispatcherTimer? _valveTimer;
 
-    /// <summary>A still's moment: the undo mark, the playhead and the 3D view it was taken at (a stale one only covers the player until its first frame).</summary>
-    private readonly record struct StillMark(object? UndoMark, double PositionMs, bool Shown3D);
+    /// <summary>A still's moment: the undo mark, the playhead and the 3D view it was taken at (a stale one only covers the player until its first frame),
+    /// and whether it is the soft frame drawn smaller while playing (5.4.4: kept only until a whole one is read).</summary>
+    private readonly record struct StillMark(object? UndoMark, double PositionMs, bool Shown3D, bool Soft = false);
 
     /// <summary>A tab put behind, kept live in memory (see the section above). Made on the window's thread and used only there.</summary>
     private sealed class TabViewContext(MainViewModel.TabProjectContext project)
@@ -346,7 +355,7 @@ public partial class MainWindow
         if (stillFits)
             ShowTabStill(live.Still);
         else
-            HideTabStill();
+            ShowTabStill(tab.ExplodedOpen ? null : FallbackStill(live, tab.PlayheadMs));
 
         // Its selection as its views of before: the restore follows them by their clips' ids (Timeline_Restored).
         (_selectedClip, _rangeAnchor, _playheadVideoSelected) = (live.SelectedClip, live.RangeAnchor, live.PlayheadVideoSelected);
@@ -412,6 +421,13 @@ public partial class MainWindow
         }, DispatcherPriority.Background);
         return true;
     }
+
+    /// <summary>
+    /// A flat tab coming back with no still of its playhead (5.4.3): its overview sheet's picture there, or the one kept beside a 3D still, so
+    /// the player is never uncovered before its first frame; null when it has neither.
+    /// </summary>
+    private static BitmapSource? FallbackStill(TabViewContext live, double playheadMs) =>
+        live.ProgramSheet is { Count: > 0 } sheet ? sheet.Cell(sheet.IndexAt(playheadMs / 1000)) : live.Preview;
 
     /// <summary>
     /// Whether a tab's kept still is the picture it comes back to (pure, 5.4D-TabPerf review: the goldens' project-tabs-tabperf-review): taken

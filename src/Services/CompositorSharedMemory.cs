@@ -253,7 +253,15 @@ public struct ControlBlock
     /// <summary>The encoder transform's friendly name (UTF-16, NUL-terminated): what the preview is an approximation by.</summary>
     [FieldOffset(160)] public LoopbackNameChars LoopbackEncoderName;
 
-    // 288..511: free.
+    /// <summary>
+    /// 5.4.4-Final: 1 when the encoder running is on the card the export's encoder family names (QuickSync on the Intel card...) or is the
+    /// software encoder asked for; 0 when it is a stand-in found on another card. And 1 when it encodes paused frames only (a software
+    /// encoder through FFmpeg: the player shows the plain picture while playing).
+    /// </summary>
+    [FieldOffset(288)] public int LoopbackOnAskedCard;
+    [FieldOffset(292)] public int LoopbackPausedOnly;
+
+    // 296..511: free.
 
     // 512..1023: the GPU time of the last frame's passes per shader slot (ms), when the scene asks for timing.
     [FieldOffset(512)] public SlotTimings SlotGpuMs;
@@ -407,7 +415,27 @@ public struct ControlBlock
         _ => OutputContentTag2,
     };
 
-    // 3212..3479: free.
+    // ----- 3212..3219: what the worker's card is, and how the client wants a parked tab's sources kept (5.4.4) -----
+    /// <summary>
+    /// Written by the worker once its device is made: 1 when its card shares the PC's memory (GpuDevice.UnifiedMemory: an integrated
+    /// or ARM64 GPU), else 0. The editor never loads DXCore itself: this is how it knows (GpuPreviewEngine.UnifiedMemory).
+    /// </summary>
+    [FieldOffset(3212)] public int UnifiedMemory;
+
+    /// <summary>
+    /// Written by the client (CompositorClient.TabParking): how the sources of a tab put behind are kept. 0: as always (the strip,
+    /// export, bench and test clients). 1: the player's: on unified memory or on battery only the frames at the tab's playhead stay
+    /// (lean parking). 2: lean always (the golden tests).
+    /// </summary>
+    [FieldOffset(3216)] public int TabParkingRequest;
+
+    /// <summary>
+    /// Written by the client (5.4.4-Final, the Live Encoded Preview of a software encoder): the export's own FFmpeg video arguments
+    /// ("-c:v libx264 -preset veryslow -crf 22"), UTF-8, NUL-terminated, at most 255 bytes; read by the worker between two even values of
+    /// <see cref="LoopbackArgumentsVersion"/> (odd while the client writes it), so a half-written string is never taken.
+    /// </summary>
+    [FieldOffset(3220)] public int LoopbackArgumentsVersion;
+    [FieldOffset(3224)] public LoopbackArgumentBytes LoopbackSoftwareArguments;
 
     // 3480..: the cache's counters (diagnostics, tools\SeekBench): exact frames found, frames not there yet, presents
     // made with a stand-in, frames and bytes held, the budget in force, how long the last exact frame took after it was
@@ -467,6 +495,11 @@ public enum GpuSeekHintKind
     Playhead = 4,
     /// <summary>The pointer resting on the timeline (5.0-Release): a short play-ahead from its moment (<see cref="GpuSeekHint.Span"/> of the file), so a click and Space there start at once.</summary>
     HoverRoll = 5,
+    /// <summary>
+    /// A tab likely next, or a file about to be dropped (5.4.4): a short play-ahead as <see cref="HoverRoll"/>'s, decoded only in idle
+    /// time: never while the front tab plays, scrubs or still waits for a frame of its own.
+    /// </summary>
+    TabRoll = 6,
 }
 
 /// <summary>
@@ -520,6 +553,13 @@ public struct MessageChars
 public struct LoopbackNameChars
 {
     private char _first;
+}
+
+/// <summary>A software encoder's FFmpeg video arguments in the control block (5.4.4-Final): 256 bytes of UTF-8, NUL-terminated.</summary>
+[InlineArray(256)]
+public struct LoopbackArgumentBytes
+{
+    private byte _first;
 }
 
 /// <summary>What the Export Quality Preview's encode loopback is doing (<see cref="ControlBlock.LoopbackState"/>, 5.4B).</summary>
@@ -661,7 +701,27 @@ public struct FrameSceneHeader
     [FieldOffset(176)] public float LoopbackLoupeX;
     [FieldOffset(180)] public float LoopbackLoupeY;
 
-    // 184..255: free.
+    /// <summary>
+    /// Dynamic Preview Scaling (5.4.3): the fraction of the output a flat player frame is drawn at, stretched over the output by the final
+    /// pass (0 or 1 the whole output). The worker ignores it for a readback, an exact frame, the 3D view and the loupe (SceneRenderer.DrawScale).
+    /// </summary>
+    [FieldOffset(184)] public float PreviewScale;
+
+    /// <summary>
+    /// The Export Quality Preview's encoder (5.4.4-Final, <see cref="FlagLoopback"/>): its family (ExportLoopbackSettings.Family: 0 Media
+    /// Foundation on the compositor's card first, 1 QuickSync on the Intel card, 2 AMF on the AMD card, 3 NVENC on the NVIDIA card, 4 the
+    /// software encoder through FFmpeg with <see cref="ControlBlock.LoopbackSoftwareArguments"/>), the export's frame size (0: the canvas's;
+    /// the canvas's shape kept), 10-bit (1: P010 into the encoder, Main10), the CRF as typed, and a stamp raised by every change of these
+    /// settings (a paused frame is encoded again from the scene already drawn: no layer is drawn again for it).
+    /// </summary>
+    [FieldOffset(188)] public int LoopbackFamily;
+    [FieldOffset(192)] public int LoopbackEncodedWidth;
+    [FieldOffset(196)] public int LoopbackEncodedHeight;
+    [FieldOffset(200)] public int LoopbackTenBit;
+    [FieldOffset(204)] public int LoopbackCrf;
+    [FieldOffset(208)] public long LoopbackSettingsStamp;
+
+    // 216..255: free.
 
     /// <summary>
     /// Bit 3 (<see cref="FlagExactFrames"/>): draw only once every media layer has its exact frame (exports, filmstrips,

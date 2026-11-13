@@ -1,0 +1,28 @@
+# The pill sliders (Volume, Timeline Zoom): the icon's size in layout open or closed, drawn past it with no child visuals, drag, Shift, wheel, double-click, keys, the readout, the icon's waves, the eased opening, UI Automation and their homes.
+ok: its size in layout is the icon's, 24 x 22, open or closed: opening it moves nothing beside it
+ok: no child visuals: it is drawn in OnRender
+ok: closed again
+ok: open, it is drawn over what is left of its slot (3129 pixels there, none closed), its own width still 24
+ok: a theme put into effect while it is in a window (ThemeManager.Applied) redraws it at once in the new theme's brushes; it listens only while loaded
+ok: opening to the left, its 96-DIP track lies left of the icon (-104 to -8)
+ok: a press jumps to the point (half way: 50); Shift moves a tenth as far (51.042 for 10 DIPs); beyond either end it stops at 100 and 0
+ok: the wheel: SmallChange a notch, both ways; a touchpad's small turns add up to a notch
+ok: a double-click puts the default back (100)
+ok: the readout: the value in ReadoutFormat (42%), or ReadoutFor's words (the Timeline's zoom: 2.4x, and 1x with nothing on it)
+ok: with Minimum above Maximum, a drag, the wheel and a reset keep it at Minimum and nothing throws (never Math.Clamp)
+ok: a click on the speaker switches its mute, and says so (IconClick) each time
+ok: while it has the keyboard it keeps the arrows, Page Up / Down, Home and End (and Enter, for a speaker), never Space (Play) or a chord
+   speaker by level: 0 = crossed; 0.2 = 1 waves; 0.33 = 1 waves; 0.5 = 2 waves; 0.67 = 2 waves; 0.9 = 3 waves
+ok: the speaker: crossed muted or at 0, one wave to a third, two to two thirds, three above
+ok: as vector strokes in a 16-DIP box: 1, 2 or 3 arcs for the waves, the cross two strokes instead; the magnifier a ring (two arcs) and a handle
+   opening every 10 ms: 0.00 0.20 0.37 0.51 0.64 0.73 0.81 0.88 0.92 0.95 0.98 0.99 1.00 1.00 1.00
+ok: it opens in 140 ms (0 at 0, 1 at 140 and after), never going back, eased out (past 80% at half way)
+ok: UI Automation: a slider named Volume with its range (RangeValue)
+ok: its value set through RangeValue; its one child the icon, Mute Player, a toggle that mutes
+ok: MainWindow.xaml: the playback bar's one Volume is the pill (VolumePill), the volume its value and the player's mute its speaker
+ok: no Mute Player button anywhere, and no Volume slider or mute switch left beside the pill
+ok: UnifiedTimelinePane.xaml: ZoomSlider is the Timeline Zoom pill (a magnifier opening to the right, a double-click on its track fits) in place of - and +
+ok: the corner holds Fit, the track height and then the zoom pill, so the open pill covers neither; the corner is raised over the ruler it opens onto
+   Mute,Volume,@3 saves as Volume,@3; the defaults: PrevIFrame,StepBack,StepForward,NextIFrame,AddMarker,EditOnVideo,Exploded3D,ExportQualityPreview,Reload,Volume,Speed,@3
+ok: the playback bar offers no standalone Mute (the pill's speaker is its one home); a bar saved with it loads the rest and saves without it
+ok: the live pane at 1200 x 480: the zoom pill 24 wide at 55 (after the track height), the ruler still at the top (0)

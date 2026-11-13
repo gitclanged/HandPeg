@@ -186,6 +186,19 @@ public sealed class ProjectTabs
 
     public int Count => _tabs.Count;
 
+    // How many tabs the strip holds, for the player's frame pump (5.4.4): written on the window's thread as a tab is added or closed.
+    private static int _openCount;
+
+    /// <summary>
+    /// How many project tabs are open (5.4.4): Dynamic Preview Scaling starts smaller on a card that shares the PC's memory while more than one
+    /// is open (GpuPreviewEngine.StartStep). Written wherever the strip gains or loses a tab; read on any thread.
+    /// </summary>
+    public static int OpenCount
+    {
+        get => Volatile.Read(ref _openCount);
+        private set => Volatile.Write(ref _openCount, value);
+    }
+
     /// <summary>The tab in front: the one the view model holds. The scheduler is told (5.4.1-M3): the work of the tabs behind waits behind its.</summary>
     public ProjectTabHeader Active
     {
@@ -202,6 +215,7 @@ public sealed class ProjectTabs
     {
         var tab = new ProjectTabHeader { Id = id ?? NewId(), Title = title };
         _tabs.Add(tab);
+        OpenCount = _tabs.Count;
         return tab;
     }
 
@@ -210,6 +224,7 @@ public sealed class ProjectTabs
     {
         var tab = new ProjectTabHeader { Id = id ?? NewId(), Title = title };
         _tabs.Insert(Math.Clamp(index, 0, _tabs.Count), tab);
+        OpenCount = _tabs.Count;
         return tab;
     }
 
@@ -241,6 +256,7 @@ public sealed class ProjectTabs
             return false;
         tab.LastActive = 0;
         _tabs.Add(tab);
+        OpenCount = _tabs.Count;
         return true;
     }
 
@@ -332,6 +348,7 @@ public sealed class ProjectTabs
             throw new InvalidOperationException("Put another tab in front before closing the one in front.");
         if (_tabs.Count <= 1 || !_tabs.Remove(tab))
             return;
+        OpenCount = _tabs.Count;
         _stills.Remove(tab.Id);
         DeleteFilesAfterIo(tab.Id);
     }

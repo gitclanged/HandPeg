@@ -88,15 +88,40 @@ internal static unsafe partial class Mf
     [LibraryImport("mfplat.dll")]
     public static partial int MFCreateDXGIDeviceManager(uint* resetToken, nint* manager);
 
-    [LibraryImport("mfplat.dll")]
-    public static partial int MFTEnumEx(Guid category, uint flags, MftRegisterTypeInfo* input, MftRegisterTypeInfo* output, nint** activates, uint* count);
+    [LibraryImport("mfplat.dll", EntryPoint = "MFTEnumEx")]
+    private static partial int MFTEnumExNative(Guid category, uint flags, MftRegisterTypeInfo* input, MftRegisterTypeInfo* output, nint** activates, uint* count);
+
+    public static int MFTEnumEx(Guid category, uint flags, MftRegisterTypeInfo* input, MftRegisterTypeInfo* output, nint** activates, uint* count)
+    {
+        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("MFTEnumEx", flags);
+        var hr = MFTEnumExNative(category, flags, input, output, activates, count);
+        crumb.Leave(hr);
+        return hr;
+    }
 
     /// <summary>MFTEnum2: the MFTs of a category, narrowed by attributes (MFT_ENUM_ADAPTER_LUID: one card's hardware MFTs).</summary>
-    [LibraryImport("mfplat.dll")]
-    public static partial int MFTEnum2(Guid category, uint flags, MftRegisterTypeInfo* input, MftRegisterTypeInfo* output, nint attributes, nint** activates, uint* count);
+    [LibraryImport("mfplat.dll", EntryPoint = "MFTEnum2")]
+    private static partial int MFTEnum2Native(Guid category, uint flags, MftRegisterTypeInfo* input, MftRegisterTypeInfo* output, nint attributes, nint** activates, uint* count);
 
-    [LibraryImport("mfreadwrite.dll", StringMarshalling = StringMarshalling.Utf16)]
-    public static partial int MFCreateSourceReaderFromURL(string url, nint attributes, nint* reader);
+    public static int MFTEnum2(Guid category, uint flags, MftRegisterTypeInfo* input, MftRegisterTypeInfo* output, nint attributes, nint** activates, uint* count)
+    {
+        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("MFTEnum2", flags);
+        var hr = MFTEnum2Native(category, flags, input, output, attributes, activates, count);
+        crumb.Leave(hr);
+        return hr;
+    }
+
+    [LibraryImport("mfreadwrite.dll", EntryPoint = "MFCreateSourceReaderFromURL", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int MFCreateSourceReaderFromURLNative(string url, nint attributes, nint* reader);
+
+    /// <summary>The Source Reader over a file (5.4.4: the Open of every Media Foundation decoder, a breadcrumb before it).</summary>
+    public static int MFCreateSourceReaderFromURL(string url, nint attributes, nint* reader)
+    {
+        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("MF.Open", System.IO.Path.GetFileName(url));
+        var hr = MFCreateSourceReaderFromURLNative(url, attributes, reader);
+        crumb.Leave(hr);
+        return hr;
+    }
 
     // ----- IMFAttributes (also IMFMediaType, IMFSample, IMFActivate) -----
 
@@ -216,7 +241,10 @@ internal static unsafe partial class Mf
     {
         var position = new PropVariant { Type = PropVariant.I8, Value = ticks };
         var format = Guid.Empty;
-        return ((delegate* unmanaged<nint, Guid*, PropVariant*, int>)Com.Table(reader)[8])(reader, &format, &position);
+        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("MF.SetCurrentPosition", ticks);
+        var hr = ((delegate* unmanaged<nint, Guid*, PropVariant*, int>)Com.Table(reader)[8])(reader, &format, &position);
+        crumb.Leave(hr);
+        return hr;
     }
 
     public static int ReadSample(nint reader, uint stream, out uint flags, out long timestamp, out nint sample)
@@ -224,7 +252,9 @@ internal static unsafe partial class Mf
         uint actual, f;
         long time;
         nint s = 0;
+        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("MF.ReadSample", stream);
         var hr = ((delegate* unmanaged<nint, uint, uint, uint*, uint*, long*, nint*, int>)Com.Table(reader)[9])(reader, stream, 0, &actual, &f, &time, &s);
+        crumb.Leave(hr);
         flags = f;
         timestamp = time;
         sample = s;
@@ -237,12 +267,20 @@ internal static unsafe partial class Mf
         uint actual, f;
         long time;
         nint s = 0;
+        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("MF.ReadSampleAny");
         var hr = ((delegate* unmanaged<nint, uint, uint, uint*, uint*, long*, nint*, int>)Com.Table(reader)[9])(reader, AllStreams, 0, &actual, &f, &time, &s);
+        crumb.Leave(hr);
         (stream, flags, timestamp, sample) = (actual, f, time, s);
         return hr;
     }
 
-    public static int Flush(nint reader, uint stream) => ((delegate* unmanaged<nint, uint, int>)Com.Table(reader)[10])(reader, stream);
+    public static int Flush(nint reader, uint stream)
+    {
+        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("MF.Flush", stream);
+        var hr = ((delegate* unmanaged<nint, uint, int>)Com.Table(reader)[10])(reader, stream);
+        crumb.Leave(hr);
+        return hr;
+    }
 
     /// <summary>The source's length in 100 ns units (MF_PD_DURATION), 0 when it does not say.</summary>
     public static long Duration(nint reader)
@@ -456,12 +494,20 @@ internal static unsafe partial class Mf
     {
         nint result = 0;
         var id = MfIid.Transform;
+        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("MFT.ActivateObject");
         var hr = ((delegate* unmanaged<nint, Guid*, nint*, int>)Com.Table(activate)[33])(activate, &id, &result);
+        crumb.Leave(hr);
         transform = result;
         return hr;
     }
 
-    public static int ShutdownObject(nint activate) => ((delegate* unmanaged<nint, int>)Com.Table(activate)[34])(activate);
+    public static int ShutdownObject(nint activate)
+    {
+        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("MFT.ShutdownObject");
+        var hr = ((delegate* unmanaged<nint, int>)Com.Table(activate)[34])(activate);
+        crumb.Leave(hr);
+        return hr;
+    }
 
     // ----- IMFTransform -----
 
@@ -510,19 +556,31 @@ internal static unsafe partial class Mf
         return hr;
     }
 
-    public static int ProcessMessage(nint transform, uint message, nint parameter) =>
-        ((delegate* unmanaged<nint, uint, nint, int>)Com.Table(transform)[23])(transform, message, parameter);
+    public static int ProcessMessage(nint transform, uint message, nint parameter)
+    {
+        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("MFT.ProcessMessage", message);
+        var hr = ((delegate* unmanaged<nint, uint, nint, int>)Com.Table(transform)[23])(transform, message, parameter);
+        crumb.Leave(hr);
+        return hr;
+    }
 
-    public static int ProcessInput(nint transform, uint stream, nint sample) =>
-        ((delegate* unmanaged<nint, uint, nint, uint, int>)Com.Table(transform)[24])(transform, stream, sample, 0);
+    public static int ProcessInput(nint transform, uint stream, nint sample)
+    {
+        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("MFT.ProcessInput");
+        var hr = ((delegate* unmanaged<nint, uint, nint, uint, int>)Com.Table(transform)[24])(transform, stream, sample, 0);
+        crumb.Leave(hr);
+        return hr;
+    }
 
     /// <summary>IMFTransform::ProcessOutput of one stream; <paramref name="buffer"/>'s sample and events come back in it.</summary>
     public static int ProcessOutput(nint transform, ref MftOutputDataBuffer buffer, out uint status)
     {
         uint result = 0;
         int hr;
+        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("MFT.ProcessOutput");
         fixed (MftOutputDataBuffer* b = &buffer)
             hr = ((delegate* unmanaged<nint, uint, uint, MftOutputDataBuffer*, uint*, int>)Com.Table(transform)[25])(transform, 0, 1, b, &result);
+        crumb.Leave(hr);
         status = result;
         return hr;
     }

@@ -35,6 +35,7 @@ public static class ExportLoopbackTests
             harness.Bypass();
             harness.Loupe();
             harness.RealCodec();
+            harness.SoftwareCodec();
             harness.Lifetime();
             new Harness(client, reader, hdr.Expect).HdrReadback();
         }
@@ -64,8 +65,8 @@ public static class ExportLoopbackTests
     private static void Settings(Action<bool, string> expect)
     {
         var nvenc = ExportLoopbackSettings.From("h264_nvenc", constantQuality: false, constantBitrate: true, 8000, 22, "p7", 59.94, out var why1);
-        expect(nvenc == new ExportLoopbackSettings(1, 0, 8000, 57, 100, 59.94) && why1 is null,
-            "h264_nvenc, CBR 8000 kbps, p7, 59.94 fps: H.264, rate control 0 (CBR), 8000 kbps, quality-vs-speed 100, the export's rate");
+        expect(nvenc == new ExportLoopbackSettings(1, 0, 8000, 57, 100, 59.94) { Family = ExportLoopbackSettings.FamilyNvenc, EncoderName = "h264_nvenc", Preset = "p7", Crf = 22 } && why1 is null,
+            "h264_nvenc, CBR 8000 kbps, p7, 59.94 fps: H.264, rate control 0 (CBR), 8000 kbps, quality-vs-speed 100, the export's rate; 5.4.4-Final: NVENC, its name, preset and CRF");
         var x264 = ExportLoopbackSettings.From("libx264", constantQuality: true, constantBitrate: false, 5000, 23, "veryslow", 60, out _);
         expect(x264 is { Codec: 1, RateControl: 3, Quality: 55, QualityVsSpeed: 100 },
             "libx264, constant quality CRF 23, veryslow: H.264 in Media Foundation's quality mode at 55 (MediaFoundationEncoder.QualityFromCrf), quality-vs-speed 100");
@@ -79,8 +80,8 @@ public static class ExportLoopbackTests
         var vp9 = ExportLoopbackSettings.From("libvpx-vp9", false, false, 5000, 22, "medium", 30, out var whyVp9);
         var copy = ExportLoopbackSettings.From("copy", false, false, 5000, 22, "medium", 30, out var whyCopy);
         var prores = ExportLoopbackSettings.From("prores_ks", false, false, 5000, 22, "medium", 30, out var whyProres);
-        expect(vp9 is null && copy is null && prores is null && whyVp9!.Contains("VP9") && whyCopy!.Contains("stream copy") && whyProres!.Contains("ProRes"),
-            "VP9, a stream copy and ProRes have no loopback, and each says why in words");
+        expect(vp9 is { Codec: 4, Family: ExportLoopbackSettings.FamilySoftware } && whyVp9 is null && copy is null && prores is null && whyCopy!.Contains("stream copy") && whyProres!.Contains("ProRes"),
+            "5.4.4-Final: libvpx-vp9 previews through the software path (VP9, codec 4); a stream copy and ProRes have no loopback, and each says why in words");
         expect(ExportLoopbackSettings.CodecOf("h264_mf") == 1 && ExportLoopbackSettings.CodecOf("hevc_qsv") == 2 && ExportLoopbackSettings.CodecOf("libx265") == 2
                && ExportLoopbackSettings.CodecOf("gif") == 0 && ExportLoopbackSettings.QualityVsSpeedOf("slow") == 83 && ExportLoopbackSettings.QualityVsSpeedOf("odd") == 50,
             "CodecOf reads the FFmpeg encoder names (h264_mf, hevc_qsv, libx265; a GIF none); QualityVsSpeedOf: slow 83, an unknown preset 50");
@@ -380,6 +381,69 @@ public static class ExportLoopbackTests
         }
 
         // ----- A real hardware encode and decode (where this PC has an H.264 encoder) -----
+
+        /// <summary>
+        /// 5.4.4-Final: a software encoder's paused frame through FFmpeg (libx264 ultrafast, CRF 23: the export's own arguments in the control
+        /// block) and Media Foundation's H.264 decoder, compared with the source; then new settings on the same picture (CRF 40) encode it again
+        /// with no new content stamp. Where this PC has no FFmpeg with libx264, the plain picture and NoEncoder.
+        /// </summary>
+        public void SoftwareCodec()
+        {
+            Begin(FrameSceneHeader.FlagLetterbox | FrameSceneHeader.FlagExactFrames);
+            Busy();
+            Loopback(0, 0.5f, stamp: 900, bypass: true);
+            var source = Frame("software codec: the source");
+
+            byte[]? encoded = null;
+            var state = ExportLoopbackState.Off;
+            // (New arguments make the encoder anew: its count of frames starts again from 0, read after the scene that made it.)
+            void Software(string arguments, long settingsStamp, bool fresh = true)
+            {
+                var bytes = GpuPreviewEngine.PackArguments(arguments);
+                Interlocked.Increment(ref Control.LoopbackArgumentsVersion);
+                Span<byte> field = Control.LoopbackSoftwareArguments;
+                field.Clear();
+                bytes.CopyTo(field);
+                Interlocked.Increment(ref Control.LoopbackArgumentsVersion);
+                var watch = Stopwatch.StartNew();
+                var before = fresh ? 0 : Control.LoopbackFramesEncoded;
+                while (watch.ElapsedMilliseconds < 20_000)
+                {
+                    Begin(FrameSceneHeader.FlagLetterbox | FrameSceneHeader.FlagExactFrames);
+                    Busy();
+                    Loopback(0, 0.5f, stamp: 900, bypass: false, rateControl: 3);
+                    (client.Scene.LoopbackFamily, client.Scene.LoopbackSettingsStamp) = (ExportLoopbackSettings.FamilySoftware, settingsStamp);
+                    encoded = Frame("software codec: encoded");
+                    state = (ExportLoopbackState)Control.LoopbackState;
+                    if (state is not (ExportLoopbackState.Starting or ExportLoopbackState.Off) && (state != ExportLoopbackState.Running || Control.LoopbackFramesEncoded > before))
+                        break;
+                    Thread.Sleep(20);
+                }
+            }
+
+            Software("-c:v libx264 -preset ultrafast -crf 23", 1);
+            var name = CompositorSharedMemory.ReadString(Control.LoopbackEncoderName);
+            if (state == ExportLoopbackState.Running && source is not null && encoded is not null)
+            {
+                var good = LumaPsnr(source, encoded);
+                Software("-c:v libx264 -preset ultrafast -crf 40", 2);
+                var coarse = encoded is null ? 0 : LumaPsnr(source, encoded);
+                Console.WriteLine(FormattableString.Invariant(
+                    $"  (software codec: {name}, luma PSNR {good:0.00} dB at CRF 23, {coarse:0.00} dB at CRF 40, round trip {Control.LoopbackRoundTripMs:0} ms, paused-only {Control.LoopbackPausedOnly})"));
+                expect(name.Contains("libx264", StringComparison.Ordinal) && good is >= 28 and <= 70 && Control.LoopbackPausedOnly == 1,
+                    "a software encoder previewed for real: libx264 through FFmpeg, decoded by Media Foundation, the paused frame close to its source (PSNR 28-70 dB at CRF 23), paused frames only");
+                expect(Control.LoopbackFramesEncoded >= 1 && coarse > 0 && coarse < good - 3,
+                    "new settings on the same picture (CRF 40, the content stamp unchanged) encode it again, and it is coarser");
+            }
+            else
+            {
+                Console.WriteLine($"  note  no software loopback on this PC ({state}, 0x{Control.LoopbackHResult:X8}{(name.Length > 0 ? ", " + name : "")}): the plain picture is shown");
+                var plainShown = source is not null && encoded is not null && Worst(source, encoded) <= 1;
+                expect(state is ExportLoopbackState.NoEncoder or ExportLoopbackState.NoDecoder && plainShown,
+                    "a software encoder previewed for real: libx264 through FFmpeg, decoded by Media Foundation, the paused frame close to its source (PSNR 28-70 dB at CRF 23), paused frames only");
+                expect(true, "new settings on the same picture (CRF 40, the content stamp unchanged) encode it again, and it is coarser");
+            }
+        }
 
         public void RealCodec()
         {

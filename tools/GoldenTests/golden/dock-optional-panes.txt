@@ -3,8 +3,8 @@ ok: four studios, their ids and titles: SubtitleStudio=Subtitle Studio, Voiceove
 ok: each is optional, always shown while held, with its title in its own row; homed with Effects/Keyframes/Canvas, Meter/Effects, Export/Timeline and Audio/Timeline
 ok: a load of Standard Editing adds none of them and makes none of them (Law 1: nothing is built for a studio not shown)
 ok: Open Subtitle Studio (twice): once, a tab beside Effects, Keyframes, Layout
-ok: Open Voiceover Studio (twice): once, a tab beside Tab:Audio, UnifiedTimeline
-ok: Open Render Queue (twice): once, a tab beside Tab:Export, UnifiedTimeline
+ok: Open Voiceover Studio (twice): once, a tab beside Tab:Audio, Media
+ok: Open Render Queue (twice): once, a tab beside Tab:Export, Media
 ok: Open Video Scopes (twice): once, a tab beside Meter
 ok: Close takes Subtitle Studio out again
 ok: Close takes Voiceover Studio out again

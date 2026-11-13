@@ -1,0 +1,16 @@
+# The dock taken up in place: nothing written when nothing differs, shares set in place when only they differ, a front tab shown only when it changes.
+ok: shares match as ratios: 70/30 is 0.7/0.3, 1/1.3 is 10/13, 0.5/0.5 is 1/1, a drag's DIPs within 0.01 % of the whole; no shares match no shares
+ok: they differ by 1 DIP of 1280 (0.08 %), in count, or with a part that is not a share (Auto, none)
+ok: the pane a group shows: its Active when shown; an Active that is hidden, or none, the first shown (Render's rule); none shown, none
+ok: two arrangements the same but for their shares are told apart from ones of another shape
+ok: laid out: 3 grids, the three columns as wide as each other (426, 426, 426)
+ok: the same arrangement loaded again (Load(Save())): no width, height or least size written, no element made stale, the same grids, nothing raised
+ok: a border dragged 120 DIPs (426 to 306), then Load(Save()): nothing written (the screen is what the arrangement says), no element made stale, the same grids
+ok: the arrangement from before the drag loaded (only its shares differ): taken up in place (the same grids, no pane moved, its three column shares set), the columns back (426, 426, 426), saved exactly as loaded
+ok: a 0.75/0.25 split loaded as 3/1: the same ratio, so nothing is written (its rows still 0.75* and 0.25*), the arrangement saved as 3/1
+ok: shares under 1 (0.5, 0.5, 1.3) taken up in place as they are: the stars 0.5, 0.5 and 1.3, the columns 277.8, 277.8 and 722.3 (2.6 to 1)
+ok: a layout that differs only in its tab in front (Keyframes): Keyframes shown in place of Effects (one change), saved exactly as loaded
+ok: Keyframes hidden while it is Active, so Effects is shown: Effects loaded as Active is what is shown already, so nothing is activated, raised, written or made stale
+ok: an arrangement of another shape (the media, effects and keyframes in one group) is laid out again, as before
+ok: Load, Apply and Reset all take an arrangement up through RebindOrRebuild; Rebind and ShowShares live in DockManager.Rebind.cs (DockManager.cs only shrinks)
+ok: a shares-only difference is taken up in place (never while a pane is dragged) and counted as built; a drag's own sizes still keep each share at least 1

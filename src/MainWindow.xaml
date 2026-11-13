@@ -571,15 +571,64 @@
         <!--
             The Views menu: which panes are open and where each of them is. Opened by the Views button of the
             transport row; it is placed beside it from code (see PlaceViewsPopup). It takes no room here.
+            5.4.4-Final (the user's): two columns at the top, Playback Bar (what the bar shows, and Dynamic Preview Scaling) at the left and
+            Timeline (its checkboxes) at the right; under both, one flat list of every tab and pane in two columns (Tabs and Panes merged),
+            then Reset Panes Layout (the "Arrange" text retired).
         -->
         <Popup x:Name="ViewsPopup" StaysOpen="False"
                AllowsTransparency="True" IsOpen="{Binding IsChecked, ElementName=ViewsButton, Mode=TwoWay}"
                Opened="ViewsPopup_Opened" Closed="ViewsPopup_Closed">
             <local:ButtonChrome Style="{StaticResource FlyoutChrome}" Padding="12,10">
-                <StackPanel TextElement.Foreground="{DynamicResource TextBrush}" MinWidth="250">
+                <Grid TextElement.Foreground="{DynamicResource TextBrush}">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <!--
+                        Playback Bar (5.4.4): what the playback bar shows, every control it can have under its heading, kept for this mode (the
+                        list the bar's own settings button opened before), then Dynamic Preview Scaling (the Settings window's setting, set here
+                        too: ViewsPreviewScalingBox_Click). The list wraps at 400 DIPs into two columns.
+                    -->
+                    <StackPanel x:Name="ViewsBarColumn" Margin="0,0,24,0">
+                        <TextBlock Text="Playback Bar" FontWeight="SemiBold" Margin="0,0,0,2" />
+                        <TextBlock Text="What this bar shows, in this mode." Foreground="{DynamicResource MutedTextBrush}" Margin="0,0,0,4" />
+                        <ItemsControl x:Name="ViewsBarControls" ItemsSource="{Binding PlaybackControls.Options}" Focusable="False" AutomationProperties.Name="Playback Bar">
+                            <ItemsControl.GroupStyle>
+                                <GroupStyle>
+                                    <GroupStyle.HeaderTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" Foreground="{DynamicResource MutedTextBrush}" Margin="0,6,0,2" />
+                                        </DataTemplate>
+                                    </GroupStyle.HeaderTemplate>
+                                    <GroupStyle.Panel>
+                                        <ItemsPanelTemplate>
+                                            <WrapPanel Orientation="Vertical" MaxHeight="400" />
+                                        </ItemsPanelTemplate>
+                                    </GroupStyle.Panel>
+                                </GroupStyle>
+                            </ItemsControl.GroupStyle>
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapPanel Orientation="Vertical" MaxHeight="400" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <CheckBox Content="{Binding Label}" IsChecked="{Binding IsShown}" ToolTip="{Binding Tip}" Margin="0,2,20,2" MinWidth="190" />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <CheckBox x:Name="ViewsPreviewScalingBox" Content="Dynamic Preview Scaling" Margin="0,10,0,0" Click="ViewsPreviewScalingBox_Click"
+                                  AutomationProperties.Name="Dynamic Preview Scaling"
+                                  ToolTip="Dynamic Preview Scaling: while playing or scrubbing on battery, with several project tabs open on graphics that share the PC's memory, or when frames come late, the player draws fewer pixels and scales them up; every pixel again the moment it stops. The same setting as in Settings." />
+                    </StackPanel>
                     <!-- The timeline's checkboxes, always here since 5.3-Stage2 (the playback bar no longer carries them; Timeline Settings has
-                         them too). One Timeline section since 5.4C (the user's: it was two, above and below the lists). -->
-                    <StackPanel x:Name="ViewsPlaybackOptions" Margin="0,0,0,8">
+                         them too). One Timeline section since 5.4C; beside the Playback Bar since 5.4.4-Final. -->
+                    <StackPanel Grid.Column="1" x:Name="ViewsPlaybackOptions" MinWidth="250">
                         <TextBlock Text="Timeline" FontWeight="SemiBold" Margin="0,0,0,4" />
                         <CheckBox Content="Snap cuts to I-frames" IsChecked="{Binding SnapToIFrames}" Margin="0,2"
                                   ToolTip="Splits move onto the I-frames of the video clip they cut, which is what a stream copy needs to cut without encoding." />
@@ -591,34 +640,18 @@
                                   ToolTip="The timeline is zoomed with Ctrl + wheel and moved along with Shift + wheel or a middle-button drag. On: the Sequence Overview Scrubber is stretched and moved with it. Off: it always shows the whole sequence." />
                     </StackPanel>
                     <!--
-                        Tabs and Panes (Pass 4.1B): every settings tab and every pane this mode has, each shown or hidden for
-                        this mode alone; made each time the menu opens (MainWindow.Export.cs, TabsAndPanes), the same list a
-                        tab's right-click menu has. 5.4C: each list under its own heading, the panes in two columns (they are
-                        twice as many as the tabs, and more with the studios), so the three columns come out even.
+                        Panes (Pass 4.1B; 5.4.4-Final: Tabs and Panes merged into one flat list): every settings tab and every pane this mode has,
+                        each shown or hidden for this mode alone, in two columns; made each time the menu opens (MainWindow.Export.cs,
+                        FillViewsLists), the same toggles a tab's right-click menu has. Then Reset Panes Layout: where the panes are put back.
                     -->
-                    <TextBlock Text="Tabs and Panes" FontWeight="SemiBold" Margin="0,0,0,4" />
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                        </Grid.RowDefinitions>
-                        <TextBlock Text="Tabs" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" Margin="0,0,0,2" />
-                        <TextBlock Grid.Column="1" Text="Panes" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" Margin="0,0,0,2" />
-                        <StackPanel Grid.Row="1" x:Name="ViewsTabList" Margin="0,0,24,0" VerticalAlignment="Top" AutomationProperties.Name="Tabs" />
-                        <UniformGrid Grid.Row="1" Grid.Column="1" x:Name="ViewsPaneList" Columns="2" VerticalAlignment="Top" AutomationProperties.Name="Panes" />
-                    </Grid>
-                    <!-- Where the panes are: moved by dragging their tabs; this puts them back. -->
-                    <TextBlock Text="Arrange" FontWeight="SemiBold" Margin="0,10,0,4" />
-                    <TextBlock TextWrapping="Wrap" MaxWidth="420" HorizontalAlignment="Left" Foreground="{DynamicResource MutedTextBrush}" Margin="0,0,0,4"
-                               Text="Drag a pane by its tab (its title, or the tab that comes up when the pointer rests on its top-left corner) onto another pane, to a side of one, or out of the window into a side window of its own. The borders between panes are dragged to resize them." />
-                    <Button Content="Reset Panes Layout" Click="ResetPanesLayout_Click" Padding="10,4" Margin="0,8,0,0" HorizontalContentAlignment="Left"
-                            AutomationProperties.Name="Reset Panes Layout"
-                            ToolTip="Puts every pane back where your Default layout (★ in the Layout Selector; Standard Editing unless you chose another) has it, at the size it starts with, and closes the Pane Dockers." />
-                </StackPanel>
+                    <StackPanel Grid.Row="1" Grid.ColumnSpan="2" x:Name="ViewsPanesSection" Margin="0,12,0,0">
+                        <TextBlock Text="Panes" FontWeight="SemiBold" Margin="0,0,0,4" />
+                        <UniformGrid x:Name="ViewsPaneList" Columns="2" VerticalAlignment="Top" HorizontalAlignment="Left" AutomationProperties.Name="Panes" />
+                        <Button Content="Reset Panes Layout" Click="ResetPanesLayout_Click" Padding="10,4" Margin="0,8,0,0" HorizontalAlignment="Left" HorizontalContentAlignment="Left"
+                                AutomationProperties.Name="Reset Panes Layout"
+                                ToolTip="Puts every pane back where your Default layout (★ in the Layout Selector; Standard Editing unless you chose another) has it, at the size it starts with, and closes the Pane Dockers." />
+                    </StackPanel>
+                </Grid>
             </local:ButtonChrome>
         </Popup>
 
@@ -705,58 +738,65 @@
                         clip's handles (in the adorner layer, beside the boxes' canvas) or the crop, a drop on the video lands as
                         it does anywhere else on the window.
                     -->
-                    <Grid x:Name="PlayerOverlay" AllowDrop="True" DragEnter="DropHint_DragOver" DragOver="DropHint_DragOver" Drop="Window_Drop">
-                        <AdornerDecorator ClipToBounds="True">
-                            <Canvas x:Name="CropCanvas" Background="#01000000" Visibility="Collapsed" ClipToBounds="True" Cursor="Cross"
-                                    MouseLeftButtonDown="CropCanvas_MouseLeftButtonDown" MouseMove="CropCanvas_MouseMove"
-                                    MouseLeftButtonUp="CropCanvas_MouseLeftButtonUp" SizeChanged="CropCanvas_SizeChanged">
-                                <Rectangle x:Name="CropRectangle" Stroke="Red" StrokeThickness="2" Fill="#18FF0000" IsHitTestVisible="False" />
+                    <!--
+                        The player's HUD (5.4.4): what lies over the video and is neither zoomed with the picture (PlayerOverlay carries the player's
+                        zoom and pan) nor hidden by the 3D view. The hover Fullscreen button and the fullscreen transport bar are made in code
+                        inside it (MainWindow.Fullscreen.cs).
+                    -->
+                    <Grid x:Name="PlayerHud">
+                        <Grid x:Name="PlayerOverlay" AllowDrop="True" DragEnter="DropHint_DragOver" DragOver="DropHint_DragOver" Drop="Window_Drop">
+                            <AdornerDecorator ClipToBounds="True">
+                                <Canvas x:Name="CropCanvas" Background="#01000000" Visibility="Collapsed" ClipToBounds="True" Cursor="Cross"
+                                        MouseLeftButtonDown="CropCanvas_MouseLeftButtonDown" MouseMove="CropCanvas_MouseMove"
+                                        MouseLeftButtonUp="CropCanvas_MouseLeftButtonUp" SizeChanged="CropCanvas_SizeChanged">
+                                    <Rectangle x:Name="CropRectangle" Stroke="Red" StrokeThickness="2" Fill="#18FF0000" IsHitTestVisible="False" />
+                                </Canvas>
+                            </AdornerDecorator>
+                            <!--
+                                Edit Clips on Video Preview (4.1.1-B, MainWindow.PlayerLayout.cs): a box per clip on screen, nearly
+                                see-through so a click on a clip selects it; only the selected one is outlined and has the handles.
+                                The canvas itself takes clicks only while an outline shows, so a click elsewhere on the video hides it.
+                            -->
+                            <AdornerDecorator ClipToBounds="True">
+                                <Canvas x:Name="PlayerLayoutCanvas" Visibility="Collapsed" ClipToBounds="True" SizeChanged="PlayerLayoutCanvas_SizeChanged"
+                                        MouseLeftButtonDown="PlayerLayoutCanvas_MouseLeftButtonDown" />
+                            </AdornerDecorator>
+                            <!-- Safe Margins: the action-safe (90%) and title-safe (80%) areas of the picture as it is shown. Placed from code. -->
+                            <Canvas x:Name="SafeMarginsCanvas" IsHitTestVisible="False" Visibility="Collapsed" SizeChanged="SafeMarginsCanvas_SizeChanged">
+                                <Rectangle x:Name="ActionSafeRectangle" Stroke="#B0FFFFFF" StrokeThickness="1" StrokeDashArray="4 3" />
+                                <Rectangle x:Name="TitleSafeRectangle" Stroke="#B0FFD54F" StrokeThickness="1" StrokeDashArray="4 3" />
                             </Canvas>
-                        </AdornerDecorator>
-                        <!--
-                            Edit Clips on Video Preview (4.1.1-B, MainWindow.PlayerLayout.cs): a box per clip on screen, nearly
-                            see-through so a click on a clip selects it; only the selected one is outlined and has the handles.
-                            The canvas itself takes clicks only while an outline shows, so a click elsewhere on the video hides it.
-                        -->
-                        <AdornerDecorator ClipToBounds="True">
-                            <Canvas x:Name="PlayerLayoutCanvas" Visibility="Collapsed" ClipToBounds="True" SizeChanged="PlayerLayoutCanvas_SizeChanged"
-                                    MouseLeftButtonDown="PlayerLayoutCanvas_MouseLeftButtonDown" />
-                        </AdornerDecorator>
-                        <!-- Safe Margins: the action-safe (90%) and title-safe (80%) areas of the picture as it is shown. Placed from code. -->
-                        <Canvas x:Name="SafeMarginsCanvas" IsHitTestVisible="False" Visibility="Collapsed" SizeChanged="SafeMarginsCanvas_SizeChanged">
-                            <Rectangle x:Name="ActionSafeRectangle" Stroke="#B0FFFFFF" StrokeThickness="1" StrokeDashArray="4 3" />
-                            <Rectangle x:Name="TitleSafeRectangle" Stroke="#B0FFD54F" StrokeThickness="1" StrokeDashArray="4 3" />
-                        </Canvas>
-                        <!--
-                            The 3D Exploded View (5.0D, MainWindow.Exploded.cs). Off, it is see-through and takes nothing, so the boxes,
-                            the crop and the handles under it work as before. On, its faint fill takes every press on the video (picking,
-                            moving and orbiting), the layers' label badges float over their planes, and the panel holds the Z-Spacing slider.
-                        -->
-                        <Grid x:Name="ExplodedLayer" IsHitTestVisible="False" Loaded="ExplodedLayer_Loaded">
-                            <Canvas x:Name="ExplodedBadges" IsHitTestVisible="False" Visibility="Collapsed" />
-                            <Border x:Name="ExplodedPanel" Visibility="Collapsed" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10"
-                                    Background="#D80E1014" BorderBrush="#40FFFFFF" BorderThickness="1" CornerRadius="6" Padding="10,5,6,6"
-                                    TextElement.Foreground="#E6FFFFFF" AutomationProperties.Name="3D Exploded View Controls">
-                                <StackPanel>
-                                    <StackPanel Orientation="Horizontal">
-                                        <TextBlock Text="3D" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,10,0" />
-                                        <TextBlock Text="Z-Spacing" Foreground="#B0FFFFFF" VerticalAlignment="Center" />
-                                        <Slider x:Name="ExplodedSpacing" Width="120" Margin="8,0,6,0" VerticalAlignment="Center" Minimum="0.02" Maximum="0.6" Value="0.16"
-                                                SmallChange="0.01" LargeChange="0.05" ValueChanged="ExplodedSpacing_ValueChanged" AutomationProperties.Name="Z-Spacing"
-                                                ToolTip="Z-Spacing: how far apart the layers' planes are, from almost touching to more than half the frame's width." />
-                                        <Button Style="{StaticResource TransportButton}" Content="&#xE72C;" Padding="7,4" Margin="2,0" Click="ExplodedReset_Click"
-                                                ToolTip="Reset the camera: the starting turn and distance (double-click the empty space does the same)." AutomationProperties.Name="Reset 3D Camera" />
-                                        <Button Style="{StaticResource TransportButton}" Content="&#xE711;" Padding="7,4" Margin="2,0" Click="ExplodedClose_Click"
-                                                ToolTip="Back to the flat picture (Esc)." AutomationProperties.Name="Leave 3D Exploded View" />
+                            <!--
+                                The 3D Exploded View (5.0D, MainWindow.Exploded.cs). Off, it is see-through and takes nothing, so the boxes,
+                                the crop and the handles under it work as before. On, its faint fill takes every press on the video (picking,
+                                moving and orbiting), the layers' label badges float over their planes, and the panel holds the Z-Spacing slider.
+                            -->
+                            <Grid x:Name="ExplodedLayer" IsHitTestVisible="False" Loaded="ExplodedLayer_Loaded">
+                                <Canvas x:Name="ExplodedBadges" IsHitTestVisible="False" Visibility="Collapsed" />
+                                <Border x:Name="ExplodedPanel" Visibility="Collapsed" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10"
+                                        Background="#D80E1014" BorderBrush="#40FFFFFF" BorderThickness="1" CornerRadius="6" Padding="10,5,6,6"
+                                        TextElement.Foreground="#E6FFFFFF" AutomationProperties.Name="3D Exploded View Controls">
+                                    <StackPanel>
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="3D" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,10,0" />
+                                            <TextBlock Text="Z-Spacing" Foreground="#B0FFFFFF" VerticalAlignment="Center" />
+                                            <Slider x:Name="ExplodedSpacing" Width="120" Margin="8,0,6,0" VerticalAlignment="Center" Minimum="0.02" Maximum="0.6" Value="0.16"
+                                                    SmallChange="0.01" LargeChange="0.05" ValueChanged="ExplodedSpacing_ValueChanged" AutomationProperties.Name="Z-Spacing"
+                                                    ToolTip="Z-Spacing: how far apart the layers' planes are, from almost touching to more than half the frame's width." />
+                                            <Button Style="{StaticResource TransportButton}" Content="&#xE72C;" Padding="7,4" Margin="2,0" Click="ExplodedReset_Click"
+                                                    ToolTip="Reset the camera: the starting turn and distance (double-click the empty space does the same)." AutomationProperties.Name="Reset 3D Camera" />
+                                            <Button Style="{StaticResource TransportButton}" Content="&#xE711;" Padding="7,4" Margin="2,0" Click="ExplodedClose_Click"
+                                                    ToolTip="Back to the flat picture (Esc)." AutomationProperties.Name="Leave 3D Exploded View" />
+                                        </StackPanel>
+                                        <!-- The view's keys and gestures (5.3-Stage3): a pinch zooms, two fingers orbit, Alt + the wheel picks the layers. -->
+                                        <TextBlock FontSize="10.5" Foreground="#90FFFFFF" Margin="0,3,0,0" LineHeight="14" AutomationProperties.Name="3D View Hints">
+                                            <Run Text="Drag: move  &#x00B7;  Shift + drag: through the stack  &#x00B7;  Esc: back" /><LineBreak />
+                                            <Run Text="Right-drag, two-finger scroll or a finger: orbit  &#x00B7;  Wheel or pinch: zoom" /><LineBreak />
+                                            <Run Text="Alt + wheel or [ ]: the layer in front or behind  &#x00B7;  Shift + wheel: spacing" />
+                                        </TextBlock>
                                     </StackPanel>
-                                    <!-- The view's keys and gestures (5.3-Stage3): a pinch zooms, two fingers orbit, Alt + the wheel picks the layers. -->
-                                    <TextBlock FontSize="10.5" Foreground="#90FFFFFF" Margin="0,3,0,0" LineHeight="14" AutomationProperties.Name="3D View Hints">
-                                        <Run Text="Drag: move  &#x00B7;  Shift + drag: through the stack  &#x00B7;  Esc: back" /><LineBreak />
-                                        <Run Text="Right-drag, two-finger scroll or a finger: orbit  &#x00B7;  Wheel or pinch: zoom" /><LineBreak />
-                                        <Run Text="Alt + wheel or [ ]: the layer in front or behind  &#x00B7;  Shift + wheel: spacing" />
-                                    </TextBlock>
-                                </StackPanel>
-                            </Border>
+                                </Border>
+                            </Grid>
                         </Grid>
                     </Grid>
                 </local:VideoSurface>
@@ -794,7 +834,36 @@
                 Advanced transport, centred under the player when switched on in Settings:
                 previous I-frame, back one frame, play/pause, forward one frame, next I-frame.
             -->
-            <local:PlaybackRow Grid.Row="1" x:Name="TransportRow" Margin="0">
+            <local:PlaybackRow Grid.Row="1" x:Name="TransportRow" Margin="0" Height="26">
+                <!--
+                    5.4.4 (the user's): the row is as tall as the Timeline's row of tools (its ToolbarRow, 26 DIPs), its buttons as that row's
+                    are (UnifiedTimelinePane.xaml's Tool and ToolToggle: Segoe MDL2 13, Padding 7,4; picture icons up to 18 x 16). Keyed here,
+                    for this row alone: the window's TransportButton and PlayPauseButton are the simple playback bar's and the studios' too.
+                    The Live Encoded Preview toggle made in code takes BarToggle from here (MainWindow.LoopbackPreview.cs).
+                -->
+                <local:PlaybackRow.Resources>
+                    <Style x:Key="BarButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                        <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
+                        <Setter Property="FontSize" Value="13" />
+                        <Setter Property="Padding" Value="7,4" />
+                        <Setter Property="Margin" Value="0,0,3,0" />
+                        <Setter Property="VerticalAlignment" Value="Center" />
+                    </Style>
+                    <Style x:Key="BarToggle" TargetType="ToggleButton" BasedOn="{StaticResource {x:Type ToggleButton}}">
+                        <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
+                        <Setter Property="FontSize" Value="13" />
+                        <Setter Property="Padding" Value="7,4" />
+                        <Setter Property="Margin" Value="0,0,3,0" />
+                        <Setter Property="VerticalAlignment" Value="Center" />
+                    </Style>
+                    <!-- Play / Pause: the row's widest button, as tall as the others. -->
+                    <Style x:Key="BarPlay" TargetType="Button" BasedOn="{StaticResource PlayPauseButton}">
+                        <Setter Property="FontSize" Value="13" />
+                        <Setter Property="Padding" Value="14,4" />
+                        <Setter Property="Margin" Value="3,0,6,0" />
+                        <Setter Property="VerticalAlignment" Value="Center" />
+                    </Style>
+                </local:PlaybackRow.Resources>
                 <!-- The buttons sit in the middle while there is room; in a narrow player they give way to the volume -->
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
@@ -807,88 +876,81 @@
                     so the button keeps its own width.
                 -->
                 <DockPanel x:Name="TimelineOptionsBar" Margin="0,0,10,0" LastChildFill="False" IsVisibleChanged="TimelineOptionsBar_IsVisibleChanged">
-                    <!-- Views: the panes and the timeline's I-frame checkboxes. Its icon is geometry: an eye. -->
-                    <ToggleButton x:Name="ViewsButton" DockPanel.Dock="Left" Padding="10,6" Margin="0,0,12,0" VerticalAlignment="Center" AutomationProperties.Name="Views"
-                                  ToolTip="Views: show or hide the tabs and the Canvas, Media, Keyframes and Effects panes, put the panes back where they started, and the timeline's I-frame checkboxes.">
-                        <StackPanel Orientation="Horizontal">
-                            <Path Width="18" Height="12" Stretch="None" VerticalAlignment="Center" StrokeThickness="1.4" StrokeLineJoin="Round"
-                                  Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
-                                  Data="M 1,6 C 4,1 14,1 17,6 C 14,11 4,11 1,6 Z M 11.5,6 A 2.5,2.5 0 1 1 6.5,6 A 2.5,2.5 0 1 1 11.5,6 Z" />
-                            <TextBlock Text="Views" Margin="7,0,0,0" VerticalAlignment="Center" />
-                        </StackPanel>
+                    <!--
+                        Views: the panes, the timeline's I-frame checkboxes and (5.4.4) what this bar shows. An icon alone (5.4.4, the user's), drawn
+                        from geometry: three sliders.
+                    -->
+                    <ToggleButton x:Name="ViewsButton" DockPanel.Dock="Left" Style="{StaticResource BarToggle}" Margin="0,0,12,0" AutomationProperties.Name="Views"
+                                  ToolTip="Views: show or hide the tabs and the Canvas, Media, Keyframes and Effects panes, put the panes back where they started, the timeline's I-frame checkboxes, and what this playback bar shows.">
+                        <Path Width="16" Height="14" Stretch="None" VerticalAlignment="Center" StrokeThickness="1.3" StrokeLineJoin="Round"
+                              Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
+                              Data="M 1,2.5 L 2.9,2.5 M 6.5,2.5 L 15,2.5 M 6.5,2.5 A 1.8,1.8 0 1 1 2.9,2.5 A 1.8,1.8 0 1 1 6.5,2.5 Z M 1,7 L 9.2,7 M 12.8,7 L 15,7 M 12.8,7 A 1.8,1.8 0 1 1 9.2,7 A 1.8,1.8 0 1 1 12.8,7 Z M 1,11.5 L 4.7,11.5 M 8.3,11.5 L 15,11.5 M 8.3,11.5 A 1.8,1.8 0 1 1 4.7,11.5 A 1.8,1.8 0 1 1 8.3,11.5 Z" />
                     </ToggleButton>
                 </DockPanel>
                 <!--
-                    The controls, each shown or not as chosen with the settings button at the right end (PlaybackControls). On one line, always: what the row has no room for is left out of it, least wanted first, and listed
+                    The controls, each shown or not as chosen in the Views menu's Playback Bar column (PlaybackControls). On one line, always: what the row has no room for is left out of it, least wanted first, and listed
                     in the menu of its last button (see OverflowStrip and FitTransport).
                 -->
                 <local:OverflowStrip Grid.Column="1" x:Name="TransportCenter" HorizontalAlignment="Center" VerticalAlignment="Center">
-                    <local:OverflowStrip.Resources>
-                        <Style x:Key="TextTransport" TargetType="Button" BasedOn="{StaticResource TransportButton}">
-                            <Setter Property="FontFamily" Value="Consolas" />
-                            <Setter Property="FontWeight" Value="Bold" />
-                            <Setter Property="Padding" Value="10,5" />
-                        </Style>
-                    </local:OverflowStrip.Resources>
-                    <Button local:OverflowStrip.Priority="20" Style="{StaticResource TransportButton}" Content="&#xE72C;" Margin="3,0,14,0" Click="ReloadPlayer_Click" Visibility="{Binding PlaybackControls[Reload], Converter={StaticResource BoolToVisibility}}"
+                    <Button local:OverflowStrip.Priority="20" Style="{StaticResource BarButton}" Content="&#xE72C;" Margin="3,0,14,0" Click="ReloadPlayer_Click" Visibility="{Binding PlaybackControls[Reload], Converter={StaticResource BoolToVisibility}}"
                             ToolTip="Use if timeline is stuck" AutomationProperties.Name="Reload Player" />
-                    <Button local:OverflowStrip.Priority="60" Style="{StaticResource TransportButton}" Content="&#xEB9E;" Tag="JumpStart" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[JumpStart], Converter={StaticResource BoolToVisibility}}"
+                    <Button local:OverflowStrip.Priority="60" Style="{StaticResource BarButton}" Content="&#xEB9E;" Tag="JumpStart" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[JumpStart], Converter={StaticResource BoolToVisibility}}"
                             local:KeyTip.Action="transport.start" local:KeyTip.Text="Go to Start{keys}" AutomationProperties.Name="Go to Start" />
-                    <Button local:OverflowStrip.Priority="50" Style="{StaticResource TransportButton}" FontFamily="Segoe UI Symbol" FontSize="15" Padding="10,4" Content="&#x21E4;" Tag="PrevEdit" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[PrevEdit], Converter={StaticResource BoolToVisibility}}"
+                    <Button local:OverflowStrip.Priority="50" Style="{StaticResource BarButton}" FontFamily="Segoe UI Symbol" Padding="7,2" Content="&#x21E4;" Tag="PrevEdit" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[PrevEdit], Converter={StaticResource BoolToVisibility}}"
                             local:KeyTip.Action="transport.prevEdit" local:KeyTip.Text="Previous Edit Point{keys}: the nearest start or end of a clip before the playhead" AutomationProperties.Name="Previous Edit Point" />
-                    <Button local:OverflowStrip.Priority="70" Style="{StaticResource TransportButton}" Content="&#xE892;" Click="PreviousIFrame_Click" Visibility="{Binding PlaybackControls[PrevIFrame], Converter={StaticResource BoolToVisibility}}"
+                    <Button local:OverflowStrip.Priority="70" Style="{StaticResource BarButton}" Content="&#xE892;" Click="PreviousIFrame_Click" Visibility="{Binding PlaybackControls[PrevIFrame], Converter={StaticResource BoolToVisibility}}"
                             local:KeyTip.Action="transport.prevIFrame" local:KeyTip.Text="Previous I-Frame{keys}" AutomationProperties.Name="Previous I-Frame" />
-                    <Button local:OverflowStrip.Priority="90" Style="{StaticResource TransportButton}" Content="&#xE76B;" Click="StepBack_Click" Visibility="{Binding PlaybackControls[StepBack], Converter={StaticResource BoolToVisibility}}"
+                    <Button local:OverflowStrip.Priority="90" Style="{StaticResource BarButton}" Content="&#xE76B;" Click="StepBack_Click" Visibility="{Binding PlaybackControls[StepBack], Converter={StaticResource BoolToVisibility}}"
                             local:KeyTip.Action="transport.stepBack" local:KeyTip.Text="Step Back One Frame{keys}" AutomationProperties.Name="Step Back One Frame" />
-                    <Button local:OverflowStrip.Priority="40" Style="{StaticResource TransportButton}" Content="&#xE768;" Tag="PlayReverse" Click="PlaybackControl_Click" RenderTransformOrigin="0.5,0.5" Visibility="{Binding PlaybackControls[PlayReverse], Converter={StaticResource BoolToVisibility}}"
+                    <Button local:OverflowStrip.Priority="40" Style="{StaticResource BarButton}" Content="&#xE768;" Tag="PlayReverse" Click="PlaybackControl_Click" RenderTransformOrigin="0.5,0.5" Visibility="{Binding PlaybackControls[PlayReverse], Converter={StaticResource BoolToVisibility}}"
                             local:KeyTip.Action="transport.shuttleBack" local:KeyTip.Text="Play Backwards{keys}: again for faster" AutomationProperties.Name="Play Backwards">
                         <Button.RenderTransform>
                             <ScaleTransform ScaleX="-1" />
                         </Button.RenderTransform>
                     </Button>
-                    <Button local:OverflowStrip.Priority="100" Style="{StaticResource PlayPauseButton}" Padding="20,7" Margin="3,0" Click="PlayPause_Click" />
-                    <Button local:OverflowStrip.Priority="90" Style="{StaticResource TransportButton}" Content="&#xE76C;" Click="StepForward_Click" Visibility="{Binding PlaybackControls[StepForward], Converter={StaticResource BoolToVisibility}}"
+                    <Button local:OverflowStrip.Priority="100" Style="{StaticResource BarPlay}" Click="PlayPause_Click" />
+                    <Button local:OverflowStrip.Priority="90" Style="{StaticResource BarButton}" Content="&#xE76C;" Click="StepForward_Click" Visibility="{Binding PlaybackControls[StepForward], Converter={StaticResource BoolToVisibility}}"
                             local:KeyTip.Action="transport.stepForward" local:KeyTip.Text="Step Forward One Frame{keys}" AutomationProperties.Name="Step Forward One Frame" />
-                    <Button local:OverflowStrip.Priority="70" Style="{StaticResource TransportButton}" Content="&#xE893;" Click="NextIFrame_Click" Visibility="{Binding PlaybackControls[NextIFrame], Converter={StaticResource BoolToVisibility}}"
+                    <Button local:OverflowStrip.Priority="70" Style="{StaticResource BarButton}" Content="&#xE893;" Click="NextIFrame_Click" Visibility="{Binding PlaybackControls[NextIFrame], Converter={StaticResource BoolToVisibility}}"
                             local:KeyTip.Action="transport.nextIFrame" local:KeyTip.Text="Next I-Frame{keys}" AutomationProperties.Name="Next I-Frame" />
-                    <Button local:OverflowStrip.Priority="50" Style="{StaticResource TransportButton}" FontFamily="Segoe UI Symbol" FontSize="15" Padding="10,4" Content="&#x21E5;" Tag="NextEdit" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[NextEdit], Converter={StaticResource BoolToVisibility}}"
+                    <Button local:OverflowStrip.Priority="50" Style="{StaticResource BarButton}" FontFamily="Segoe UI Symbol" Padding="7,2" Content="&#x21E5;" Tag="NextEdit" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[NextEdit], Converter={StaticResource BoolToVisibility}}"
                             local:KeyTip.Action="transport.nextEdit" local:KeyTip.Text="Next Edit Point{keys}: the nearest start or end of a clip after the playhead" AutomationProperties.Name="Next Edit Point" />
-                    <Button local:OverflowStrip.Priority="60" Style="{StaticResource TransportButton}" Content="&#xEB9D;" Tag="JumpEnd" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[JumpEnd], Converter={StaticResource BoolToVisibility}}"
+                    <Button local:OverflowStrip.Priority="60" Style="{StaticResource BarButton}" Content="&#xEB9D;" Tag="JumpEnd" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[JumpEnd], Converter={StaticResource BoolToVisibility}}"
                             local:KeyTip.Action="transport.end" local:KeyTip.Text="Go to End{keys}" AutomationProperties.Name="Go to End" />
-                    <ToggleButton local:OverflowStrip.Priority="45" Content="&#xE8EE;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="12,7" Margin="3,0" IsChecked="{Binding LoopPlayback}" Visibility="{Binding PlaybackControls[Loop], Converter={StaticResource BoolToVisibility}}"
+                    <ToggleButton local:OverflowStrip.Priority="45" Style="{StaticResource BarToggle}" Content="&#xE8EE;" Margin="3,0" IsChecked="{Binding LoopPlayback}" Visibility="{Binding PlaybackControls[Loop], Converter={StaticResource BoolToVisibility}}"
                                   ToolTip="Loop Playback: at the end, playback starts again from the beginning: of the selected clip, or of the whole sequence." AutomationProperties.Name="Loop Playback" />
-                    <Button local:OverflowStrip.Priority="30" Style="{StaticResource TransportButton}" Content="&#xE8C6;" Tag="Split" Click="PlaybackControl_Click"
+                    <Button local:OverflowStrip.Priority="30" Style="{StaticResource BarButton}" Content="&#xE8C6;" Tag="Split" Click="PlaybackControl_Click"
                             local:KeyTip.Action="edit.split" local:KeyTip.Text="Split at Playhead{keys}: cuts the selected block in two at the playhead." AutomationProperties.Name="Split at Playhead (Playback Bar)">
                         <Button.Visibility>
                             <Binding Path="PlaybackControls[Split]" Converter="{StaticResource BoolToVisibility}" />
                         </Button.Visibility>
                     </Button>
-                    <Button local:OverflowStrip.Priority="20" Style="{StaticResource TransportButton}" Content="&#xE7C1;" Margin="14,0,3,0" Tag="AddMarker" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[AddMarker], Converter={StaticResource BoolToVisibility}}"
+                    <Button local:OverflowStrip.Priority="20" Style="{StaticResource BarButton}" Content="&#xE7C1;" Margin="14,0,3,0" Tag="AddMarker" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[AddMarker], Converter={StaticResource BoolToVisibility}}"
                             local:KeyTip.Action="marker.add" local:KeyTip.Text="Add Marker{keys}: a marker at the playhead. Right-click a marker (on the timeline or the ruler) to rename or delete it." AutomationProperties.Name="Add Marker" />
-                    <Button local:OverflowStrip.Priority="15" Style="{StaticResource TransportButton}" Tag="PrevMarker" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[PrevMarker], Converter={StaticResource BoolToVisibility}}"
+                    <Button local:OverflowStrip.Priority="15" Style="{StaticResource BarButton}" Tag="PrevMarker" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[PrevMarker], Converter={StaticResource BoolToVisibility}}"
                             local:KeyTip.Action="marker.prev" local:KeyTip.Text="Previous Marker{keys}" AutomationProperties.Name="Previous Marker">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock Text="&#xE76B;" FontSize="10" VerticalAlignment="Center" />
                             <TextBlock Text="&#xE7C1;" />
                         </StackPanel>
                     </Button>
-                    <Button local:OverflowStrip.Priority="15" Style="{StaticResource TransportButton}" Tag="NextMarker" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[NextMarker], Converter={StaticResource BoolToVisibility}}"
+                    <Button local:OverflowStrip.Priority="15" Style="{StaticResource BarButton}" Tag="NextMarker" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[NextMarker], Converter={StaticResource BoolToVisibility}}"
                             local:KeyTip.Action="marker.next" local:KeyTip.Text="Next Marker{keys}" AutomationProperties.Name="Next Marker">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock Text="&#xE7C1;" />
                             <TextBlock Text="&#xE76C;" FontSize="10" VerticalAlignment="Center" />
                         </StackPanel>
                     </Button>
-                    <ToggleButton local:OverflowStrip.Priority="10" Content="&#xE8B3;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="12,7" Margin="14,0,3,0" IsChecked="{Binding ShowSafeMargins}" Visibility="{Binding PlaybackControls[SafeMargins], Converter={StaticResource BoolToVisibility}}"
+                    <ToggleButton local:OverflowStrip.Priority="10" Style="{StaticResource BarToggle}" Content="&#xE8B3;" Margin="14,0,3,0" IsChecked="{Binding ShowSafeMargins}" Visibility="{Binding PlaybackControls[SafeMargins], Converter={StaticResource BoolToVisibility}}"
                                   ToolTip="Safe Margins: outlines the action-safe (90%) and title-safe (80%) areas of the frame over the picture." AutomationProperties.Name="Safe Margins" />
-                    <ToggleButton local:OverflowStrip.Priority="10" Content="&#xE7AD;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="12,7" Margin="3,0,3,0" IsChecked="{Binding EditLayersOnPlayer}"
+                    <ToggleButton local:OverflowStrip.Priority="10" Style="{StaticResource BarToggle}" Content="&#xE7AD;" Margin="3,0,3,0" IsChecked="{Binding EditLayersOnPlayer}"
                                   ToolTip="Edit Clips on Video Preview: click a clip on the player to select it, then move, resize or turn it there. Only the selected clip is outlined, and nothing while playing." AutomationProperties.Name="Edit Clips on Video Preview">
                         <ToggleButton.Visibility>
                             <Binding Path="PlaybackControls[EditOnVideo]" Converter="{StaticResource BoolToVisibility}" />
                         </ToggleButton.Visibility>
                     </ToggleButton>
                     <!-- 3D Exploded View (5.0D, MainWindow.Exploded.cs): the GPU engine's layer stack in 3D, and back. Its icon is geometry: three planes apart. -->
-                    <ToggleButton x:Name="ExplodedToggle" local:OverflowStrip.Priority="12" Padding="10,6" Margin="3,0,3,0" Checked="ExplodedToggle_Changed" Unchecked="ExplodedToggle_Changed"
+                    <ToggleButton x:Name="ExplodedToggle" local:OverflowStrip.Priority="12" Style="{StaticResource BarToggle}" Margin="3,0,3,0" Checked="ExplodedToggle_Changed" Unchecked="ExplodedToggle_Changed"
                                   Visibility="{Binding PlaybackControls[Exploded3D], Converter={StaticResource BoolToVisibility}}" AutomationProperties.Name="3D Exploded View"
                                   local:KeyTip.Action="view.exploded3d" local:KeyTip.Text="3D Exploded View{keys}: the player shows the layer stack in 3D, each layer a plane in compositing order. Drag a layer to move it in its plane, Shift + drag to move it through the stack (its track's place); right-drag, a touchpad's two-finger scroll or a finger on the empty space to orbit (Alt + middle-drag from the flat player); the wheel or a pinch to zoom; Alt + the wheel or [ and ] for the layer in front or behind. Esc or this button goes back. Needs the GPU preview engine.">
                         <Path Width="18" Height="16" Stretch="None" VerticalAlignment="Center" StrokeThickness="1.3" StrokeLineJoin="Round"
@@ -897,83 +959,58 @@
                     </ToggleButton>
                     <!-- 5.4B/5.4D: the Live Encoded Preview toggle and its flyout, made in code (MainWindow.LoopbackPreview.cs), shown by default beside the 3D view. -->
                     <ContentControl x:Name="ExportQualityPreviewBarSlot" local:OverflowStrip.Priority="12" Focusable="False" VerticalAlignment="Center" />
-                    <Button local:OverflowStrip.Priority="10" Style="{StaticResource TransportButton}" Content="&#xE722;" Tag="ExportFrame" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[ExportFrame], Converter={StaticResource BoolToVisibility}}"
+                    <Button local:OverflowStrip.Priority="10" Style="{StaticResource BarButton}" Content="&#xE722;" Tag="ExportFrame" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[ExportFrame], Converter={StaticResource BoolToVisibility}}"
                             ToolTip="Export Frame: saves the frame as it is shown (as the layout makes it) as a PNG in the output's folder." AutomationProperties.Name="Export Frame" />
                     <!-- What the row has no room for: listed in a menu from here (see OverflowStrip). Shown only while something is left out. -->
-                    <ToggleButton local:OverflowStrip.IsOverflowButton="True" Content="&#xE712;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,7" Margin="3,0"
+                    <ToggleButton local:OverflowStrip.IsOverflowButton="True" Style="{StaticResource BarToggle}" Content="&#xE712;" Margin="3,0"
                                   AutomationProperties.Name="More Playback Controls" ToolTip="More: the playback controls the bar has no room for." />
                 </local:OverflowStrip>
-                <!-- The time, sound and speed, and at the end the settings button that chooses what the bar shows -->
-                <StackPanel Grid.Column="2" x:Name="TransportRight" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                <!--
+                    The time, sound and speed (5.4.4: what the bar shows is chosen in the Views menu, its settings button here retired). The volume
+                    and speed pills 22 DIPs tall inside the row's 26.
+                -->
+                <StackPanel Grid.Column="2" x:Name="TransportRight" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center"
+                            KeyboardNavigation.TabNavigation="Local">
                     <local:TimeReadout VerticalAlignment="Center" Margin="0,0,12,0" Visibility="{Binding PlaybackControls[Timecode], Converter={StaticResource BoolToVisibility}}">
                         <TextBlock Style="{StaticResource TimeText}">
                             <Run Text="{Binding PositionText, Mode=OneWay}" /><Run Text=" / " Foreground="{DynamicResource MutedTextBrush}" /><Run Text="{Binding DurationText, Mode=OneWay}" Foreground="{DynamicResource MutedTextBrush}" />
                         </TextBlock>
                     </local:TimeReadout>
-                    <ToggleButton FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="8,5" Margin="0,0,8,0" IsChecked="{Binding IsPlayerMuted}" Visibility="{Binding PlaybackControls[Mute], Converter={StaticResource BoolToVisibility}}"
-                                  AutomationProperties.Name="Mute Player">
-                        <ToggleButton.Style>
-                            <Style TargetType="ToggleButton" BasedOn="{StaticResource {x:Type ToggleButton}}">
-                                <Setter Property="Content" Value="&#xE767;" />
-                                <Setter Property="ToolTip" Value="Mute the player (the export is not affected)." />
+                    <!-- How tall the Sequence Overview Scrubber is: no slider here since 4.2B-2; its lower edge (dragged), the border above it (Ctrl-drag) and its tab's right-click menu. -->
+                    <!--
+                        Monitor volume (5.4.4): an icon that opens into a pill slider under the pointer; a click on the speaker mutes the player.
+                        Raised over the speed pill (ZIndex), so its speaker stays in sight and under the pointer while the speed pill is open over it;
+                        the Tab order stays the order on screen (TabIndex: ZIndex reorders the panel's children for the keyboard too).
+                    -->
+                    <local:ExpandablePillSlider x:Name="VolumePill" Panel.ZIndex="1" KeyboardNavigation.TabIndex="1" Margin="0,0,8,0" VerticalAlignment="Center" Icon="Speaker" ExpandsLeft="True"
+                                                Minimum="0" Maximum="100" SmallChange="5" LargeChange="20" DefaultValue="100" ReadoutFormat="{}{0:0}%"
+                                                Value="{Binding Volume}" IsIconToggle="True" IsIconChecked="{Binding IsPlayerMuted}"
+                                                AutomationProperties.Name="Volume" IconAutomationName="Mute Player"
+                                                ToolTip="Volume. Click the speaker to mute the player (the export is not affected). Double-click the track to reset."
+                                                Visibility="{Binding PlaybackControls[Volume], Converter={StaticResource BoolToVisibility}}" />
+                    <!--
+                        Playback speed (5.4.4, in place of a box whose words were cut): the pill's face is the speed itself ("1x"), 44 DIPs wide
+                        whatever the speed (the widest, "0.25x", fits at any scale, so nothing beside it moves), opening left into a track of the
+                        seven speeds whose thumb snaps to them. Its value is the speed's place in the list (PlaybackSpeedStep, 3 for 1x).
+                        While the Volume pill is shown, the track starts past its slot (TrackInset: its 24 DIPs and 8 of margin), so no speed
+                        lies under the speaker; a pointer crossing the speaker to the track leaves it shut, one resting there opens it.
+                    -->
+                    <local:ExpandablePillSlider x:Name="SpeedPill" KeyboardNavigation.TabIndex="2" Margin="0" VerticalAlignment="Center" Icon="Readout" ExpandsLeft="True" CollapsedWidth="44"
+                                                Minimum="0" Maximum="6" SmallChange="1" LargeChange="1" DefaultValue="3" Detent="1"
+                                                DetentLabels="{Binding PlaybackSpeeds}" Value="{Binding PlaybackSpeedStep}"
+                                                AutomationProperties.Name="Playback Speed"
+                                                ToolTip="Playback Speed. Scroll or drag to change; double-click for 1x."
+                                                Visibility="{Binding PlaybackControls[Speed], Converter={StaticResource BoolToVisibility}}">
+                        <local:ExpandablePillSlider.Style>
+                            <Style TargetType="local:ExpandablePillSlider">
                                 <Style.Triggers>
-                                    <Trigger Property="IsChecked" Value="True">
-                                        <Setter Property="Content" Value="&#xE74F;" />
-                                        <Setter Property="ToolTip" Value="The player is muted. Click to hear it again." />
-                                    </Trigger>
+                                    <DataTrigger Binding="{Binding PlaybackControls[Volume]}" Value="True">
+                                        <Setter Property="TrackInset" Value="32" />
+                                    </DataTrigger>
                                 </Style.Triggers>
                             </Style>
-                        </ToggleButton.Style>
-                    </ToggleButton>
-                    <!-- How tall the Sequence Overview Scrubber is: no slider here since 4.2B-2; its lower edge (dragged), the border above it (Ctrl-drag) and its tab's right-click menu. -->
-                    <StackPanel Orientation="Horizontal" Visibility="{Binding PlaybackControls[Volume], Converter={StaticResource BoolToVisibility}}">
-                        <TextBlock Text="&#xE767;" FontFamily="Segoe MDL2 Assets" FontSize="15" VerticalAlignment="Center"
-                                   Foreground="{DynamicResource MutedTextBrush}" ToolTip="Volume" />
-                        <Slider Width="64" Margin="6,0,8,0" VerticalAlignment="Center" Minimum="0" Maximum="100"
-                                SmallChange="5" LargeChange="20" IsMoveToPointEnabled="True" ToolTip="Volume. Double-click to reset."
-                                Value="{Binding Volume}" AutomationProperties.Name="Volume" local:NumericInput.Default="100" />
-                    </StackPanel>
-                    <ComboBox MinWidth="64" Margin="0" ItemsSource="{Binding PlaybackSpeeds}" SelectedItem="{Binding PlaybackSpeed}" Visibility="{Binding PlaybackControls[Speed], Converter={StaticResource BoolToVisibility}}"
-                              ToolTip="Playback Speed" AutomationProperties.Name="Playback Speed" />
-                    <!-- What the bar shows: every control it can have, to tick or not, kept for this mode -->
-                    <ToggleButton x:Name="PlaybackSettingsButton" Content="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="8,5" Margin="8,0,0,0"
-                                  AutomationProperties.Name="Playback Controls Settings"
-                                  ToolTip="Playback controls: choose what this bar shows (jump to start and end, edit points, loop, start and stop points, markers, safe margins, export frame, timecode, mute and more). Kept for this mode." />
-                    <Popup PlacementTarget="{Binding ElementName=PlaybackSettingsButton}" Placement="Top" HorizontalOffset="-300" VerticalOffset="-4" StaysOpen="False" AllowsTransparency="True"
-                           IsOpen="{Binding IsChecked, ElementName=PlaybackSettingsButton, Mode=TwoWay}" Opened="BinPopup_Opened" Closed="BinPopup_Closed" Tag="{Binding ElementName=PlaybackSettingsButton}">
-                        <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="12,10">
-                            <DockPanel TextElement.Foreground="{DynamicResource TextBrush}">
-                                <TextBlock DockPanel.Dock="Top" Text="Playback controls" FontWeight="SemiBold" Margin="0,0,0,2" />
-                                <TextBlock DockPanel.Dock="Top" Text="What this bar shows, in this mode." Foreground="{DynamicResource MutedTextBrush}" Margin="0,0,0,8" />
-                                <ItemsControl ItemsSource="{Binding PlaybackControls.Options}" Focusable="False">
-                                    <ItemsControl.GroupStyle>
-                                        <GroupStyle>
-                                            <GroupStyle.HeaderTemplate>
-                                                <DataTemplate>
-                                                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" Foreground="{DynamicResource MutedTextBrush}" Margin="0,6,0,2" />
-                                                </DataTemplate>
-                                            </GroupStyle.HeaderTemplate>
-                                            <GroupStyle.Panel>
-                                                <ItemsPanelTemplate>
-                                                    <WrapPanel Orientation="Vertical" MaxHeight="420" />
-                                                </ItemsPanelTemplate>
-                                            </GroupStyle.Panel>
-                                        </GroupStyle>
-                                    </ItemsControl.GroupStyle>
-                                    <ItemsControl.ItemsPanel>
-                                        <ItemsPanelTemplate>
-                                            <WrapPanel Orientation="Vertical" MaxHeight="440" />
-                                        </ItemsPanelTemplate>
-                                    </ItemsControl.ItemsPanel>
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <CheckBox Content="{Binding Label}" IsChecked="{Binding IsShown}" ToolTip="{Binding Tip}" Margin="0,2,20,2" MinWidth="190" />
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                            </DockPanel>
-                        </Border>
-                    </Popup>
+                        </local:ExpandablePillSlider.Style>
+                    </local:ExpandablePillSlider>
                 </StackPanel>
             </local:PlaybackRow>
             <!-- The Canvas: the output frame with its clips, to drag into place -->
@@ -1013,14 +1050,16 @@
                         <!-- With the advanced transport on, its play/pause button takes over from this one -->
                         <Button Grid.Column="0" Style="{StaticResource PlayPauseButton}" MinWidth="56" Click="PlayPause_Click"
                                 Visibility="{Binding ShowSimplePlayback, Converter={StaticResource BoolToVisibility}}" />
-                        <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="10,0,0,0" ToolTip="Volume"
-                                    Visibility="{Binding ShowSimplePlayback, Converter={StaticResource BoolToVisibility}}">
-                            <TextBlock Text="&#xE767;" FontFamily="Segoe MDL2 Assets" FontSize="15" VerticalAlignment="Center"
-                                       Foreground="{DynamicResource MutedTextBrush}" />
-                            <Slider Width="90" Margin="6,0,0,0" VerticalAlignment="Center" Minimum="0" Maximum="100"
-                                    SmallChange="5" LargeChange="20" IsMoveToPointEnabled="True"
-                                    Value="{Binding Volume}" AutomationProperties.Name="Volume" local:NumericInput.Default="100" />
-                        </StackPanel>
+                        <!--
+                            Monitor volume in the simple playback row (5.4.4-Final, the user's Q5): the playback bar's pill slider in place of the plain
+                            slider, opening right over the row (ZIndex) under the pointer; a click on the speaker mutes the player.
+                        -->
+                        <local:ExpandablePillSlider Grid.Column="1" x:Name="SimpleVolumePill" Panel.ZIndex="1" Margin="10,0,0,0" VerticalAlignment="Center" Icon="Speaker"
+                                                    Minimum="0" Maximum="100" SmallChange="5" LargeChange="20" DefaultValue="100" ReadoutFormat="{}{0:0}%"
+                                                    Value="{Binding Volume}" IsIconToggle="True" IsIconChecked="{Binding IsPlayerMuted}"
+                                                    AutomationProperties.Name="Volume" IconAutomationName="Mute Player"
+                                                    ToolTip="Volume. Click the speaker to mute the player (the export is not affected). Double-click the track to reset."
+                                                    Visibility="{Binding ShowSimplePlayback, Converter={StaticResource BoolToVisibility}}" />
                         <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="10,0,0,0"
                                     Visibility="{Binding ShowSimplePlayback, Converter={StaticResource BoolToVisibility}}">
                             <Button Style="{StaticResource TransportButton}" Content="&#xE72C;" Padding="9,6" Click="ReloadPlayer_Click"

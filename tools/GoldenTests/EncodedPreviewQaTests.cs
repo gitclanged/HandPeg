@@ -509,7 +509,7 @@ public static class EncodedPreviewQaTests
             expect(rewrote && rewritten == wanted, $"the retry of {hardware} at {(wanted.Contains("ultrafast", StringComparison.Ordinal) ? "its fastest step is ultrafast" : "its slowest step is veryslow")}");
         }
 
-        var window = Read("ViewModels", "MainViewModel.cs");
+        var window = Read("ViewModels", "MainViewModel.EncodeAndLoad.cs");
         var retry = window[window.IndexOf("VideoEncoders.FirstOrDefault(e => e.Name == software) is { } replacement", StringComparison.Ordinal)..];
         retry = retry[..retry.IndexOf("retry = CommandPreview;", StringComparison.Ordinal)];
         expect(retry.Contains("PlaceSoftwareRetry(replacement, command);", StringComparison.Ordinal),
@@ -597,7 +597,7 @@ public static class EncodedPreviewQaTests
         Place(vm, "D:/media/game.mp4", Probe());
         expect(string.Join(", ", vm.Document.MediaPool) == "D:/media/first.mp4, D:/media/voice.wav, D:/media/game.mp4" && vm.ClipsUsing("D:/media/game.mp4") == 1,
             "the first file opened later (a new source, then its clip placed) keeps the pool: the two pooled files, then the opened one's");
-        var load = Method(Read("ViewModels", "MainViewModel.cs"), "private async Task<(bool Loaded, string Message)> LoadMediaAsync(");
+        var load = Method(Read("ViewModels", "MainViewModel.EncodeAndLoad.cs"), "private async Task<(bool Loaded, string Message)> LoadMediaAsync(");
         expect(load.Length > 0 && !load.Contains("InstallDocument", StringComparison.Ordinal) && !load.Contains("MediaPool", StringComparison.Ordinal),
             "opening a file (LoadMediaAsync) never puts a new document in place nor touches the pool");
         var menu = Method(Read("Views", "MediaBrowserPane.ProjectMedia.cs"), "private void AddProjectMediaItems(");
@@ -695,7 +695,7 @@ public static class EncodedPreviewQaTests
         var captions = Read("ViewModels", "MainViewModel.Captions.cs");
         var subtitles = Read("ViewModels", "MainViewModel.Subtitles.cs");
         expect(!timeline.Contains("Close the Subtitle Studio first", StringComparison.Ordinal) && !Method(captions, "GpuCaptions()").Contains("SubtitleEditor", StringComparison.Ordinal)
-               && !subtitles.Contains("InSubtitleVisit", StringComparison.Ordinal) && !Read("ViewModels", "MainViewModel.cs").Contains("nameof(IsSubtitleEditorOpen)", StringComparison.Ordinal),
+               && !subtitles.Contains("InSubtitleVisit", StringComparison.Ordinal) && !(Read("ViewModels", "MainViewModel.cs") + Read("ViewModels", "MainViewModel.EncodeAndLoad.cs")).Contains("nameof(IsSubtitleEditorOpen)", StringComparison.Ordinal),
             "Undo has no \"Close the Subtitle Studio first\", the captions no editor guard, and NonCommandProperties no entry for it");
     }
 

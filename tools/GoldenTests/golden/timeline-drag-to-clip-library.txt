@@ -1,0 +1,24 @@
+# A clip dragged out of the Timeline onto the Clip Library: held back where it began while the pane offers the drop, let go there nothing is committed and the Save dialog is asked for after the release; anywhere else the drag is as before.
+ok: inside the control the host is never asked: the block follows the pointer as before
+ok: above the control, the host offering a drop: asked once about the pressed block, with the point itself (in no window there is no screen to put it on)
+ok: the block is drawn back where it began, over no row and no new track's seam (above the rows it would offer a new track otherwise)
+ok: let go there: the host takes it (once); no commit, no move, no new track (nothing for Undo), the drag ended once
+ok: the host was told the drag is no longer outside (null), and the block is where it began
+ok: the host offering nothing there: asked, and the drag is as before (above the rows, the new track's seam)
+ok: back inside the control: the host is told (null), the block follows the pointer
+ok: let go inside: committed as before (one move along its row), the host never asked to take it
+ok: parked, then back inside: the block follows the pointer again
+ok: and let go inside, it is committed as before
+ok: offered as it moved but refused as it is let go: nothing is committed, the block stays where it began
+   parked, after the wheel the block is 0 s from where it began, after the next move 0 s; let go refused: nothing
+ok: parked, a turn of the wheel (the plain wheel, Ctrl's zoom) leaves the block where it began, over no row and no new track, and so does the next move; let go there refused, nothing is committed
+ok: a trim of its end and an Alt slip dragged out of the control never ask the host: committed as before
+ok: a selected group dragged out: the host is asked about the pressed clip, and every block of the group is held back where it began
+ok: let go there: nothing of the group is committed
+   decisions: None 0 ms = nothing; None 500 ms = nothing; Library 0 ms = drop; Tab 0 ms = drop; Tab 179 ms = drop; Tab 180 ms = drop, show the Clip Library; Tab 400 ms = drop, show the Clip Library
+ok: over the Clip Library a drop; over its button a drop too (let go before the dwell), and held 180 ms (not 179) the pane shows the Clip Library; elsewhere nothing
+ok: a Media pane in no window: the Folder Browser, nothing under any point takes a clip, no rectangle for the guide (and nothing throws)
+ok: ShowClipLibrary shows the Clip Library (still nothing to drop on in no window)
+ok: the New Project studio's picker never switches for a drag and takes nothing
+ok: the window answers the Timeline's drags out (MainWindow.ClipLibrary.cs) and forgets each when it ends
+ok: a drop asks for Save Clip to Personal Clip Library... after the release (posted, never inside it) and edits nothing of the Sequence

@@ -536,8 +536,9 @@ public static class ProjectSettingsTests
             window.Show();
             dock.Load(json);
             var current = dock.Current;
-            expect(!current.Main.AllPanes().Contains("Tab:Summary") && current.Main.GroupOf("UnifiedTimeline") is { Active: "UnifiedTimeline" } tabs && TabIds.All(tabs.Panes.Contains),
-                "a saved arrangement on Tab:Summary loads without it, its group on the Timeline (no dock version bump: Validate drops the unknown pane)");
+            expect(!current.Main.AllPanes().Contains("Tab:Summary") && current.Main.GroupOf("UnifiedTimeline") is { Panes: ["UnifiedTimeline"], Active: "UnifiedTimeline" }
+                   && current.Main.GroupOf("Media") is { } tabs && TabIds.All(tabs.Panes.Contains),
+                "a saved arrangement on Tab:Summary loads without it, the Timeline shown (5.4.4-Final: alone at the bottom, the settings tabs beside Media; Validate drops the unknown pane)");
         }
         finally
         {

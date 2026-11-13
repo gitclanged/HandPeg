@@ -24,11 +24,15 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
     /// <summary>The bounded waits for the decoded frame: playing (the frame's turn) and paused (a representative key frame).</summary>
     public const int PlayingWaitMs = 10, PausedWaitMs = 120;
 
-    // A paused frame not back this soon is drained out of the encoder (a low-latency one has given it by then).
-    private const int DrainAfterMs = 4;
+    // A paused frame is drained out of the encoder as soon as it has gone in (5.4.4-Final, the user's: both the encoder and the decoder are
+    // drained on a paused frame, so it shows at once; before, 4 ms, and the decoder never).
+    private const int DrainAfterMs = 0;
 
     // A paused frame still in flight after this long is given up on (the worker stops looking every 2 ms).
     private const int GiveUpMs = 2000;
+
+    // An encoder that has given no picture back this long after its first frame is given up on, and the next one tried (5.4.4).
+    private const int FirstPictureGiveUpMs = 5000;
 
     // The source's planes of the last frames handed over, by sample time: the decoded frame is shown beside its own.
     private sealed class Source(GpuTexture luma, GpuTexture chroma) : IDisposable
@@ -54,13 +58,38 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
     private nint _stagingLuma, _stagingChroma;
     private (int Width, int Height) _size;
 
-    private MfEncoderMft? _encoder;
+    // 5.4.4-Final: the export's frame size when it is not the canvas's (a 720p export of a 1080p Sequence): the scene stretched to it, its NV12
+    // planes (what the encoder is given; the source's own planes, at the canvas's size, are the RAW side), and the staging at that size.
+    private GpuTexture? _scaled, _encodeLuma, _encodeChroma;
+    private (int Width, int Height) _encodedSize;
+
+    // The scene drawn last (its content stamp and whether every video frame in it was exact): a paused frame encoded again for new settings
+    // takes it as it is (no layer drawn again), and the settings' stamp the last encode was made for.
+    private long _renderedStamp = long.MinValue;
+    private bool _renderedExact;
+    private long _encodedSettingsStamp = long.MinValue;
+
+    // A drain of the decoder or the encoder ends a stream: the next frame handed over is a key frame.
+    private bool _forceKeyNext;
+
+    // A software encoder's arguments as read from the control block, and the version they were read at.
+    private string _softwareArguments = "";
+    private int _argumentsVersion = -1;
+
+    private ILoopbackEncoder? _encoder;
     private MfDecoderMft? _decoder;
     private LoopbackConfig _config;
     private bool _configured, _bypass;
     private ExportLoopbackState _state;
     private int _hresult;
     private string _name = "";
+
+    // 5.4.4 (the Desktop's missing encoded picture): encoders that failed or gave nothing back are not tried again for this codec, the
+    // first frame's hand-over time (the give-up's clock), the last failure's HRESULT, and the state last written to HandPeg.log.
+    private readonly HashSet<string> _refused = new(StringComparer.Ordinal);
+    private long _firstSubmit;
+    private int _lastFailure;
+    private (ExportLoopbackState State, int HResult, string Name) _logged;
 
     // The sample clock (frames handed over), the newest frame handed over and not yet back, the pair shown, and the paused frame's key.
     private long _frames;
@@ -90,14 +119,18 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
     /// The loopback's textures or render failed at this scene's size: the worker draws the player's plain picture and keeps this
     /// instance only for its state (Failed). A canvas of another size tries again.
     /// </summary>
-    public bool Broken(in FrameSceneHeader header) => _failedSize.Width != 0 && _failedSize == EncodedSize(header);
+    public bool Broken(in FrameSceneHeader header) => _failedSize.Width != 0 && _failedSize == RawSize(header);
 
-    // The encoded size: the canvas's, even, at most 8192 a side.
-    private static (int Width, int Height) EncodedSize(in FrameSceneHeader header)
+    // The scene's size (the RAW side's): the canvas's, even, at most 8192 a side.
+    private static (int Width, int Height) RawSize(in FrameSceneHeader header)
     {
         var (width, height) = ((Math.Max(header.CanvasWidth, 2) + 1) & ~1, (Math.Max(header.CanvasHeight, 2) + 1) & ~1);
         return (Math.Min(width, 8192), Math.Min(height, 8192));
     }
+
+    // The encoded size (5.4.4-Final): the export's frame size, the canvas's shape kept (ExportLoopbackSettings.EncodedSizeOf).
+    private static (int Width, int Height) EncodedSize(in FrameSceneHeader header) =>
+        ExportLoopbackSettings.EncodedSizeOf(header.CanvasWidth, header.CanvasHeight, header.LoopbackEncodedWidth, header.LoopbackEncodedHeight);
 
     /// <summary>
     /// A paused frame is still awaited: the worker looks again in 2 ms, not 100, and <see cref="Poll"/>s for it. 5.4.1A: true until Poll
@@ -105,9 +138,9 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
     /// </summary>
     public bool Pending => _awaited >= 0 && !_playing && Find(_awaited) >= 0;
 
-    // A paused frame still in flight: awaited, and handed over less than GiveUpMs ago.
+    // A paused frame still in flight: awaited, and handed over less than the encoder's give-up time ago (2 s; a software encoder's, 30 s).
     private bool InFlight => Pending && Find(_awaited) is var index and >= 0
-        && Stopwatch.GetElapsedTime(_sources[index]!.HandedAt).TotalMilliseconds < GiveUpMs;
+        && Stopwatch.GetElapsedTime(_sources[index]!.HandedAt).TotalMilliseconds < (_encoder?.GiveUpMs ?? GiveUpMs);
 
     /// <summary>
     /// The frame's half before the output is taken: the scene rendered at the encoded size (only when the picture may have changed:
@@ -119,11 +152,21 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
         _playing = header.IsPlaying != 0;
         _bypass = (header.LoopbackTestFlags & 1) != 0;
         _submitted = false;
-        var (width, height) = EncodedSize(header);
+        var (width, height) = RawSize(header);
+        var (encodedWidth, encodedHeight) = EncodedSize(header);
         _failedSize = (0, 0);
-        Configure(header, width, height);
+        Configure(ref control, header, encodedWidth, encodedHeight);
 
-        var encode = _playing || _program is null || header.LoopbackContentStamp != _encodedStamp
+        // An encoder that took frames but gave none back (5.4.4): given up on, and the next one of the codec tried.
+        if (_encoder is not null && _encodedCount == 0 && _firstSubmit != 0
+            && Stopwatch.GetElapsedTime(_firstSubmit).TotalMilliseconds > Math.Max(FirstPictureGiveUpMs, _encoder.GiveUpMs))
+        {
+            Fail(unchecked((int)0x800705B4), $"waiting {Math.Max(FirstPictureGiveUpMs, _encoder.GiveUpMs)} ms for its first picture", tryNext: true);
+            Configure(ref control, header, encodedWidth, encodedHeight);
+        }
+
+        // Encoded again when the picture may have changed, or (5.4.4-Final) when the export's settings did: a new stamp of either.
+        var encode = _playing || _program is null || header.LoopbackContentStamp != _encodedStamp || header.LoopbackSettingsStamp != _encodedSettingsStamp
                      || (!_encodedExact && decoders.FramesDecoded != _decodedAtRender);
         if (!encode)
         {
@@ -131,27 +174,44 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
             return;
         }
 
-        // The export's look: the canvas stretched over the encoded size, no player zoom, pan or loupe. Textures the card cannot give
+        // The export's look: the canvas stretched over the scene's size, no player zoom, pan or loupe. Textures the card cannot give
         // (an 8K canvas on a small card) or a render that fails are a state, never a throw out of the worker: the textures are let go
         // and the player draws its plain picture (Broken) until the canvas's size changes.
         int index;
         Source source;
         try
         {
-            EnsureTextures(width, height);
-            var flat = header;
-            flat.Flags &= ~(FrameSceneHeader.FlagLetterbox | FrameSceneHeader.FlagLoopback);
-            (flat.LoupeClipKey, flat.ViewScale, flat.ViewPanX, flat.ViewPanY) = (0, 1, 0, 0);
+            var made = EnsureTextures(width, height, encodedWidth, encodedHeight);
 
-            // The count before the render: a frame a lane finishes during it (and wakes the worker for) is drawn on that wake.
-            var decoded = decoders.FramesDecoded;
-            renderer.Render(flat, layers, _program!.Rtv, width, height, raw: false);
-            (_encodedStamp, _encodedExact, _decodedAtRender) = (header.LoopbackContentStamp, decoders.LastFrameExact, decoded);
+            // 5.4.4-Final: a paused frame encoded again because only the export's settings changed takes the scene drawn last as it is: not one
+            // layer is drawn again (the new settings show as fast as the encoder answers). Playing, or a picture that may have changed, is drawn.
+            var redraw = made || _playing || header.LoopbackContentStamp != _renderedStamp
+                         || (!_renderedExact && decoders.FramesDecoded != _decodedAtRender);
+            if (redraw)
+            {
+                var flat = header;
+                flat.Flags &= ~(FrameSceneHeader.FlagLetterbox | FrameSceneHeader.FlagLoopback);
+                (flat.LoupeClipKey, flat.ViewScale, flat.ViewPanX, flat.ViewPanY) = (0, 1, 0, 0);
 
+                // The count before the render: a frame a lane finishes during it (and wakes the worker for) is drawn on that wake.
+                var decoded = decoders.FramesDecoded;
+                renderer.Render(flat, layers, _program!.Rtv, width, height, raw: false);
+                (_renderedStamp, _renderedExact, _decodedAtRender) = (header.LoopbackContentStamp, decoders.LastFrameExact, decoded);
+            }
+
+            (_encodedStamp, _encodedExact, _encodedSettingsStamp) = (header.LoopbackContentStamp, _renderedExact, header.LoopbackSettingsStamp);
             index = NextSource();
             source = _sources[index]!;
             _newest = index;
-            renderer.ToNv12(_program, source.Luma, source.Chroma);
+            renderer.ToNv12(_program!, source.Luma, source.Chroma);
+
+            // A smaller (or larger) export: the scene stretched to its size, made NV12 there, for the encoder alone.
+            if (_scaled is not null)
+            {
+                renderer.Stretch(_program!, _scaled);
+                renderer.ToNv12(_scaled, _encodeLuma!, _encodeChroma!);
+            }
+
             source.Time = _frames * 10_000_000L * 1000 / FpsMilli(_config.Fps);
             source.HandedAt = Stopwatch.GetTimestamp();
             _frames++;
@@ -161,7 +221,7 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
             ReleaseTextures();
             (_shown, _newest, _shownDecoded) = (-1, -1, false);
             _failedSize = (width, height);
-            Fail(ex.Code);
+            Fail(ex.Code, "the compare's textures or render");
             Publish(ref control);
             return;
         }
@@ -173,12 +233,16 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
             _state = ExportLoopbackState.Running;
             _encodedCount++;
         }
-        else if (_encoder is not null && (_playing || _encodedExact))
+        else if (_encoder is not null && (_playing || _encodedExact) && !(_playing && _encoder.PausedOnly))
         {
             try
             {
                 _encoder.SetQualityVsSpeed(_playing ? Math.Min(header.LoopbackQualityVsSpeed, 33) : header.LoopbackQualityVsSpeed);
-                _encoder.Submit(SampleOf(source), forceKey: !_playing);
+                var (luma, chroma) = _scaled is not null ? (_encodeLuma!, _encodeChroma!) : (source.Luma, source.Chroma);
+                _encoder.Submit(SampleOf(luma, chroma, source.Time, _encoder.TakesP010), forceKey: !_playing || _forceKeyNext);
+                _forceKeyNext = false;
+                if (_firstSubmit == 0)
+                    _firstSubmit = Stopwatch.GetTimestamp();
                 _awaited = source.Time;
                 (_drained, _submitted) = (false, true);
 
@@ -188,13 +252,14 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
             }
             catch (GpuException ex) when (!ex.IsDeviceLost)
             {
-                Fail(ex.Code);
+                Fail(ex.Code, "handing a frame to the encoder (ProcessInput)", tryNext: true);
             }
         }
 
-        // No codec (none on this PC, a codec without a loopback, a failure): the plain picture. A paused picture that still shows a
-        // stand-in for a video frame is not encoded: it shows as it is, and is encoded once the exact frame is drawn.
-        if (_encoder is null && !_bypass)
+        // No codec (none on this PC, a codec without a loopback, a failure), or a software encoder while playing (5.4.4-Final: paused frames
+        // only): the plain picture. A paused picture that still shows a stand-in for a video frame is not encoded: it shows as it is, and is
+        // encoded once the exact frame is drawn.
+        if ((_encoder is null || (_playing && _encoder.PausedOnly)) && !_bypass)
             (_shown, _shownDecoded) = (index, false);
         Publish(ref control);
     }
@@ -277,7 +342,7 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
         }
         catch (GpuException ex) when (!ex.IsDeviceLost)
         {
-            Fail(ex.Code);
+            Fail(ex.Code, "taking the encoded frame back", tryNext: true);
         }
 
         Publish(ref control);
@@ -320,7 +385,7 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
         }
         catch (GpuException ex) when (!ex.IsDeviceLost)
         {
-            Fail(ex.Code);
+            Fail(ex.Code, "polling the encoder for its frame", tryNext: true);
             return true;
         }
 
@@ -395,22 +460,31 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
 
     // The encoder and decoder for the scene's settings: made anew when the codec, the rate control, the bitrate, the quality, the rate
     // or the size changed (a failed set-up is not tried again until one of them does).
-    private void Configure(in FrameSceneHeader header, int width, int height)
+    private void Configure(ref ControlBlock control, in FrameSceneHeader header, int width, int height)
     {
         var codec = header.LoopbackCodec switch
         {
             1 => MfGuids.H264,
             2 => MfGuids.Hevc,
             3 => MfGuids.Av1,
+            4 => MfGuids.Vp9,
             _ => Guid.Empty,
         };
         var fps = header.LoopbackFrameRate > 0 && float.IsFinite(header.LoopbackFrameRate) ? Math.Clamp(header.LoopbackFrameRate, 1, 1000) : 30;
-        var config = new LoopbackConfig(codec, width, height, fps, header.LoopbackRateControl, Math.Max(header.LoopbackBitrateKbps, 100), header.LoopbackQuality);
+
+        // 5.4.4-Final: the preset (quality against speed), 10-bit, the family (whose card's encoder) and a software encoder's own arguments too.
+        var software = header.LoopbackFamily == ExportLoopbackSettings.FamilySoftware;
+        var config = new LoopbackConfig(codec, width, height, fps, header.LoopbackRateControl, Math.Max(header.LoopbackBitrateKbps, 100), header.LoopbackQuality,
+            Math.Clamp(header.LoopbackQualityVsSpeed, 0, 100), header.LoopbackTenBit != 0, header.LoopbackFamily, software ? SoftwareArguments(ref control) : "");
         if (_configured && config == _config && _bypass == _bypassConfigured)
             return;
 
         CloseCodec();
-        (_config, _configured, _bypassConfigured) = (config, true, _bypass);
+        // Another codec, family or software command: every encoder may be tried again (a setting fixed may be what it failed on).
+        if (config.Codec != _config.Codec || config.Family != _config.Family || config.SoftwareArguments != _config.SoftwareArguments)
+            _refused.Clear();
+        _forceKeyNext = false;
+        (_config, _configured, _bypassConfigured, _firstSubmit) = (config, true, _bypass, 0);
         (_frames, _awaited, _shown, _newest, _shownDecoded, _encodedStamp, _hresult, _late, _encodedCount, _roundTripMs) = (0, -1, -1, -1, false, long.MinValue, 0, 0, 0, 0);
         foreach (var slot in _sources)
         {
@@ -432,17 +506,40 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
 
         try
         {
-            _encoder = MfEncoderMft.Create(gpu, config, header.LoopbackQualityVsSpeed, out _state, out _hresult);
+            // The export's own encoder (5.4.4-Final): a software one through FFmpeg, else the hardware transform on its family's card first.
+            _encoder = software
+                ? _refused.Count == 0 ? FfmpegLoopbackEncoder.Create(config, out _state) : null
+                : MfEncoderMft.Create(gpu, config, header.LoopbackQualityVsSpeed, _refused, out _state, out _hresult);
             _name = _encoder?.Name ?? "";
+
+            // Every encoder of the codec already given up on: the last failure stands (not "no encoder on this PC").
+            if (_encoder is null && _refused.Count > 0 && _state == ExportLoopbackState.NoEncoder)
+                (_state, _hresult) = (ExportLoopbackState.Failed, _lastFailure);
         }
         catch (GpuException ex) when (!ex.IsDeviceLost)
         {
-            Fail(ex.Code);
+            Fail(ex.Code, "setting the encoder up");
         }
         catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
         {
-            Fail(ex.HResult);
+            Fail(ex.HResult, "loading Media Foundation");
         }
+    }
+
+    // A software encoder's arguments from the control block (5.4.4-Final), read between two even versions (never half written); the last
+    // ones read stand while the client writes.
+    private string SoftwareArguments(ref ControlBlock control)
+    {
+        var version = Volatile.Read(ref control.LoopbackArgumentsVersion);
+        if (version == _argumentsVersion || (version & 1) != 0)
+            return _softwareArguments;
+        ReadOnlySpan<byte> field = control.LoopbackSoftwareArguments;
+        var end = field.IndexOf((byte)0);
+        var text = System.Text.Encoding.UTF8.GetString(end < 0 ? field : field[..end]);
+        if (Volatile.Read(ref control.LoopbackArgumentsVersion) != version)
+            return _softwareArguments;
+        (_softwareArguments, _argumentsVersion) = (text, version);
+        return text;
     }
 
     // One bitstream sample through the decoder (made on the first, with the encoder's sequence header where it has one).
@@ -459,7 +556,17 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
             }
         }
 
-        if (!_decoder.Decode(bitstream))
+        var got = _decoder.Decode(bitstream);
+
+        // 5.4.4-Final (the user's): paused, a decoder that keeps the frame back (its reorder buffer of one picture) is drained at once, so the
+        // paused frame shows without waiting for a scrub or a play; the next frame handed over is then a key frame.
+        if (!_playing && _awaited >= 0 && _decoder.LastTime != _awaited)
+        {
+            got |= _decoder.DrainHeld();
+            _forceKeyNext = true;
+        }
+
+        if (!got)
             return;
 
         var time = _decoder.LastTime;
@@ -478,13 +585,15 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
             _awaited = -1;
     }
 
-    // The source's planes into an NV12 sample in memory: Y rows, then the UV rows, each the encoded width (the card waited for here).
-    private nint SampleOf(Source source)
+    // The encoder's planes into an NV12 sample in memory: Y rows, then the UV rows, each the encoded width (the card waited for here). 5.4.4-Final:
+    // P010 for an encoder that took 10-bit, each 8-bit value at the top of its 16 bits (the scene is drawn in 8 bits: nothing is lost or made up).
+    private nint SampleOf(GpuTexture lumaPlane, GpuTexture chromaPlane, long time, bool p010)
     {
-        var (width, height) = _size;
-        gpu.Context.CopyResource(_stagingLuma, source.Luma.Texture);
-        gpu.Context.CopyResource(_stagingChroma, source.Chroma.Texture);
-        var bytes = (uint)(width * height * 3 / 2);
+        var (width, height) = _encodedSize;
+        gpu.Context.CopyResource(_stagingLuma, lumaPlane.Texture);
+        gpu.Context.CopyResource(_stagingChroma, chromaPlane.Texture);
+        var sampleSize = p010 ? 2 : 1;
+        var bytes = (uint)(width * height * 3 / 2 * sampleSize);
         var sample = MfEncoderMft.Sample(bytes);
         nint buffer = 0;
         try
@@ -497,7 +606,7 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
                 try
                 {
                     for (var y = 0; y < height; y++)
-                        Buffer.MemoryCopy(luma.Data + (long)y * luma.RowPitch, data + (long)y * width, width, width);
+                        CopyRow(luma.Data + (long)y * luma.RowPitch, data + (long)y * width * sampleSize, width, p010);
                 }
                 finally
                 {
@@ -507,9 +616,9 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
                 Com.Check(gpu.Context.Map(_stagingChroma, 0, D3D11.MapRead, 0, out var chroma), "Map loopback (UV)");
                 try
                 {
-                    var start = data + (long)width * height;
+                    var start = data + (long)width * height * sampleSize;
                     for (var y = 0; y < height / 2; y++)
-                        Buffer.MemoryCopy(chroma.Data + (long)y * chroma.RowPitch, start + (long)y * width, width, width);
+                        CopyRow(chroma.Data + (long)y * chroma.RowPitch, start + (long)y * width * sampleSize, width, p010);
                 }
                 finally
                 {
@@ -523,7 +632,7 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
 
             MfEncoderMft.Check(Mf.SetCurrentLength(buffer, bytes), "IMFMediaBuffer::SetCurrentLength");
             var duration = 10_000_000L * 1000 / FpsMilli(_config.Fps);
-            _ = Mf.SetSampleTime(sample, source.Time);
+            _ = Mf.SetSampleTime(sample, time);
             _ = Mf.SetSampleDuration(sample, duration);
             return sample;
         }
@@ -538,36 +647,69 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
         }
     }
 
+    /// <summary>A row of 8-bit samples into the sample's memory: as they are, or (P010) each at the top of 16 bits. Pure, for the golden test.</summary>
+    internal static void CopyRow(byte* from, byte* to, int count, bool p010)
+    {
+        if (!p010)
+        {
+            Buffer.MemoryCopy(from, to, count, count);
+            return;
+        }
+
+        var wide = (ushort*)to;
+        for (var i = 0; i < count; i++)
+            wide[i] = (ushort)(from[i] << 8);
+    }
+
     private static long FpsMilli(double fps) => Math.Max((long)Math.Round(fps * 1000), 1000);
 
-    private void Fail(int hresult)
+    // A failure: the plain picture, said in HandPeg.log (5.4.4). With tryNext, the encoder that failed is not tried again for this codec
+    // and the next scene sets the codec up anew with the next one (until none is left: then the failure stands).
+    private void Fail(int hresult, string stage, bool tryNext = false)
     {
-        (_state, _hresult, _awaited) = (ExportLoopbackState.Failed, hresult, -1);
+        var encoder = _name;
+        (_state, _hresult, _awaited, _lastFailure) = (ExportLoopbackState.Failed, hresult, -1, hresult);
         CloseCodec();
+        var next = tryNext && encoder.Length > 0 && _refused.Add(encoder);
+        if (next)
+            _configured = false;
+        AppLog.Write(FormattableString.Invariant(
+            $"Live Encoded Preview: {stage} failed (0x{hresult:X8}) with {(encoder.Length > 0 ? encoder : "no encoder")}{(next ? "; the next encoder of the codec is tried" : "")}."));
     }
 
     private void CloseCodec()
     {
         _decoder?.Dispose();
         _encoder?.Dispose();
-        (_decoder, _encoder) = (null, null);
+        (_decoder, _encoder, _firstSubmit) = (null, null, 0);
         _shownDecoded = false;
     }
 
     // ----- Textures -----
 
-    private void EnsureTextures(int width, int height)
+    // The scene's textures at its size, and (5.4.4-Final) the export's own when it is another size: true when anything was made anew (the
+    // scene is then drawn again, its picture gone).
+    private bool EnsureTextures(int width, int height, int encodedWidth, int encodedHeight)
     {
-        if (_program is not null && _size == (width, height))
-            return;
+        if (_program is not null && _size == (width, height) && _encodedSize == (encodedWidth, encodedHeight))
+            return false;
         ReleaseTextures();
-        _size = (width, height);
+        (_size, _encodedSize) = ((width, height), (encodedWidth, encodedHeight));
         _program = gpu.CreateTexture(width, height, DxgiFormat.B8G8R8A8Unorm, renderTarget: true);
         for (var i = 0; i < Sources; i++)
             _sources[i] = new Source(gpu.CreateTexture(width, height, DxgiFormat.R8Unorm, renderTarget: true), gpu.CreateTexture(width / 2, height / 2, DxgiFormat.R8G8Unorm, renderTarget: true));
-        _stagingLuma = gpu.CreateStaging(width, height, DxgiFormat.R8Unorm);
-        _stagingChroma = gpu.CreateStaging(width / 2, height / 2, DxgiFormat.R8G8Unorm);
+        if ((encodedWidth, encodedHeight) != (width, height))
+        {
+            _scaled = gpu.CreateTexture(encodedWidth, encodedHeight, DxgiFormat.B8G8R8A8Unorm, renderTarget: true);
+            _encodeLuma = gpu.CreateTexture(encodedWidth, encodedHeight, DxgiFormat.R8Unorm, renderTarget: true);
+            _encodeChroma = gpu.CreateTexture(encodedWidth / 2, encodedHeight / 2, DxgiFormat.R8G8Unorm, renderTarget: true);
+        }
+
+        _stagingLuma = gpu.CreateStaging(encodedWidth, encodedHeight, DxgiFormat.R8Unorm);
+        _stagingChroma = gpu.CreateStaging(encodedWidth / 2, encodedHeight / 2, DxgiFormat.R8G8Unorm);
         (_shown, _newest, _shownDecoded, _awaited) = (-1, -1, false, -1);
+        _renderedStamp = long.MinValue;
+        return true;
     }
 
     // The slot for the next frame: never the pair on screen, else the oldest.
@@ -601,6 +743,11 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
     {
         _program?.Dispose();
         _program = null;
+        _scaled?.Dispose();
+        _encodeLuma?.Dispose();
+        _encodeChroma?.Dispose();
+        (_scaled, _encodeLuma, _encodeChroma) = (null, null, null);
+        _renderedStamp = long.MinValue;
         for (var i = 0; i < Sources; i++)
         {
             _sources[i]?.Dispose();
@@ -615,12 +762,27 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
 
     private void Publish(ref ControlBlock control)
     {
+        // Each new state in HandPeg.log and the breadcrumbs (5.4.4): what the ENCODED pill says, and why.
+        if ((_state, _hresult, _name) != _logged)
+        {
+            _logged = (_state, _hresult, _name);
+            var codec = _config.Codec == MfGuids.H264 ? "H.264" : _config.Codec == MfGuids.Hevc ? "HEVC" : _config.Codec == MfGuids.Av1 ? "AV1"
+                : _config.Codec == MfGuids.Vp9 ? "VP9" : "no codec";
+            var line = FormattableString.Invariant(
+                $"Live Encoded Preview: {_state}{(_hresult != 0 ? $" (0x{_hresult:X8})" : "")}, {codec} {_config.Width}x{_config.Height}{(_config.TenBit ? " 10-bit" : "")} ({ExportLoopbackSettings.FamilyShort(_config.Family)}), encoder {(_name.Length > 0 ? _name : "none")}{(_encoder is { OnAskedCard: false } ? " (a stand-in)" : "")}, compositor LUID 0x{gpu.AdapterLuid:X}.");
+            AppLog.Write(line);
+            GpuNativeBreadcrumbs.Mark("Loopback", line);
+        }
+
+        control.LoopbackOnAskedCard = _encoder is { OnAskedCard: false } ? 0 : 1;
+        control.LoopbackPausedOnly = _encoder is { PausedOnly: true } ? 1 : 0;
         control.LoopbackState = (int)_state;
         control.LoopbackHResult = _hresult;
         control.LoopbackRoundTripMs = _roundTripMs;
         control.LoopbackFramesEncoded = _encodedCount;
         control.LoopbackLateFrames = _late;
-        control.LoopbackCodecsAvailable = _state == ExportLoopbackState.Running && !_bypass ? _config.Codec == MfGuids.H264 ? 1 : _config.Codec == MfGuids.Hevc ? 2 : 4 : 0;
+        control.LoopbackCodecsAvailable = _state == ExportLoopbackState.Running && !_bypass
+            ? _config.Codec == MfGuids.H264 ? 1 : _config.Codec == MfGuids.Hevc ? 2 : _config.Codec == MfGuids.Vp9 ? 8 : 4 : 0;
         if (!CompositorSharedMemory.ReadString(control.LoopbackEncoderName).Equals(_name, StringComparison.Ordinal))
             CompositorSharedMemory.WriteString(control.LoopbackEncoderName, _name);
     }

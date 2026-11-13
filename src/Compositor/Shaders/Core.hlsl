@@ -339,7 +339,9 @@ float4 PSCopy(VsOut i) : SV_Target
 float4 PSFinal(VsOut i) : SV_Target
 {
     // The canvas's drawn part (5.4.1-M2: the canvas is kept at a capacity, drawn into its top left); the whole of it at WholeUv.
-    float4 c = Input.SampleLevel(PointClamp, lerp(UvRect.xy, UvRect.zw, i.Uv), 0);
+    // Params2.y = 1: the canvas was drawn smaller than the output (5.4.3, Dynamic Preview Scaling) and is stretched over it, filtered.
+    float2 uv = lerp(UvRect.xy, UvRect.zw, i.Uv);
+    float4 c = Params2.y > 0.5 ? Input.SampleLevel(LinearClamp, uv, 0) : Input.SampleLevel(PointClamp, uv, 0);
     if (Params4.z > 0.5)
         return c;
     return float4(saturate(c.rgb + Color.rgb * (1 - c.a)), 1);

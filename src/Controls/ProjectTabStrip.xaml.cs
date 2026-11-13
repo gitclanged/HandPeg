@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
@@ -43,8 +44,8 @@ public sealed partial class ProjectTabItem : ObservableObject
     private ImageSource? _preview;
 
     /// <summary>
-    /// Where along its Sequence the pointer scrubs its hover card (5.4.2A: 0 to 1 across the tab, its overview sheet's picture there shown);
-    /// NaN while it does not.
+    /// Where along its Sequence the pointer scrubs its hover card (5.4.2A: 0 to 1 across the tab, its overview sheet's picture there shown;
+    /// 5.4.4: across the card too); NaN while it does not.
     /// </summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(ScrubWidth))]
@@ -228,7 +229,10 @@ public partial class ProjectTabStrip : UserControl
     /// <summary>Whether a tab is being dragged along the strip now: the window leaves the strip's order and layout alone until it is let go.</summary>
     public bool IsReordering { get; private set; }
 
-    /// <summary>The tab whose hover card is open now (null for none): a picture that comes late is given only to it.</summary>
+    /// <summary>
+    /// The tab whose hover card is open now (null for none): a picture that comes late is given only to it. 5.4.4: kept while the pointer
+    /// is over the tab or its card (and the moment the gap between them takes), so "the pointer rests on a tab" counts the card too.
+    /// </summary>
     public ProjectTabItem? HoverItem { get; private set; }
 
     /// <summary>The tabs share <paramref name="available"/> DIPs (what the title bar leaves between its name and its buttons, less a caption to drag by), never more.</summary>
@@ -561,18 +565,54 @@ public partial class ProjectTabStrip : UserControl
     // its file carries, its frame and frame rate, and whether it is saved. Gliding along the strip moves the one card from tab to tab, and
     // across a tab scrubs its overview sheet (HoverScrubbed: pictures already in memory, nothing decoded). The window gives the picture
     // (PreviewAsked); the card lets it go as it closes, so at most the shown one is held. The tab in front keeps its text tooltip instead.
+    // 5.4.4 (the user's): the card takes the pointer. The tab under the pointer always owns it; across the card the pointer scrubs that
+    // tab's whole Sequence, edge to edge (a narrowed tab is too small to scrub across: along it the pointer moves about its playhead, a span
+    // as wide as the card centred on it); a click on the card brings the tab to the front at its own playhead (no seek: its still, frames
+    // and pre-roll are all kept for that moment). The card stays open while the pointer is over the tab or the card, and HoverCardGraceMs
+    // after it left both (the gap under the tab); every other close (a press, a drag, a menu, the window let go) is at once.
+
+    /// <summary>How long the hover card waits after the pointer left its tab and the card (5.4.4): as long as the header's hover flyouts.</summary>
+    public const int HoverCardGraceMs = HoverFlyout.CloseDelayMs;
 
     private bool _hoverOwnerHooked;
 
-    // Counted up at every tab the pointer enters: a leave closes the card only when no other tab was entered meanwhile.
-    private int _hoverEntered;
+    // The tab the card was opened from (to ask whether the pointer is still on it), the pointer's place over the tab and the card, the
+    // timer that closes the card after the grace (made the first time a card opens), and a press on the card that a release there completes.
+    private FrameworkElement? _hoverTab;
+    private readonly HoverCardHold _hoverHold = new(HoverCardGraceMs);
+    private DispatcherTimer? _hoverClose;
+    private bool _cardPressed;
 
-    /// <summary>The pointer across a tab behind whose card is open (5.4.2A): where along it, 0 to 1. The window shows that picture of its Sequence.</summary>
-    public event Action<ProjectTabItem, double>? HoverScrubbed;
+    /// <summary>
+    /// The pointer across a tab behind whose card is open (5.4.2A): where along it, 0 to 1, and the window shows that picture of its
+    /// Sequence. 5.4.4: with the second value true, the first is an offset from the tab's playhead instead, as a fraction of the Sequence
+    /// (a narrowed tab: <see cref="TabScrub"/>).
+    /// </summary>
+    public event Action<ProjectTabItem, double, bool>? HoverScrubbed;
+
+    /// <summary>
+    /// What the pointer at <paramref name="x"/> along a tab <paramref name="tabWidth"/> wide scrubs (pure, 5.4.4: the golden tab-hover-scrub):
+    /// across a tab with its name, the whole Sequence (0 to 1); across a narrowed tab (<paramref name="compact"/>), an offset from its
+    /// playhead, the tab's middle at the playhead, as if the tab were <paramref name="span"/> wide (its card's width), so the pointer moves
+    /// the picture as fast as it does across the card.
+    /// </summary>
+    internal static (double Value, bool AboutPlayhead) TabScrub(double x, double tabWidth, bool compact, double span)
+    {
+        if (!(tabWidth > 0) || !double.IsFinite(x))
+            return (0, compact);
+        if (!compact)
+            return (Math.Max(0, Math.Min(x / tabWidth, 1)), false);
+        var offset = (Math.Max(0, Math.Min(x, tabWidth)) - tabWidth / 2) / (span > 0 ? span : tabWidth);
+        return (Math.Max(-0.5, Math.Min(offset, 0.5)), true);
+    }
+
+    /// <summary>What the pointer at <paramref name="x"/> across a card <paramref name="width"/> wide scrubs (pure, 5.4.4): the whole Sequence, edge to edge.</summary>
+    internal static double CardScrub(double x, double width) => width > 0 && double.IsFinite(x) ? Math.Max(0, Math.Min(x / width, 1)) : 0;
+
+    private static double NowMs() => Stopwatch.GetTimestamp() * 1000.0 / Stopwatch.Frequency;
 
     private void Tab_MouseEnter(object sender, MouseEventArgs e)
     {
-        _hoverEntered++;
         if (IsReordering || e.LeftButton == MouseButtonState.Pressed || ItemOf(sender) is not { IsActive: false } item || sender is not FrameworkElement tab
             || !tab.IsVisible || !Tabs.Contains(item))
         {
@@ -580,21 +620,16 @@ public partial class ProjectTabStrip : UserControl
             return;
         }
 
+        _hoverHold.EnterTab();
+        _hoverClose?.Stop();
         OpenHoverCard(item, tab);
     }
 
     private void Tab_MouseLeave(object sender, MouseEventArgs e)
     {
-        if (ItemOf(sender) is not { } item || !ReferenceEquals(item, HoverItem))
-            return;
-
-        // Onto the next tab (its enter comes after this leave): the card moves there instead of closing and opening again.
-        var entered = _hoverEntered;
-        Dispatcher.BeginInvoke(() =>
-        {
-            if (entered == _hoverEntered && ReferenceEquals(item, HoverItem))
-                CloseHoverCard();
-        }, DispatcherPriority.Input);
+        // Onto the next tab (its enter comes after this leave), the card moves there; onto the card, it stays (HoverCardHold).
+        if (ItemOf(sender) is { } item && ReferenceEquals(item, HoverItem))
+            HoldOff(card: false);
     }
 
     private void Tab_MouseMove(object sender, MouseEventArgs e)
@@ -603,7 +638,96 @@ public partial class ProjectTabStrip : UserControl
             || e.LeftButton == MouseButtonState.Pressed)
             return;
 
-        HoverScrubbed?.Invoke(item, Math.Clamp(e.GetPosition(tab).X / tab.ActualWidth, 0, 1));
+        var (value, aboutPlayhead) = TabScrub(e.GetPosition(tab).X, tab.ActualWidth, Compact, item.CardWidth);
+        HoverScrubbed?.Invoke(item, value, aboutPlayhead);
+    }
+
+    private void HoverCard_MouseEnter(object sender, MouseEventArgs e)
+    {
+        if (HoverItem is null)
+            return;
+        _hoverHold.EnterCard();
+        _hoverClose?.Stop();
+    }
+
+    private void HoverCard_MouseLeave(object sender, MouseEventArgs e)
+    {
+        _cardPressed = false;
+        if (HoverItem is not null)
+            HoldOff(card: true);
+    }
+
+    // Across the card (5.4.4): the tab's whole Sequence, measured on the card as it is drawn now (its first scrubbed picture can change its shape).
+    private void HoverCard_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (HoverItem is not { } item || e.LeftButton == MouseButtonState.Pressed || HoverBody.ActualWidth <= 1)
+            return;
+
+        HoverScrubbed?.Invoke(item, CardScrub(e.GetPosition(HoverBody).X, HoverBody.ActualWidth), false);
+    }
+
+    private void HoverCard_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        // The card's own (its routed events also pass the strip, through the popup's place in the tree).
+        e.Handled = true;
+        _cardPressed = HoverItem is not null;
+    }
+
+    // A click on the card brings its tab to the front, as a click on the tab does (5.4.4), at the tab's own playhead.
+    private void HoverCard_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        if (!_cardPressed || HoverItem is not { } item)
+            return;
+        _cardPressed = false;
+        CloseHoverCard();
+        TabChosen?.Invoke(item);
+    }
+
+    // The pointer left the tab or the card: the card closes once it has been off both for the grace (the timer made the first time).
+    private void HoldOff(bool card)
+    {
+        var now = NowMs();
+        if (card)
+            _hoverHold.LeaveCard(now);
+        else
+            _hoverHold.LeaveTab(now);
+        if (_hoverHold.IsOver)
+            return;
+
+        if (_hoverClose is null)
+        {
+            _hoverClose = new DispatcherTimer(DispatcherPriority.Input, Dispatcher);
+            _hoverClose.Tick += (_, _) => HoverCloseTick();
+        }
+
+        _hoverClose.Stop();
+        _hoverClose.Interval = TimeSpan.FromMilliseconds(Math.Max(_hoverHold.Remaining(now), 1));
+        _hoverClose.Start();
+    }
+
+    private void HoverCloseTick()
+    {
+        var now = NowMs();
+        _hoverClose?.Stop();
+        if (HoverItem is null)
+            return;
+
+        // An enter missed (the pointer came back while a popup or capture had it): the card stays, and the next leave starts the grace again.
+        if (_hoverTab?.IsMouseOver == true || HoverSurface.IsMouseOver)
+            return;
+        if (!_hoverHold.Due(now))
+        {
+            if (_hoverClose is { } timer && double.IsFinite(_hoverHold.Remaining(now)))
+            {
+                timer.Interval = TimeSpan.FromMilliseconds(Math.Max(_hoverHold.Remaining(now), 1));
+                timer.Start();
+            }
+
+            return;
+        }
+
+        CloseHoverCard();
     }
 
     private void OpenHoverCard(ProjectTabItem item, FrameworkElement tab)
@@ -615,6 +739,7 @@ public partial class ProjectTabStrip : UserControl
             _hoverOwnerHooked = true;
         }
 
+        _hoverTab = tab;
         if (ReferenceEquals(item, HoverItem) && HoverCard.IsOpen)
             return;
 
@@ -622,6 +747,7 @@ public partial class ProjectTabStrip : UserControl
         if (HoverItem is { } shown)
             (shown.Preview, shown.ScrubFraction) = (null, double.NaN);
         HoverItem = item;
+        _cardPressed = false;
         PreviewAsked?.Invoke(item);
         HoverCard.DataContext = item;
         UiScale.PlaceAgainst(HoverCard, tab, UiScale.FlyoutSide.BelowStart, 4);
@@ -634,6 +760,10 @@ public partial class ProjectTabStrip : UserControl
         if (HoverItem is { } shown)
             (shown.Preview, shown.ScrubFraction) = (null, double.NaN);
         HoverItem = null;
+        _hoverTab = null;
+        _cardPressed = false;
+        _hoverHold.Reset();
+        _hoverClose?.Stop();
         HoverCard.IsOpen = false;
         HoverCard.DataContext = null;
     }

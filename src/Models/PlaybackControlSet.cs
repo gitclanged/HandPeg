@@ -17,7 +17,7 @@ public sealed partial class PlaybackControlOption(string id, string label, strin
 }
 
 /// <summary>
-/// Which controls the playback bar shows, chosen from its settings button, as editors' viewers let one choose
+/// Which controls the playback bar shows, chosen in the Views menu's Playback Bar column (5.4.4), as editors' viewers let one choose
 /// (a viewer's button editor, its viewer options). The bar binds each control's visibility to this
 /// by name (<c>PlaybackControls[Loop]</c>). Saved as the names of the controls shown.
 /// </summary>
@@ -52,8 +52,9 @@ public sealed class PlaybackControlSet : ObservableObject
             new("ExportFrame", "Export Frame", "Viewer", "Saves the frame as it is shown, as a PNG beside the output."),
             new("Reload", "Reload Player", "Viewer", "For when the player has stopped answering."),
             new("Timecode", "Timecode", "Viewer", "The playhead's time and the sequence's length."),
-            new("Mute", "Mute", "Sound", "Silences the player (not the export)."),
-            new("Volume", "Volume", "Sound", "The player's volume."),
+            // 5.4.4: Volume is one pill, its speaker the player's mute; the standalone "Mute" control is retired (a saved list naming it
+            // loads the rest, as Load ignores a name it does not know, and the next save drops it).
+            new("Volume", "Volume", "Sound", "The player's volume, and its mute: a click on its speaker silences the player (not the export)."),
             new("Speed", "Playback Speed", "Sound", "How fast the player plays (0.25x to 2x)."),
         ];
         _byId = Options.ToDictionary(o => o.Id);

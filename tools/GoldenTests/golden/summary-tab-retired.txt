@@ -8,4 +8,4 @@ ok: and the Export Presets selector while it is not above the tabs (ShowPresetBa
 ok: each former Summary control has exactly one home: the Export Presets selector (and its Import / Export...), Format, Web Optimized, the copy warning, the details, Vertical in the Export tab's second card
 ok: Swap Project and the cards are gone; the Timeline's row of tools has no Game Presets box (5.4C: a clip's or a track's right-click menu applies, saves, imports and exports them)
 ok: the preset bar's places are the Export tab (the default) and the top of the window
-ok: a saved arrangement on Tab:Summary loads without it, its group on the Timeline (no dock version bump: Validate drops the unknown pane)
+ok: a saved arrangement on Tab:Summary loads without it, the Timeline shown (5.4.4-Final: alone at the bottom, the settings tabs beside Media; Validate drops the unknown pane)

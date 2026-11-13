@@ -132,6 +132,15 @@ public sealed class GpuProgramStrip : IDisposable
 
         /// <summary>Told of the sheet as it fills (the worker's thread): null to be given the whole sheet alone.</summary>
         public Action<ThumbnailSheet>? Progress { get; init; }
+
+        /// <summary>
+        /// Whether the sheet stops before its next picture to draw (5.4.4: WorkScheduler.PausePoint, captured in its background work); null
+        /// never (DrawNowAsync).
+        /// </summary>
+        public Func<bool>? Pause { get; init; }
+
+        /// <summary>Set by the worker's thread when the sheet stopped for <see cref="Pause"/>: its work waits, then asks again.</summary>
+        public volatile bool Held;
     }
 
     /// <summary>Made on the interface's thread, whose dispatcher <see cref="SheetReady"/> is raised on.</summary>
@@ -248,25 +257,38 @@ public sealed class GpuProgramStrip : IDisposable
         {
             var sheet = await WorkScheduler.Run(new WorkSpec("Sequence Overview Scrubber pictures", WorkLane.Background) { Visible = false }, async work =>
             {
-                // A few decoding sessions at a time on the card, whatever asked for them.
-                await WorkScheduler.GpuDecodeGate.WaitAsync(work.Token);
-                try
+                var pause = WorkScheduler.PausePoint();
+                while (true)
                 {
-                    // The sheet as it fills goes to the bar at once, while it is still the newest asked for.
-                    var job = new Job(state, settings.ThumbnailIntervalSeconds, settings.ShowTimelineThumbnails == true, asked, work.Token)
+                    // A few decoding sessions at a time on the card, whatever asked for them.
+                    await WorkScheduler.GpuDecodeGate.WaitAsync(work.Token);
+                    Job job;
+                    ThumbnailSheet? drawn;
+                    try
                     {
-                        Progress = partial => _home.BeginInvoke(() =>
+                        // The sheet as it fills goes to the bar at once, while it is still the newest asked for.
+                        job = new Job(state, settings.ThumbnailIntervalSeconds, settings.ShowTimelineThumbnails == true, asked, work.Token)
                         {
-                            if (asked == Volatile.Read(ref _asked) && !_disposed)
-                                SheetReady?.Invoke(partial);
-                        }),
-                    };
-                    using (work.Token.Register(() => job.Done.TrySetResult(null)))
-                        return await Enqueue(job);
-                }
-                finally
-                {
-                    WorkScheduler.GpuDecodeGate.Release();
+                            Progress = partial => _home.BeginInvoke(() =>
+                            {
+                                if (asked == Volatile.Read(ref _asked) && !_disposed)
+                                    SheetReady?.Invoke(partial);
+                            }),
+                            Pause = pause,
+                        };
+                        using (work.Token.Register(() => job.Done.TrySetResult(null)))
+                            drawn = await Enqueue(job);
+                    }
+                    finally
+                    {
+                        WorkScheduler.GpuDecodeGate.Release();
+                    }
+
+                    // Stopped before a picture (5.4.4: the player plays, or a scrub holds background work back): its permit and lane's slot
+                    // given back until that is over, then the sheet again (the pictures drawn so far are found by their keys).
+                    if (!job.Held || work.Token.IsCancellationRequested || asked != Volatile.Read(ref _asked))
+                        return drawn;
+                    await WorkScheduler.WhenBackgroundMayRunAsync(work.Token);
                 }
             }, cancellation.Token);
 
@@ -401,6 +423,7 @@ public sealed class GpuProgramStrip : IDisposable
     {
         var settings = AppSettings.Current;
         var adapter = GpuAdapters.BackgroundAdapter?.Index ?? settings.CompositorGpuAdapter;
+        GpuNativeBreadcrumbs.Mark("ProgramStrip.Start", $"worker on adapter {adapter} ({GpuAdapters.BackgroundAdapter?.Name ?? "the compositor's"})");
         try
         {
             _client = new CompositorClient(adapter, keepStandby: false, CacheBytes, decodeThreads: 1, announcesRecovery: false,
@@ -537,6 +560,13 @@ public sealed class GpuProgramStrip : IDisposable
                 var key = KeyOf(header, layers[..on], broker, drawWidth, drawHeight);
                 if (!_pictures.TryGetValue(key, out var picture))
                 {
+                    // A picture to draw while the player plays or a scrub is held (5.4.4): stopped, its work asks again once that is over.
+                    if (!MayGoOn(job))
+                    {
+                        job.Held = !job.Token.IsCancellationRequested;
+                        return null;
+                    }
+
                     var sequence = client.Publish();
                     if (!client.TryReadback(sequence, _drawn, out var gotWidth, out var gotHeight, drawnNow == 0 ? FirstPictureMs : PictureMs))
                         return Fault(string.Create(CultureInfo.InvariantCulture, $"picture {i + 1} did not come back in time"));
@@ -615,6 +645,30 @@ public sealed class GpuProgramStrip : IDisposable
             if (_pictures.Count > 2 * MaxPictures)
                 _pictures.Clear();
         }
+    }
+
+    /// <summary>How long a sheet stopped before a picture waits where it is before it lets go of its lane and permit, ms (5.4.4).</summary>
+    private const int PausedInPlaceMs = 1500;
+
+    /// <summary>
+    /// Whether a sheet draws its next picture (5.4.4): yes unless it is paused (Job.Pause); paused, it waits in place up to
+    /// <see cref="PausedInPlaceMs"/> and goes on if that is over, else stops (false), at once when it is cancelled or a newer sheet was asked for.
+    /// </summary>
+    private bool MayGoOn(Job job)
+    {
+        if (job.Pause is not { } pause || !pause())
+            return true;
+        var clock = Stopwatch.StartNew();
+        while (clock.ElapsedMilliseconds < PausedInPlaceMs)
+        {
+            if (job.Token.IsCancellationRequested || job.Asked != Volatile.Read(ref _asked))
+                return false;
+            if (!pause())
+                return true;
+            Thread.Sleep(20);
+        }
+
+        return !pause();
     }
 
     private ThumbnailSheet? Fault(string why)

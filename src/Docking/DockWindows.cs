@@ -57,11 +57,12 @@ public sealed partial class DockGuide : Window
         };
     }
 
-    /// <summary>Shows the shape over a rectangle of the screen, in its real pixels, with a word on where the pane would go.</summary>
+    /// <summary>Shows the shape over a rectangle of the screen, in its real pixels, with a word on where the pane would go (none for an empty text: 5.4.4, over a button).</summary>
     public void ShowAt(Rect pixels, string text)
     {
         _label.Text = text;
-        (_shape.Background, _shape.BorderThickness, _shape.CornerRadius, _words.Visibility) = (_fill, new Thickness(2), new CornerRadius(4), Visibility.Visible);
+        var words = text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        (_shape.Background, _shape.BorderThickness, _shape.CornerRadius, _words.Visibility) = (_fill, new Thickness(2), new CornerRadius(4), words);
         Place(pixels, 8);
     }
 

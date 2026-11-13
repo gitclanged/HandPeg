@@ -861,6 +861,7 @@ public sealed partial class UnifiedTimelineControl
 
     private void EndDrag()
     {
+        LeaveOutside();
         _snapTimes = [];
         _coupled.Clear();
         _coupledSet.Clear();
@@ -1372,6 +1373,13 @@ public sealed partial class UnifiedTimelineControl
             return;
         }
 
+        // Let go outside over a place that takes the block (5.4.4: the Clip Library): the host has it, nothing is committed.
+        if (TryDropOutside(drag, e.GetPosition(this)))
+        {
+            e.Handled = true;
+            return;
+        }
+
         _drag = null;
         ReleaseMouseCapture();
         e.Handled = true;
@@ -1478,15 +1486,20 @@ public sealed partial class UnifiedTimelineControl
         if (_drag is not { } drag)
             return false;
         _lastPointer = Laid(point);
-        Follow(drag, _lastPointer, pointerMoved: true);
+        FollowPointer(drag, point, _lastPointer);
         return true;
     }
 
-    /// <summary>A block's drag let go (<see cref="PressBlockAt"/>): what <see cref="CommitDrag"/> makes of it. False with no drag, or when it was refused.</summary>
+    /// <summary>
+    /// A block's drag let go (<see cref="PressBlockAt"/>): what <see cref="CommitDrag"/> makes of it, or (5.4.4) the host's when it was
+    /// parked outside and the host takes it there (true). False with no drag, or when it was refused.
+    /// </summary>
     internal bool ReleaseBlockDrag()
     {
         if (_drag is not { } drag)
             return false;
+        if (TryDropOutside(drag, _outsideAt))
+            return true;
         _drag = null;
         return CommitDrag(drag);
     }

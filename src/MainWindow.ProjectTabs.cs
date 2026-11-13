@@ -544,6 +544,7 @@ public partial class MainWindow
             return tab;
         }
 
+        TakeStillOnScreen();
         var live = DetachActive(tab, out write);
         _hydrated[tab.Id] = live;
         _unresumed.Remove(tab.Id);

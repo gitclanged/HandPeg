@@ -661,25 +661,22 @@ public static unsafe class HardwareBenchmark
         roles.Compositor = compositor.Index;
         roles.Reasons.Add($"Compositor: {compositor.Name}, the card with the most video memory ({compositor.DedicatedVideoMemoryMb:N0} MB).");
 
-        if (result.CrossAdapter is { CrossIsFaster: true } cross)
-        {
-            roles.Decode = cross.DecodeAdapter;
-            roles.Reasons.Add($"Decode: card {cross.DecodeAdapter}, whose decoding plus the copy across ({cross.CrossDecodeFps:0} fps) beat the compositor's own ({cross.LocalDecodeFps:0} fps).");
-        }
-        else
-        {
-            roles.Decode = compositor.DecodesInHardware ? compositor.Index : -1;
-            roles.Reasons.Add(compositor.DecodesInHardware
-                ? $"Decode: the compositor's card ({compositor.HardwareDecodeFps:0} fps): frames stay in its memory, nothing crosses the bus."
+        // 5.4.4 (the user's standing rule, CLAUDE.md 8): Decode and Background stay Auto, the Compositor GPU, whatever a second card measured.
+        // Strip workers and decodes on the Desktop's Arc A310 beside its RX 7900 XTX ended in 0x116 VIDEO_TDR_FAILURE in the Arc's driver; a
+        // second card is the user's to pick in Settings, never the test's.
+        roles.Decode = -1;
+        roles.Reasons.Add(result.CrossAdapter is { CrossIsFaster: true } cross
+            ? $"Decode: Auto, the compositor's card. Card {cross.DecodeAdapter} decoding across the bus measured faster ({cross.CrossDecodeFps:0} against {cross.LocalDecodeFps:0} fps), but a second card is never chosen for you: pick it here if you want it."
+            : compositor.DecodesInHardware
+                ? $"Decode: Auto, the compositor's card ({compositor.HardwareDecodeFps:0} fps): frames stay in its memory, nothing crosses the bus."
                 : "Decode: Auto (the compositor's card did not decode the test clip in hardware).");
-        }
 
         var second = working.Where(a => (a.VendorId, a.DeviceId) != (compositor.VendorId, compositor.DeviceId) && a.DecodesInHardware)
             .OrderByDescending(a => a.HardwareDecodeFps).FirstOrDefault();
-        roles.Background = second?.Index ?? -1;
+        roles.Background = -1;
         roles.Reasons.Add(second is not null
-            ? $"Background: {second.Name}, so thumbnails, waveforms, proxies and captions never slow the preview."
-            : "Background: Auto (there is no second card that decodes).");
+            ? $"Background: Auto, the compositor's card. {second.Name} also decodes, but a second card is never chosen for you: pick it here if you want thumbnails, waveforms and proxies there."
+            : "Background: Auto, the compositor's card.");
 
         static int Score(HardwareBenchmarkAdapter a) => (a.EncodeCodecs.Contains("AV1") ? 4 : 0) + (a.EncodeCodecs.Contains("HEVC") ? 2 : 0) + (a.EncodeCodecs.Contains("H.264") ? 1 : 0);
         // Since 5.4C the Export GPU is where exports are composited (GpuExport.ExportAdapter), so the compositor's card keeps it on a tie

@@ -1,10 +1,10 @@
 # The Export Quality Preview's encode loopback (5.4B): settings, the off path, the compare pass, a real hardware round trip, its lifetime.
-ok: h264_nvenc, CBR 8000 kbps, p7, 59.94 fps: H.264, rate control 0 (CBR), 8000 kbps, quality-vs-speed 100, the export's rate
+ok: h264_nvenc, CBR 8000 kbps, p7, 59.94 fps: H.264, rate control 0 (CBR), 8000 kbps, quality-vs-speed 100, the export's rate; 5.4.4-Final: NVENC, its name, preset and CRF
 ok: libx264, constant quality CRF 23, veryslow: H.264 in Media Foundation's quality mode at 55 (MediaFoundationEncoder.QualityFromCrf), quality-vs-speed 100
 ok: hevc_amf, VBR (the average bitrate mode) 12000 kbps, balanced: HEVC, rate control 2 (unconstrained VBR), quality-vs-speed 50
 ok: av1_qsv, fast, an unknown rate: AV1, quality-vs-speed 33, 30 fps assumed
 ok: libsvtav1 at 50 kbps, ultrafast: AV1, the bitrate kept at least 100 kbps, quality-vs-speed 0
-ok: VP9, a stream copy and ProRes have no loopback, and each says why in words
+ok: 5.4.4-Final: libvpx-vp9 previews through the software path (VP9, codec 4); a stream copy and ProRes have no loopback, and each says why in words
 ok: CodecOf reads the FFmpeg encoder names (h264_mf, hevc_qsv, libx265; a GIF none); QualityVsSpeedOf: slow 83, an unknown preset 50
 ok: the playback bar offers the Live Encoded Preview under Viewer, shown by default right after the 3D Exploded View; the defaults' list is saved at version 3
 ok: a bar saved before 5.4D (@2) shows it once, saved at @3 with it; one saved at @3 without it keeps it hidden (the user's choice)
@@ -23,4 +23,6 @@ ok: its middle shows the compare picture at the point it looks at (canvas pixel 
 ok: over the heatmap (black: the codec bypassed) the loupe's view is black too, framed in amber: it magnifies the compare picture, not the layer drawn again
 ok: a real H.264 hardware encode and decode where this PC has one (PSNR 28-60 dB at 8000 kbps CBR, a heatmap neither black nor bright, the paused frame encoded once), else the plain picture with NoEncoder or NoDecoder
 ok: playing, the encoder keeps up well enough to show its pictures: at least 15 of 60 frames come back and it stays Running (this PC's numbers on the console)
+ok: a software encoder previewed for real: libx264 through FFmpeg, decoded by Media Foundation, the paused frame close to its source (PSNR 28-70 dB at CRF 23), paused frames only
+ok: new settings on the same picture (CRF 40, the content stamp unchanged) encode it again, and it is coarser
 ok: the flag on: Running; in the 3D view: Unavailable (the flat picture only); the flag gone: Off on the next frame, and nothing made after

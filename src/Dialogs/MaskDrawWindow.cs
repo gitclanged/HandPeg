@@ -105,16 +105,27 @@ public sealed partial class MaskDrawWindow : Window
     /// <summary>Whether the shapes are for every layer cut from the video, not only the one the window was opened from.</summary>
     public bool ForAllLayers { get; private set; }
 
+    /// <summary>
+    /// A picture of the still's file near its moment, decoded ahead (5.4.3, MainWindow.HeatLamp.cs): shown on the window's first frame while
+    /// the exact still is taken, when it is of the same file and moment (<see cref="StillTarget"/>).
+    /// </summary>
+    public sealed record WarmStill(string Source, double Seconds, BitmapSource Picture);
+
+    private readonly WarmStill? _warm;
+
     /// <param name="layer">The clip it is asked to mask; null opens it on the video alone, for Cutouts and Game Presets.</param>
-    public MaskDrawWindow(MainViewModel viewModel, Layer? layer)
+    /// <param name="warm">A picture decoded ahead (the heat lamp), used only when it is of this still's file and moment.</param>
+    public MaskDrawWindow(MainViewModel viewModel, Layer? layer, WarmStill? warm = null)
     {
         (_viewModel, _layer, _forLayer) = (viewModel, layer ?? viewModel.PlayheadVideo, layer is not null);
 
         // The still and its natural size are the clip's being edited (on the video alone, the video at the playhead): a clip is
         // drawn on over its own file's picture.
         var target = layer ?? _layer;
-        var ownFile = target is { IsVideoFile: true } && target.ImagePath.Trim().Trim('"') is { Length: > 0 } path ? path : null;
+        var ownFile = OwnFileOf(target);
         (_stillSource, _stillOnClip) = (ownFile ?? viewModel.LocalMediaPath, ownFile is not null);
+        if (warm is not null && string.Equals(warm.Source, _stillSource, StringComparison.OrdinalIgnoreCase) && Math.Abs(warm.Seconds - StillSeconds()) < 0.001)
+            _warm = warm;
         (_width, _height) = ownFile is not null
             ? MediaProbe.KnownInfo(ownFile)?.Video is { Width: > 0, Height: > 0 } video ? (video.Width, video.Height)
             : target.ImageWidth > 0 && target.ImageHeight > 0 ? (target.ImageWidth, target.ImageHeight) : (1920.0, 1080.0)
@@ -699,7 +710,7 @@ public sealed partial class MaskDrawWindow : Window
     // drive with the points and keys they choose.
     private void Viewport_MouseWheel(object sender, MouseWheelEventArgs e)
     {
-        Wheel(e.Delta, e.GetPosition(_viewport), Keyboard.Modifiers);
+        Wheel(e.Delta, e.GetPosition(_viewport), Keyboard.Modifiers, MainWindow.FromTouchpad());
         e.Handled = true;
     }
 
@@ -726,11 +737,16 @@ public sealed partial class MaskDrawWindow : Window
         return new IntPtr(1);
     }
 
-    /// <summary>The wheel at a point of the view: a zoom about it; with Shift a pan sideways (a notch down moves the view right).</summary>
-    internal void Wheel(int delta, Point at, ModifierKeys keys)
+    /// <summary>
+    /// The wheel at a point of the view: a zoom about it; with Shift a pan sideways (a notch down moves the view right). A touchpad's
+    /// two-finger scroll with no key (5.4.3, <paramref name="touchpad"/>) pans up and down instead; its pinch (Ctrl) still zooms.
+    /// </summary>
+    internal void Wheel(int delta, Point at, ModifierKeys keys, bool touchpad = false)
     {
         if (keys == ModifierKeys.Shift)
             PanTo(_panX + delta / 120.0 * WheelPan, _panY);
+        else if (touchpad && keys == ModifierKeys.None)
+            PanTo(_panX, _panY + delta / 120.0 * WheelPan);
         else
             ZoomTo(_zoomGoal * Math.Pow(ZoomPerNotch, delta / 120.0), at);
     }
@@ -900,6 +916,12 @@ public sealed partial class MaskDrawWindow : Window
         }
 
         _status.Text = "Taking a still of the video at the playhead...";
+        if (_warm is not null)
+        {
+            _still.Source = _warm.Picture;
+            _navigator.Show(_warm.Picture);
+        }
+
         try
         {
             _still.Source = await SourceStill.TakeAsync(source, StillSeconds(), _stillPath, _closing.Token);
@@ -920,17 +942,35 @@ public sealed partial class MaskDrawWindow : Window
 
     // Where the still is taken in its file: the playhead's moment in the clip (held to the clip's span), or (the file last opened)
     // where a video at the playhead shows it.
-    private double StillSeconds()
+    private double StillSeconds() => StillSecondsOf(_viewModel, _layer, _stillOnClip);
+
+    private static double StillSecondsOf(MainViewModel viewModel, Layer? layer, bool onClip)
     {
-        var at = _viewModel.PositionMs / 1000;
-        if (_stillOnClip && _layer.IsVideoFile)
+        var at = viewModel.PositionMs / 1000;
+        if (onClip && layer is { IsVideoFile: true })
         {
-            var end = _layer.Duration > 0.001 ? _layer.StartTime + _layer.Duration : double.PositiveInfinity;
-            var inside = Math.Clamp(at, _layer.StartTime, Math.Max(_layer.StartTime, end - 0.001));
-            return Math.Max(_layer.MediaOffset + (inside - _layer.StartTime) * _layer.Speed, 0);
+            var end = layer.Duration > 0.001 ? layer.StartTime + layer.Duration : double.PositiveInfinity;
+            var inside = Math.Clamp(at, layer.StartTime, Math.Max(layer.StartTime, end - 0.001));
+            return Math.Max(layer.MediaOffset + (inside - layer.StartTime) * layer.Speed, 0);
         }
 
-        return _viewModel.FileMomentAt(at)?.Seconds ?? at;
+        return viewModel.FileMomentAt(at)?.Seconds ?? at;
+    }
+
+    // A video clip's own file (its picture is drawn on over that file's); null for anything else.
+    private static string? OwnFileOf(Layer? target) =>
+        target is { IsVideoFile: true } && target.ImagePath.Trim().Trim('"') is { Length: > 0 } path ? path : null;
+
+    /// <summary>
+    /// The file and moment the window would take its still of, opened for <paramref name="layer"/> (null: the video at the playhead) now:
+    /// what the heat lamp decodes ahead (5.4.3). Null when there is no file.
+    /// </summary>
+    internal static (string Source, double Seconds)? StillTarget(MainViewModel viewModel, Layer? layer)
+    {
+        var target = layer ?? viewModel.PlayheadVideo;
+        var ownFile = OwnFileOf(target);
+        var source = ownFile ?? viewModel.LocalMediaPath;
+        return string.IsNullOrWhiteSpace(source) ? null : (source, StillSecondsOf(viewModel, target, ownFile is not null));
     }
 
     private void Finish(bool forAll)

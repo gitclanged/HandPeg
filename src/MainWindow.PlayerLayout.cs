@@ -102,6 +102,9 @@ public partial class MainWindow
                 return;
             RunGuarded("Ping-to-Mark", () => _viewModel.PingToMark(focal.X, focal.Y));
         };
+
+        // A right-click on the picture that does not move: the player's menu (5.4.4-Final, MainWindow.PlayerMenu.cs).
+        HookPlayerContextMenu();
     }
 
     // Where an Alt press on the player was (Ping-to-Mark), while it is held.

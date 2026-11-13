@@ -13,8 +13,8 @@ ok: a link: downloaded and added with clips on the Sequence, opened with none, p
 ok: a project open with no clips: a tile from the media browser is added (4.1.1-B), a file from Explorer opened as before
 ok: media from Explorer onto the Media Browser pane: into Project Media (a video, a picture, a sound)
 ok: a project open with no clips yet: into Project Media too
-ok: a tile dragged from the browser and let go over it: at the playhead, as before
+ok: a tile dragged from the browser and let go over it: no drop (5.4.4, the user's self-drop cancel)
 ok: a video with a project over the bin: the video into Project Media; a project alone: opened in a Project Tab
 ok: a link over the bin keeps today's path (downloaded, at the playhead); a file that is not media too
-ok: with nothing open (5.4D), media over the Media Browser goes into Project Media too (the blank window keeps it); a project alone, a file that is not media and a tile from the browser are opened as before
+ok: with nothing open (5.4D), media over the Media Browser goes into Project Media too (the blank window keeps it); a project alone and a file that is not media are opened as before; a tile from the browser let go over it is no drop (5.4.4)
 ok: with clips on the Sequence no drop of media, anywhere, ever opens over the project

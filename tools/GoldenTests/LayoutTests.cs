@@ -81,9 +81,10 @@ public static class LayoutTests
         expect(middle is { Panes: ["Effects", "Keyframes", "Layout", "Meter"], Active: "Effects" },
             "Standard Editing's middle column is one group: Effects, Keyframes, Canvas (Layout), Master Meter, Effects shown");
         expect(!standard.Main.AllGroups().Any(g => g.Panes is ["Layout"]), "and no part holds the Canvas alone");
-        expect(standard.Version == DockLayoutState.CurrentVersion && DockLayoutState.CurrentVersion == 4, "it is an arrangement of version 4, the current one");
-        expect(standard.Main.GroupOf("UnifiedTimeline") is { Active: "UnifiedTimeline" } bottom && bottom.Panes[0] == "UnifiedTimeline" && TabIds.All(bottom.Panes.Contains),
-            "the timeline is still the first tab of the settings tabs' group, and shown");
+        expect(standard.Version == DockLayoutState.CurrentVersion && DockLayoutState.CurrentVersion == 5, "it is an arrangement of version 5, the current one");
+        expect(standard.Main.GroupOf("UnifiedTimeline") is { Panes: ["UnifiedTimeline"] } && standard.Main.GroupOf("Media") is { Active: "Media" } media
+               && media.Panes[0] == "Media" && TabIds.All(media.Panes.Contains) && TopOf(standard).Sizes.SequenceEqual([54.0, 20.0, 26.0]),
+            "5.4.4-Final: the timeline alone at the bottom; the settings tabs beside Media under the header (Media first and shown); the top row 54 / 20 / 26");
 
         // The frozen version 3 shape, and the 4.4 fingerprint derived from it: the Canvas still in a part of its own.
         var v3 = MainWindow.StandardLayoutV3(TabIds);
@@ -103,11 +104,11 @@ public static class LayoutTests
         TopOf(left).Sizes = [50.0, 30.0, 20.0];
         MainWindow.UpgradeLayout(left, TabIds);
         text.Append("   version 3, upgraded: ").Append(Shape(left)).Append('\n');
-        expect(left.Version == 4 && DockManager.SameShape(left, standard), "a version 3 Standard Editing is brought up to version 4, today's shape");
+        expect(left.Version == 5 && DockManager.SameShape(left, standard), "a version 3 Standard Editing is brought up to version 5, today's shape");
         expect(left.Main.GroupOf("Layout") is { Panes: ["Effects", "Keyframes", "Layout", "Meter"], Active: "Keyframes" },
             "the Canvas goes in after the keyframes, and the tab shown (Keyframes) stays shown");
         expect(TopOf(left).Sizes.SequenceEqual([50.0, 30.0, 20.0]) && ReferenceEquals(TopOf(left).Children[1], left.Main.GroupOf("Layout")),
-            "the group takes the column's place, and so its share of the room (30 of 100)");
+            "the group takes the column's place, and so its share of the room (30 of 100; shares the user dragged are kept by 4 to 5 too)");
 
         // 4.4's Standard Editing (version 2, no Master Meter yet): 2 to 3 (the timeline first among the tabs), then 3 to 4.
         var old = MainWindow.StandardLayoutBeside(TabIds);
@@ -115,10 +116,10 @@ public static class LayoutTests
         text.Append("   4.4, upgraded: ").Append(Shape(old)).Append('\n');
         var withoutMeter = MainWindow.StandardLayout(TabIds);
         withoutMeter.Main.GroupOf("Meter")!.Panes.Remove("Meter");
-        expect(old.Version == 4 && DockManager.SameShape(old, withoutMeter),
-            "4.4's Standard Editing goes 2 to 3 to 4: today's shape but for the Master Meter (put in afterwards by DockManager.PlaceAsDefault)");
-        expect(old.Main.GroupOf("UnifiedTimeline") is { } tabs4 && tabs4.Panes[0] == "UnifiedTimeline" && old.Main.GroupOf("Layout") is { Panes: ["Effects", "Keyframes", "Layout"] },
-            "its timeline is the tabs' first (2 to 3) and its Canvas a tab after the keyframes (3 to 4)");
+        expect(old.Version == 5 && DockManager.SameShape(old, withoutMeter),
+            "4.4's Standard Editing goes 2 to 3 to 4 to 5: today's shape but for the Master Meter (put in afterwards by DockManager.PlaceAsDefault)");
+        expect(old.Main.GroupOf("UnifiedTimeline") is { Panes: ["UnifiedTimeline"] } && old.Main.GroupOf("Layout") is { Panes: ["Effects", "Keyframes", "Layout"] },
+            "its Canvas a tab after the keyframes (3 to 4) and its settings tabs beside Media, the timeline alone (4 to 5)");
 
         // Arrangements the user made are left as they are: the Canvas beside the player, and Standard Editing with the media in the Canvas's part.
         var player = DockNode.Split(true, (DockNode.Split(false, (DockNode.Group("Player"), 72), (DockNode.Group("Layout"), 28)), 1), (DockNode.Group("Playback"), 1));
@@ -131,8 +132,8 @@ public static class LayoutTests
         };
         var ownShape = Shape(own);
         MainWindow.UpgradeLayout(own, TabIds);
-        expect(own.Version == 4 && Shape(own) == ownShape && own.Main.GroupOf("Layout") is { Panes: ["Layout"] },
-            "the user's own arrangement (the Canvas beside the player) is only marked version 4: nothing moves");
+        expect(own.Version == 5 && Shape(own) == ownShape && own.Main.GroupOf("Layout") is { Panes: ["Layout"] },
+            "the user's own arrangement (the Canvas beside the player) is only marked version 5: nothing moves");
 
         var mixed = MainWindow.StandardLayoutV3(TabIds);
         mixed.Main.GroupOf("Media")!.Panes.Remove("Media");
@@ -149,8 +150,32 @@ public static class LayoutTests
         var fresh = MainWindow.StandardLayout(TabIds);
         MainWindow.UpgradeLayout(fresh, TabIds);
         expect(Shape(again) == Shape(left) && again.Main.GroupOf("Layout")?.Active == "Keyframes" && TopOf(again).Sizes.SequenceEqual(TopOf(left).Sizes),
-            "a version 4 arrangement is unchanged by a second pass");
+            "a version 5 arrangement is unchanged by a second pass");
         expect(Shape(fresh) == Shape(standard), "and today's Standard Editing passes through unchanged");
+
+        // 4 to 5 (5.4.4-Final): version 4's Standard Editing as it started (shares untouched) gets today's shape and shares; one dragged keeps its
+        // shares; one still holding the retired Summary tab (every 5.3 arrangement) is moved too, Validate dropping the tab afterwards.
+        var v4 = MainWindow.StandardLayoutV4(TabIds);
+        v4.Main.GroupOf("UnifiedTimeline")!.Active = "Tab:Export";
+        MainWindow.UpgradeLayout(v4, TabIds);
+        text.Append("   version 4, upgraded: ").Append(Shape(v4)).Append('\n');
+        expect(v4.Version == 5 && DockManager.SameShape(v4, standard) && v4.Main.GroupOf("UnifiedTimeline") is { Panes: ["UnifiedTimeline"], Active: "UnifiedTimeline" }
+               && v4.Main.GroupOf("Media") is { Active: "Media" } && TopOf(v4).Sizes.SequenceEqual([54.0, 20.0, 26.0]),
+            "version 4's Standard Editing: its settings tabs beside Media (Media shown), the timeline alone and shown, the top row's untouched shares today's");
+        var dragged = MainWindow.StandardLayoutV4(TabIds);
+        TopOf(dragged).Sizes = [60.0, 15.0, 25.0];
+        MainWindow.UpgradeLayout(dragged, TabIds);
+        var summary = MainWindow.StandardLayoutV4(["Tab:Summary", .. TabIds]);
+        MainWindow.UpgradeLayout(summary, TabIds);
+        expect(DockManager.SameShape(dragged, standard) && TopOf(dragged).Sizes.SequenceEqual([60.0, 15.0, 25.0])
+               && summary.Main.GroupOf("UnifiedTimeline") is { Panes: ["UnifiedTimeline"] } && summary.Main.GroupOf("Media")!.Panes.Contains("Tab:Summary"),
+            "a dragged version 4 keeps its shares; one holding the retired Summary tab moves too (the tab dropped later by DockManager.Validate)");
+        var mixed4 = MainWindow.StandardLayoutV4(TabIds);
+        mixed4.Main.GroupOf("Media")!.Panes.Add("Keyframes");
+        mixed4.Main.GroupOf("Effects")!.Panes.Remove("Keyframes");
+        var mixed4Shape = Shape(mixed4);
+        MainWindow.UpgradeLayout(mixed4, TabIds);
+        expect(Shape(mixed4) == mixed4Shape, "a version 4 arrangement the user changed (the keyframes moved beside Media) is left as it is");
     }
 
     // ----- layout-edge-to-edge -----

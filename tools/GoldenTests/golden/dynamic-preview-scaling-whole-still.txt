@@ -1,0 +1,9 @@
+# A still read while paused is a whole frame (5.4.4); the one drawn smaller while playing or scrubbing only when the whole one is late.
+ok: StillMayBeRead: paused, not while the frame on screen is the last one drawn smaller (or older), at once when a newer one is (whole: the paused turn's); playing, as it is
+ok: the pump reads the still asked for only when StillMayBeRead says so (the request read before the player's state), else reads the frame drawn smaller once as its fallback and leaves the request for a later turn
+ok: AwaitStill: the whole frame when it is read in time; the soft frame read meanwhile when it is late (the request withdrawn, the UI held no longer than its bound) or not read; null only when neither is
+ok: and it says which: soft for the frame drawn smaller (late or unread), not for the whole frame nor for nothing
+ok: every scene published drawn smaller is noted as such
+ok: the paused turn draws a picture drawn smaller whole again and shows it, so the still waiting for it is taken at the next turn's top
+ok: the UI thread still waits at most 40 ms for it (the soft frame kept when the whole frame is not read by then)
+ok: a soft still is marked so: it covers the player, but the next switch away reads the screen again (not while that still is over the player: the screen is not the tab's yet) and the next quiet moment reads a whole still in its place (its mark never equals now's)

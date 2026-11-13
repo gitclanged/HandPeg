@@ -142,7 +142,8 @@ public static class DevFlightRecorder
     {
         try
         {
-            return File.Exists(FlagPath) || AppSettings.Current.DevVerboseLogging;
+            // 5.4.4-Final: a preview build's always-on tracing too (PreviewTrace: preview-trace.flag beside HandPeg.exe, or HANDPEG_PREVIEW_TRACE=1).
+            return File.Exists(FlagPath) || AppSettings.Current.DevVerboseLogging || PreviewTrace.IsOn;
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
@@ -302,7 +303,7 @@ public static class DevFlightRecorder
     {
         try
         {
-            if (!File.Exists(FlagPath) && !SettingOnDisk())
+            if (!File.Exists(FlagPath) && !SettingOnDisk() && !PreviewTrace.IsOn)
                 return null;
 
             var report = File.Exists(StatePath) ? System.Text.Json.JsonSerializer.Deserialize<CrashDevVerbose>(File.ReadAllText(StatePath)) ?? new() : new();

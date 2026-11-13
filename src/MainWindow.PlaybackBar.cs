@@ -7,14 +7,14 @@ using HandPegApp.Models;
 namespace HandPegApp;
 
 // ----- The playback bar's controls -----
-// What the bar shows is chosen with its settings button (PlaybackControls). Most of its controls are
+// What the bar shows is chosen in the Views menu's Playback Bar column (PlaybackControls; 5.4.4: the bar's own settings button is retired). Most of its controls are
 // handled here: jumps (start, end, edit points), Play Backwards, the start and stop points, Play Start to Stop,
 // Loop, markers, Export Frame, Safe Margins and Mute. Play, the steps and the I-frame jumps are the transport's own.
 public partial class MainWindow
 {
     // Play Start to Stop: the stretch being played, in milliseconds, while it is.
 
-    /// <summary>Lists the bar's options under their headings in its settings, and keeps the player's mute and the safe margins in step.</summary>
+    /// <summary>Lists the bar's options under their headings (the Views menu's Playback Bar column), and keeps the player's mute and the safe margins in step.</summary>
     private void InitializePlaybackBar()
     {
         var options = CollectionViewSource.GetDefaultView(_viewModel.PlaybackControls.Options);
@@ -193,13 +193,14 @@ public partial class MainWindow
 
     /// <summary>
     /// The controls in the middle of the bar get the room its two ends do not need: the left end needs only its Views
-    /// button (its menu holds the panes and the timeline's I-frame checkboxes), the right end all of its controls. What the
+    /// button (its menu holds the panes, the timeline's I-frame checkboxes and what the bar shows), the right end all of its controls. What the
     /// middle has no room for is left out of it and listed in its "more" menu (see OverflowStrip); nothing is ever wrapped
     /// onto a second line.
     /// Asked by the row each time it is measured, with the width it is offered (see PlaybackRow).
     /// </summary>
     private void FitTransport(double width)
     {
+        // (The right end's pills open over the middle's buttons and never move them: a click off an open pill closes it, 5.4.4.)
         TransportRight.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         var right = Math.Ceiling(TransportRight.DesiredSize.Width);
         TransportRow.ColumnDefinitions[2].MinWidth = right;

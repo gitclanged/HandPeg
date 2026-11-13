@@ -148,8 +148,8 @@ public static class StudioPanesTests
             "it is still named Vertical & Shorts Studio among the five built-in layouts (5.4D: the Vertical Creator Split the fifth)");
 
         var standard = MainWindow.StandardLayout(TabIds).Main.AllPanes().ToList();
-        expect(DockLayoutState.CurrentVersion == 4 && !standard.Any(p => MainWindow.Studios.Any(s => s.Id == p)),
-            "Standard Editing holds no studio and the arrangement version is still 4");
+        expect(DockLayoutState.CurrentVersion == 5 && !standard.Any(p => MainWindow.Studios.Any(s => s.Id == p)),
+            "Standard Editing holds no studio and the arrangement version is 5 (5.4.4-Final: the settings tabs beside Media)");
 
         // What it sets besides the arrangement: the Media Browser's Filmstrip view, when taken up, kept or chosen at first run, never while previewed.
         var layouts = Read("MainWindow.Layouts.cs");
@@ -229,8 +229,8 @@ public static class StudioPanesTests
             {
                 MainWindow.SubtitleStudioId => new[] { "Effects", "Keyframes", "Layout" },
                 MainWindow.VideoScopesId => ["Meter"],
-                MainWindow.RenderQueueId => ["Tab:Export", "UnifiedTimeline"],
-                _ => ["Tab:Audio", "UnifiedTimeline"],
+                MainWindow.RenderQueueId => ["Tab:Export", "Media"],
+                _ => ["Tab:Audio", "Media"],
             };
             expect(group is not null && mates.All(group.Panes.Contains) && count == 1,
                 $"Open {title} (twice): once, a tab beside {string.Join(", ", mates)}");

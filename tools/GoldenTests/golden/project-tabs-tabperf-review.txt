@@ -27,7 +27,7 @@ ok: a clean close waits for a kept tab's write to its end (Saving tabs...), writ
 ok: a save from memory waits for the tab's write (refused, said so, after 5 s) and writes a copy with its name and time: the frozen state is never changed
 ok: the tabs never change while clips are still being added
 ok: closing the tab in front drops a still being taken, as putting it behind does (a switch generation)
-ok: a tab kept live shows its still only when it fits, and keeps it only then
+ok: a tab kept live shows its still when it fits, else (flat, 5.4.3) its overview picture at its playhead, and keeps a still only when it fits
 ok: the valve counts a kept tab's views' filmstrips and waveforms, its tracks' and the timeline's waveforms, its still and sheet
 ok: playback forgets the still; entering or leaving the 3D view and moving its camera take it again
 ok: a sheet carries the undo mark its request was made at, and a tab keeps it only when current

@@ -1,0 +1,11 @@
+# Every frame the player queues takes a turn of its swap chain's frame-latency object, the paused pump's too: no pause lets the playing pump run ahead of the display.
+frames queued at most while playing after 40 paused presents: 41 without turns, 1 with them (9 owed after the pause)
+ok: the bug as it was: presents made without a turn leave the object counts, and the playing pump then runs that many frames ahead of the display
+ok: every frame queued takes a turn: after any pause the playing pump is at most one frame ahead of the display (the swap chain's latency)
+ok: a paused present that finds no turn free owes one (nine of the forty came while the display had not retired the one before)
+ok: two frames queued with no turn free owe two; the next waits take them back as turns come free, then take their own
+ok: a wait while a turn is held keeps it and takes no second one (the turn freed meanwhile is still there)
+ok: a frame queued uses the turn held
+ok: a new swap chain starts with nothing taken or owed
+ok: GpuViewportControl: WaitForTurn waits through FrameLatencyTurns, PresentNewest's queued frames take their turn, a new swap chain resets them
+ok: a present that queued nothing (an occluded window) keeps its turn, so the playing pump's next wait is paced by the clock, never spinning

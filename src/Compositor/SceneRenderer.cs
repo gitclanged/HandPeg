@@ -21,6 +21,14 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
     private readonly PassTimer _timer;
     private GpuTexture? _canvas;
     private GpuTexture? _canvasCopy;
+
+    // The two canvases a flat frame draws into (5.4.4): whole, and drawn smaller (Dynamic Preview Scaling), each kept at its own capacity,
+    // so play and pause, a scrub begun and ended, make no texture. _canvas is the one of the frame being drawn: dispose these, never it.
+    private GpuTexture? _canvasWhole, _canvasScaled;
+
+    // Each one's copy a blend or a frosted glass reads (5.4.4), kept with it, so going from one to the other makes none either. _canvasCopy
+    // is the one of the frame being drawn (a 3D plane's and the loupe's are their own): dispose these, never it.
+    private GpuTexture? _canvasCopyWhole, _canvasCopyScaled;
     private long _frame;
 
     // The frame being drawn.
@@ -50,7 +58,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         _decoders.BeginFrame(_frame, _playing, header.PlayheadSeconds, exactOnly: (header.Flags & FrameSceneHeader.FlagExactFrames) != 0);
         try
         {
-            RenderLayers(header, layers, outputRtv, outputWidth, outputHeight, raw);
+            RenderLayers(header, layers, outputRtv, outputWidth, outputHeight, raw, DrawScale(header, raw));
         }
         finally
         {
@@ -78,7 +86,20 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
             outputHeight / 2f + header.ViewPanY * pictureHeight * zoom - canvasHeight * scale / 2, scale);
     }
 
-    private void RenderLayers(in FrameSceneHeader header, ReadOnlySpan<GpuLayerDescriptor> layers, nint outputRtv, int outputWidth, int outputHeight, bool raw)
+    /// <summary>
+    /// The fraction of the output a flat player frame is drawn at (5.4.3, Dynamic Preview Scaling: <see cref="FrameSceneHeader.PreviewScale"/>,
+    /// 0.25 to 1), stretched over the output by the final pass; 1 for anything read back, exact, raw, in 3D or under the loupe.
+    /// </summary>
+    internal static float DrawScale(in FrameSceneHeader header, bool raw)
+    {
+        var scale = header.PreviewScale;
+        if (!(scale > 0 && scale < 0.999f) || raw || header.ViewMode != 0 || header.LoupeClipKey != 0
+            || (header.Flags & (FrameSceneHeader.FlagReadback | FrameSceneHeader.FlagExactFrames)) != 0 || (header.Flags & FrameSceneHeader.FlagLetterbox) == 0)
+            return 1;
+        return Math.Max(scale, 0.25f);
+    }
+
+    private void RenderLayers(in FrameSceneHeader header, ReadOnlySpan<GpuLayerDescriptor> layers, nint outputRtv, int outputWidth, int outputHeight, bool raw, float drawScale = 1)
     {
         // The 3D exploded layer stack (5.0D) has a path of its own (SceneRenderer.Exploded.cs); the flat one follows unchanged.
         if (header.ViewMode == 1)
@@ -86,6 +107,11 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
             RenderExploded(header, layers, outputRtv, outputWidth, outputHeight, raw);
             return;
         }
+
+        // Scaled (5.4.3): everything below is drawn at the smaller size; only the final pass fills the whole output.
+        var (finalWidth, finalHeight) = (outputWidth, outputHeight);
+        if (drawScale < 1)
+            (outputWidth, outputHeight) = (Math.Max((int)MathF.Round(outputWidth * drawScale), 16), Math.Max((int)MathF.Round(outputHeight * drawScale), 16));
 
         // (The 3D view's textures go a while after it was last drawn.)
         ForgetExplodedTextures();
@@ -118,20 +144,31 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
 
         // The canvas is kept at a capacity (CompositorWorker.OutputCapacity, 5.4.1-M2) and drawn into its top left, so a dock splitter's
         // drag of the player makes a few canvases, not one a pixel; an export's stays exactly its size. The copy a blend reads is the
-        // drawn part's size exactly (CopyCanvas).
-        var capacity = CompositorWorker.OutputCapacity(_canvas?.Width ?? 0, _canvas?.Height ?? 0, outputWidth, outputHeight,
-            (header.Flags & FrameSceneHeader.FlagReadback) != 0);
-        if (_canvas is null || (_canvas.Width, _canvas.Height) != capacity)
+        // drawn part's size exactly (CopyCanvas). A frame drawn smaller has a canvas of its own (5.4.4), which only grows while it fits
+        // (a step down draws into its top left), so going back to where a run starts makes none either.
+        var scaled = drawScale < 1;
+        ref var slot = ref scaled ? ref _canvasScaled : ref _canvasWhole;
+        var capacity = scaled && slot is not null && outputWidth <= slot.Width && outputHeight <= slot.Height
+                       && (long)outputWidth * outputHeight * 8 >= (long)slot.Width * slot.Height
+            ? (slot.Width, slot.Height)
+            : CompositorWorker.OutputCapacity(slot?.Width ?? 0, slot?.Height ?? 0, outputWidth, outputHeight, (header.Flags & FrameSceneHeader.FlagReadback) != 0);
+        if (slot is null || (slot.Width, slot.Height) != capacity)
         {
-            _canvas?.Dispose();
-            _canvas = _gpu.CreateTexture(capacity.Width, capacity.Height, DxgiFormat.R16G16B16A16Float, renderTarget: true);
+            slot?.Dispose();
+            slot = _gpu.CreateTexture(capacity.Width, capacity.Height, DxgiFormat.R16G16B16A16Float, renderTarget: true);
         }
 
-        if (_canvasCopy is not null && (_canvasCopy.Width != outputWidth || _canvasCopy.Height != outputHeight))
+        _canvas = slot;
+
+        // Its copy is the drawn part's size exactly: made again only when that size changes (CopyCanvas makes it when a blend first wants it).
+        ref var copy = ref scaled ? ref _canvasCopyScaled : ref _canvasCopyWhole;
+        if (copy is not null && (copy.Width != outputWidth || copy.Height != outputHeight))
         {
-            _canvasCopy.Dispose();
-            _canvasCopy = null;
+            copy.Dispose();
+            copy = null;
         }
+
+        _canvasCopy = copy;
 
         _gpu.Context.ClearRenderTargetView(_canvas.Rtv, 0, 0, 0, 0);
 
@@ -164,8 +201,16 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         constants.Color = _letterbox ? new Vector4(0, 0, 0, 1) : new Vector4(header.BackgroundR, header.BackgroundG, header.BackgroundB, 1);
         constants.Params4 = new Vector4(1, 1, raw ? 1 : 0, (float)_time);
         (constants.U0, constants.V0, constants.U1, constants.V1) = (0, 0, (float)outputWidth / _canvas.Width, (float)outputHeight / _canvas.Height);
+        if ((finalWidth, finalHeight) != (outputWidth, outputHeight))
+        {
+            // Stretched and filtered: the far edges are taken half a texel in (5.4.4), so the filter never reads the cleared texels
+            // beyond the drawn part (a dark fringe along the right and bottom of a picture that reaches them).
+            constants.U1 = (outputWidth - 0.5f) / _canvas.Width;
+            constants.V1 = (outputHeight - 0.5f) / _canvas.Height;
+            constants.Params2 = new Vector4(0, 1, 0, 0);
+        }
         _timer.Begin(0);
-        Draw("PSFinal", _canvas, outputRtv, outputWidth, outputHeight, ref constants, blend: false);
+        Draw("PSFinal", _canvas, outputRtv, finalWidth, finalHeight, ref constants, blend: false);
         _timer.End();
         _gpu.Textures.EndFrame();
         _timer.EndFrame();
@@ -608,7 +653,17 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
     private GpuTexture CopyCanvas()
     {
         var canvas = _canvas!;
-        var copy = _canvasCopy ??= _gpu.CreateTexture(_outWidth, _outHeight, DxgiFormat.R16G16B16A16Float, renderTarget: false);
+        if (_canvasCopy is not { } copy)
+        {
+            copy = _canvasCopy = _gpu.CreateTexture(_outWidth, _outHeight, DxgiFormat.R16G16B16A16Float, renderTarget: false);
+
+            // A flat canvas's copy is kept with it (5.4.4); a 3D plane's or the loupe's is its caller's.
+            if (ReferenceEquals(canvas, _canvasWhole))
+                _canvasCopyWhole = copy;
+            else if (ReferenceEquals(canvas, _canvasScaled))
+                _canvasCopyScaled = copy;
+        }
+
         if (copy.Width == canvas.Width && copy.Height == canvas.Height)
         {
             _gpu.Context.CopyResource(copy.Texture, canvas.Texture);
@@ -1168,6 +1223,18 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         Submit("VSFull", shader, input?.Srv ?? 0, aux, lut, target, width, height, ref constants, blend, vertices: 3, clipToFrame: false);
     }
 
+    /// <summary>
+    /// A finished frame stretched over another target of its own size (5.4.4-Final, the Live Encoded Preview of a smaller or larger export: the
+    /// scene drawn once at the canvas's size, filtered to the export's), linear (PSCopy over the whole picture).
+    /// </summary>
+    public void Stretch(GpuTexture picture, GpuTexture target)
+    {
+        _gpu.BindCommon();
+        var constants = default(PassConstants);
+        constants.WholeUv();
+        Draw("PSCopy", picture, target.Rtv, target.Width, target.Height, ref constants, blend: false);
+    }
+
     /// <summary>A finished frame as NV12's two planes (FlagReadbackNv12): each is a render target of its own, read back by the worker.</summary>
     public void ToNv12(GpuTexture picture, GpuTexture luma, GpuTexture chroma)
     {
@@ -1254,16 +1321,22 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
 
     /// <summary>
     /// Lets go of the textures kept between frames that the next frame makes again when it wants them (the worker's trim, 5.4D-TabPerf
-    /// follow-up): the canvas copy a blend mode reads, the 3D view's picture and plane (their budget step kept, so the 3D picture drawn
+    /// follow-up): the canvases' copies a blend mode reads, the 3D view's picture and plane (their budget step kept, so the 3D picture drawn
     /// again is the same), and the loupe's scan, view, point and staging (the point it follows kept). With <paramref name="history"/> (a
     /// trim the client asked for: a tab put behind, Settings' Clear) also what carries one frame into the next: the Motion Blur's flows,
     /// the Explosion's noise, and Matte Smooth's alpha histories; the idle trim keeps them, so the paused picture it draws again is the
-    /// one shown. The canvas itself stays: every flat frame draws into it. Between frames only (the worker's own thread).
+    /// one shown. The whole canvas stays: every flat frame draws into it; the canvas of frames drawn smaller (5.4.4) goes, made again by
+    /// the next play. Between frames only (the worker's own thread).
     /// </summary>
     public void ReleaseIdleTextures(bool history)
     {
-        _canvasCopy?.Dispose();
-        _canvasCopy = null;
+        _canvasCopyWhole?.Dispose();
+        _canvasCopyScaled?.Dispose();
+        (_canvasCopy, _canvasCopyWhole, _canvasCopyScaled) = (null, null, null);
+        if (ReferenceEquals(_canvas, _canvasScaled))
+            _canvas = _canvasWhole;
+        _canvasScaled?.Dispose();
+        _canvasScaled = null;
         ReleaseExplodedTextures();
         DisposeLoupe();
         if (!history)
@@ -1280,7 +1353,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
     /// </summary>
     internal (int Textures, int History) IdleTexturesForTests()
     {
-        var textures = (_canvasCopy is null ? 0 : 1) + (_view3D is null ? 0 : 1) + (_planeTarget is null ? 0 : 1) + KeptPlaneTextures()
+        var textures = (_canvasCopyWhole is null ? 0 : 1) + (_canvasCopyScaled is null ? 0 : 1) + (_canvasScaled is null ? 0 : 1) + (_view3D is null ? 0 : 1) + (_planeTarget is null ? 0 : 1) + KeptPlaneTextures()
             + (_loupeScan is null ? 0 : 1) + (_loupeView is null ? 0 : 1) + (_loupeFound is null ? 0 : 1) + _loupeStaging.Count(s => s != 0);
         return (textures, _flows.Count + (_noise3D == 0 ? 0 : 1) + _histories.Count);
     }
@@ -1288,8 +1361,12 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
     public void Dispose()
     {
         _timer.Dispose();
-        _canvas?.Dispose();
-        _canvasCopy?.Dispose();
+        _canvasWhole?.Dispose();
+        _canvasScaled?.Dispose();
+        (_canvas, _canvasWhole, _canvasScaled) = (null, null, null);
+        _canvasCopyWhole?.Dispose();
+        _canvasCopyScaled?.Dispose();
+        (_canvasCopy, _canvasCopyWhole, _canvasCopyScaled) = (null, null, null);
         _blank?.Dispose();
         DisposeExploded();
         DisposeLoupe();

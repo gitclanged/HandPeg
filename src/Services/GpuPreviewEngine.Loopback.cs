@@ -1,7 +1,11 @@
 namespace HandPegApp.Services;
 
-/// <summary>What the compositor's encode loopback is doing (ControlBlock's Loopback* fields, read as they are).</summary>
-public readonly record struct ExportLoopbackStatus(ExportLoopbackState State, string EncoderName, float RoundTripMs, int FramesEncoded, int LateFrames, int HResult);
+/// <summary>
+/// What the compositor's encode loopback is doing (ControlBlock's Loopback* fields, read as they are). 5.4.4-Final: whether the encoder is on
+/// the card the export's family names (false: a stand-in on another card) and whether it encodes paused frames only (a software encoder).
+/// </summary>
+public readonly record struct ExportLoopbackStatus(ExportLoopbackState State, string EncoderName, float RoundTripMs, int FramesEncoded, int LateFrames, int HResult,
+    bool OnAskedCard = true, bool PausedOnly = false);
 
 // ----- The Export Quality Preview (Pass 5.4B): the player's frame through the export's encoder and back -----
 // Off (null settings), nothing of it is written into a scene and the worker holds nothing for it (FrameSceneHeader.FlagLoopback is
@@ -21,13 +25,62 @@ public sealed partial class GpuPreviewEngine
     /// <summary>The difference's magnification (the roadmap's "x10").</summary>
     public const float LoopbackHeatGain = 10;
 
-    /// <summary>The Export Quality Preview on with these settings, or off (null). Any thread.</summary>
+    // Raised by every change of the settings while the preview is on (5.4.4-Final, FrameSceneHeader.LoopbackSettingsStamp).
+    private long _loopbackSettingsStamp;
+
+    /// <summary>
+    /// The Export Quality Preview on with these settings, or off (null). Any thread. 5.4.4-Final: turned on, the picture is drawn anew (the
+    /// content stamp raised); new settings while it is on keep the content stamp (the worker encodes the scene it has already drawn again,
+    /// no layer drawn for it: a paused frame updates as fast as the encoder answers) and raise the settings' own stamp.
+    /// </summary>
     public void SetLoopback(ExportLoopbackSettings? settings)
     {
-        if (Equals(Volatile.Read(ref _loopback), settings))
+        var was = Volatile.Read(ref _loopback);
+        if (Equals(was, settings))
             return;
+        if (settings is not null)
+            WriteSoftwareArguments(settings.SoftwareArguments);
+        Interlocked.Increment(ref _loopbackSettingsStamp);
         Volatile.Write(ref _loopback, settings);
-        Invalidate();
+        if (was is null || settings is null)
+        {
+            Invalidate();
+            return;
+        }
+
+        Volatile.Write(ref _sceneDirty, 1);
+        _dirty.Set();
+    }
+
+    /// <summary>
+    /// A software encoder's arguments into the control block (UTF-8, at most 255 bytes, cut at the last whole argument that fits), between an
+    /// odd and an even <see cref="ControlBlock.LoopbackArgumentsVersion"/>: the worker never takes a half-written string. Pure in its packing
+    /// (<see cref="PackArguments"/>, for the golden test).
+    /// </summary>
+    private void WriteSoftwareArguments(string arguments)
+    {
+        ref var control = ref _client.Memory.Control;
+        var bytes = PackArguments(arguments);
+        lock (_loopbackArgumentsLock)
+        {
+            Interlocked.Increment(ref control.LoopbackArgumentsVersion);
+            Span<byte> field = control.LoopbackSoftwareArguments;
+            field.Clear();
+            bytes.CopyTo(field);
+            Interlocked.Increment(ref control.LoopbackArgumentsVersion);
+        }
+    }
+
+    private readonly object _loopbackArgumentsLock = new();
+
+    /// <summary>The arguments as the control block holds them: UTF-8, at most 255 bytes, cut at a space so no argument is half there.</summary>
+    internal static byte[] PackArguments(string arguments)
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes((arguments ?? "").Trim());
+        if (bytes.Length <= 255)
+            return bytes;
+        var cut = Array.LastIndexOf(bytes, (byte)' ', 254);
+        return bytes[..Math.Max(cut, 0)];
     }
 
     /// <summary>Whether the preview is on (settings given).</summary>
@@ -62,7 +115,8 @@ public sealed partial class GpuPreviewEngine
             if (_sourceView && Volatile.Read(ref _loopback) is not null && state == ExportLoopbackState.Off)
                 state = ExportLoopbackState.Unavailable;
             return new ExportLoopbackStatus(state, CompositorSharedMemory.ReadString(control.LoopbackEncoderName),
-                control.LoopbackRoundTripMs, control.LoopbackFramesEncoded, control.LoopbackLateFrames, control.LoopbackHResult);
+                control.LoopbackRoundTripMs, control.LoopbackFramesEncoded, control.LoopbackLateFrames, control.LoopbackHResult,
+                Volatile.Read(ref control.LoopbackOnAskedCard) != 0, Volatile.Read(ref control.LoopbackPausedOnly) != 0);
         }
     }
 
@@ -179,6 +233,13 @@ public sealed partial class GpuPreviewEngine
         header.LoopbackWipeX = Volatile.Read(ref _loopbackWipe);
         header.LoopbackHeatGain = LoopbackHeatGain;
         header.LoopbackContentStamp = _loopbackStamp;
+
+        // 5.4.4-Final: the exact encoder the Export tab chose and every setting it has.
+        header.LoopbackFamily = settings.Family;
+        (header.LoopbackEncodedWidth, header.LoopbackEncodedHeight) = (Math.Max(settings.EncodedWidth, 0), Math.Max(settings.EncodedHeight, 0));
+        header.LoopbackTenBit = settings.TenBit ? 1 : 0;
+        header.LoopbackCrf = settings.Crf;
+        header.LoopbackSettingsStamp = Interlocked.Read(ref _loopbackSettingsStamp);
 
         // The Magnifier (5.4D): only in the flat view this is written for (never in source view, which writes no loopback).
         var (loupeX, loupeY) = (Volatile.Read(ref _loopbackLoupeX), Volatile.Read(ref _loopbackLoupeY));

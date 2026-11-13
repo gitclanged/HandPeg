@@ -1,0 +1,3 @@
+# A blend's copy of the canvas is kept per canvas (5.4.4): drawing whole and smaller by turns makes no texture with a blend on screen.
+ok: a layer with a blend mode drawn whole and at half by turns: after the first frame of each size, four more pairs make no texture (each canvas keeps the copy the blend reads)
+ok: the idle trim and Dispose let go of both canvases' copies

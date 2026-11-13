@@ -561,8 +561,9 @@ public partial class MainWindow
                 state |= _viewModel.IsTrackHidden(layer) ? RowSwitches.Hidden : 0;
             }
 
-            // The master mute: on every video track's header, all of its sound at once (the user's directive).
-            if (layer.IsVideoFile)
+            // The master mute: on every video track's header, all of its sound at once (the user's directive). 5.4.4-Final (the user's): only on a
+            // track that is heard, never on a Cutout's or a mask's track (a child layer with no sound of its own) nor on a silent video's.
+            if (layer.IsVideoFile && _viewModel.RowHasOwnSound(layer) && !(_viewModel.ParentRowOf(layer) is not null && CountsAsCutout(_viewModel, layer)))
             {
                 offered |= RowSwitches.Muted;
                 state |= _viewModel.IsRowSoundMuted(layer) ? RowSwitches.Muted : 0;
@@ -1057,7 +1058,7 @@ public partial class MainWindow
     private void OpenCutoutStudio()
     {
         if (_viewModel.HasSource)
-            new MaskDrawWindow(_viewModel, null) { Owner = this }.ShowDialog();
+            new MaskDrawWindow(_viewModel, null, TakeWarmCutoutStill()) { Owner = this }.ShowDialog();
     }
 
     /// <summary>
@@ -1070,7 +1071,7 @@ public partial class MainWindow
     {
         _viewModel.Checkpoint($"change the mask of {clip.Name}");
         var visit = _viewModel.UndoMark;
-        var window = new MaskDrawWindow(_viewModel, clip) { Owner = this };
+        var window = new MaskDrawWindow(_viewModel, clip, TakeWarmCutoutStill()) { Owner = this };
         if (window.ShowDialog() == true && MaskStore.DrawnKey(window.Shapes).Length > 0)
         {
             (clip.CustomMask, clip.MaskPath, clip.MaskFrame, clip.MaskShapes) = (true, "", true, window.Shapes);
@@ -1109,8 +1110,6 @@ public partial class MainWindow
             case "PreviousKey": PreviousKeyframe_Click(sender, e); break;
             case "ToggleKey": ToggleKeyframe_Click(sender, e); break;
             case "NextKey": NextKeyframe_Click(sender, e); break;
-            case "ZoomIn": ZoomAboutPlayhead(1.6); break;
-            case "ZoomOut": ZoomAboutPlayhead(1 / 1.6); break;
             case "ZoomFit": FitTimeline(); break;
             case "PlayPause": PlayPause_Click(sender, e); break;
 

@@ -1,0 +1,9 @@
+# Background work drawn in pieces stops between them while the player plays or a scrub is held, and goes on after.
+ok: background work stops while the player plays (as Settings asks), and is told so both ways
+ok: a scrub holds background work back (400 ms after each move), and it goes on when the hold ends
+ok: outside any work (a golden, a tool) nothing ever pauses
+ok: inside background work: stopped while the player plays, still waiting 300 ms on, going on as it pauses
+ok: work the user waits on (urgent) never stops
+ok: a filmstrip stops before it starts and between pictures, after its cancellation check; stopped, it gives its permit back and waits
+ok: the overview sheet stops before a picture it has to draw (drawn ones are reused); stopped, it leaves its lane and permit; DrawNowAsync never stops
+ok: each move of a scrub holds background work back

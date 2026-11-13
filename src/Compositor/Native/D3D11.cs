@@ -458,10 +458,21 @@ internal static unsafe partial class Dxgi
     }
 
     /// <summary>IDXGIKeyedMutex::AcquireSync: S_OK, or <see cref="Com.WaitTimeout"/>.</summary>
-    public static int AcquireSync(nint keyedMutex, ulong key, uint milliseconds) =>
-        ((delegate* unmanaged<nint, ulong, uint, int>)Com.Table(keyedMutex)[8])(keyedMutex, key, milliseconds);
+    public static int AcquireSync(nint keyedMutex, ulong key, uint milliseconds)
+    {
+        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("AcquireSync", milliseconds);
+        var hr = ((delegate* unmanaged<nint, ulong, uint, int>)Com.Table(keyedMutex)[8])(keyedMutex, key, milliseconds);
+        crumb.Leave(hr);
+        return hr;
+    }
 
-    public static int ReleaseSync(nint keyedMutex, ulong key) => ((delegate* unmanaged<nint, ulong, int>)Com.Table(keyedMutex)[9])(keyedMutex, key);
+    public static int ReleaseSync(nint keyedMutex, ulong key)
+    {
+        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("ReleaseSync");
+        var hr = ((delegate* unmanaged<nint, ulong, int>)Com.Table(keyedMutex)[9])(keyedMutex, key);
+        crumb.Leave(hr);
+        return hr;
+    }
 
     // ----- Swap chains (the GPU viewport in HandPeg's own process, 5.0-AudioAnd3D) -----
 
@@ -542,12 +553,56 @@ internal static unsafe partial class Dxgi
     }
 
     /// <summary>IDXGISwapChain::Present: S_OK, DXGI_STATUS_OCCLUDED, or a device-lost code.</summary>
-    public static int Present(nint swapChain, uint syncInterval, uint flags) =>
-        ((delegate* unmanaged<nint, uint, uint, int>)Com.Table(swapChain)[8])(swapChain, syncInterval, flags);
+    public static int Present(nint swapChain, uint syncInterval, uint flags)
+    {
+        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("Present", syncInterval);
+        var hr = ((delegate* unmanaged<nint, uint, uint, int>)Com.Table(swapChain)[8])(swapChain, syncInterval, flags);
+        crumb.Leave(hr);
+        return hr;
+    }
+
+    // DXGI_FRAME_STATISTICS: the present shown at the last vblank, the refresh counts, and that vblank's QPC and GPU times.
+    private struct FrameStatisticsData
+    {
+        public uint PresentCount, PresentRefreshCount, SyncRefreshCount;
+        public long SyncQpcTime, SyncGpuTime;
+    }
+
+    /// <summary>IDXGISwapChain::GetLastPresentCount (slot 17): the count of the swap chain's last Present; 0 when it cannot say.</summary>
+    public static uint LastPresentCount(nint swapChain)
+    {
+        if (swapChain == 0)
+            return 0;
+        uint count = 0;
+        var hr = ((delegate* unmanaged<nint, uint*, int>)Com.Table(swapChain)[17])(swapChain, &count);
+        return hr >= 0 ? count : 0;
+    }
+
+    /// <summary>
+    /// IDXGISwapChain::GetFrameStatistics (slot 16, 5.4.4-Final): the present shown at the last vblank and that vblank's QPC; false when it
+    /// gives none (a windowed swap chain's frames are reported only while DWM composes its window; DISJOINT after a mode change).
+    /// </summary>
+    public static bool FrameStatistics(nint swapChain, out uint presentCount, out long syncQpc)
+    {
+        (presentCount, syncQpc) = (0, 0);
+        if (swapChain == 0)
+            return false;
+        FrameStatisticsData data;
+        var hr = ((delegate* unmanaged<nint, FrameStatisticsData*, int>)Com.Table(swapChain)[16])(swapChain, &data);
+        if (hr < 0 || data.PresentCount == 0 || data.SyncQpcTime == 0)
+            return false;
+        (presentCount, syncQpc) = (data.PresentCount, data.SyncQpcTime);
+        return true;
+    }
 
     /// <summary>IDXGISwapChain::ResizeBuffers, keeping the count and format (every buffer reference let go first).</summary>
-    public static int ResizeBuffers(nint swapChain, int width, int height) =>
-        ((delegate* unmanaged<nint, uint, uint, uint, uint, uint, int>)Com.Table(swapChain)[13])(swapChain, 0, (uint)Math.Max(width, 8), (uint)Math.Max(height, 8), 0, SwapChainFlagFrameLatencyWaitable);
+    public static int ResizeBuffers(nint swapChain, int width, int height)
+    {
+        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("ResizeBuffers", $"{width}x{height}");
+        var hr = ((delegate* unmanaged<nint, uint, uint, uint, uint, uint, int>)Com.Table(swapChain)[13])(swapChain, 0, (uint)Math.Max(width, 8), (uint)Math.Max(height, 8), 0, SwapChainFlagFrameLatencyWaitable);
+        crumb.Leave(hr);
+        return hr;
+    }
 
     /// <summary>
     /// IDXGIAdapter3::QueryVideoMemoryInfo for the card's own memory (node 0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL): the budget

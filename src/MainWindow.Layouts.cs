@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 using HandPegApp.Docking;
 using HandPegApp.Services;
 
@@ -60,8 +61,9 @@ public partial class MainWindow
     /// Standard Editing (where HandPeg starts, and what Reset Layout puts back): the player at the top left with the
     /// playback controls under it; beside it one column of tabs, the effects first and shown, then the keyframes, the Canvas
     /// and the Master Meter (5.3-Stage2, the user's de-clutter: the Canvas no longer takes a part of its own); the header
-    /// joined over the media browser at the right; the Sequence Overview Scrubber under all of it (shown: AppSettings.ShowMasterTimeline
-    /// is on by default), and under that the timeline, the first tab of the group of settings tabs (4.4-BugHunt).
+    /// joined over the media browser at the right, the settings tabs beside the Media tab (5.4.4: Media | Export | ..., Media shown);
+    /// the Sequence Overview Scrubber under all of it (shown: AppSettings.ShowMasterTimeline is on by default), and under that the
+    /// timeline alone, its title row hidden (DockPane.HeaderlessAlone: the whole bottom is tracks).
     /// </summary>
     private DockLayoutState StandardLayout() => StandardLayout(TabIds);
 
@@ -72,10 +74,43 @@ public partial class MainWindow
         // The Master Meter (5.2B) is a tab beside the effects, keyframes and Canvas: hidden until Tabs and Panes shows it, and taken there
         // by every arrangement that has no place of its own for it (DockManager.PlaceAsDefault).
         var middle = DockNode.Group("Effects", "Keyframes", "Layout", "Meter");
+        var side = DockNode.Split(true, (DockNode.Group("Header"), 1), (MediaFirst(DockNode.Group([.. tabIds])), 1));
+        var top = DockNode.Split(false, (player, StandardTopShares[0]), (middle, StandardTopShares[1]), (side, StandardTopShares[2]));
+        return new DockLayoutState
+        {
+            Main = DockNode.Split(true, (top, 46), (DockNode.Group("Timeline"), 1), (DockNode.Group("Presets"), 1), (DockNode.Group(TimelinePaneId), 38)),
+        };
+    }
+
+    /// <summary>
+    /// Standard Editing's top row: the player, the effects column and the Media column's shares (5.4.4-Final: 54, 20, 26, from 56, 22, 22, the
+    /// Media column now the Export tab's too, which needs 300 DIPs: at 1280 DIPs its border still has room to move both ways).
+    /// </summary>
+    internal static readonly double[] StandardTopShares = [54, 20, 26];
+
+    /// <summary>The settings tabs' group with the Media Browser as its first tab, and shown (5.4.4, Standard Editing: Media | Export | ...).</summary>
+    private static DockNode MediaFirst(DockNode tabs)
+    {
+        tabs.Panes.Remove("Media");
+        tabs.Panes.Insert(0, "Media");
+        tabs.Active = "Media";
+        return tabs;
+    }
+
+    /// <summary>
+    /// Standard Editing as 5.3-Stage2 to 5.4.3 made it (arrangement version 4): the media browser in a group of its own under the header,
+    /// the timeline the first tab of the settings tabs' group at the bottom. What step 4 to 5 recognises (MoveExportBesideMedia). Frozen:
+    /// never change it.
+    /// </summary>
+    internal static DockLayoutState StandardLayoutV4(IReadOnlyList<string> tabIds)
+    {
+        var player = DockNode.Split(true, (DockNode.Group("Player"), 1), (DockNode.Group("Playback"), 1));
+        var middle = DockNode.Group("Effects", "Keyframes", "Layout", "Meter");
         var side = DockNode.Split(true, (DockNode.Group("Header"), 1), (DockNode.Group("Media"), 1));
         var top = DockNode.Split(false, (player, 56), (middle, 22), (side, 22));
         return new DockLayoutState
         {
+            Version = 4,
             Main = DockNode.Split(true, (top, 46), (DockNode.Group("Timeline"), 1), (DockNode.Group("Presets"), 1), (TimelineFirst(DockNode.Group([.. tabIds])), 38)),
         };
     }
@@ -604,9 +639,14 @@ public partial class MainWindow
             card.MouseEnter += (_, _) =>
             {
                 ShowPills();
-                PreviewLayout(index);
+                PreviewWhenStill(card, () => PreviewLayout(index));
             };
-            card.MouseLeave += (_, _) => ShowPills();
+            card.MouseMove += (_, _) => PreviewWhenStill(card, () => PreviewLayout(index));
+            card.MouseLeave += (_, _) =>
+            {
+                ShowPills();
+                CancelPreviewOf(card);
+            };
             card.IsKeyboardFocusWithinChanged += (_, _) => ShowPills();
             card.GotKeyboardFocus += (_, _) => PreviewLayout(index);
             card.Click += (_, _) => KeepLayout(index, choice);
@@ -637,10 +677,17 @@ public partial class MainWindow
 
     private const double ThemeSwatchHeight = 30;
 
+    // What the theme cards were last made for (the theme saved, the one shown): the same again, they are kept (5.4.3, the heat lamp makes them ahead).
+    private string? _themeCardsKey;
+
     private void MakeThemeCards()
     {
-        ThemeCards.Children.Clear();
         var saved = ThemeManager.Normalize(AppSettings.Current.Theme);
+        var key = saved + "|" + ThemeManager.Current;
+        if (key == _themeCardsKey && ThemeCards.Children.Count == ThemeManager.Themes.Count)
+            return;
+        _themeCardsKey = key;
+        ThemeCards.Children.Clear();
         foreach (var theme in ThemeManager.Themes)
         {
             // The window's colour with the theme's name in its text colour, over a band of its panel colour holding its
@@ -673,7 +720,9 @@ public partial class MainWindow
             card.SetResourceReference(StyleProperty, "LayoutCard");
             card.Padding = new Thickness(3);
             AutomationProperties.SetName(card, theme == saved ? $"Theme {theme} (in use)" : $"Theme {theme}");
-            card.MouseEnter += (_, _) => PreviewTheme(theme);
+            card.MouseEnter += (_, _) => PreviewWhenStill(card, () => PreviewTheme(theme));
+            card.MouseMove += (_, _) => PreviewWhenStill(card, () => PreviewTheme(theme));
+            card.MouseLeave += (_, _) => CancelPreviewOf(card);
             card.GotKeyboardFocus += (_, _) => PreviewTheme(theme);
             card.Click += (_, _) => KeepTheme(theme);
             ThemeCards.Children.Add(card);
@@ -737,14 +786,56 @@ public partial class MainWindow
 
     private const double SelectorEdge = 8;
 
-    /// <summary>The pointer came onto a card: the window takes its layout, nothing saved.</summary>
+    /// <summary>
+    /// The pointer came onto a card: the window takes its layout, nothing saved. 5.4.3: none laid out when it is already the window's shape
+    /// (the same panes in the same splits: a card of the layout in use).
+    /// </summary>
     private void PreviewLayout(int index)
     {
         if (index == _previewing || index >= _cardLayouts.Count)
             return;
 
         _previewing = index;
-        _dock.Preview(_cardLayouts[index]);
+        if (!DockManager.SameShape(_dock.Current, _cardLayouts[index]))
+            _dock.Preview(_cardLayouts[index]);
+    }
+
+    // ----- The cards' hover previews wait for the pointer to rest (5.4.3: a pointer swept across the cards laid out every layout it crossed) -----
+
+    /// <summary>How long the pointer rests on a layout or theme card before the window takes it, ms.</summary>
+    private const int CardPreviewRestMs = 90;
+
+    private DispatcherTimer? _cardPreviewTimer;
+    private (FrameworkElement Card, Action Preview)? _cardPreview;
+
+    /// <summary>The card's preview once the pointer has rested on it CardPreviewRestMs (every move starts the wait again).</summary>
+    private void PreviewWhenStill(FrameworkElement card, Action preview)
+    {
+        if (_cardPreviewTimer is null)
+        {
+            _cardPreviewTimer = new DispatcherTimer(DispatcherPriority.Input) { Interval = TimeSpan.FromMilliseconds(CardPreviewRestMs) };
+            _cardPreviewTimer.Tick += (_, _) =>
+            {
+                _cardPreviewTimer.Stop();
+                if (_cardPreview is { } wanted && LayoutSelector.IsOpen && wanted.Card.IsMouseOver)
+                    wanted.Preview();
+                _cardPreview = null;
+            };
+        }
+
+        _cardPreview = (card, preview);
+        _cardPreviewTimer.Stop();
+        _cardPreviewTimer.Start();
+    }
+
+    /// <summary>The pointer left a card before its preview: none.</summary>
+    private void CancelPreviewOf(FrameworkElement card)
+    {
+        if (_cardPreview is { } wanted && ReferenceEquals(wanted.Card, card))
+        {
+            _cardPreviewTimer?.Stop();
+            _cardPreview = null;
+        }
     }
 
     /// <summary>A card clicked: its layout is kept (it is already laid out) and saved, and what it sets besides is set (the preview set nothing).</summary>
@@ -788,6 +879,8 @@ public partial class MainWindow
 
     private void RestoreLayoutBeforePreview()
     {
+        _cardPreviewTimer?.Stop();
+        _cardPreview = null;
         if (_previewing < 0 || _layoutKept)
             return;
 

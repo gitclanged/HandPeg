@@ -1,13 +1,13 @@
 # The dock's borders at 1280 x 760 DIPs: each drags both ways, cascading past a part at its least; a double-click evens it; the Filmstrip view's least width set in place.
-ok: Standard Editing at 1280 x 760: 5 borders dragged, 4 of them sharing the room; the joined header 307 DIPs wide with its tab (capped at 240), so the Media column's least is 240
-ok:   column border 1 (left 716/320, right 281/180): dragged 24 one way it moves 24, 48 the other way 48
-ok:   column border 2 (left 281/180, right 281/240): dragged 24 one way it moves 24, 48 the other way 48
+ok: Standard Editing at 1280 x 760: 5 borders dragged, 4 of them sharing the room; the joined header 396 DIPs wide with its tab (capped at 240), so the Media column's least is 240
+ok:   column border 1 (left 690/320, right 256/180): dragged 24 one way it moves 24, 48 the other way 48
+ok:   column border 2 (left 256/180, right 332/300): dragged 24 one way it moves 24, 48 the other way 48
 ok:   row border 3 (above 372/240, below 48/0): dragged 24 one way it moves 24, 48 the other way 48
 ok:   row border 4 (above 30/0, below 307/140): dragged 24 one way it moves 24, 48 the other way 48
-ok:   its last column border dragged 161 to the left: the middle part down to its least (180), the first part gives the other 60 (716 to 656, its least 320), the last part gains all 161
+ok:   its last column border dragged 136 to the left: the middle part down to its least (180), the first part gives the other 60 (690 to 630, its least 320), the last part gains all 136
 ok:   the drag's end keeps the parts' widths as the arrangement's shares (saved)
 ok:   a border nudged by 16 DIPs (Nudge) keeps its shares; borders take no keyboard focus, as before
-ok:   a double-click evens the two parts beside it (311 and 311), kept as their shares
+ok:   a double-click evens the two parts beside it (324 and 324), kept as their shares
 ok:   a double-click on the scrubber's lower edge puts its height back (its ResetSize), the parts' shares untouched
 ok: Vertical & Shorts Studio at 1280 x 760: 5 borders dragged, 4 of them sharing the room; the joined header 307 DIPs wide with its tab (capped at 240), so the Media column's least is 240
 ok:   column border 1 (left 358/240, right 536/320): dragged 24 one way it moves 24, 48 the other way 48
@@ -26,7 +26,7 @@ ok:   the drag's end keeps the parts' widths as the arrangement's shares (saved)
 ok:   a border nudged by 16 DIPs (Nudge) keeps its shares; borders take no keyboard focus, as before
 ok:   a double-click evens the two parts beside it (479 and 479), kept as their shares
 ok:   a double-click on the scrubber's lower edge puts its height back (its ResetSize), the parts' shares untouched
-ok: Standard Editing, the Media column dragged to its least (240): the joined header whole (172 of its 172 DIPs) and inside it (the strip of tabs beside it gives way)
-ok: Standard Editing: the Media column's least 240; the Media Browser switched to Filmstrip, 280 at once, in place (the same grid and borders); back to Grid, 240
-ok: Standard Editing, its Media border dragged 120 to the left (281 to 401), then the arrangement from before loaded: the columns back as they were (716, 1, 281, 1, 281)
-ok: Reset Layout twice, then the Media border dragged 80 to the left: the arrangement saved has the dragged widths (361 for 361 on screen)
+ok: Standard Editing, the Media column dragged to its least (300): the joined header whole (172 of its 172 DIPs) and inside it (the strip of tabs beside it gives way)
+ok: Standard Editing (version 4's, the Media Browser alone): the Media column's least 240; the Media Browser switched to Filmstrip, 280 at once, in place (the same grid and borders); back to Grid, 240
+ok: Standard Editing, its Media border dragged 120 to the left (332 to 452), then the arrangement from before loaded: the columns back as they were (690, 1, 256, 1, 332)
+ok: Reset Layout twice, then the Media border dragged 80 to the left: the arrangement saved has the dragged widths (412 for 412 on screen)

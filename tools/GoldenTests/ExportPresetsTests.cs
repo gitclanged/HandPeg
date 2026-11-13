@@ -830,7 +830,7 @@ public static class ExportPresetsTests
             found.SetValue(null, kept);
         }
 
-        var source = File.ReadAllText(Path.Combine(RepositoryRoot(), "src", "ViewModels", "MainViewModel.cs"));
+        var source = File.ReadAllText(Path.Combine(RepositoryRoot(), "src", "ViewModels", "MainViewModel.EncodeAndLoad.cs"));
         var apply = source[source.IndexOf("private void ApplyHardwareEncoders", StringComparison.Ordinal)..];
         apply = apply[..apply.IndexOf("\n    }", StringComparison.Ordinal)];
         expect(!apply.Contains("GpuAdapters.All", StringComparison.Ordinal) && source.Contains("EncoderProber.ProblemsForCardsHere(_hardwareProblems)", StringComparison.Ordinal),
@@ -921,7 +921,7 @@ public static class ExportPresetsTests
         expect(!audioBound.Intersect(["AudioEncoder", "AudioBitrate", "AudioSampleRate", "AudioChannels", "MergeAudioTracks", "NormalizeAudio"]).Any()
                && audio.Descendants().Count(e => ((string?)e.Attribute("Text"))?.StartsWith("{Binding DuckAmountDb", StringComparison.Ordinal) == true) == 2,
             "the Audio tab no longer repeats the codec, bitrate, rate, channels, mix and normalize; its Duck Amount stays (inline and folded)");
-        var tracks = File.ReadAllText(Path.Combine(root, "src", "MainWindow.Tracks.cs"));
+        var tracks = File.ReadAllText(Path.Combine(root, "src", "MainWindow.TrackMenus.cs"));
         expect(tracks.Contains("Header = \"Interactive Crop\"", StringComparison.Ordinal) && tracks.Contains("\"Reset Crop\"", StringComparison.Ordinal)
                && typeof(MainViewModel).GetMethod("CropInteractively") is not null && typeof(MainViewModel).GetMethod("ResetClipCrop") is not null,
             "Interactive Crop and Reset Crop are on a clip's menu (Transform, Sizing & Position > Crop), on the clip");

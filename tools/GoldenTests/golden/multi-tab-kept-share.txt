@@ -1,0 +1,6 @@
+# Frames kept for tabs behind hold only a share of the budget as it is now: a budget that falls leaves the front tab its room.
+ok: the kept frames' share: max(96 MB, an eighth of the budget), never above a quarter of it (24 MB of the 96 MB floor, 50 MB of 200 MB, 96 MB of 512 MB, 256 MB of 2 GB); the parks' cap is the same
+ok: five tabs behind keep their playhead's 4K frame each (59 MB, within the cap of a 512 MB budget)
+ok: the budget fallen to 64 MB: the frames no plan wants went first (their key frame too), then only the oldest tab's kept frame; four tabs behind still find their playhead
+ok: then, under four tabs' kept frames: the tab in front keeps all ten frames it decoded; the kept frames beyond the share went before them, the oldest tab's first
+ok: ten frames more: the kept frames held to the share of the budget as it is now (the tab in front holds the rest); the newest tab behind still finds its playhead

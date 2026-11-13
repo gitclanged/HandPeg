@@ -235,6 +235,14 @@ public partial class MainViewModel
     private IEnumerable<TimelineTrackModel> SoundLanesOf(TimelineTrackModel track) =>
         Document.Tracks.Where(t => t.Kind == TimelineTrackKind.Audio && t.ParentTrackId == track.Id);
 
+    /// <summary>
+    /// Whether a video track's row is heard at all (5.4.4-Final: its header's speaker only then): a sound lane under it with clips, or a clip
+    /// of its own with sound. A Cutout's, a mask's or a picture's track has none (the Cutout's sound is its source clip's, never its own).
+    /// </summary>
+    public bool RowHasOwnSound(Layer row) => TrackOfRow(row) is { } track
+        ? SoundLanesOf(track).Any(t => t.Clips.Count > 0) || track.Clips.Any(c => c.HasSound)
+        : row.CarriesSound;
+
     /// <summary>Whether all that a video track's row can be heard is muted: its clips' sound and the lanes under it.</summary>
     public bool IsRowSoundMuted(Layer row)
     {

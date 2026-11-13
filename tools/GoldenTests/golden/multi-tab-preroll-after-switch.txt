@@ -1,0 +1,6 @@
+# The first plan after a switch lets go only of the kept sources nothing asked for since; a pre-roll or a drop made after it stays.
+ok: the first plan after a switch: its pre-rolled file stays, the kept file nothing asked for since goes
+ok: the next pre-roll's new file, a kept file it named again, and a drop's file opened after the switch all stay (their decoders and frames kept)
+ok: only the first plan after a switch lets go of kept sources
+ok: ReleaseAll still lets go of everything
+ok: the engine's first SetState after a Suspend asks the broker for exactly that

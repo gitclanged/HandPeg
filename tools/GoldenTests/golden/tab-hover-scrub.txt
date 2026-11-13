@@ -1,0 +1,23 @@
+# A tab behind's hover card: scrubbed across its own width, held open across the gap under its tab, clicked to bring its tab to the front; nothing asked of the engine.
+ok: across a tab with its name (100 DIPs): 0 at its left, 0.5 at its middle, 1 at its right, held to 0 and 1 beyond (the whole Sequence)
+ok: across a narrowed tab (28 DIPs): an offset from its playhead, 0 at its middle, -0.0440 to +0.0440 at its edges (28 of a 318 DIP card: the picture moves as fast as across the card)
+ok: across the card (318 wide, or a tall project's 191): 0 at its left edge, 0.5 at its middle, 1 at its right edge, the whole Sequence; no width, nothing
+ok: along the Sequence: the card's or a named tab's value as it is; a narrowed tab's offset from the middle of its playhead's cell (cell 40 of 100: 0.405), held to 0 and 1, a playhead past the sheet at its last cell
+ok: the cell shown: a narrowed tab's middle shows the very picture its playhead is on (cell 40); the end the last cell (99), the start the first; no sheet, none
+ok: the card's scrub bar reaches where the pointer is across the card (half of a 318 DIP card at 0.5)
+ok: the card waits 260 ms after the pointer left its tab and itself (HoverFlyout's close delay)
+ok: tab, then the gap under it (100 ms, 160 to go), then the card: it stays open for as long as the pointer is on the card; off the card, it closes 260 ms later, not before
+ok: gliding from a tab to the next (the next one's enter right after the last one's leave) never closes it
+ok: off the tab and never onto the card: closed 260 ms later
+ok: from the card back onto the tab it stays; closed (Reset), nothing is held and nothing is due
+ok: ProjectTabStrip.xaml: HoverCard is a Popup that takes the pointer (no IsHitTestVisible False), and stays open on its own (StaysOpen)
+ok: its surface (HoverSurface, the card's outer border) hears the pointer come, go, move, press and release
+ok: the scrub is measured across the card's body (HoverBody, the card's width)
+ok: ProjectTabStrip.HoverScrubbed tells the tab, the value and whether it is about the tab's playhead
+ok: the card's move scrubs across the card as it is drawn now; a tab's move through TabScrub (narrowed: about its playhead, the card's width as its span)
+ok: a click on the card (pressed and let go on it) closes it and chooses its tab, as a click on the tab does: no seek; the press and release are the card's own (Handled)
+ok: every close that was at once still is (a press or a middle click on a tab, a drag, the right-click menu, the window let go, the tab in front entered), and stops the grace's timer
+ok: the grace's timer closes the card only when the pointer is on neither the tab nor the card; it is made the first time a card is left (nothing new before the first frame)
+ok: scrubbing shows a cell of the overview sheet already held, and asks nothing of the engine (no decode, no seek, no pre-warm: zero VRAM)
+ok: a thumbnail decoded late is given to the card only while it is not being scrubbed (never over a scrubbed picture)
+ok: the window still takes the strip's scrub with ScrubTabCard

@@ -311,7 +311,8 @@ public sealed class CompositorClient : IDisposable
     /// CompositorWorker.TrimEmptiesCache). Served between frames on the worker's next turn, but for handing the memory back to Windows
     /// (the driver's Trim and the heap: CompositorWorker.GiveBack), which waits until nothing has been asked of the worker for a quarter of a
     /// second and nothing plays, and is echoed then; a counted request, never lost to a later command. Returns the request's number for
-    /// <see cref="WaitForTrim"/>.
+    /// <see cref="WaitForTrim"/>. 5.4.4: a scene published after it (a tab switch) keeps the working set and the driver's allocations for
+    /// the tab in front (the worker's idle trim gives them back once the player has rested).
     /// </summary>
     public int TrimWorker()
     {
@@ -350,6 +351,19 @@ public sealed class CompositorClient : IDisposable
 
     /// <summary>The hardware's ceiling now (bytes): what Auto grows to at most.</summary>
     public long CacheCeilingBytes => Volatile.Read(ref _shared.Control.CacheCeilingBytes);
+
+    /// <summary>Whether the worker's card shares the PC's memory (5.4.4: ControlBlock.UnifiedMemory; false until the worker is Ready).</summary>
+    public bool UnifiedMemory => Volatile.Read(ref _shared.Control.UnifiedMemory) != 0;
+
+    /// <summary>
+    /// How the worker keeps the sources of a tab put behind (5.4.4: ControlBlock.TabParkingRequest): 0 as always, 1 the player's (lean on
+    /// unified memory or on battery), 2 lean always (the golden tests).
+    /// </summary>
+    public int TabParking
+    {
+        get => Volatile.Read(ref _shared.Control.TabParkingRequest);
+        set => Volatile.Write(ref _shared.Control.TabParkingRequest, value);
+    }
 
     /// <summary>Decode threads (0 automatic); read when a worker starts.</summary>
     public int DecodeThreads
