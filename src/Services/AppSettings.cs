@@ -181,6 +181,33 @@ public sealed partial class AppSettings
         return changed;
     }
 
+    /// <summary>
+    /// Gives the drop overlay's Game Presets (<see cref="SplashStylePresets"/>, by file name) that name one by its name before 5.5.0 the
+    /// new one (<see cref="LegacyPresetNames"/>), as the settings are read; saved with them the next time they are. Game Presets only
+    /// (Pass 5.5.2, the user's Q2): the Smart Rules and the default preset name Export Presets and are never mapped here. An entry that
+    /// maps onto a name already in the list is dropped, so the list keeps one of each in its order. Whether anything changed.
+    /// </summary>
+    public bool MapLegacyPresetNames()
+    {
+        if (SplashStylePresets is not { Count: > 0 } list)
+            return false;
+
+        var mapped = new List<string>(list.Count);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in list)
+        {
+            var now = LegacyPresetNames.Map(entry) ?? entry;
+            if (now is null || seen.Add(now.Trim()))
+                mapped.Add(now!);
+        }
+
+        if (mapped.SequenceEqual(list, StringComparer.Ordinal))
+            return false;
+
+        SplashStylePresets = mapped;
+        return true;
+    }
+
     /// <summary>When on, saving a preset also stores the Target File Size that is set at the time.</summary>
     public bool SaveTargetSizeInPresets { get; set; }
 
@@ -1090,6 +1117,7 @@ public sealed partial class AppSettings
 
                 foreach (var rule in settings.SmartRules)
                     rule.Normalize();
+                settings.MapLegacyPresetNames();
 
                 // The double-click's reset target as settings from before 5.2-AuditB named it.
                 if (settings.DoubleClickResetsTo == LegacyResetToPreset)

@@ -75,13 +75,15 @@ public sealed partial class GpuPreviewEngine : IDisposable
     // The display's refresh interval while playing (measured between the swap chain's turns), seconds.
     private double _refresh = 1 / 60.0;
 
-    private GpuPreviewEngine(CompositorClient client, WasapiAudioEngine audio, nint surface)
+    private GpuPreviewEngine(CompositorClient client, WasapiAudioEngine audio, nint surface, bool player)
     {
         (_client, _audio) = (client, audio);
 
         // The player's tabs put behind are parked lean on unified memory or on battery (5.4.4): asked of the worker and its standby alike
         // (they share the control block); strip, export, bench and test clients never ask.
-        client.TabParking = 1;
+        // 5.5.2: the Playback & A/V Sync Test's engine (player: false) has no tabs and never asks.
+        if (player)
+            client.TabParking = 1;
         _viewport = new GpuViewportControl(client, surface);
         _broker = new GpuResourceBroker(client);
 
@@ -98,11 +100,15 @@ public sealed partial class GpuPreviewEngine : IDisposable
 
         _pump = new Thread(Pump) { Name = "GPU frame pump", IsBackground = true, Priority = ThreadPriority.AboveNormal };
         _pump.Start();
-        Current = this;
+        if (player)
+            Current = this;
     }
 
     /// <summary>The engine the player runs on now (null while it is not started, or stopped): Settings' cache readout.</summary>
     public static GpuPreviewEngine? Current { get; private set; }
+
+    /// <summary>The swap chain it presents on (the Playback &amp; A/V Sync Test's sampler reads its frame statistics).</summary>
+    internal GpuViewportControl Viewport => _viewport;
 
     /// <summary>
     /// Starts the engine for a player surface: the worker and its standby (off the UI thread), the audio device, then the
@@ -110,19 +116,21 @@ public sealed partial class GpuPreviewEngine : IDisposable
     /// the reason in <see cref="LastStartFailure"/>: the player then says so and tries again (MainWindow.OnGpuFailed). On the
     /// card of Settings' Compositor GPU role, or on <paramref name="adapter"/> (a DXGI index: the processor's WARP after the
     /// card failed). Call after Frame 1.
+    /// <para><paramref name="player"/> false (Pass 5.5.2-Release, the Playback &amp; A/V Sync Test): an engine beside the player's, never
+    /// <see cref="Current"/>, with no standby worker, a small frame cache, no tab parking, and the card it draws on not taken for Auto's.</para>
     /// </summary>
-    public static async Task<GpuPreviewEngine?> StartAsync(nint surface, int? adapter = null)
+    public static async Task<GpuPreviewEngine?> StartAsync(nint surface, int? adapter = null, bool player = true)
     {
         var settings = AppSettings.Current;
         var card = adapter ?? settings.CompositorGpuAdapter;
-        var budget = settings.GpuFrameCacheMb switch { < 0 => -1L, 0 => 0L, var mb => (long)mb << 20 };
+        var budget = !player ? 64L << 20 : settings.GpuFrameCacheMb switch { < 0 => -1L, 0 => 0L, var mb => (long)mb << 20 };
         var threads = settings.GpuDecodeThreads;
         var started = await Task.Run(() =>
         {
             CompositorClient? client = null;
             try
             {
-                client = new CompositorClient(card, keepStandby: true, budget, threads, softwareDecode: !settings.PlayerHardwareAcceleration);
+                client = new CompositorClient(card, keepStandby: player, budget, threads, softwareDecode: !settings.PlayerHardwareAcceleration);
                 var clock = Stopwatch.StartNew();
                 while (client.State == CompositorWorkerState.Starting && clock.ElapsedMilliseconds < 8000)
                     Thread.Sleep(10);
@@ -137,7 +145,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
                 AppLog.Write(string.Create(System.Globalization.CultureInfo.InvariantCulture, $"GPU engine started in {clock.ElapsedMilliseconds} ms: {client.Message}"));
 
                 // The card it draws on is what Auto means for the background card (5.4.4: never a second card on its own). Not WARP's.
-                if (client.Memory.Control.IsSoftwareDevice == 0 && client.Memory.Control.AdapterIndex >= 0)
+                if (player && client.Memory.Control.IsSoftwareDevice == 0 && client.Memory.Control.AdapterIndex >= 0)
                     GpuAdapters.CompositorIndex = client.Memory.Control.AdapterIndex;
                 return (client, WasapiAudioEngine.Create(settings.AudioOutputDeviceId));
             }
@@ -150,7 +158,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
             }
         });
 
-        return started is { } parts ? new GpuPreviewEngine(parts.Item1, parts.Item2, surface) : null;
+        return started is { } parts ? new GpuPreviewEngine(parts.Item1, parts.Item2, surface, player) : null;
     }
 
     /// <summary>Raised on the pump's thread when playback reaches the end of the sequence (the engine is paused there).</summary>
@@ -570,12 +578,18 @@ public sealed partial class GpuPreviewEngine : IDisposable
 
     // ----- The frame pump -----
 
+    /// <summary>How long the playing pump last waited for the worker's frame, ms (Pass 5.5.2: AvSync's trace).</summary>
+    internal float LastFrameWaitMs;
+
     private void Pump()
     {
         var waits = _workerFrame is null ? new WaitHandle[] { _dirty, _stop } : new WaitHandle[] { _dirty, _stop, _workerFrame };
         var lastTurn = Stopwatch.GetTimestamp();
         var failedNoted = false;
         var (owedTurn, presentedLast) = (false, false);
+
+        // The monitor's refresh period, read as each play begins (Pass 5.5.2): where the play's refresh estimate starts and its bound.
+        var (monitorPeriod, playBegun) = (double.NaN, false);
         Span<GpuSeekHint> hints = stackalloc GpuSeekHint[CompositorProtocol.MaxHints];
         while (!_stop.WaitOne(0))
         {
@@ -605,6 +619,13 @@ public sealed partial class GpuPreviewEngine : IDisposable
 
                 if (_playing)
                 {
+                    if (!playBegun)
+                    {
+                        playBegun = true;
+                        monitorPeriod = _viewport.MonitorRefreshSeconds;
+                        _refresh = GpuViewportControl.StartRefresh(_refresh, monitorPeriod);
+                    }
+
                     // Paced by the swap chain: one frame queued at most, so what is drawn now is on screen one refresh on. A
                     // turn that presented nothing left the swap chain's event unset: the next turn does not wait for it. The
                     // refresh is measured only between two paced turns (a presented frame, then the swap chain's turn).
@@ -617,9 +638,10 @@ public sealed partial class GpuPreviewEngine : IDisposable
                     var interval = (now - lastTurn) / (double)Stopwatch.Frequency;
                     lastTurn = now;
                     // 1.5 ms up: a 500 Hz display is 2 ms a refresh (5.0-Verify: a floor of 4 ms left a 500 Hz display
-                    // measured at 1/60 s, the picture 15 ms ahead of the sound).
-                    if (paced && presentedLast && interval is > 0.0015 and < 0.05)
-                        _refresh = 0.9 * _refresh + 0.1 * interval;
+                    // measured at 1/60 s, the picture 15 ms ahead of the sound). A turn over 1.5 of the monitor's refresh is a stall, not
+                    // a refresh, and is left out (5.5.2: a cold play's 37-52 ms turns took a 500 Hz estimate to ~18 ms, the frames that far ahead).
+                    if (paced && presentedLast)
+                        _refresh = GpuViewportControl.NextRefresh(_refresh, interval, monitorPeriod);
                     presentedLast = false;
 
                     if (_primingSince != 0 && PlayStartReady(_client, _primingSince, _primingScene))
@@ -634,15 +656,17 @@ public sealed partial class GpuPreviewEngine : IDisposable
 
                     // Drawing ahead (5.4.4-Final, the user's Q2 a; unified memory, the XPS): the frame drawn during the last refresh shown now,
                     // and the next one handed to the worker at once, drawn while this one is on the screen (DrawAheadTurn).
+                    // A stalled turn (a cold play's first second) measures no lead: its frame's long way to the screen is not the display's (5.5.2).
+                    var origin = GpuViewportControl.LeadOrigin(now, interval, monitorPeriod, _refresh);
                     if (DrawsAhead)
                     {
-                        DrawAheadTurn(plan, now, hints, ref owedTurn, ref presentedLast);
+                        DrawAheadTurn(plan, origin, hints, ref owedTurn, ref presentedLast);
                         continue;
                     }
 
                     // The frame is drawn for the moment it will be on the screen (5.4.4-Final, the user's Q4 a): the swap chain's measured lead
                     // from this turn to the vblank that shows it (GpuViewportControl.DisplayLeadSeconds), else one refresh as before.
-                    _viewport.FrameOrigin = now;
+                    _viewport.FrameOrigin = origin;
                     var at = _audio.Position + GpuViewportControl.PlayingLead(_refresh, _viewport.DisplayLeadSeconds) * Math.Max(_rate, 0);
                     if (_rate >= 0 && at >= plan.SequenceSeconds - 1e-3 || _rate < 0 && at <= 0)
                     {
@@ -661,7 +685,9 @@ public sealed partial class GpuPreviewEngine : IDisposable
                     if (frame == _lastPlayedFrame && frame != long.MinValue && Volatile.Read(ref _sceneDirty) == 0 && !moved)
                     {
                         // The frame drawn last presented again (a copy, no render): the swap chain keeps its beat, so the
-                        // next turn wakes at the next refresh and a new frame is on screen at the first one after its time.
+                        // next turn wakes at the next refresh and a new frame is on screen at the first one after its time. A copy measures no
+                        // lead (5.5.2): it waits for no draw, and the lead is what a new frame takes to the screen.
+                        _viewport.FrameOrigin = 0;
                         var kept = _viewport.PresentNewest(vsync: true, force: true);
                         (owedTurn, presentedLast) = (!kept, kept);
                         PresentMirrors();
@@ -676,8 +702,10 @@ public sealed partial class GpuPreviewEngine : IDisposable
 
                     // The cuts ahead (rewritten only when one is passed or another comes into the horizon).
                     LeaveHints(plan, at, playing: true, hints);
+                    var waitStarted = Stopwatch.GetTimestamp();
                     if (sequence > 0)
                         CountFrame(late: NoteFrame(!_client.WaitForFrame(sequence, Math.Max(12, (int)(_refresh * 1000)))));
+                    LastFrameWaitMs = (float)Stopwatch.GetElapsedTime(waitStarted).TotalMilliseconds;
                     owedTurn = !(_viewport.PresentNewest(vsync: true) || _viewport.PresentNewest(vsync: true, force: true));
                     presentedLast = !owedTurn;
                     PresentMirrors();
@@ -685,6 +713,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
                 }
 
                 _lastPlayedFrame = long.MinValue;
+                playBegun = false;
                 _viewport.FrameOrigin = 0; // (a paused present measures no lead: its frame's moment is not a turn's)
                 _aheadSequence = 0; // (a frame drawn ahead for a play that stopped is never shown)
 

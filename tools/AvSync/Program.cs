@@ -15,7 +15,8 @@ namespace HandPegApp.Tools.AvSync;
 /// real time instead, through a real GpuPreviewEngine and its WASAPI clock, in the steps the app takes (a seek while paused
 /// then Play, a seek while playing, a change of speed, Loop's wrap), and compares each frame put on the screen with the
 /// sound being heard then. No window is shown: the worker draws off screen, and the session's player is a window off the
-/// desktop that never takes the focus.
+/// desktop that never takes the focus (with --onscreen, Pass 5.5.2-Release, a 320x180 one in a corner of the main screen, so
+/// DXGI reports when each frame was shown). "calibrate" runs the app's own Playback &amp; A/V Sync Test on such a window.
 /// </summary>
 internal static class Program
 {
@@ -38,7 +39,8 @@ internal static class Program
             {
                 "test" => Test(options),
                 "session" => Session.Run(options),
-                _ => throw new ArgumentException($"Unknown mode: {options.Mode} (test or session)."),
+                "calibrate" => Calibrate(),
+                _ => throw new ArgumentException($"Unknown mode: {options.Mode} (test, session or calibrate)."),
             };
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or IOException or TimeoutException)
@@ -131,6 +133,29 @@ internal static class Program
         Console.WriteLine(failed == 0 ? $"PASS: every point within {tolerance:0.#} ms." : $"FAIL: {failed} of {results.Count} points outside {tolerance:0.#} ms.");
         Console.WriteLine(off == 0 ? $"Nominal: every point within {nominal:0.0#} ms." : $"Not nominal: {off} of {results.Count} points {nominal:0.0#} ms or more off.");
         return failed == 0 && results.Count > 0 ? 0 : 1;
+    }
+
+    /// <summary>
+    /// "calibrate" (Pass 5.5.2-Release): the app's own Playback &amp; A/V Sync Test (PlaybackSyncTest.RunAsync, what the first-run window and
+    /// Settings run) on a 320x180 window in a corner of the main screen, never activated; no project, no settings written. Prints every step.
+    /// </summary>
+    private static int Calibrate()
+    {
+        _ = System.Windows.Application.Current ?? new System.Windows.Application { ShutdownMode = System.Windows.ShutdownMode.OnExplicitShutdown };
+        SynchronizationContext.SetSynchronizationContext(new System.Windows.Threading.DispatcherSynchronizationContext(System.Windows.Threading.Dispatcher.CurrentDispatcher));
+        using var window = OffscreenWindow.Create(320, 180, onscreen: true);
+        var running = PlaybackSyncTest.RunAsync(window.Handle, null, CancellationToken.None);
+        if (!ProjectSession.WaitUntil(() => running.IsCompleted, TimeSpan.FromSeconds(90)))
+            throw new TimeoutException("The Playback & A/V Sync Test did not end within 90 s.");
+        var result = running.GetAwaiter().GetResult();
+
+        Console.WriteLine($"Playback & A/V Sync Test: sound {(result.AudioDevice.Length > 0 ? result.AudioDevice : "no device (the processor's counter)")}, refresh {result.RefreshHz:0.##} Hz, "
+                          + $"display lead {(result.DisplayLeadMs is { } lead ? $"{lead:0.###} ms" : "not measured")}, {(result.FrameStatistics ? "DXGI frame statistics" : "DWM's grid assumed")}.");
+        Console.WriteLine("step   frames   median (ms)   worst (ms)   off   dropped   sync   smooth");
+        foreach (var step in result.Steps)
+            Console.WriteLine($"{step.Name,-5}  {step.Frames,6}   {step.MedianMs,11:+0.00;-0.00;0.00}  {step.WorstMs,11:+0.00;-0.00;0.00}  {step.Off,4}  {step.Dropped,8}   {(step.InSync ? "PASS" : "FAIL"),-4}   {(step.Smooth ? "PASS" : "FAIL")}");
+        Console.WriteLine($"{(result.Passed ? "PASS" : "FAIL")}: {PlaybackSyncTest.Summary(result)}");
+        return result.Passed ? 0 : 1;
     }
 
     private static string Row(bool proxies, PointResult r, GpuRun run, double tolerance)

@@ -1,0 +1,13 @@
+# A closed sound stack's one bar keeps its waveform inside it while its video clip is dragged, and after it is let go.
+the closed stack's bar: 8 DIPs tall, 83.2 DIPs a second
+ok: the video's sound stack is closed: its lane is one thin bar
+ok: before the drag: each stream's wave in the bar where its clip is (1 to 3 s, 7 to 8.5 s), none between
+dragged 3 s: the stream's block at 4 s
+ok: the stream's block went with its clip (to 4 s)
+ok: its bar is drawn where it is now (4 to 6 s)
+ok: and its wave with it, inside the bar (4 to 6 s)
+ok: no wave is left where the clip was (1 to 3 s): the user's bug, the wave staying at its time before the drag
+ok: the other clip's stream on the same lane keeps its wave where it is (7 to 8.5 s)
+ok: let go, the drag is over
+ok: the wave lies inside its bar, across it (4 to 6 s): nothing offset after the let-go
+ok: and still none where the clip was

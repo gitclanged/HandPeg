@@ -34,7 +34,10 @@ public sealed partial class GpuPreviewEngine
     /// </summary>
     internal static double AheadLead(double refresh, double measured) => GpuViewportControl.PlayingLead(2 * refresh, measured);
 
-    /// <summary>One playing turn while drawing ahead: the frame drawn during the last refresh presented, then the next one handed over.</summary>
+    /// <summary>
+    /// One playing turn while drawing ahead: the frame drawn during the last refresh presented, then the next one handed over. <paramref name="now"/>
+    /// is the turn's lead origin (its QPC, or 0 for a stalled turn: GpuViewportControl.LeadOrigin).
+    /// </summary>
     private void DrawAheadTurn(GpuScenePlan plan, long now, Span<GpuSeekHint> hints, ref bool owedTurn, ref bool presentedLast)
     {
         // 1. On the screen now: the frame handed over on the last turn (waited for at most a refresh: the worker had the refresh between),

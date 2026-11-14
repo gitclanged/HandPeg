@@ -26,9 +26,9 @@
     <Product>HandPeg</Product>
     <AssemblyTitle>HandPeg</AssemblyTitle>
     <Company>HandPeg</Company>
-    <Version>5.5.0</Version>
-    <AssemblyVersion>5.5.0.0</AssemblyVersion>
-    <FileVersion>5.5.0.0</FileVersion>
+    <Version>5.5.2</Version>
+    <AssemblyVersion>5.5.2.0</AssemblyVersion>
+    <FileVersion>5.5.2.0</FileVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
 
     <!-- Native, small, quick to start: no stack trace data, no globalization data, resource keys for messages, no background GC thread. -->

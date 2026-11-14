@@ -180,6 +180,9 @@ public partial class FirstRunWindow
     private void SetMeasuring(bool measuring)
     {
         _measuring = measuring;
+
+        // 5.5.2: the Playback & A/V Sync Test waits for the quick check (both would measure the same cards at once).
+        SyncTestCard.BlockedBy = measuring ? "Waits for the hardware check" : null;
         if (!_closed && _profile is { } shown)
             ShowProfile(shown, again: true);
     }

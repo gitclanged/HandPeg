@@ -1,0 +1,26 @@
+# The Playback & A/V Sync Test's figures, words, sequence and kept result (5.5.2).
+ok: 120 frames a frame apart, A/V within 1.1 ms: median 0, worst +1.1, 0 dropped, in sync and smooth
+ok: one frame skipped in 120: 1 dropped, still smooth (one in a hundred)
+ok: three skipped (one, then two at once): 3 dropped, not smooth, still in sync
+ok: 2x on a 50 Hz display moving two frames at times: allowed (2), nothing dropped
+ok: one frame 16.2 ms ahead of the sound (15 ms): 1 off, a hitch; still in sync and smooth (one in a hundred)
+ok: a frame two refreshes late and one dropped: in sync, 2 hitches in 120, not smooth; the worst kept with its sign
+ok: 7 frames of 120 off (more than one in twenty): out of sync
+ok: every frame 20 ms ahead: out of sync by its median
+ok: nine frames: too few to say either way
+ok: allowed steps: 60 Hz 1x 1, 60 Hz 2x 1 (exactly a frame a refresh), 50 Hz 2x 2, 500 Hz 2x 1, 144 Hz 2x 1, unknown 1, 25 Hz 1x 2 (1,1,2,1,1,1,2)
+ok: a clean run: "In sync · worst 1.1 ms · 0 dropped · 60 Hz"
+ok: out of sync: "Out of sync at 2x · median +24.0 ms · 500 Hz"
+ok: out of sync, frames off: "Out of sync at 1x · 7 frames off"
+ok: stutters, refresh unknown: "Stutters at 1x · 3 hitches"
+ok: a frame late and one dropped at 2x, passing: "In sync · 2 hitches · 60 Hz"
+ok: a run that could not start says why, and has not passed
+ok: the tooltip's detail: every step's figures, the display lead, how frames were known shown
+ok: the sequence: 1280x720 at 30 fps, one 24 s title clip, no file
+ok: the title moves every second (25 keys, each to the other side): every frame presented is a new frame
+ok: lowered, nothing reads a file
+ok: steps Play, 2x, 1x end 18.6 s into the 24 s sequence; the run is 14.7 s plus the player's start (under a minute)
+ok: the result written to the settings file and read back whole (every step)
+ok: Passed is worked out, never written; settings without a test hold none
+ok: lead origins: 500 Hz turns of 2 and 2.9 ms kept, 3.1 and 32 ms stalls; 60 Hz 16.7 kept, 34 ms a stall; monitor unknown: by the estimate; a play's first turn none (1000,1000,0,0,1000,0,1000,0,0)
+ok: GpuPreviewEngine.StartAsync(surface, adapter, player = true): the player's callers unchanged, the test's engine asks player: false

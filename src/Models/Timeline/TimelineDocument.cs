@@ -907,6 +907,10 @@ public sealed class TimelineDocument : IJsonOnDeserialized
 
     void IJsonOnDeserialized.OnDeserialized()
     {
+        // A Track Preset Node naming a Game Preset by its name before 5.5.0 takes the new one (Pass 5.5.1, the user's Q2(b)).
+        foreach (var track in Tracks)
+            track.PresetNodeName = HandPegApp.Services.LegacyPresetNames.Map(track.PresetNodeName);
+
         if (_tethersMarkedRead)
             return;
 

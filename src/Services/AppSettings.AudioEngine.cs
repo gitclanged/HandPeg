@@ -22,6 +22,12 @@ public sealed partial class AppSettings
     /// </summary>
     public double AudioSyncOffsetMs { get; set; }
 
+    /// <summary>
+    /// The last Playback &amp; A/V Sync Test's result (Pass 5.5.2-Release: the first-run window's second screen, Settings > Export &amp; Hardware >
+    /// GPU &amp; NPU Roles; PlaybackSyncTest); null never run. A measurement, not a choice: nothing reads it to play.
+    /// </summary>
+    public PlaybackSyncResult? LastPlaybackSyncTest { get; set; }
+
     // ----- Audio beats (Pass 5.2B): Detect & Snap to Audio Beats (BeatDetector, TimelineClip.BeatTimes) -----
 
     /// <summary>A clip's detected beats are among the times the Timeline snaps to (on by default; a file without the setting reads it on).</summary>

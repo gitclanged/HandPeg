@@ -308,6 +308,10 @@
                                       AutomationProperties.Name="GPU and NPU Roles" />
                         <TextBlock Style="{StaticResource MutedText}" FontSize="11.5" Margin="0,4,0,0"
                                    Text="The full test (seeking, accuracy, every card and the bus between two) is Test &amp; Auto-Tune Hardware in Settings › Export &amp; Hardware." />
+
+                        <!-- 5.5.2 (the user's Q2): the optional Playback & A/V Sync Test, kept by Start Editing (Finish) -->
+                        <TextBlock Text="Playback &amp; A/V Sync" Style="{StaticResource SectionTitle}" Margin="0,14,0,6" />
+                        <local:PlaybackSyncCard x:Name="SyncTestCard" />
                     </StackPanel>
 
                     <!-- The defaults every export starts with, and what happens on closing and after a failed hardware encode. -->

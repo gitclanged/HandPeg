@@ -1,0 +1,27 @@
+# The Cutout Studio's wheel and shortcuts (Pass 5.5.1): a touchpad's two-finger scroll pans, a mouse's wheel and a pinch zoom; the instructions are a card behind a '?'.
+ok: a mouse's notches (120, -240), Windows saying nothing of a touchpad and none just before: a mouse's wheel
+ok: a whole notch Windows says came from a touchpad (IMDT_TOUCHPAD): a touchpad's
+ok: no whole number of notches (37, -8), whatever Windows says: a touchpad's two-finger scroll
+ok: a whole notch within 250 ms of a touchpad's scroll: the same gesture, still a touchpad's
+ok: a touchpad's scroll with no key pans up and down
+ok: a touchpad's pinch (Ctrl + the wheel) zooms
+ok: a mouse's wheel zooms, with Ctrl or without
+ok: Shift + the wheel pans sideways, a mouse's or a touchpad's
+ok: two fingers down half a notch (-60): the picture moves up 48 pixels, as a page scrolls, its zoom kept
+ok: and back up: where it was
+ok: a touchpad's pinch spread apart (Ctrl + 30) zooms in
+ok: a wheel event of -40 (no whole notch: a touchpad's) pans 32 pixels, its zoom kept
+ok: a whole notch straight after it (the same gesture) pans 96 pixels back the other way
+ok: a notch once the touchpad's gesture is long over: a mouse's wheel, which zooms
+ok: no help paragraph is left in the window (no TextBlock of more than 120 characters, none of the old instructions)
+ok: the '?' sits right after Fit and 100%
+ok: its tooltip is 12 words at most ("Keyboard and mouse shortcuts")
+ok: the card has 8 rows (8 at most), each named in 4 words at most, with its keys
+ok: the card is closed as the window opens
+ok: a click opens it, placed by UiScale.PlaceAgainst (a custom placement from the window's content, never Relative or Bottom)
+ok: on the inspector card's surface (#1E1E22) with its 1 px border (#2A2A30), both brushes frozen
+ok: a name and its keys a row (16 words in all)
+ok: a press elsewhere in the window closes it
+ok: the pointer on the '?' opens it, not pinned (it closes as the pointer leaves)
+ok: a click on the '?' while hovering keeps it open (pinned)
+ok: clicked again it closes

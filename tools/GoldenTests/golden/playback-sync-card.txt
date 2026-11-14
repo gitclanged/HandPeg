@@ -1,0 +1,16 @@
+# The Playback & A/V Sync Test's card on the first-run window, run by a stand-in (5.5.2).
+ok: Screen 2 shows Test Playback & A/V Sync and the user's line about it
+ok: before a run: no picture, no progress, no result line
+ok: pressed: the small picture shows, and the run is given its native window (the swap chain's)
+ok: while it runs: Cancel Test, the progress at half, the step said
+ok: done: the result in a few words ("In sync · worst 1.1 ms · 0 dropped · 60 Hz"), every step's figures in its tooltip
+ok: the picture and the progress go, the button is itself again; RunningChanged twice, Completed once
+ok: the first-run window holds the result for Start Editing (Finish)
+ok: Cancel Test stops it: "Test cancelled", nothing raised, the window keeps the last result
+ok: a run that could not start says why and is not kept
+ok: while the quick hardware check measures, the button waits ("Waits for the hardware check") and nothing runs
+ok: the check done, it can run again
+ok: Back to Screen 1 while it runs: the test stops
+ok: opened again, the last result kept: "Last test: In sync · worst 2.0 ms · 0 dropped · 144 Hz" (not written again unless a new one is made)
+ok: Settings keeps a result in its own copy and in the settings in effect, saved at once (whether Settings is then saved or cancelled)
+ok: Start Editing (Finish) stops a test running and writes the window's result with the other choices

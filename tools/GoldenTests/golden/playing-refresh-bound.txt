@@ -1,0 +1,11 @@
+# The playing pump's refresh estimate starts at the monitor's and leaves out stalled turns; copies measure no display lead (5.5.2).
+ok: a play starts its estimate at the monitor's refresh when it is off by more than half (1/60 on a 500 Hz display, and back)
+ok: an estimate near the monitor's, or a monitor that cannot be told, is kept
+after a cold play's stalls: 2 ms bounded, 11.844 ms as before 5.5.2
+ok: turns over 1.5 refreshes are stalls and leave the 500 Hz estimate at 2 ms
+ok: unbounded (5.4.4-5.5.1, or a monitor not told) the same turns pull it past 8 ms: the frames drawn that far ahead
+ok: a turn near the monitor's refresh still moves the estimate (the average as before)
+ok: under 1.5 ms or over 50 ms counts for nothing (as before)
+ok: a playing copy of the frame shown last is presented with no origin: it measures no display lead
+ok: MeasureLead keeps only new frames' presents, and asks the swap chain after every present (copies included)
+ok: the pump starts each play at the monitor's refresh and bounds every turn it measures

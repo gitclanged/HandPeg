@@ -9,7 +9,8 @@ namespace HandPegApp.Tools.AvSync;
 
 /// <summary>
 /// The player in real time (Pass 5.0-Verify): a real <see cref="GpuPreviewEngine"/> (its compositor worker, its frame pump,
-/// its swap chain on a window of the harness's own, off the desktop, never shown on any screen nor activated) and its
+/// its swap chain on a window of the harness's own, off the desktop, never shown on any screen nor activated; with --onscreen, a small
+/// one in a corner of the main screen, still never activated) and its
 /// <see cref="Services.Audio.WasapiAudioEngine"/> on the sound device Settings name (muted unless --audible: the clock runs
 /// all the same), driven through the steps the app takes:
 ///   paused - a seek while paused, the paused settle (300 ms), then Play;
@@ -41,7 +42,11 @@ internal static class Session
         project.UseProxies(proxies);
         var state = project.State();
 
-        using var window = OffscreenWindow.Create((int)options.Number("width", 1280), (int)options.Number("height", 720));
+        // --onscreen (Pass 5.5.2-Release): a 320x180 window in a corner of the main screen, never activated, so DXGI reports when each frame
+        // was really shown (frame statistics) and the pump's measured display lead (GpuViewportControl.MeasureLead) runs as it does in the app.
+        var onscreen = options.Has("onscreen");
+        using var window = OffscreenWindow.Create((int)options.Number("width", onscreen ? 320 : 1280), (int)options.Number("height", onscreen ? 180 : 720), onscreen);
+        Console.WriteLine(onscreen ? "Player window: on screen (320x180, bottom-right corner, never activated)." : "Player window: off screen.");
         var starting = GpuPreviewEngine.StartAsync(window.Handle);
         if (!ProjectSession.WaitUntil(() => starting.IsCompleted, TimeSpan.FromSeconds(30)) || starting.Result is not { } engine)
             throw new InvalidOperationException($"The GPU engine did not start: {GpuPreviewEngine.LastStartFailure}");
@@ -97,6 +102,17 @@ internal static class Session
                 {
                     engine.Seek(at + 20);
                     Measured("seek", at + 20);
+                }
+
+                // A short sequence (Pass 5.5.2: the 11.6 s quick-cut edit with --measure 10): the paused step played almost to its end, and
+                // 2x began there, playing into the end at once (2 or 3 frames measured). Back to where the step began first, still playing
+                // at 1x (a seek while playing, settled), so the rate still changes mid-play.
+                if (engine.Position + 2 * (measure + 0.4) > length - 0.5 || !engine.IsPlaying)
+                {
+                    engine.Seek(at);
+                    if (!engine.IsPlaying)
+                        engine.Play();
+                    Idle(0.3);
                 }
 
                 engine.Rate = 2;
@@ -195,6 +211,9 @@ internal static class Session
         private readonly GpuPreviewEngine _engine;
         private readonly Func<long> _presents;
         private readonly Func<nint> _swapChain;
+        private readonly Func<float> _turnMs, _copyMs, _presentMs, _frameWaitMs;
+        private readonly Func<int> _presentHr;
+        private readonly Func<double> _lead;
         private readonly Thread _thread;
         private volatile bool _stop;
 
@@ -229,6 +248,11 @@ internal static class Session
             public int Rendered, Opens, Busy, Exact, Ahead, DrawDecodes;
             public float CpuMs, GpuMs, AcquireMs, DrawMs, FlushMs;
             public double Heard;
+
+            // The pump's last turn (Pass 5.5.2): its swap-chain turn wait, wait for the worker's frame, back-buffer copy and Present call (ms),
+            // Present's HRESULT, and the display lead it drew for (DisplayLeadSeconds, ms; NaN unknown).
+            public float TurnMs, FrameWaitMs, CopyMs, PresentMs, LeadMs;
+            public int PresentHr;
         }
 
         private Sampler(GpuPreviewEngine engine)
@@ -239,6 +263,18 @@ internal static class Session
             var self = Expression.Constant(viewport);
             _presents = Expression.Lambda<Func<long>>(Expression.Property(self, viewport.GetType().GetProperty("Presents")!)).Compile();
             _swapChain = Expression.Lambda<Func<nint>>(Expression.Field(self, viewport.GetType().GetField("_swapChain", BindingFlags.NonPublic | BindingFlags.Instance)!)).Compile();
+            static Func<T> Member<T>(ConstantExpression owner, string name)
+            {
+                const BindingFlags Any = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+                var type = owner.Value!.GetType();
+                Expression member = type.GetField(name, Any) is { } field ? Expression.Field(owner, field)
+                    : Expression.Property(owner, type.GetProperty(name, Any) ?? throw new MissingMemberException(type.Name, name));
+                return Expression.Lambda<Func<T>>(member).Compile();
+            }
+
+            (_turnMs, _copyMs, _presentMs, _presentHr, _lead) = (Member<float>(self, "LastTurnMs"), Member<float>(self, "LastCopyMs"),
+                Member<float>(self, "LastPresentCallMs"), Member<int>(self, "LastPresentHr"), Member<double>(self, "DisplayLeadSeconds"));
+            _frameWaitMs = Member<float>(Expression.Constant(engine), "LastFrameWaitMs");
             _thread = new Thread(Run) { IsBackground = true, Name = "A/V sampler", Priority = ThreadPriority.Highest };
         }
 
@@ -344,6 +380,8 @@ internal static class Session
                         Seeks = control.DecoderSeeks, Decoded = control.DecodedFrames, Approximate = control.ApproximatePresents, Misses = control.CacheMisses,
                         Exact = control.PresentedExact, Ahead = control.PresentedAhead, Heard = _engine.IsPlaying ? _engine.Audio.Position : double.NaN,
                         AcquireMs = control.LastAcquireMs, DrawMs = control.LastDrawMs, FlushMs = control.LastFlushMs, DrawDecodes = control.LastDrawDecodes,
+                        TurnMs = _turnMs(), FrameWaitMs = _frameWaitMs(), CopyMs = _copyMs(), PresentMs = _presentMs(), PresentHr = _presentHr(),
+                        LeadMs = (float)(_lead() * 1000),
                     };
                 }
 
@@ -396,12 +434,12 @@ internal static class Session
 
             // The pipeline's turns, on the same clock.
             using var trace = new StreamWriter(Path.ChangeExtension(path, ".trace.csv"));
-            trace.WriteLine("ms,published,rendered,presented_seq,presents,worker_cpu_ms,worker_gpu_ms,busy_lanes,opens,seeks,decoded,approximate,misses,exact,ahead,heard_s,acquire_ms,draw_ms,flush_ms,draw_decodes");
+            trace.WriteLine("ms,published,rendered,presented_seq,presents,worker_cpu_ms,worker_gpu_ms,busy_lanes,opens,seeks,decoded,approximate,misses,exact,ahead,heard_s,acquire_ms,draw_ms,flush_ms,draw_decodes,turn_ms,frame_wait_ms,copy_ms,present_ms,present_hr,lead_ms");
             for (var i = 0; i < _traced; i++)
             {
                 var row = _trace[i];
                 trace.WriteLine(string.Create(CultureInfo.InvariantCulture,
-                    $"{Ms(row.Ticks - origin):0.000},{row.Published},{row.Rendered},{row.PresentedSequence},{row.Presents},{row.CpuMs:0.###},{row.GpuMs:0.###},{row.Busy},{row.Opens},{row.Seeks},{row.Decoded},{row.Approximate},{row.Misses},{row.Exact},{row.Ahead},{row.Heard:0.000000},{row.AcquireMs:0.###},{row.DrawMs:0.###},{row.FlushMs:0.###},{row.DrawDecodes}"));
+                    $"{Ms(row.Ticks - origin):0.000},{row.Published},{row.Rendered},{row.PresentedSequence},{row.Presents},{row.CpuMs:0.###},{row.GpuMs:0.###},{row.Busy},{row.Opens},{row.Seeks},{row.Decoded},{row.Approximate},{row.Misses},{row.Exact},{row.Ahead},{row.Heard:0.000000},{row.AcquireMs:0.###},{row.DrawMs:0.###},{row.FlushMs:0.###},{row.DrawDecodes},{row.TurnMs:0.###},{row.FrameWaitMs:0.###},{row.CopyMs:0.###},{row.PresentMs:0.###},0x{row.PresentHr:X8},{row.LeadMs:0.###}"));
             }
         }
 

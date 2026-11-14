@@ -99,6 +99,23 @@ internal sealed unsafe partial class GpuViewportControl : IDisposable
     /// <summary>Frames presented on the screen (diagnostics).</summary>
     public long Presents { get; private set; }
 
+    // The Playback & A/V Sync Test's sampler (5.5.2) reads the swap chain from a thread of its own: the pump lets it go only under this gate.
+    private readonly object _statisticsGate = new();
+
+    /// <summary>The swap chain's last present count, 0 none (any thread: the sampler's; never while the pump lets the swap chain go).</summary>
+    internal uint SampleLastPresentCount()
+    {
+        lock (_statisticsGate)
+            return Dxgi.LastPresentCount(Volatile.Read(ref _swapChain));
+    }
+
+    /// <summary>The present shown at the last vblank and that vblank's QPC (any thread, as <see cref="SampleLastPresentCount"/>); false none.</summary>
+    internal bool SampleFrameStatistics(out uint presentCount, out long syncQpc)
+    {
+        lock (_statisticsGate)
+            return Dxgi.FrameStatistics(Volatile.Read(ref _swapChain), out presentCount, out syncQpc);
+    }
+
     // The scene (its sequence number) in the frame last handed to IDXGISwapChain::Present (5.4.3): what is on the screen, not only drawn.
     private long _presentedSequence;
 
@@ -123,11 +140,18 @@ internal sealed unsafe partial class GpuViewportControl : IDisposable
     /// </summary>
     public void WaitForTurn(int milliseconds)
     {
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
         if (_waitable == 0 || _nothingQueued)
             Thread.Sleep(Math.Min(milliseconds, 16));
         if (_waitable != 0)
             _ = _turns.Wait(_takeTurn, milliseconds);
+        LastTurnMs = (float)System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
     }
+
+    // Pass 5.5.2 (the A/V bisect): how long the pump's last turn wait, back-buffer copy and IDXGISwapChain::Present call took, and what Present
+    // returned, for AvSync's trace (read by reflection; a few counter reads a frame).
+    internal float LastTurnMs, LastCopyMs, LastPresentCallMs;
+    internal int LastPresentHr;
 
     // One turn of the frame-latency object, waited for at most that long (5.4.4: FrameLatencyTurns' wait).
     private bool TakeTurn(int milliseconds) => _waitable != 0 && WaitForSingleObject(_waitable, (uint)milliseconds) == 0;
@@ -173,7 +197,10 @@ internal sealed unsafe partial class GpuViewportControl : IDisposable
             {
                 if (_backRtv == 0)
                     _backRtv = device.Device.CreateRenderTargetView(back);
-                if (!_reader.CopyPresentedCentered(back, _backRtv, width, height, 8))
+                var copyStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+                var copied = _reader.CopyPresentedCentered(back, _backRtv, width, height, 8);
+                LastCopyMs = (float)System.Diagnostics.Stopwatch.GetElapsedTime(copyStarted).TotalMilliseconds;
+                if (!copied)
                 {
                     // A capture's frame (read back, 5.4.1A): seen, never shown; the player's next frame follows it.
                     if (_reader.SkippedReadback)
@@ -187,7 +214,9 @@ internal sealed unsafe partial class GpuViewportControl : IDisposable
             }
 
             (_framesSeen, _generationSeen) = (frames, generation);
+            var presentStarted = System.Diagnostics.Stopwatch.GetTimestamp();
             var hr = Dxgi.Present(_swapChain, vsync ? 1u : 0u, 0);
+            (LastPresentCallMs, LastPresentHr) = ((float)System.Diagnostics.Stopwatch.GetElapsedTime(presentStarted).TotalMilliseconds, hr);
             if (Com.IsDeviceLost(hr))
             {
                 DropSwapChain();
@@ -241,23 +270,26 @@ internal sealed unsafe partial class GpuViewportControl : IDisposable
     /// </summary>
     public double DisplayLeadSeconds => Volatile.Read(ref _displayLead);
 
-    // After a vsync'd present: its count and the turn that made it kept; the swap chain asked which present the last vblank showed.
+    // After a vsync'd present: its count and the turn that made it kept when it has one (a new frame: FrameOrigin set); the swap chain asked
+    // which present the last vblank showed after every one. Pass 5.5.2: only new frames are kept. On the 500 Hz Desktop seven presents in
+    // eight are copies of a 60 fps timeline's frame (no draw, no wait for the worker), so a median over every present measured the copies'
+    // lead and left out the draw the new frames wait for: those were drawn for a moment a few ms too soon (1x median -4 ms, worst -24).
     private void MeasureLead()
     {
-        if (FrameOrigin == 0)
-            return;
         var id = Dxgi.LastPresentCount(_swapChain);
-        if (id == 0)
-            return;
-        _leadIds[_leadNext] = id;
-        _leadOrigins[_leadNext] = FrameOrigin;
-        _leadNext = (_leadNext + 1) % LeadRing;
+        if (id != 0 && FrameOrigin != 0)
+        {
+            _leadIds[_leadNext] = id;
+            _leadOrigins[_leadNext] = FrameOrigin;
+            _leadNext = (_leadNext + 1) % LeadRing;
+        }
+
         if (!Dxgi.FrameStatistics(_swapChain, out var shown, out var shownAt) || shown == _leadSeen)
             return;
         _leadSeen = shown;
         for (var i = 0; i < LeadRing; i++)
         {
-            if (_leadIds[i] != shown)
+            if (_leadIds[i] != shown || _leadOrigins[i] == 0)
                 continue;
             if (LeadOf(_leadOrigins[i], shownAt, System.Diagnostics.Stopwatch.Frequency) is { } lead)
             {
@@ -292,6 +324,18 @@ internal sealed unsafe partial class GpuViewportControl : IDisposable
     /// </summary>
     internal static double PlayingLead(double refresh, double measured) =>
         double.IsFinite(measured) && measured >= refresh && measured <= 0.1 ? measured : refresh;
+
+    /// <summary>
+    /// The origin a playing turn gives its frame's lead (pure, Pass 5.5.2-Release): the turn's QPC, or 0 (no lead measured) when the turn is a
+    /// stall, longer than 1.5 of the monitor's refresh (else of the pump's estimate). On the 500 Hz Desktop, with the player on screen (real
+    /// frame statistics: AvSync --onscreen), a cold play's first second turns every 20-60 ms and its frames reach the screen 50-60 ms after
+    /// their turn; those leads filled the median, and once the pipeline drained the frames were drawn 57-61 ms ahead of the sound.
+    /// </summary>
+    internal static long LeadOrigin(long now, double interval, double monitorPeriod, double refresh)
+    {
+        var period = double.IsFinite(monitorPeriod) && monitorPeriod > 0 ? monitorPeriod : refresh;
+        return period > 0 && interval > 1.5 * period ? 0 : now;
+    }
 
     /// <summary>
     /// Where a frame of one size goes in a target of another (5.4.1A, the player while it is resized): 1:1, never scaled, in whole
@@ -448,7 +492,9 @@ internal sealed unsafe partial class GpuViewportControl : IDisposable
 
         if (_swapChain != 0)
         {
-            Com.Release(ref _swapChain);
+            // Under the gate the Playback & A/V Sync Test's sampler reads its statistics under (5.5.2): never let go mid-call.
+            lock (_statisticsGate)
+                Com.Release(ref _swapChain);
 
             // Destroyed for real (the window free for another swap chain) once the context lets go of it.
             if (_device is { } device && device.Device.GetDeviceRemovedReason() >= 0)
@@ -484,6 +530,65 @@ internal sealed unsafe partial class GpuViewportControl : IDisposable
 
     [LibraryImport("user32.dll")]
     private static partial uint GetDpiForWindow(nint window);
+
+    /// <summary>
+    /// The refresh period of the monitor the window is on (nearest one for a window off every screen), in seconds, from its current display
+    /// mode (whole Hz); NaN when it cannot be told (Pass 5.5.2: the pump's bound for its measured refresh, <see cref="NextRefresh"/>). Any thread.
+    /// </summary>
+    public double MonitorRefreshSeconds
+    {
+        get
+        {
+            var monitor = MonitorFromWindow(_window, 2 /* MONITOR_DEFAULTTONEAREST */);
+            if (monitor == 0)
+                return double.NaN;
+            var info = stackalloc byte[104]; // MONITORINFOEXW: cbSize, rcMonitor, rcWork, dwFlags, szDevice[32]
+            *(uint*)info = 104;
+            if (!GetMonitorInfoW(monitor, info))
+                return double.NaN;
+            var mode = stackalloc byte[220]; // DEVMODEW: dmSize at 68, dmDisplayFrequency at 184
+            new Span<byte>(mode, 220).Clear();
+            *(ushort*)(mode + 68) = 220;
+            if (!EnumDisplaySettingsW((char*)(info + 40), -1 /* ENUM_CURRENT_SETTINGS */, mode))
+                return double.NaN;
+            var hertz = *(uint*)(mode + 184);
+            return hertz > 1 ? 1.0 / hertz : double.NaN;
+        }
+    }
+
+    /// <summary>
+    /// The pump's refresh estimate after one more paced turn <paramref name="interval"/> apart (seconds), pure for the golden test (Pass 5.5.2):
+    /// a moving average as before, except that a turn longer than 1.5 of the monitor's refresh (<paramref name="monitorPeriod"/>, when known) is
+    /// a stall, not a refresh, and leaves it as it was. On the 500 Hz Desktop a cold play's first half second has turns of 37-52 ms (frames
+    /// retired slowly while the decoders start): they took the estimate from 2 ms to ~18 ms, and with no measured display lead the frames were
+    /// drawn that far ahead of the sound (the paused step's worst +20..+35 ms).
+    /// </summary>
+    internal static double NextRefresh(double refresh, double interval, double monitorPeriod)
+    {
+        if (interval is not (> 0.0015 and < 0.05))
+            return refresh;
+        if (double.IsFinite(monitorPeriod) && monitorPeriod > 0 && interval > 1.5 * monitorPeriod)
+            return refresh;
+        return 0.9 * refresh + 0.1 * interval;
+    }
+
+    /// <summary>
+    /// Where a play begins its refresh estimate (pure, Pass 5.5.2): the monitor's period when known and the estimate is off it by more than half
+    /// (the 1/60 s start on a 500 Hz display, or a window moved to another monitor), else the estimate as it was.
+    /// </summary>
+    internal static double StartRefresh(double refresh, double monitorPeriod) =>
+        double.IsFinite(monitorPeriod) && monitorPeriod > 0 && (refresh > 1.5 * monitorPeriod || refresh < 0.5 * monitorPeriod) ? monitorPeriod : refresh;
+
+    [LibraryImport("user32.dll")]
+    private static partial nint MonitorFromWindow(nint window, uint flags);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetMonitorInfoW(nint monitor, byte* info);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool EnumDisplaySettingsW(char* device, int mode, byte* devMode);
 
     [LibraryImport("kernel32.dll")]
     private static partial uint WaitForSingleObject(nint handle, uint milliseconds);

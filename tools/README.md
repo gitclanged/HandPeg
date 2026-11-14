@@ -155,6 +155,13 @@ reached the screen is DXGI's frame statistics where it reports them (DWM may sto
 else that median latency after Present, else the first vblank after Present on DWM's grid (said in the report). A frame's
 A/V is its moment minus the sound's then (positive: the picture is ahead); each step's median must be within 0.5 ms
 (nominal) and no frame 15 ms or more off. `--dump <file>` writes every frame presented, for looking into a result.
+`--onscreen` (5.5.2) puts the player on a 320x180 topmost window in the bottom-right corner of the main screen, still never
+activated, so DXGI reports when each frame was shown on a PC whose off-screen window gets no frame statistics.
+
+`AvSync.exe calibrate` (5.5.2) runs the app's own Playback & A/V Sync Test (`PlaybackSyncTest.RunAsync`, what the first-run
+window and Settings > Export & Hardware run) on such an on-screen window: a 24 s title sequence of its own (no project, no
+file, no settings written) played from paused, at 2x and at 1x. Each step passes with its median within 15 ms, no more than
+one frame in twenty 15 ms or more off, and no more than one frame in a hundred a hitch (off, or skipped). Exit 0 = PASS.
 
 Check the harness on a known answer when changing it, running `tools\AvSync\bin\Debug\net10.0-windows\AvSync.exe test
 --project <file> --points 300 --proxies off` with `--audio-shift-ms 10` (the sound rendered 10 ms late: the audio column

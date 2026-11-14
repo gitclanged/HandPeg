@@ -3,6 +3,36 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v5.5.2 — A Playback & A/V Sync Test, Picture and Sound in Step From the First Frame, and Touchpad Panning in Cutout Studio
+
+### User-Facing Highlights
+- **Test Playback & A/V Sync.** A new, optional test on the welcome's second screen and in Settings > Export & Hardware > GPU & NPU
+  Roles: "Testing your hardware to ensure playback is smooth and synced — this takes under a minute." It plays a short title
+  sequence of HandPeg's own in a small picture on screen (no media needed) from paused, at 2x and at 1x, and measures every frame
+  against the sound as Windows reports it shown. The result is one line ("In sync · worst 1.1 ms · 0 dropped · 60 Hz") with every
+  step's figures in its tooltip, and is kept. Press it again to stop.
+- **Picture and sound in step from the first frame.** Pressing Play from a pause no longer runs the picture up to 35 ms ahead of
+  the sound for its first seconds, and on high-refresh displays (500 Hz) playback at 1x no longer runs a few milliseconds behind,
+  with the odd frame 24 ms late. Both were measured on the reference desktop and are now within 2 ms. Just after a cold Play, the
+  picture no longer runs about 60 ms ahead of the sound for a moment once playback settles.
+- **Pan Cutout Studio with a touchpad.** Two-finger scrolling pans the canvas; pinch or Ctrl+scroll zooms; a mouse wheel still
+  zooms. The shortcuts moved from a paragraph into a compact `?` card.
+- **Waveforms stay with their clip while you drag it.** A video clip's closed sound stack now draws its waveform inside its bar
+  during the drag and after you let go.
+- **Projects and settings from before 5.5.0 use the new preset names.** A project's Track Preset Nodes and the drop overlay's
+  Game Presets that name "Overwatch 2 Vertical HUD" or "Fortnite draft" read as Overwatch Vertical and Fortnite Vertical. Your own
+  presets keep their names.
+
+### Under the Hood & Fixes
+- Each play starts its refresh estimate at the monitor's own rate and leaves stalled turns out of it, so the first half-second of a
+  cold play no longer stretches the frame timing.
+- The display's measured lead comes from new frames only, not from the copies a high-refresh display shows between them, and
+  never from a stalled turn (a cold play's first second), whose slow way to the screen is not the display's.
+- The A/V sync harness can play on a small on-screen window (`--onscreen`), where Windows reports real presentation times, and
+  can run the in-app test itself (`calibrate`).
+- Tested on the reference desktop (Ryzen 9 7950X3D, RX 7900 XTX + Arc A310, 500 Hz): the Playback & A/V Sync Test in sync at every
+  step (median 0.00 ms, 0 dropped), 0 late frames of 1,044 in the seek test, start-up to the first window in 440 ms.
+
 ## HandPeg v5.5.0 — Tethers and Nesting on the Timeline, a Two-Screen Welcome, Crash-Safe Tabs, and Overwatch & Fortnite Vertical Presets
 
 ### User-Facing Highlights

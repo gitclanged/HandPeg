@@ -338,20 +338,19 @@ public sealed partial class UnifiedTimelineControl
             DrawBlock(drawing, lane, block, rect, rect.Left, null, from, to, dpi);
         }
 
-        // The one bar a closed sound stack is: every stream that is not muted, in one waveform.
+        // The one bar a closed sound stack is: every stream that is not muted, in one waveform. What a drag carries along is drawn on
+        // the overlay with its bar, where it is now (Pass 5.5.1): these rows are drawn once as the drag begins and not again while it goes.
         if (lane.Summary && lane.Parent >= 0 && scale > 0)
         {
             foreach (var sibling in _lanes[lane.Parent].Row.Children)
             {
-                if (sibling.Stack != ChildStack.Audio || (sibling.State & RowSwitches.Muted) != 0)
+                if (!HeardInBar(sibling))
                     continue;
 
                 foreach (var block in sibling.Blocks)
                 {
-                    var rect = BlockRect(lane, block, _originX);
-                    if (rect.Right < from || rect.Left > to || (block.SoundWindow ?? WindowOf(block, rect.Width, scale)) is not { } sound)
-                        continue;
-                    DrawWave(drawing, sound, rect.Left, new Rect(rect.Left, rect.Top + 1, rect.Width, Math.Max(rect.Height - 2, 1)), from, to, scale, 0.7, dpi.DpiScaleX);
+                    if (_drag is null || !IsDragged(block))
+                        DrawBarWave(drawing, lane, block, BlockRect(lane, block, _originX).Left, from, to, scale, dpi);
                 }
             }
         }
@@ -415,6 +414,39 @@ public sealed partial class UnifiedTimelineControl
             if (x >= from - 8 && x <= to + 8)
                 DrawSeam(drawing, lane, x);
         }
+    }
+
+    // Whether a row's sound is in its closed stack's one bar: a lane of the sound's stack, not muted.
+    private static bool HeardInBar(TimelineRow row) => row.Stack == ChildStack.Audio && (row.State & RowSwitches.Muted) == 0;
+
+    /// <summary>
+    /// A block's sound in its closed stack's one bar (<paramref name="bar"/>, the Summary lane), cut to where the block is and laid from
+    /// <paramref name="soundLeft"/> (where its file's stretch begins: its left edge, or where it was while a trim moves its start).
+    /// </summary>
+    private void DrawBarWave(DrawingContext drawing, in Lane bar, TimelineBlock block, double soundLeft, double from, double to, double scale, DpiScale dpi)
+    {
+        var rect = BlockRect(bar, block, _originX);
+        if (rect.Right < from || rect.Left > to || (block.SoundWindow ?? WindowOf(block, rect.Width, scale)) is not { } sound)
+            return;
+        DrawWave(drawing, sound, soundLeft, new Rect(rect.Left, rect.Top + 1, rect.Width, Math.Max(rect.Height - 2, 1)), from, to, scale, 0.7, dpi.DpiScaleX);
+    }
+
+    /// <summary>
+    /// The closed stack's one bar a row's sound is drawn in (Pass 5.5.1): the Summary lane under the row's parent, while the row is a lane
+    /// of its sound stack that is heard; -1 for none (the stack open, the lane muted, a row of no sound stack).
+    /// </summary>
+    private int BarLaneOf(TimelineRow row)
+    {
+        if (!HeardInBar(row) || row.Parent is not { } parent)
+            return -1;
+
+        for (var i = 0; i < _lanes.Count; i++)
+        {
+            if (_lanes[i] is { Summary: true, Parent: >= 0 } lane && ReferenceEquals(_lanes[lane.Parent].Row, parent))
+                return i;
+        }
+
+        return -1;
     }
 
     // A stretch of dead air that was put back: a faint shade over it, a dashed line at either end, and (on a lane in full,

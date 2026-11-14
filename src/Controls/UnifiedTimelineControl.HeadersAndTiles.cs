@@ -321,6 +321,11 @@ public sealed partial class UnifiedTimelineControl
                 if (child.Detaching)
                     drawing.PushOpacity(0.6);
                 DrawBlock(drawing, childLane, child.Block, childRect, childContent, null, from, to, dpi);
+
+                // Its sound in its closed stack's one bar goes with it, where it is now (Pass 5.5.1: the rows under the overlay leave it out
+                // while it is dragged, as they leave out its bar).
+                if (scale > 0 && BarLaneOf(child.Row) is >= 0 and var childBar)
+                    DrawBarWave(drawing, _lanes[childBar], child.Block, childContent, from, to, scale, dpi);
                 if (childLane.Detailed)
                     DrawLabel(drawing, child.Block, childRect, from, dpi.PixelsPerDip);
                 if (child.Detaching)
@@ -353,6 +358,9 @@ public sealed partial class UnifiedTimelineControl
             if (away)
                 drawing.PushOpacity(0.5);
             DrawBlock(drawing, lane, block, rect, contentLeft, null, from, to, dpi, drag.Kind == BlockEdit.Slip ? rect.Left : null);
+            var dragBar = scale > 0 ? BarLaneOf(drag.Row) : -1;
+            if (dragBar >= 0)
+                DrawBarWave(drawing, _lanes[dragBar], block, contentLeft, from, to, scale, dpi);
             DrawLabel(drawing, block, rect, from, dpi.PixelsPerDip);
             if (block.CrossfadeIn > 0.01 && scale > 0)
                 DrawCrossfade(drawing, lane, block, scale, _originX, dpi.PixelsPerDip);
@@ -377,6 +385,8 @@ public sealed partial class UnifiedTimelineControl
             {
                 var nextRect = BlockRect(lane, next, _originX);
                 DrawBlock(drawing, lane, next, nextRect, drag.NeighborLeft - _originX, null, from, to, dpi);
+                if (dragBar >= 0)
+                    DrawBarWave(drawing, _lanes[dragBar], next, drag.NeighborLeft - _originX, from, to, scale, dpi);
                 DrawLabel(drawing, next, nextRect, from, dpi.PixelsPerDip);
             }
 

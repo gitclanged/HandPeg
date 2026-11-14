@@ -40,7 +40,14 @@ public sealed partial class MaskDrawWindow : Window
     // moves before it is a pan rather than a click (5.3.1).
     private const double WheelPan = 96, RightDragFrom = 4;
 
-    private const int WmMouseHWheel = 0x020E;
+    private const int WmMouseWheel = 0x020A, WmMouseHWheel = 0x020E, MkShift = 0x0004, MkControl = 0x0008;
+
+    // How long after a touchpad's scroll a wheel message is still taken for the same gesture (Pass 5.5.1): a precision touchpad's scroll
+    // now and then sends a whole notch (120), which must not zoom in the middle of a pan.
+    internal const long TouchpadStreamMs = 250;
+
+    // When the wheel last came from a touchpad (Environment.TickCount64); long ago at first.
+    private long _touchpadWheelAt = long.MinValue / 2;
 
     private static readonly string[] PieceNames = ["Hero Portrait & HP", "Abilities & Weapon", "Killfeed", "Minimap", "Objective"];
 
@@ -143,7 +150,7 @@ public sealed partial class MaskDrawWindow : Window
         SourceInitialized += (_, _) =>
         {
             ThemeManager.ApplyTitleBar(this);
-            HwndSource.FromHwnd(new WindowInteropHelper(this).Handle)?.AddHook(HorizontalWheel);
+            HwndSource.FromHwnd(new WindowInteropHelper(this).Handle)?.AddHook(WheelMessage);
         };
 
         // The old regions of the opened file (LayerKind.Video, a legacy kind) are shown over its still alone.
@@ -176,16 +183,6 @@ public sealed partial class MaskDrawWindow : Window
         _verticalBar.Scroll += (_, _) => PanTo(_panX, -_verticalBar.Value);
         _navigator = new SourceNavigator(_width, _height, _surface) { Margin = new Thickness(0, 2, 0, 0) };
         _navigator.Navigate += CenterOn;
-
-        var help = new TextBlock
-        {
-            Text = "Pen: click corner by corner, as many points as you like (a live line follows; Shift keeps it to 0, 45 or 90 degrees), then click the glowing first point, double-click, or press Enter to close the shape. "
-                   + "Drag a point to move it, Alt + click or double-click an edge to add one, right-click a point to remove it. Backspace takes back a point, Escape drops the shape being drawn. Ctrl+Z undoes, Ctrl+Y redoes. "
-                   + "At any moment, a shape half drawn or not: the wheel zooms about the pointer, up to 64x; a right-drag, the middle button, Alt + drag, Space + drag, Shift + the wheel, the scroll bars, the Source Navigator or W A S D pan. From 16x points land on pixel corners.",
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 0, 0, 8),
-        };
-        help.SetResourceReference(TextBlock.ForegroundProperty, "MutedTextBrush");
 
         // Undo and redo, over the shapes (ShapeSurface keeps the steps): enabled while there is something to undo or redo.
         _undoButton = GlyphButton(UndoGlyph, "Undo (Ctrl+Z)", "Undo");
@@ -222,6 +219,10 @@ public sealed partial class MaskDrawWindow : Window
         var view = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(10, 0, 0, 0) };
         view.Children.Add(fit);
         view.Children.Add(actualSize);
+
+        // Pass 5.5.1 (the user's): the shortcuts are a card behind a '?' beside Fit and 100%, no longer four lines of words over the view.
+        view.Children.Add(_shortcutsButton = ShortcutsButton());
+        view.Children.Add(_shortcutsCard);
         view.Children.Add(_zoomText);
 
         var top = new DockPanel { Margin = new Thickness(0, 0, 0, 6) };
@@ -290,10 +291,8 @@ public sealed partial class MaskDrawWindow : Window
         DockPanel.SetDock(pane, Dock.Right);
 
         var root = new DockPanel { Margin = new Thickness(14) };
-        DockPanel.SetDock(help, Dock.Top);
         DockPanel.SetDock(top, Dock.Top);
         DockPanel.SetDock(buttons, Dock.Bottom);
-        root.Children.Add(help);
         root.Children.Add(top);
         root.Children.Add(buttons);
         root.Children.Add(pane);
@@ -306,7 +305,12 @@ public sealed partial class MaskDrawWindow : Window
 
         PreviewKeyDown += Window_PreviewKeyDown;
         PreviewKeyUp += Window_PreviewKeyUp;
-        Deactivated += (_, _) => LetGoOfKeys();
+        PreviewMouseDown += (_, _) => CloseShortcutsUnlessOnButton();
+        Deactivated += (_, _) =>
+        {
+            LetGoOfKeys();
+            CloseShortcuts();
+        };
         Loaded += async (_, _) =>
         {
             Fit();
@@ -708,9 +712,10 @@ public sealed partial class MaskDrawWindow : Window
 
     // The view's pointer, from WPF's events (and the window's own messages) into the point-based steps below, which the golden tests
     // drive with the points and keys they choose.
+    // A wheel WPF raises (the window's own messages answer the real ones first, WheelMessage): one sent by a test, or one the hook let by.
     private void Viewport_MouseWheel(object sender, MouseWheelEventArgs e)
     {
-        Wheel(e.Delta, e.GetPosition(_viewport), Keyboard.Modifiers, MainWindow.FromTouchpad());
+        Wheel(e.Delta, e.GetPosition(_viewport), Keyboard.Modifiers, TouchpadNow(e.Delta));
         e.Handled = true;
     }
 
@@ -724,31 +729,90 @@ public sealed partial class MaskDrawWindow : Window
     private void Viewport_MouseUp(object sender, MouseButtonEventArgs e) => e.Handled = Release(e.ChangedButton);
 
     /// <summary>
-    /// The horizontal wheel over the view (a touchpad's sideways scroll, a tilted wheel), which WPF raises nothing for: a pan sideways.
-    /// Answered TRUE, or Windows sends it on as an old tilt wheel's clicks.
+    /// The wheels over the view, from the window's own messages, before WPF sees them (Pass 5.5.1, the user's: a touchpad's two-finger
+    /// scroll up and down zoomed). The horizontal wheel (a touchpad's sideways scroll, a tilted wheel), which WPF raises nothing for, pans
+    /// sideways, answered TRUE or Windows sends it on as an old tilt wheel's clicks. The vertical wheel is told apart here, while its
+    /// message is the one being handled (<see cref="TouchpadNow"/>), with its keys as the message carries them (a precision touchpad's
+    /// pinch is Ctrl + the wheel), and done here (<see cref="Wheel"/>): handled, so WPF raises no MouseWheel for it and nothing is done twice.
     /// </summary>
-    private IntPtr HorizontalWheel(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    private IntPtr WheelMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (msg != WmMouseHWheel || !_viewport.IsMouseOver)
+        if (msg is not (WmMouseWheel or WmMouseHWheel) || !_viewport.IsMouseOver)
             return IntPtr.Zero;
 
-        SidewaysWheel((short)((wParam.ToInt64() >> 16) & 0xFFFF));
+        var word = wParam.ToInt64();
+        var delta = (short)((word >> 16) & 0xFFFF);
         handled = true;
-        return new IntPtr(1);
+        if (msg == WmMouseHWheel)
+        {
+            SidewaysWheel(delta);
+            return new IntPtr(1);
+        }
+
+        var keys = Keyboard.Modifiers & ModifierKeys.Alt;
+        if ((word & MkShift) != 0)
+            keys |= ModifierKeys.Shift;
+        if ((word & MkControl) != 0)
+            keys |= ModifierKeys.Control;
+
+        // The pointer as the message has it (screen pixels), in the view's DIPs: the point a zoom keeps under it.
+        var (x, y) = ((short)(lParam.ToInt64() & 0xFFFF), (short)((lParam.ToInt64() >> 16) & 0xFFFF));
+        Wheel(delta, _viewport.PointFromScreen(new Point(x, y)), keys, TouchpadNow(delta));
+        return IntPtr.Zero;
     }
 
     /// <summary>
-    /// The wheel at a point of the view: a zoom about it; with Shift a pan sideways (a notch down moves the view right). A touchpad's
-    /// two-finger scroll with no key (5.4.3, <paramref name="touchpad"/>) pans up and down instead; its pinch (Ctrl) still zooms.
+    /// Whether the wheel being handled now is a touchpad's (<see cref="IsTouchpadWheel"/>, with what Windows says of the message and of the
+    /// wheel just before it); a touchpad's is remembered, so the rest of its gesture is one too.
+    /// </summary>
+    private bool TouchpadNow(int delta)
+    {
+        var now = Environment.TickCount64;
+        var touchpad = IsTouchpadWheel(delta, MainWindow.FromTouchpad(), now - _touchpadWheelAt <= TouchpadStreamMs);
+        if (touchpad)
+            _touchpadWheelAt = now;
+        return touchpad;
+    }
+
+    /// <summary>
+    /// Whether a vertical wheel is a touchpad's two-finger scroll (pure, for cutout-studio-wheel): Windows says its message came from a
+    /// touchpad (GetCurrentInputMessageSource, IMDT_TOUCHPAD), or it is no whole number of notches (a mouse's notched wheel turns 120 at a
+    /// time; a precision touchpad's scroll sends what the fingers moved), or a touchpad's scroll came just before it (the same gesture).
+    /// </summary>
+    internal static bool IsTouchpadWheel(int delta, bool sourceIsTouchpad, bool touchpadJustBefore) =>
+        sourceIsTouchpad || touchpadJustBefore || delta % 120 != 0;
+
+    /// <summary>What a turn of the vertical wheel does in the view.</summary>
+    internal enum WheelAction { Zoom, PanSideways, PanUpDown }
+
+    /// <summary>
+    /// What the vertical wheel does in the view (pure, for cutout-studio-wheel): Shift pans sideways; a touchpad's two-finger scroll with no
+    /// key pans up and down; anything else zooms about the pointer: a mouse's wheel, Ctrl + either, and a touchpad's pinch (Ctrl + the wheel).
+    /// </summary>
+    internal static WheelAction WheelDoes(ModifierKeys keys, bool touchpad) =>
+        keys == ModifierKeys.Shift ? WheelAction.PanSideways
+        : touchpad && keys == ModifierKeys.None ? WheelAction.PanUpDown
+        : WheelAction.Zoom;
+
+    /// <summary>
+    /// The wheel at a point of the view (<see cref="WheelDoes"/>): a zoom about it; with Shift a pan sideways (a notch down moves the view
+    /// right); a touchpad's two-finger scroll with no key (<paramref name="touchpad"/>) a pan up and down, the picture moving with the fingers
+    /// as a page scrolls; its pinch (Ctrl) still zooms.
     /// </summary>
     internal void Wheel(int delta, Point at, ModifierKeys keys, bool touchpad = false)
     {
-        if (keys == ModifierKeys.Shift)
-            PanTo(_panX + delta / 120.0 * WheelPan, _panY);
-        else if (touchpad && keys == ModifierKeys.None)
-            PanTo(_panX, _panY + delta / 120.0 * WheelPan);
-        else
-            ZoomTo(_zoomGoal * Math.Pow(ZoomPerNotch, delta / 120.0), at);
+        switch (WheelDoes(keys, touchpad))
+        {
+            case WheelAction.PanSideways:
+                PanTo(_panX + delta / 120.0 * WheelPan, _panY);
+                break;
+            case WheelAction.PanUpDown:
+                PanTo(_panX, _panY + delta / 120.0 * WheelPan);
+                break;
+            default:
+                ZoomTo(_zoomGoal * Math.Pow(ZoomPerNotch, delta / 120.0), at);
+                break;
+        }
     }
 
     /// <summary>The horizontal wheel: a notch to the right moves the view right.</summary>

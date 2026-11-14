@@ -1,0 +1,15 @@
+# The Game Presets' names before 5.5.0 are read as today's: a project's Track Preset Nodes, the settings' drop overlay Game Presets.
+ok: "Overwatch 2 Vertical HUD" and "Overwatch Vertical HUDv2" read as "Overwatch Vertical"
+ok: "Fortnite draft" reads as "Fortnite Vertical"
+ok: case and spaces round the name are ignored
+ok: as a file name with the Game Preset extension, the new file name
+ok: today's names, the user's own (even one holding an old name in it), empty and none are left as they are
+ok: the table is three old names, each mapped to a built-in of 5.5.0
+ok: a project written with the old names holds them (as a project of 5.4 does)
+read: Overwatch Vertical | Fortnite Vertical | Overwatch Vertical | My Own Preset | (none)
+ok: read back, each Track Preset Node of an old name has the new one; the user's own and a track of none are as they were
+overlay: Overwatch Vertical.hpstyle | Fortnite Vertical.hpstyle | My Own.hpstyle
+ok: the drop overlay's Game Presets of an old name have the new one, in order, a duplicate of a mapped name dropped; the user's own kept
+ok: the default preset and Smart Rules (Export Presets) are never mapped
+ok: mapped again, nothing changes
+ok: the settings are mapped as they are read (AppSettings.Load calls MapLegacyPresetNames)

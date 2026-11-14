@@ -23,7 +23,7 @@ namespace HandPegGoldenTests;
 /// selected one keeps all of its box whatever lies over it; an unselected masked one takes only what its mask shows; and a click
 /// with no drag still goes down through the stack.
 /// </summary>
-public static class CutoutTests
+public static partial class CutoutTests
 {
     private const string Template = """
         <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="Thumb">
@@ -106,6 +106,9 @@ public static class CutoutTests
         }
 
         yield return new GraphResult("game-preset-blur-order", order.ToString(), disorder, 0);
+
+        // Pass 5.5.1: the touchpad's two-finger scroll pans, the wheel and the pinch zoom; the instructions are a card behind a '?'.
+        yield return WheelAndShortcuts();
     }
 
     private static void BlurOrder(StringBuilder text, List<string> problems)

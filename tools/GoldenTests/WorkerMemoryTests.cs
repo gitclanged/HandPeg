@@ -962,6 +962,13 @@ public static class WorkerMemoryTests
 
         var cached = Volatile.Read(ref control.CacheBytes);
         var cachedFrames = Volatile.Read(ref control.CachedFrames);
+
+        // Unified memory keeps max(5 GB, 25%) of the computer's memory free (MemoryTier.UnifiedReserve, the user's standing rule): on a
+        // 16 GB laptop with a browser open, that floor (not a fault) can stop the cache short of half the frames (Pass 5.5.1). Then
+        // free memory sits at the floor (within 256 MB): the cache kept what the rule allows.
+        var wanted = Frames / 2 * (long)W * H * 3 / 2;
+        var atFloor = SystemCommit.TryRead(out _, out _, out var availablePhysical)
+                      && availablePhysical - MemoryTier.UnifiedReserve(SystemCommit.PhysicalMemory()) < wanted - cached + 256L * Mb;
         var before = Published(client.WorkerPrivateBytes);
 
         // The tab put behind (GpuPreviewEngine.Suspend: GpuResourceBroker.ReleaseAll, then TrimWorker; no clear).
@@ -996,7 +1003,8 @@ public static class WorkerMemoryTests
         Expect(problems, "every frame drawn", drawn, Frames);
         Expect(problems, "the tab put behind, the clear and the trim served", (suspended, cleared, trimmed), (true, true, true));
         var given = cached > 0 && before - afterTrim >= cached / 2;
-        Line(text, $"  the frames decoded: {(cached >= Frames / 2 * (long)W * H * 3 / 2 ? "kept in the cache" : "NOT kept")}");
+        var keptEnough = cached >= wanted || (!big && atFloor && cached > 0);
+        Line(text, $"  the frames decoded: {(keptEnough ? "kept in the cache (as many as the free-memory floor allows)" : "NOT kept")}");
         Line(text, $"  the cache after the tab put behind: {(asRule ? "as the card's rule says (emptied on unified memory or a small card, every frame kept on a big card)" : "NOT")}");
         Line(text, $"  on a big card, the same file registered again: {(found ? "its frames found, nothing decoded (or not a big card)" : "NOT found")}");
         if (!asRule)
@@ -1005,8 +1013,10 @@ public static class WorkerMemoryTests
             problems.Add("on a big card, the file registered again did not find its frames");
         Line(text, $"  its private bytes after Settings' Clear: {(given ? "down by at least half of what the frames held" : "NOT down")}");
         Line(text, $"  the cache after it: {(Volatile.Read(ref control.CachedFrames) == 0 ? "no frame" : "NOT empty")}");
-        if (cached < Frames / 2 * (long)W * H * 3 / 2)
-            problems.Add(string.Create(CultureInfo.InvariantCulture, $"only {cached / Mb} MB of frames were kept in the cache"));
+        if (!keptEnough)
+            problems.Add(string.Create(CultureInfo.InvariantCulture, $"only {cached / Mb} MB of frames were kept in the cache, with {availablePhysical / Mb} MB of memory free"));
+        else if (cached < wanted)
+            Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"        note: {cached / Mb} MB of frames kept, free memory at the unified floor ({availablePhysical / Mb} MB free)"));
         if (!given)
             problems.Add(string.Create(CultureInfo.InvariantCulture, $"the worker's private bytes went from {before / Mb} MB to {afterTrim / Mb} MB with {cached / Mb} MB of frames let go of"));
         try

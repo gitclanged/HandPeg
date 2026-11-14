@@ -188,6 +188,10 @@ public static class Program
         results.AddRange(FirstRunStudioTests.All());
         results.AddRange(LaggedRecoveryTests.All());
         results.AddRange(TabExitTests.All());
+        // Pass 5.5.1-AutoTest: legacy Game Preset names read as today's, and the closed sound stack's wave in its bar through a drag.
+        results.AddRange(AutoTestFixesTests.All());
+        // Pass 5.5.2-Release: the Playback & A/V Sync Test (its figures, words, sequence and kept result; its card on the first-run window).
+        results.AddRange(PlaybackSyncTests.All());
         // Last of all: its tour needs the WPF Application it makes, and a view model works otherwise once there is one (its command
         // and its undo steps go through the dispatcher, which nothing here pumps), so no test after it would see what it saw alone.
         results.AddRange(UiScaleTests.All());
@@ -215,6 +219,8 @@ public static class Program
         results.AddRange(FirstRunStudioTests.Live());
         results.AddRange(LaggedRecoveryTests.Live());
         results.AddRange(TabExitTests.Live());
+        results.AddRange(AutoTestFixesTests.Live());
+        results.AddRange(PlaybackSyncTests.Live());
         if (filter is not null)
             results = results.Where(r => r.Golden.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
 

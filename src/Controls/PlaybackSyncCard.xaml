@@ -1,0 +1,31 @@
+<UserControl x:Class="HandPegApp.PlaybackSyncCard"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:HandPegApp">
+    <!--
+        The Playback & A/V Sync Test (Pass 5.5.2-Release, the user's Q2): one button (Cancel Test while it runs), the user's line about it,
+        and, while it runs, the test playing in a small on-screen picture with its progress; then the result in a few words (every step's
+        figures in its tooltip). Used by the first-run window's second screen and Settings > Export & Hardware > GPU & NPU Roles.
+    -->
+    <StackPanel>
+        <StackPanel Orientation="Horizontal">
+            <Button x:Name="TestButton" Padding="12,4" Margin="0" Click="Test_Click" HorizontalAlignment="Left"
+                    AutomationProperties.Name="Test Playback &amp; A/V Sync" AutomationProperties.AutomationId="PlaybackSyncButton"
+                    ToolTip="Plays a short test on screen and measures A/V sync">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock x:Name="TestButtonIcon" Text="&#xE768;" FontFamily="Segoe MDL2 Assets" FontSize="12" VerticalAlignment="Center" />
+                    <TextBlock x:Name="TestButtonText" Text="Test Playback &amp; A/V Sync" Margin="7,0,0,0" VerticalAlignment="Center" />
+                </StackPanel>
+            </Button>
+            <ProgressBar x:Name="RunProgress" Width="90" Height="6" Margin="10,0,0,0" Maximum="1" VerticalAlignment="Center" Visibility="Collapsed"
+                         AutomationProperties.Name="Playback Test Progress" />
+        </StackPanel>
+        <TextBlock x:Name="DescriptionText" TextWrapping="Wrap" FontSize="11.5" Margin="0,4,0,0" Foreground="{DynamicResource MutedTextBrush}"
+                   Text="Testing your hardware to ensure playback is smooth and synced &#x2014; this takes under a minute." />
+        <Border x:Name="SurfaceFrame" Width="256" Height="144" HorizontalAlignment="Left" Margin="0,6,0,0" Background="Black" Visibility="Collapsed">
+            <local:PlaybackTestSurface x:Name="Surface" />
+        </Border>
+        <TextBlock x:Name="StatusText" TextWrapping="Wrap" FontSize="11.5" Margin="0,4,0,0" Visibility="Collapsed" Foreground="{DynamicResource MutedTextBrush}"
+                   AutomationProperties.AutomationId="PlaybackSyncStatus" />
+    </StackPanel>
+</UserControl>

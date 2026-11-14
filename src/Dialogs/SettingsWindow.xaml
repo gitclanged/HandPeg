@@ -840,6 +840,8 @@
                         <TextBlock x:Name="BenchmarkReasonsText" Visibility="Collapsed" Foreground="{DynamicResource MutedTextBrush}" FontSize="12" TextWrapping="Wrap"
                                    Margin="0,0,0,6" AutomationProperties.AutomationId="BenchmarkReasons" />
                     </StackPanel>
+                    <!-- 5.5.2 (the user's Q2): the Playback & A/V Sync Test, its result kept at once (SettingsWindow.Hardware.cs) -->
+                    <local:PlaybackSyncCard x:Name="SyncTestCard" Margin="0,2,0,10" />
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Compositor GPU:" Style="{StaticResource FieldLabel}" />
                         <ComboBox x:Name="CompositorGpuBox" MinWidth="260" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Value"

@@ -100,12 +100,20 @@ public partial class FirstRunWindow : Window
             }
         };
 
+        // 5.5.2 (the user's Q2): the Playback & A/V Sync Test's result, kept by Start Editing with the other choices; opened again from the
+        // settings, the last one kept is shown.
+        SyncTestCard.Completed += result => _syncResult = result;
+        SyncTestCard.ShowKept(AppSettings.Current.LastPlaybackSyncTest);
+
         if (live)
             StartLiveWork();
         else if (Dependencies.Parent is Panel holder)
             holder.Children.Remove(Dependencies);
         _initialized = true;
     }
+
+    // The Playback & A/V Sync Test's result from this window (null none), written by Finish.
+    private PlaybackSyncResult? _syncResult;
 
     /// <summary>What the window starts on its own: the encoder probe and its re-asking, and the hardware profile.</summary>
     private void StartLiveWork()
@@ -396,8 +404,11 @@ public partial class FirstRunWindow : Window
         // 5.5A: the hardware profile's workers (a quick check still measuring, an estimate not back yet) are killed first, before the
         // main window and its compositor start.
         _profileCancellation.Cancel();
+        SyncTestCard.Cancel();
 
         var settings = AppSettings.Current.Clone();
+        if (_syncResult is { } sync)
+            settings.LastPlaybackSyncTest = sync;
         var firstStart = !settings.FirstRunComplete;
         settings.Theme = _chosenTheme;
         settings.AutoFallbackToSoftware = FallbackBox.IsChecked == true;

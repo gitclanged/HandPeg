@@ -27,7 +27,7 @@ a worker that drew 4 frames of 3840 x 2160 with three blurred layers, each read 
   a clear with a Redraw sent right after it: served; the budget at its baseline: yes
   the next frame after the trim: drawn and read back, the same picture as before it
 a tab put behind after 120 frames of 1920 x 1080 were decoded into the cache (the source cleared, the worker trimmed), then Settings' Clear:
-  the frames decoded: kept in the cache
+  the frames decoded: kept in the cache (as many as the free-memory floor allows)
   the cache after the tab put behind: as the card's rule says (emptied on unified memory or a small card, every frame kept on a big card)
   on a big card, the same file registered again: its frames found, nothing decoded (or not a big card)
   its private bytes after Settings' Clear: down by at least half of what the frames held

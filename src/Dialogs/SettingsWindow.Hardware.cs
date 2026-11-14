@@ -83,6 +83,7 @@ public partial class SettingsWindow
 
         // Closed while it runs: the run stops with the screen (nothing is left half-applied).
         Closed += (_, _) => _benchmarkRun?.Cancel();
+        InitializeSyncTest();
     }
 
     private async void Benchmark_Click(object sender, RoutedEventArgs e)
@@ -93,6 +94,9 @@ public partial class SettingsWindow
             BenchmarkStatusText.Text = "Stopping...";
             return;
         }
+
+        if (SyncTestCard.IsRunning)
+            return;
 
         using var run = _benchmarkRun = new CancellationTokenSource();
         SetBenchmarkRunning(true);
@@ -215,6 +219,33 @@ public partial class SettingsWindow
         foreach (var box in new[] { CompositorGpuBox, DecodeGpuBox, BackgroundGpuBox, DecodeAdapterBox })
             box.IsEnabled = !running;
         ApplyRolesButton.IsEnabled = !running && CanApplyRoles(_benchmarkShown);
+        SyncTestCard.BlockedBy = running ? "Waits for the hardware test" : null;
+    }
+
+    // ----- The Playback & A/V Sync Test (Pass 5.5.2-Release, the user's Q2) -----
+    // The last result kept is shown; a new one is kept at once, in this screen's copy and in the settings in effect (saved), as a hardware
+    // test's roles are, so it holds whether this screen is then saved or cancelled. The hardware test waits while it runs, and it for that.
+    private void InitializeSyncTest()
+    {
+        SyncTestCard.ShowKept(_settings.LastPlaybackSyncTest);
+        SyncTestCard.RunningChanged += () => BenchmarkButton.IsEnabled = !SyncTestCard.IsRunning;
+        SyncTestCard.Completed += result => KeepSyncResult(_settings, result);
+    }
+
+    /// <summary>A Playback &amp; A/V Sync Test's result kept (the golden test calls it): in the screen's copy, and in the settings in effect, saved.</summary>
+    internal static void KeepSyncResult(AppSettings screenCopy, PlaybackSyncResult result)
+    {
+        screenCopy.LastPlaybackSyncTest = result;
+        var current = AppSettings.Current;
+        current.LastPlaybackSyncTest = result;
+        try
+        {
+            current.SaveAsCurrent();
+        }
+        catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException)
+        {
+            AppLog.Write("The Playback & A/V Sync Test's result could not be saved", ex);
+        }
     }
 
     // A result on the stage, in the status line, and the reasons for its roles under the button.

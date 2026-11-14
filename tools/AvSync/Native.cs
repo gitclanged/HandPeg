@@ -83,11 +83,15 @@ internal static unsafe partial class Native
 /// The session player's window: a pop-up of the harness's own, off every screen (beyond the virtual desktop's left edge),
 /// shown without being activated (no focus taken, no taskbar button: a tool window that never activates), with a black
 /// class brush. The engine's swap chain needs a real window with a size; nothing of it is ever on a screen.
+/// <para>On screen (--onscreen, Pass 5.5.2-Release): the same window, topmost, in the bottom-right corner of the main screen's work
+/// area, so DWM composes it and DXGI's frame statistics report when each frame was really shown (an off-screen window gets none on the
+/// Desktop); still never activated.</para>
 /// </summary>
 internal sealed unsafe partial class OffscreenWindow : IDisposable
 {
-    private const uint WsPopup = 0x80000000, WsExToolWindow = 0x00000080, WsExNoActivate = 0x08000000;
+    private const uint WsPopup = 0x80000000, WsExToolWindow = 0x00000080, WsExNoActivate = 0x08000000, WsExTopmost = 0x00000008;
     private const int SwShowNoActivate = 4, SmXVirtualScreen = 76, SmYVirtualScreen = 77, BlackBrush = 4;
+    private const uint SpiGetWorkArea = 0x0030;
 
     private static readonly WindowProcedure Procedure = DefWindowProcW;
     private static ushort _class;
@@ -96,7 +100,7 @@ internal sealed unsafe partial class OffscreenWindow : IDisposable
 
     public nint Handle { get; }
 
-    public static OffscreenWindow Create(int width, int height)
+    public static OffscreenWindow Create(int width, int height, bool onscreen = false)
     {
         var instance = GetModuleHandleW(null);
         if (_class == 0)
@@ -119,7 +123,10 @@ internal sealed unsafe partial class OffscreenWindow : IDisposable
         }
 
         var (x, y) = (GetSystemMetrics(SmXVirtualScreen) - width - 4000, GetSystemMetrics(SmYVirtualScreen) - height - 4000);
-        var handle = CreateWindowExW(WsExToolWindow | WsExNoActivate, "HandPegAvSyncPlayer", "HandPeg A/V sync", WsPopup, x, y, width, height, 0, 0, instance, 0);
+        var area = default(WorkArea);
+        if (onscreen && SystemParametersInfoW(SpiGetWorkArea, 0, &area, 0))
+            (x, y) = (area.Right - width - 8, area.Bottom - height - 8);
+        var handle = CreateWindowExW(WsExToolWindow | WsExNoActivate | (onscreen ? WsExTopmost : 0), "HandPegAvSyncPlayer", "HandPeg A/V sync", WsPopup, x, y, width, height, 0, 0, instance, 0);
         if (handle == 0)
             throw new InvalidOperationException($"The player's window could not be made ({Marshal.GetLastPInvokeError()}).");
         ShowWindow(handle, SwShowNoActivate);
@@ -129,6 +136,16 @@ internal sealed unsafe partial class OffscreenWindow : IDisposable
     public void Dispose() => DestroyWindow(Handle);
 
     private delegate nint WindowProcedure(nint window, uint message, nint wParam, nint lParam);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WorkArea
+    {
+        public int Left, Top, Right, Bottom;
+    }
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool SystemParametersInfoW(uint action, uint parameter, void* value, uint flags);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct WindowClass
