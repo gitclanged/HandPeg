@@ -440,7 +440,7 @@ public static class TabPerfTests
         expect(attachTab.Length > 0 && !HasAny(attachTab, "LoadMediaAsync(", "RestoreStateAsync(", "TimelineToOpen(", "TakeUpHistory(", "MediaLoaded", "RunOperationAsync(", "ConvertLegacy(", "Fingerprint()", "await ")
                && SourceProbe.InOrder(attachTab, "ApplyProjectSettings(state, legacyMixing: false);", "InstallProjectTimeline(state, tab.Document, tab.Views);", "if (tab.MarkSavedOnAttach)", "MarkSaved();"),
             "MainViewModel.AttachTab: no probe, open, deep clone, history read or MediaLoaded; the same steps an open takes on the tab's own Sequence; a fingerprint only for a tab saved while behind");
-        var restore = SourceProbe.Member(SourceProbe.Src("ViewModels", "MainViewModel.Project.cs"), "public Task RestoreStateAsync(");
+        var restore = SourceProbe.Member(SourceProbe.Src("ViewModels", "MainViewModel.Project.cs"), "private Task RestoreStateAsync(");
         expect(SourceProbe.InOrder(restore, "ApplyProjectSettings(state, legacyMixing: oldShape is not null);", "TimelineToOpen(state);", "InstallProjectTimeline(state, timeline);", "TakeUpHistory(state, converted);", "MarkSaved();"),
             "the cold path takes the very same steps (ApplyProjectSettings, InstallProjectTimeline) around its file's own");
     }

@@ -144,7 +144,7 @@ public static class TrustBoundaryTests
 
         var project = SourceProbe.Src("ViewModels", "MainViewModel.Project.cs");
         var queue = SourceProbe.Src("ViewModels", "MainViewModel.Queue.cs");
-        expect(SourceProbe.Member(project, "public Task RestoreStateAsync(").Contains("_commandTrust.TookFromFile(state.ManualCommand, extras);", StringComparison.Ordinal)
+        expect(SourceProbe.Member(project, "private Task RestoreStateAsync(").Contains("_commandTrust.TookFromFile(state.ManualCommand, extras);", StringComparison.Ordinal)
                && SourceProbe.Member(SourceProbe.Src("ViewModels", "MainViewModel.EncodeAndLoad.cs"), "private Task RunEncodeAsync(").Contains("if (!ConfirmFileCommand(command))", StringComparison.Ordinal)
                && SourceProbe.Member(queue, "private async Task AddToQueueAsync(").Contains("if (!ConfirmFileCommand(CommandPreview))", StringComparison.Ordinal)
                && SourceProbe.InOrder(SourceProbe.Member(queue, "private async Task QueueProjectInBackgroundAsync("), "await worker.RestoreStateAsync(state, \"\");", "worker.DropFileCommand();", "worker.CreateQueueJob()"),

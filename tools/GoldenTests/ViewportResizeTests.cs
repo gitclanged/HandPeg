@@ -442,7 +442,7 @@ public static class ViewportResizeTests
 
                 (cpu, draw) = (cpu + Control.LastFrameCpuMs, draw + Control.LastDrawMs);
 
-                // The divider: the columns that differ from the encoded picture in every row (a light line on the gradient).
+                // No divider in the picture (the player overlay draws the one line): no column differs from the encoded picture in every row.
                 var columns = new List<int>();
                 for (var x = 0; x < W; x++)
                 {
@@ -458,9 +458,8 @@ public static class ViewportResizeTests
                         columns.Add(x);
                 }
 
-                var expected = (int)Math.Round(wipe * W);
-                if (columns.Count == 0 || columns.Any(c => Math.Abs(c - expected) > 1))
-                    misplaced.Add(FormattableString.Invariant($"wipe {wipe:0.00}: the divider at [{string.Join(", ", columns)}], not {expected} +-1"));
+                if (columns.Count > 0)
+                    misplaced.Add(FormattableString.Invariant($"wipe {wipe:0.00}: a line drawn into the picture at [{string.Join(", ", columns)}]"));
             }
 
             Console.WriteLine(FormattableString.Invariant(
@@ -469,7 +468,7 @@ public static class ViewportResizeTests
                 Console.WriteLine("  " + problemLine);
             expect(Control.LoopbackFramesEncoded == count && Volatile.Read(ref Control.TexturesMade) == made,
                 "20 scenes with the same content stamp, only the wipe moved (0.05 to 0.95): nothing is rendered or encoded again and no texture is made");
-            expect(misplaced.Count == 0, "in each, the divider is the column at round(wipe x 640) +-1, in every row (the canvas fills the 640 x 360 output)");
+            expect(misplaced.Count == 0, "in each, no divider is drawn into the picture (the player overlay draws the one line; the canvas fills the 640 x 360 output)");
         }
 
         // ----- live-encoded-preview-wipe: a real encoder (where this PC has an H.264 one) -----

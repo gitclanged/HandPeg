@@ -10,7 +10,7 @@ ok: the handle is placed with WipeLineX and dragged with WipeAt, its edge rounde
 ok: the wipe's layer undoes the player's zoom and pan (the overlay's view matrix, inverted), so a zoomed player moves the handle once and never scales it; the drag reads the pointer in that layer; a zoom re-places it at once
 ok: the wipe maps through the picture's rectangle (PictureSpan, the worker's letterbox), never the crop canvas's GetDisplayedVideoArea
 ok: 20 scenes with the same content stamp, only the wipe moved (0.05 to 0.95): nothing is rendered or encoded again and no texture is made
-ok: in each, the divider is the column at round(wipe x 640) +-1, in every row (the canvas fills the 640 x 360 output)
+ok: in each, no divider is drawn into the picture (the player overlay draws the one line; the canvas fills the 640 x 360 output)
 ok: with a real H.264 encoder, the wipe moved right after a new paused frame went to it: no wipe scene waits for the encoder (each back within ExportLoopbackPreview.PausedWaitMs, 120 ms), nothing encoded again; else nothing to wait for
 ok: and the frame still in the encoder is drawn by the worker's poll once it is back (or given up), with no new scene and at most 3 redraws (not one every 2 ms)
 ok: a paused frame its scene never waited for (test flag 2) comes back through the worker's Poll alone: drawn with no new scene, in 1 to 3 redraws, before it would be given up
