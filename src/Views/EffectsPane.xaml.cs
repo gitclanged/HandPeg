@@ -75,8 +75,9 @@ public partial class EffectsPane : UserControl
     // Coalesced card rebuild and value refresh (at most one of each queued).
     private readonly RunGate _rebuild, _refresh;
 
-    // View-model handlers attached (Attach, then while loaded); a rebuild deferred while the loaded pane was hidden.
-    private bool _hooked, _rebuildWhenShown;
+    // View-model handlers attached (Attach, then while loaded); a rebuild (the card set changed) or a value refresh (playback moved
+    // animated values, a parameter changed) deferred while the loaded pane was hidden.
+    private bool _hooked, _rebuildWhenShown, _refreshWhenShown;
 
     /// <summary>Raised by the Mask card's Edit Mask... button; the window opens the layer's mask tools.</summary>
     public event Action<Layer>? EditMaskRequested;
@@ -95,17 +96,30 @@ public partial class EffectsPane : UserControl
         _refresh = new RunGate(Dispatcher, RefreshParams, DispatcherPriority.Background);
         AddPopup.Opened += AddPopup_Opened;
         AddPopup.Closed += AddPopup_Closed;
-        ReorderBehavior.Reordered += OnReordered;
+        // Routed from this pane's own card panels: no static subscription roots the pane (BAD-03).
+        AddHandler(ReorderBehavior.ReorderedEvent, new RoutedEventHandler((_, e) =>
+        {
+            if (e.OriginalSource is Panel panel)
+                OnReordered(panel);
+        }));
 
         // Unloaded (closed or undocked) panes hold no view-model handlers; reloading re-hooks and retargets.
         Loaded += (_, _) => Hook();
         Unloaded += (_, _) => Unhook();
         IsVisibleChanged += (_, e) =>
         {
-            if (e.NewValue is true && _rebuildWhenShown)
+            if (e.NewValue is not true)
+                return;
+
+            // Cards rebuilt only when their set changed while hidden; values that moved (playback, a parameter) refresh in place.
+            if (_rebuildWhenShown)
             {
-                _rebuildWhenShown = false;
                 Rebuild();
+            }
+            else if (_refreshWhenShown)
+            {
+                _refreshWhenShown = false;
+                RefreshParams();
             }
         };
     }
@@ -320,7 +334,7 @@ public partial class EffectsPane : UserControl
     {
         if (HiddenNow)
         {
-            _rebuildWhenShown = true;
+            _refreshWhenShown = true;
             return;
         }
 
@@ -330,9 +344,10 @@ public partial class EffectsPane : UserControl
 
     private void OnPlayheadMoved()
     {
+        // Hidden: only a pane with animated values has anything to bring up to date when shown (never a rebuild).
         if (HiddenNow)
         {
-            _rebuildWhenShown = true;
+            _refreshWhenShown |= _params.Any(model => model.Animated);
             return;
         }
 
@@ -364,6 +379,7 @@ public partial class EffectsPane : UserControl
             return;
         }
 
+        (_rebuildWhenShown, _refreshWhenShown) = (false, false);
         CardsPanel.Children.Clear();
         PinnedPanel.Children.Clear();
         SpeedPanel.Children.Clear();

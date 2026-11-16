@@ -21,6 +21,8 @@ ok: the compositor's protocol is version 9 (a ring can be larger than its frames
 ok: each output slot's content size is at 3176..3199 of the control block, before the cache's counters (3480)
 ok: a slot's content size: what the worker wrote, never more than the ring, the whole ring where nothing was written (an older worker)
 ok: each slot's tag at 3200..3211: its ring's generation * 2, + 1 for a frame read back (a capture the player never shows)
+ok: each slot's scene number at 296..319, written with its size under the slot's mutex (UGLY-07)
+ok: the player's copy carries the held slot's own scene number, read under its mutex with the copy (never a newer slot's) (UGLY-07)
 ok: the player and a mirror never show a capture's frame (read back), a slot drawn into another ring gives no size, and the ring's size comes from its textures
 ok: 40 frames of a drag from 640 x 360 to 757 x 418, 3 pixels a step: each read back at exactly its size, its bars and picture where SceneRenderer.Letterbox puts them
 ok: the worker made at most 3 output rings for the 40 sizes (one a size before 5.4.1A), the last one large enough for the largest frame

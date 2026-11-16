@@ -375,6 +375,28 @@ public static class TabsDockTransportTests
             "Keyframes hidden while it is Active, so Effects is shown: Effects loaded as Active is what is shown already, so nothing is activated, raised, written or made stale");
         shown["Rig:Keyframes"] = true;
 
+        // Codex UGLY-13: a group of a, b and a hidden pane, b in front; the same layout loaded with the hidden pane as Active shows what a
+        // fresh render would (the first shown pane, a), not b, and keeps the saved choice.
+        var trioHost = new ContentControl { Focusable = false };
+        var trioContents = new Dictionary<string, FrameworkElement>();
+        DockLayoutState Trio(string active) => new() { Main = new DockNode { Kind = DockNode.GroupKind, Panes = ["Trio:A", "Trio:B", "Trio:Hidden"], Active = active } };
+        var trio = new DockManager(new Window(), trioHost, () => Trio("Trio:B"));
+        foreach (var id in new[] { "Trio:A", "Trio:B", "Trio:Hidden" })
+        {
+            var content = new Border { Child = new TextBlock { Text = id } };
+            trioContents[id] = content;
+            trio.Register(new DockPane { Id = id, Title = id, Content = () => content, MinWidth = () => 120, MinHeight = 60, IsShown = () => id != "Trio:Hidden" });
+        }
+
+        trio.Load(Json(Trio("Trio:B")));
+        Lay(trioHost);
+        var bFirst = trioContents["Trio:B"].IsDescendantOf(trioHost);
+        var hiddenLayout = Json(Trio("Trio:Hidden"));
+        trio.Load(hiddenLayout);
+        Lay(trioHost);
+        expect(bFirst && trioContents["Trio:A"].IsDescendantOf(trioHost) && !trioContents["Trio:B"].IsDescendantOf(trioHost) && trio.Save() == hiddenLayout,
+            "a layout whose Active is hidden, taken up in place over b in front: a is shown (Render's first shown pane), b is not, and the saved Active is kept (UGLY-13)");
+
         // Another shape: built again.
         dock.Load(Json(new DockLayoutState { Main = DockNode.Split(false, (DockNode.Split(true, (DockNode.Group("Rig:Player"), 3), (DockNode.Group("Rig:Timeline"), 1)), 2), (DockNode.Group("Rig:Media", "Rig:Effects", "Rig:Keyframes"), 1)) }));
         Lay(host);

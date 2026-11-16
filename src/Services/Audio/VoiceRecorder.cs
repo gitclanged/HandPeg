@@ -435,11 +435,20 @@ internal sealed class WavFile : IDisposable
         _stream.Write(Header(rate, channels, 0));
     }
 
-    public void Write(ReadOnlySpan<short> samples)
+    /// <summary>Whether the file reached the RIFF limit (a block that would pass it is not written; logged once).</summary>
+    public bool Full { get; private set; }
+
+    /// <summary>Appends whole samples; false (nothing written) when they would pass the 4 GiB RIFF limit.</summary>
+    public bool Write(ReadOnlySpan<short> samples)
     {
         var bytes = MemoryMarshal.AsBytes(samples);
-        if (_data + bytes.Length > MostData)
-            return;
+        if (_data + (long)bytes.Length > MostData)
+        {
+            if (!Full)
+                AppLog.Write(string.Create(CultureInfo.InvariantCulture, $"Voiceover: the WAV reached its 4 GiB limit at {_data} bytes; later audio is not written"));
+            Full = true;
+            return false;
+        }
 
         _stream.Write(bytes);
         (_data, _sinceHeader) = (_data + bytes.Length, _sinceHeader + bytes.Length);
@@ -449,6 +458,8 @@ internal sealed class WavFile : IDisposable
             UpdateHeader();
             _stream.Flush();
         }
+
+        return true;
     }
 
     public void Dispose()
@@ -490,62 +501,184 @@ internal sealed class WavFile : IDisposable
         return header;
     }
 
-    /// <summary>Rate, channels and samples of one of these files (header as <see cref="Header"/> writes it); null if not one.</summary>
+    /// <summary>Rate, channels and samples of one of these files (header as <see cref="Header"/> writes it); null if not one. Small files (goldens).</summary>
     public static (int Rate, int Channels, short[] Samples)? Read(string path)
     {
-        var bytes = File.ReadAllBytes(path);
-        if (bytes.Length < HeaderBytes || !bytes.AsSpan(0, 4).SequenceEqual("RIFF"u8) || !bytes.AsSpan(36, 4).SequenceEqual("data"u8)
-            || BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(34)) != 16)
-        {
-            return null;
-        }
-
-        var (channels, rate) = (BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(22)), (int)BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(24)));
-        if (channels is < 1 or > 2 || rate <= 0)
+        using var segment = Segment.Open(path);
+        if (segment is null || segment.Frames * segment.Channels > Array.MaxLength)
             return null;
 
-        // Whole frames only, so a torn last frame cannot swap the channels of the segment after it.
-        var data = (int)Math.Min(BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(40)), (uint)(bytes.Length - HeaderBytes)) / (2 * channels) * (2 * channels);
-
-        return (rate, channels, MemoryMarshal.Cast<byte, short>(bytes.AsSpan(HeaderBytes, data)).ToArray());
+        var samples = new short[segment.Frames * segment.Channels];
+        var read = segment.ReadFrames(samples);
+        return (segment.Rate, segment.Channels, samples[..(read * segment.Channels)]);
     }
 
+    // Frames per block a join streams through (128 KiB of stereo samples): memory stays flat whatever the length of the take.
+    internal const int JoinBlockFrames = 1 << 15;
+
     /// <summary>
-    /// Writes the segments one after another into <paramref name="output"/>, in the first one's rate and channels (others converted:
-    /// mono and stereo mapped, the rate resampled linearly). Throws <see cref="InvalidOperationException"/> when a segment is unreadable.
+    /// Streams the segments one after another into <paramref name="output"/>, in the first one's rate and channels (others converted:
+    /// mono and stereo mapped, the rate resampled linearly, its fractional position carried between blocks). Throws
+    /// <see cref="InvalidOperationException"/> when a segment is unreadable and <see cref="WavTooLongException"/>, before writing, when the
+    /// joined take would pass the 4 GiB RIFF limit (the segments are untouched either way).
     /// </summary>
     public static void Join(IReadOnlyList<string> parts, string output)
     {
-        var first = Read(parts[0]) ?? throw new InvalidOperationException("A part of the recording could not be read.");
-        using var file = new WavFile(output, first.Rate, first.Channels);
-        file.Write(first.Samples);
-        foreach (var part in parts.Skip(1))
+        var segments = new List<Segment>(parts.Count);
+        try
         {
-            var next = Read(part) ?? throw new InvalidOperationException("A part of the recording could not be read.");
-            file.Write(next.Rate == first.Rate && next.Channels == first.Channels ? next.Samples : Converted(next, first.Rate, first.Channels));
+            foreach (var part in parts)
+                segments.Add(Segment.Open(part) ?? throw new InvalidOperationException("A part of the recording could not be read."));
+
+            var (rate, channels) = (segments[0].Rate, segments[0].Channels);
+            var total = segments.Sum(s => OutFrames(s, rate) * channels * 2);
+            if (total > MostData)
+                throw new WavTooLongException(total);
+
+            using var file = new WavFile(output, rate, channels);
+            foreach (var segment in segments)
+            {
+                if (segment.Rate == rate && segment.Channels == channels)
+                    Copy(segment, file);
+                else
+                    Convert(segment, file, rate, channels);
+            }
+        }
+        finally
+        {
+            foreach (var segment in segments)
+                segment.Dispose();
         }
     }
 
-    private static short[] Converted((int Rate, int Channels, short[] Samples) part, int rate, int channels)
+    // Frames a segment becomes at the output rate (as the converter emits them).
+    private static long OutFrames(Segment segment, int rate) => segment.Rate == rate ? segment.Frames : segment.Frames * rate / segment.Rate;
+
+    private static void Copy(Segment segment, WavFile file)
     {
-        var frames = part.Samples.Length / part.Channels;
-        var outFrames = (int)((long)frames * rate / part.Rate);
-        var result = new short[outFrames * channels];
-        for (var f = 0; f < outFrames; f++)
+        var block = new short[JoinBlockFrames * segment.Channels];
+        int frames;
+        while ((frames = segment.ReadFrames(block)) > 0)
+            file.Write(block.AsSpan(0, frames * segment.Channels));
+    }
+
+    /// <summary>
+    /// Linear resampling and channel mapping in blocks: output frame f sits at source position f * from / to and mixes source frames low
+    /// and low + 1 (the last frame when past the end), the same samples a whole-file conversion gives.
+    /// </summary>
+    private static void Convert(Segment segment, WavFile file, int rate, int channels)
+    {
+        var outFrames = OutFrames(segment, rate);
+        var block = new short[JoinBlockFrames * segment.Channels];
+        var output = new short[JoinBlockFrames * channels];
+        var (previous, current) = (new double[channels], new double[channels]);
+        var (made, filled, index) = (0L, 0, 0L);
+
+        void Emit(double[] low, double[] high, double mix)
         {
-            var at = (double)f * part.Rate / rate;
-            var (low, mix) = ((int)at, at - (int)at);
-            var high = Math.Min(low + 1, frames - 1);
             for (var c = 0; c < channels; c++)
+                output[filled * channels + c] = (short)Math.Round(low[c] * (1 - mix) + high[c] * mix);
+            made++;
+            if (++filled == JoinBlockFrames)
             {
-                double Sample(int frame) => part.Channels == channels ? part.Samples[frame * channels + c]
-                    : part.Channels == 1 ? part.Samples[frame]
-                    : (part.Samples[frame * 2] + part.Samples[frame * 2 + 1]) / 2.0;
-                result[f * channels + c] = (short)Math.Round(Sample(low) * (1 - mix) + Sample(high) * mix);
+                file.Write(output);
+                filled = 0;
             }
         }
 
-        return result;
+        int frames;
+        while ((frames = segment.ReadFrames(block)) > 0)
+        {
+            for (var k = 0; k < frames; k++)
+            {
+                for (var c = 0; c < channels; c++)
+                {
+                    current[c] = segment.Channels == channels ? block[k * channels + c]
+                        : segment.Channels == 1 ? block[k]
+                        : (block[k * 2] + block[k * 2 + 1]) / 2.0;
+                }
+
+                // Every output frame whose position lies between the previous source frame and this one.
+                if (index > 0)
+                {
+                    double at;
+                    while (made < outFrames && (at = (double)made * segment.Rate / rate) < index)
+                        Emit(previous, current, at - (long)at);
+                }
+
+                (previous, current) = (current, previous);
+                index++;
+            }
+        }
+
+        // Past the last source frame: it alone (low and high the same frame).
+        while (made < outFrames)
+        {
+            var at = (double)made * segment.Rate / rate;
+            Emit(previous, previous, at - (long)at);
+        }
+
+        if (filled > 0)
+            file.Write(output.AsSpan(0, filled * channels));
+    }
+
+    /// <summary>One segment opened for streaming: its format from the header and its whole frames, read in blocks.</summary>
+    private sealed class Segment : IDisposable
+    {
+        private readonly FileStream _stream;
+        private long _left;
+
+        private Segment(FileStream stream, int rate, int channels, long frames) => (_stream, Rate, Channels, Frames, _left) = (stream, rate, channels, frames, frames);
+
+        public int Rate { get; }
+        public int Channels { get; }
+        public long Frames { get; }
+
+        public static Segment? Open(string path)
+        {
+            var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16);
+            try
+            {
+                Span<byte> header = stackalloc byte[HeaderBytes];
+                if (stream.Length < HeaderBytes)
+                    return Fail();
+                stream.ReadExactly(header);
+                if (!header[..4].SequenceEqual("RIFF"u8) || !header.Slice(36, 4).SequenceEqual("data"u8) || BinaryPrimitives.ReadUInt16LittleEndian(header[34..]) != 16)
+                    return Fail();
+
+                var (channels, rate) = (BinaryPrimitives.ReadUInt16LittleEndian(header[22..]), (int)BinaryPrimitives.ReadUInt32LittleEndian(header[24..]));
+                if (channels is < 1 or > 2 || rate <= 0)
+                    return Fail();
+
+                // Whole frames only, so a torn last frame cannot swap the channels of the segment after it.
+                var data = Math.Min(BinaryPrimitives.ReadUInt32LittleEndian(header[40..]), stream.Length - HeaderBytes);
+                return new Segment(stream, rate, channels, data / (2 * channels));
+            }
+            catch
+            {
+                stream.Dispose();
+                throw;
+            }
+
+            Segment? Fail()
+            {
+                stream.Dispose();
+                return null;
+            }
+        }
+
+        /// <summary>Reads up to as many whole frames as <paramref name="into"/> holds; the frames read (0 at the end).</summary>
+        public int ReadFrames(Span<short> into)
+        {
+            var frames = (int)Math.Min(_left, into.Length / Channels);
+            if (frames == 0)
+                return 0;
+            _stream.ReadExactly(MemoryMarshal.AsBytes(into[..(frames * Channels)]));
+            _left -= frames;
+            return frames;
+        }
+
+        public void Dispose() => _stream.Dispose();
     }
 
     /// <summary>Deletes a segment; a locked one is left for the session folder's clean-up.</summary>
@@ -559,4 +692,11 @@ internal sealed class WavFile : IDisposable
         {
         }
     }
+}
+
+/// <summary>A joined voiceover take that would pass a WAV's 4 GiB RIFF limit; thrown before anything is written (Codex UGLY-14).</summary>
+internal sealed class WavTooLongException(long bytes)
+    : InvalidOperationException(string.Create(CultureInfo.InvariantCulture, $"The take is too long for one WAV file ({bytes / (1L << 20)} MiB of audio; the limit is 4 GiB)."))
+{
+    public long Bytes { get; } = bytes;
 }

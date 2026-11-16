@@ -169,32 +169,51 @@ public partial class SettingsWindow
     // ----- The category rail -----
 
     // Each category's icon: lines on a 16 x 16 square, stroked in the rail's text colour.
-    private static readonly Dictionary<string, string> RailIcons = new()
+    private static readonly Dictionary<SettingsCategory, string> RailIcons = new()
     {
-        ["General"] = "M2,4.5 H14 M2,8 H14 M2,11.5 H14 M5,2.8 V6.2 M10.5,6.3 V9.7 M7,9.8 V13.2",
-        ["Timeline & Player"] = "M2,4.5 H9 V7.5 H2 Z M6,9.5 H14 V12.5 H6 Z M11.5,1.5 V14.5",
-        ["Preview & Cache"] = "M3,4 C3,2.3 13,2.3 13,4 V12 C13,13.7 3,13.7 3,12 Z M3,4 C3,5.7 13,5.7 13,4 M3,8 C3,9.7 13,9.7 13,8",
-        ["Export & Hardware"] = "M4.5,4.5 H11.5 V11.5 H4.5 Z M6.5,6.5 H9.5 V9.5 H6.5 Z M6,2 V4.5 M8,2 V4.5 M10,2 V4.5 M6,11.5 V14 M8,11.5 V14 M10,11.5 V14 M2,6 H4.5 M2,8 H4.5 M2,10 H4.5 M11.5,6 H14 M11.5,8 H14 M11.5,10 H14",
-        ["Auto-Captions"] = "M1.5,3.5 H14.5 V12.5 H1.5 Z M7,6.3 C5,5.4 3.8,6.4 3.8,8 C3.8,9.6 5,10.6 7,9.7 M12.2,6.3 C10.2,5.4 9,6.4 9,8 C9,9.6 10.2,10.6 12.2,9.7",
-        ["Automation & Drop Targets"] = "M9,1.5 L3.5,9 H8 L7,14.5 L12.5,7 H8 Z",
+        [SettingsCategory.General] = "M2,4.5 H14 M2,8 H14 M2,11.5 H14 M5,2.8 V6.2 M10.5,6.3 V9.7 M7,9.8 V13.2",
+        [SettingsCategory.TimelinePlayer] = "M2,4.5 H9 V7.5 H2 Z M6,9.5 H14 V12.5 H6 Z M11.5,1.5 V14.5",
+        [SettingsCategory.PreviewCache] = "M3,4 C3,2.3 13,2.3 13,4 V12 C13,13.7 3,13.7 3,12 Z M3,4 C3,5.7 13,5.7 13,4 M3,8 C3,9.7 13,9.7 13,8",
+        [SettingsCategory.ExportHardware] = "M4.5,4.5 H11.5 V11.5 H4.5 Z M6.5,6.5 H9.5 V9.5 H6.5 Z M6,2 V4.5 M8,2 V4.5 M10,2 V4.5 M6,11.5 V14 M8,11.5 V14 M10,11.5 V14 M2,6 H4.5 M2,8 H4.5 M2,10 H4.5 M11.5,6 H14 M11.5,8 H14 M11.5,10 H14",
+        [SettingsCategory.AutoCaptions] = "M1.5,3.5 H14.5 V12.5 H1.5 Z M7,6.3 C5,5.4 3.8,6.4 3.8,8 C3.8,9.6 5,10.6 7,9.7 M12.2,6.3 C10.2,5.4 9,6.4 9,8 C9,9.6 10.2,10.6 12.2,9.7",
+        [SettingsCategory.Automation] = "M9,1.5 L3.5,9 H8 L7,14.5 L12.5,7 H8 Z",
         // A keyboard: its outline, two rows of keys and the space bar.
-        ["Keybinds & Lightning Dial"] = "M1.5,4 H14.5 V12 H1.5 Z M4,6.5 H5 M7,6.5 H8 M10,6.5 H11 M5.5,8.5 H6.5 M8.5,8.5 H9.5 M5,10.3 H11",
-        ["Tools & Backup"] = "M2.5,9.5 V13.5 H13.5 V9.5 M8,2 V10 M5,7 L8,10 L11,7",
+        [SettingsCategory.Keybinds] = "M1.5,4 H14.5 V12 H1.5 Z M4,6.5 H5 M7,6.5 H8 M10,6.5 H11 M5.5,8.5 H6.5 M8.5,8.5 H9.5 M5,10.3 H11",
+        [SettingsCategory.Tools] = "M2.5,9.5 V13.5 H13.5 V9.5 M8,2 V10 M5,7 L8,10 L11,7",
     };
 
-    private static readonly Dictionary<string, Geometry> RailGeometries = [];
+    private static readonly Dictionary<SettingsCategory, Geometry> RailGeometries = [];
 
-    private static Geometry RailIcon(string header)
+    private static Geometry RailIcon(SettingsCategory category)
     {
-        if (!RailGeometries.TryGetValue(header, out var geometry))
+        if (!RailGeometries.TryGetValue(category, out var geometry))
         {
-            geometry = Geometry.Parse(RailIcons.GetValueOrDefault(header, "M6,8 A2,2 0 1 1 10,8 A2,2 0 1 1 6,8"));
+            geometry = Geometry.Parse(RailIcons.GetValueOrDefault(category, "M6,8 A2,2 0 1 1 10,8 A2,2 0 1 1 6,8"));
             geometry.Freeze();
-            RailGeometries[header] = geometry;
+            RailGeometries[category] = geometry;
         }
 
         return geometry;
     }
+
+    /// <summary>
+    /// A tab's stable category, from its XAML <c>Tag</c> (never its header text, which may be relabelled or translated; Codex BAD-05);
+    /// <see cref="SettingsCategory.None"/> for an untagged tab.
+    /// </summary>
+    internal static SettingsCategory CategoryOf(TabItem? tab) =>
+        tab?.Tag is string id && Enum.TryParse<SettingsCategory>(id, out var category) && Enum.IsDefined(category) ? category : SettingsCategory.None;
+
+    /// <summary>The stage picture of a category (pure).</summary>
+    internal static StageKind StageKindOf(SettingsCategory category) => category switch
+    {
+        SettingsCategory.General => StageKind.Appearance,
+        SettingsCategory.TimelinePlayer => StageKind.Timeline,
+        SettingsCategory.PreviewCache => StageKind.Cache,
+        SettingsCategory.ExportHardware => StageKind.Hardware,
+        SettingsCategory.AutoCaptions => StageKind.Captions,
+        SettingsCategory.Keybinds => StageKind.Keybinds,
+        _ => StageKind.None,
+    };
 
     // A category for each tab: its icon and header, hidden with it when the search leaves the tab nothing.
     private void BuildCategoryRail()
@@ -204,7 +223,7 @@ public partial class SettingsWindow
             var header = tab.Header as string ?? "";
             var icon = new Shapes.Path
             {
-                Data = RailIcon(header), Width = 16, Height = 16, StrokeThickness = 1.3, VerticalAlignment = VerticalAlignment.Center,
+                Data = RailIcon(CategoryOf(tab)), Width = 16, Height = 16, StrokeThickness = 1.3, VerticalAlignment = VerticalAlignment.Center,
                 StrokeLineJoin = PenLineJoin.Round, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round,
             };
             icon.SetBinding(Shapes.Shape.StrokeProperty, new Binding(nameof(Control.Foreground)) { RelativeSource = new RelativeSource(RelativeSourceMode.FindAncestor, typeof(ListBoxItem), 1) });
@@ -248,40 +267,40 @@ public partial class SettingsWindow
     // ----- The live preview stage -----
 
     // What each category is about, for the stage when the category is chosen and no option is looked at yet.
-    private static readonly Dictionary<string, string> CategoryIntros = new()
+    private static readonly Dictionary<SettingsCategory, string> CategoryIntros = new()
     {
-        ["General"] = "How HandPeg looks, how it starts, how it keeps itself and its tools up to date, and how it looks after a project and its crash reports.",
-        ["Timeline & Player"] = "How the timeline is drawn, how it snaps and edits, the hover previews above it, and the player.",
-        ["Preview & Cache"] = "What is kept on disk and how much of it, proxies of heavy videos, the media browser and downloads.",
-        ["Export & Hardware"] = "The encoding a new export starts with, which graphics card does what (and the test that tunes it), and how much of the computer background work may take.",
-        ["Auto-Captions"] = "The speech model that writes captions, how it listens, Remove Dead Air, and the style new captions start with.",
-        ["Automation & Drop Targets"] = "Smart rules for files that are dropped or loaded, the targets of the drop overlay, and the Social Sharing Squisher's presets.",
-        ["Keybinds & Lightning Dial"] = "What the Lightning Dial's slices hold, every key of the main window (from a preset or set by hand), and the Quick-Start Tour.",
-        ["Tools & Backup"] = "The programs HandPeg downloads and where they come from, SponsorBlock, and getting settings and projects in and out.",
+        [SettingsCategory.General] = "How HandPeg looks, how it starts, how it keeps itself and its tools up to date, and how it looks after a project and its crash reports.",
+        [SettingsCategory.TimelinePlayer] = "How the timeline is drawn, how it snaps and edits, the hover previews above it, and the player.",
+        [SettingsCategory.PreviewCache] = "What is kept on disk and how much of it, proxies of heavy videos, the media browser and downloads.",
+        [SettingsCategory.ExportHardware] = "The encoding a new export starts with, which graphics card does what (and the test that tunes it), and how much of the computer background work may take.",
+        [SettingsCategory.AutoCaptions] = "The speech model that writes captions, how it listens, Remove Dead Air, and the style new captions start with.",
+        [SettingsCategory.Automation] = "Smart rules for files that are dropped or loaded, the targets of the drop overlay, and the Social Sharing Squisher's presets.",
+        [SettingsCategory.Keybinds] = "What the Lightning Dial's slices hold, every key of the main window (from a preset or set by hand), and the Quick-Start Tour.",
+        [SettingsCategory.Tools] = "The programs HandPeg downloads and where they come from, SponsorBlock, and getting settings and projects in and out.",
     };
 
     // Editor region (MainWindow.StageMirror) mirrored for each category section (null section = category default); unlisted
     // sections show only their picture.
-    private static readonly Dictionary<(string Category, string? Section), string> StageMirrors = new()
+    private static readonly Dictionary<(SettingsCategory Category, string? Section), string> StageMirrors = new()
     {
-        [("General", null)] = "Window",
-        [("General", "Appearance")] = "Window",
-        [("General", "Launch")] = "Window",
-        [("General", "A new window starts with")] = "Window",
-        [("General", "Projects and saving")] = "Header",
-        [("Timeline & Player", null)] = "Timeline",
-        [("Timeline & Player", "Timeline")] = "Timeline",
-        [("Timeline & Player", "I-frames")] = "Timeline",
-        [("Timeline & Player", "Hover previews")] = "Timeline",
-        [("Timeline & Player", "Player")] = "Player",
-        [("Timeline & Player", "Tabs and bars")] = "Window",
-        [("Preview & Cache", null)] = "Player",
-        [("Preview & Cache", "Proxies")] = "Player",
-        [("Preview & Cache", "Media browser")] = "Media",
-        [("Export & Hardware", null)] = "Export",
-        [("Export & Hardware", "Export tab")] = "Export",
-        [("Export & Hardware", "Default encoding settings")] = "Export",
-        [("Auto-Captions", "Remove Dead Air")] = "Timeline",
+        [(SettingsCategory.General, null)] = "Window",
+        [(SettingsCategory.General, "Appearance")] = "Window",
+        [(SettingsCategory.General, "Launch")] = "Window",
+        [(SettingsCategory.General, "A new window starts with")] = "Window",
+        [(SettingsCategory.General, "Projects and saving")] = "Header",
+        [(SettingsCategory.TimelinePlayer, null)] = "Timeline",
+        [(SettingsCategory.TimelinePlayer, "Timeline")] = "Timeline",
+        [(SettingsCategory.TimelinePlayer, "I-frames")] = "Timeline",
+        [(SettingsCategory.TimelinePlayer, "Hover previews")] = "Timeline",
+        [(SettingsCategory.TimelinePlayer, "Player")] = "Player",
+        [(SettingsCategory.TimelinePlayer, "Tabs and bars")] = "Window",
+        [(SettingsCategory.PreviewCache, null)] = "Player",
+        [(SettingsCategory.PreviewCache, "Proxies")] = "Player",
+        [(SettingsCategory.PreviewCache, "Media browser")] = "Media",
+        [(SettingsCategory.ExportHardware, null)] = "Export",
+        [(SettingsCategory.ExportHardware, "Export tab")] = "Export",
+        [(SettingsCategory.ExportHardware, "Default encoding settings")] = "Export",
+        [(SettingsCategory.AutoCaptions, "Remove Dead Air")] = "Timeline",
     };
 
     // Options about another part of the editor than the rest of their section's (by the name the stage gives them).
@@ -436,7 +455,7 @@ public partial class SettingsWindow
         (_stageTab, _stageSection, _stageOptionName) = (tab, section, name);
         StageCategory.Text = section is null ? category : $"{category}  ›  {section}";
         StageTitle.Text = option is null ? category : name ?? section ?? category;
-        StageDescription.Text = option is null ? CategoryIntros.GetValueOrDefault(category, "")
+        StageDescription.Text = option is null ? CategoryIntros.GetValueOrDefault(CategoryOf(tab), "")
             : TipOf(option) ?? (option is TextBlock { Text.Length: > 0 } words ? words.Text : IntroOf(option) ?? "");
 
         var fallback = option is null ? null : DefaultOf(option);
@@ -492,17 +511,7 @@ public partial class SettingsWindow
     // The picture of the category on show, drawn from the settings being edited.
     private void RefreshStage()
     {
-        var kind = (_stageTab?.Header as string) switch
-        {
-            "General" => StageKind.Appearance,
-            "Timeline & Player" => StageKind.Timeline,
-            "Preview & Cache" => StageKind.Cache,
-            "Export & Hardware" => StageKind.Hardware,
-            "Auto-Captions" => StageKind.Captions,
-            "Keybinds & Lightning Dial" => StageKind.Keybinds,
-            _ => StageKind.None,
-        };
-
+        var kind = StageKindOf(CategoryOf(_stageTab));
         _stageKind = kind;
         StageCardTitle.Text = kind switch
         {
@@ -546,11 +555,10 @@ public partial class SettingsWindow
     /// </summary>
     private void RefreshMirror()
     {
-        var category = _stageTab?.Header as string ?? "";
         string? region = null;
         if (_stageOptionName is { } option && OptionMirrors.TryGetValue(option, out var own))
             region = own;
-        else if (_stageTab is not null && StageMirrors.TryGetValue((category, _stageSection), out var shown))
+        else if (_stageTab is not null && StageMirrors.TryGetValue((CategoryOf(_stageTab), _stageSection), out var shown))
             region = shown;
 
         var mirror = region is not null && MirrorSource is { } find ? find(region) : null;
@@ -611,12 +619,13 @@ public partial class SettingsWindow
     }
 
     /// <summary>
-    /// Splits options/stage 55/45, or 35/65 when widened (button, or a tab tagged "WideStage"); hides the stage when too narrow.
+    /// Splits options/stage 55/45, or 35/65 when widened (button, or the Keybinds category, whose keyboard needs the room); hides the
+    /// stage when too narrow.
     /// </summary>
     private void LayOutStage()
     {
         var room = ActualWidth <= 0 || ActualWidth >= 980;
-        var wide = _stageWide || _stageTab?.Tag is "WideStage";
+        var wide = _stageWide || CategoryOf(_stageTab) == SettingsCategory.Keybinds;
         StagePanel.Visibility = room ? Visibility.Visible : Visibility.Collapsed;
         ListColumn.Width = new GridLength(room && wide ? 35 : 55, GridUnitType.Star);
         StageColumn.Width = room ? new GridLength(wide ? 65 : 45, GridUnitType.Star) : new GridLength(0);
@@ -781,4 +790,21 @@ public partial class SettingsWindow
             _ => value.ToString() ?? "",
         };
     }
+}
+
+/// <summary>
+/// A Settings category's stable identity, carried by its tab's XAML <c>Tag</c>: what the stage picture, its intro, rail icon and mirrors
+/// are chosen by, whatever the header says (Codex BAD-05).
+/// </summary>
+internal enum SettingsCategory
+{
+    None,
+    General,
+    TimelinePlayer,
+    PreviewCache,
+    ExportHardware,
+    AutoCaptions,
+    Automation,
+    Keybinds,
+    Tools,
 }

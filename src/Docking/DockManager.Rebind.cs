@@ -55,23 +55,24 @@ public sealed partial class DockManager
             if (old.Panes.FirstOrDefault() is not { } first || (side is null ? _state.Main : side.State.Tree)?.GroupOf(first) is not { } fresh)
                 continue;
 
-            // Compare with the shown pane, not the old tree's Active, which may name a hidden pane Render skipped.
-            var wanted = fresh.Active;
+            // Both sides by Render's rule (Codex UGLY-13): the new tree's front is its Active if shown, else its first shown pane (a fresh
+            // render of this layout shows the same); the old side is the pane on screen, not the old tree's Active (maybe hidden).
+            var saved = fresh.Active;
+            var wanted = FrontOf(fresh, IsPaneShown);
             var front = FrontOf(old, IsPaneShown);
             _groupHosts[i] = (host, fresh, side);
             if (_joined is { } joined && ReferenceEquals(joined.Under, old))
                 _joined = joined with { Under = fresh };
             if (host is TabGroupHost tabs)
                 tabs.Group = fresh;
-            if (wanted is not null && wanted != front && IsPaneShown(wanted))
+            if (wanted is not null && wanted != front)
             {
                 fresh.Active = front;
                 Activate(wanted);
             }
-            else
-            {
-                fresh.Active = wanted;
-            }
+
+            // As Render: the saved choice stays (a hidden pane named Active comes forward once shown); only the shown pane fell back.
+            fresh.Active = saved;
         }
 
         // Rebind splits to the new tree's nodes (same positions) so later border drags write into the saved layout, re-read minimum

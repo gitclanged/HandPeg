@@ -93,9 +93,12 @@ public static class ThreadLifetimeTests
         expect(SourceProbe.InOrder(SourceProbe.Member(client, "private void Supervise("), "AppLog.Write(\"Compositor supervisor\", ex);", "if (_disposed)", "_stopping.WaitOne(1000);"),
             "the supervisor's catch touches nothing of a closed client");
         var wasapi = SourceProbe.Src("Services", "Audio", "WasapiAudioEngine.cs");
-        expect(SourceProbe.InOrder(SourceProbe.Member(wasapi, "public void Dispose("), "ThreadStop.Join(_thread, 3000,", "return;", "Kernel32.CloseHandle(_commands);")
-               && SourceProbe.InOrder(SourceProbe.Member(wasapi, "private void Run("), "_watch?.Dispose(_enumerator);", "Close();"),
-            "the sound engine closes its wake event only after its mixer stopped, and unregisters the device watch before the slow teardown");
+        var wasapiDispose = SourceProbe.Member(wasapi, "public void Dispose(");
+        expect(SourceProbe.InOrder(wasapiDispose, "if (Interlocked.Exchange(ref _disposing, 1) != 0)", "return;", "Wake();", "ThreadStop.Join(_thread, 3000,")
+               && !wasapiDispose.Contains("CloseHandle", StringComparison.Ordinal) && !wasapi.Contains("Kernel32.SetEvent(_commands)", StringComparison.Ordinal)
+               && SourceProbe.InOrder(SourceProbe.Member(wasapi, "private void Wake("), "_commandEvent.DangerousAddRef(ref held);", "Kernel32.SetEvent(", "_commandEvent.DangerousRelease();")
+               && SourceProbe.InOrder(SourceProbe.Member(wasapi, "private void Run("), "_watch?.Dispose(_enumerator);", "Close();", "_commandEvent.Dispose();"),
+            "the sound engine elects one disposer, its mixer closes the wake event last (after the device watch), even after a timed-out join, and every wake holds a SafeHandle reference (UGLY-10)");
     }
 
     // ----- work-shared-cancellation -----
@@ -150,7 +153,44 @@ public static class ThreadLifetimeTests
         }
 
         expect(allCancelled == 2, "both callers cancelled: both waits end, and the work itself is cancelled (no one wants it)");
-        var frames = SourceProbe.Member(SourceProbe.Src("Services", "SourceFrames.cs"), "private async Task PumpAsync(");
+
+        // Codex UGLY-08 barrier: between the last caller's closing decision and the work's cancellation, a new caller for the same key
+        // gets fresh work (never the closing item), which is not cancelled by the leaving caller.
+        var raceKey = key + "|race";
+        Task<int>? joinedLate = null;
+        WorkItem? closed = null;
+        WorkScheduler.ClosingSeam = shared =>
+        {
+            if (shared.Key != raceKey)
+                return;
+            closed = shared;
+            joinedLate = WorkScheduler.Run(new WorkSpec("Golden shared work", WorkLane.Interactive) { Key = raceKey, Visible = false }, Work, CancellationToken.None);
+        };
+        try
+        {
+            using var e = new CancellationTokenSource();
+            var leaving = WorkScheduler.Run(new WorkSpec("Golden shared work", WorkLane.Interactive) { Key = raceKey, Visible = false }, Work, e.Token);
+            e.Cancel();
+            var leftCancelled = false;
+            try
+            {
+                leaving.GetAwaiter().GetResult();
+            }
+            catch (OperationCanceledException)
+            {
+                leftCancelled = true;
+            }
+
+            var lateResult = joinedLate is { } late && late.Wait(5000) && late.Status == TaskStatus.RanToCompletion ? late.Result : -1;
+            expect(leftCancelled && closed is { Closing: true } && lateResult == 42,
+                $"a caller arriving while the last one leaves gets fresh work and its result (closing item never reused; got {lateResult}) (UGLY-08)");
+        }
+        finally
+        {
+            WorkScheduler.ClosingSeam = null;
+        }
+
+        var frames = SourceProbe.Member(SourceProbe.Src("Services", "SourceFrames.cs"), "private async Task PumpRequestsAsync(");
         expect(SourceProbe.InOrder(frames, "held = WorkScheduler.IsHeld;", "if (!held)", "_waiting = null;", "if (held)") && frames.Split("WorkScheduler.IsHeld").Length == 2,
             "the media browser's still pump reads the hold once per decision (a request is never taken out and then skipped)");
     }

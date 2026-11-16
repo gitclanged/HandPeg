@@ -49,9 +49,12 @@ public sealed class SourceFrames
 
         replaced?.Done.TrySetResult(null);
         if (start)
-            _ = Task.Run(PumpAsync);
+            StartPump();
         return request.Done.Task;
     }
+
+    // The pump's task is observed: a fault that still escapes it is logged, never unobserved.
+    private void StartPump() => Faults.Forget(Task.Run(PumpAsync), "Media browser still pump");
 
     /// <summary>Drops any waiting request (file changed or preview closed).</summary>
     public void Cancel()
@@ -62,11 +65,39 @@ public sealed class SourceFrames
         replaced?.Done.TrySetResult(null);
     }
 
-    // One request at a time, the newest waiting next, until none waits.
+    // One request at a time, the newest waiting next, until none waits. Whatever ends the loop, the request in hand is settled and
+    // the pump's ownership given back (a request queued meanwhile starts a fresh pump), so one fault never wedges later stills.
     private async Task PumpAsync()
+    {
+        Request? current = null;
+        var finished = false;
+        try
+        {
+            await PumpRequestsAsync(r => current = r, () => finished = true).ConfigureAwait(false);
+        }
+        finally
+        {
+            current?.Done.TrySetResult(null);
+            if (!finished)
+            {
+                var restart = false;
+                lock (_gate)
+                {
+                    _running = _waiting is not null;
+                    restart = _running;
+                }
+
+                if (restart)
+                    StartPump();
+            }
+        }
+    }
+
+    private async Task PumpRequestsAsync(Action<Request?> serving, Action finished)
     {
         while (true)
         {
+            serving(null);
             Request? next;
             bool held;
             lock (_gate)
@@ -74,6 +105,7 @@ public sealed class SourceFrames
                 if (_waiting is null)
                 {
                     _running = false;
+                    finished();
                     return;
                 }
 
@@ -97,6 +129,7 @@ public sealed class SourceFrames
                 continue;
             }
 
+            serving(next);
             try
             {
                 next.Done.TrySetResult(await _fetch(next.Path, next.Seconds, next.Height, next.Fast, next.Token).ConfigureAwait(false));
@@ -105,8 +138,9 @@ public sealed class SourceFrames
             {
                 next.Done.TrySetResult(null);
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or NotSupportedException or ArgumentException)
+            catch (Exception ex) when (ex is not OutOfMemoryException)
             {
+                // Any producer failure (a decoder's Win32Exception or COMException included) settles this request only.
                 AppLog.Write($"Media browser: a still of {Path.GetFileName(next.Path)} could not be made", ex);
                 next.Done.TrySetResult(null);
             }

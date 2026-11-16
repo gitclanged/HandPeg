@@ -275,7 +275,7 @@
                     SelectionChanged="SettingsTabs_SelectionChanged">
 
             <!-- ===== General: appearance, startup and project handling ===== -->
-            <TabItem Header="General">
+            <TabItem Header="General" Tag="General">
                 <StackPanel>
                     <TextBlock Text="About HandPeg" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
                     <TextBlock x:Name="AboutText" Style="{StaticResource Hint}" Margin="0,0,0,4" />
@@ -425,7 +425,7 @@
             </TabItem>
 
             <!-- ===== Timeline & Player: timeline display and playback behaviour ===== -->
-            <TabItem Header="Timeline &amp; Player">
+            <TabItem Header="Timeline &amp; Player" Tag="TimelinePlayer">
                 <StackPanel>
                     <TextBlock Text="Timeline" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
                     <TextBlock Style="{StaticResource Hint}"
@@ -584,7 +584,7 @@
             </TabItem>
 
             <!-- ===== Preview & Cache: on-disk caches ===== -->
-            <TabItem Header="Preview &amp; Cache">
+            <TabItem Header="Preview &amp; Cache" Tag="PreviewCache">
                 <StackPanel>
                     <TextBlock Text="Caches" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
                     <TextBlock Style="{StaticResource Hint}"
@@ -740,7 +740,7 @@
             </TabItem>
 
             <!-- ===== Export & Hardware: encode defaults and hardware role assignment ===== -->
-            <TabItem Header="Export &amp; Hardware">
+            <TabItem Header="Export &amp; Hardware" Tag="ExportHardware">
                 <StackPanel>
                     <TextBlock Text="Default encoding settings" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
                     <TextBlock Style="{StaticResource Hint}"
@@ -988,7 +988,7 @@
             </TabItem>
 
             <!-- ===== Auto-Captions: whisper.cpp settings, silence detection and default caption style ===== -->
-            <TabItem Header="Auto-Captions">
+            <TabItem Header="Auto-Captions" Tag="AutoCaptions">
                 <StackPanel>
                     <TextBlock Text="Speech model" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
                     <TextBlock Style="{StaticResource Hint}"
@@ -1110,7 +1110,7 @@
                 Rules belong to the main window's view model, not the edited settings copy, and are saved on edit
                 (independent of Save).
             -->
-            <TabItem Header="Automation &amp; Drop Targets">
+            <TabItem Header="Automation &amp; Drop Targets" Tag="Automation">
                 <StackPanel>
                     <TextBlock Text="Automation" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
                     <TextBlock Style="{StaticResource Hint}"
@@ -1281,7 +1281,7 @@
                 named hosts and committed on Save (SaveKeybinds); DialHint shows the dial's bound key. The stage widens for the
                 keyboard. The Lightning Dial section is listed first.
             -->
-            <TabItem Header="Keybinds &amp; Lightning Dial" Tag="WideStage">
+            <TabItem Header="Keybinds &amp; Lightning Dial" Tag="Keybinds">
                 <StackPanel>
                     <TextBlock Text="Lightning Dial" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
                     <TextBlock x:Name="DialHint" Style="{StaticResource Hint}"
@@ -1313,7 +1313,7 @@
             </TabItem>
 
             <!-- ===== Tools & Backup: managed tool downloads, sources, and settings import/export ===== -->
-            <TabItem Header="Tools &amp; Backup">
+            <TabItem Header="Tools &amp; Backup" Tag="Tools">
                 <StackPanel>
                     <TextBlock Text="Dependencies" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
                     <TextBlock Style="{StaticResource Hint}"

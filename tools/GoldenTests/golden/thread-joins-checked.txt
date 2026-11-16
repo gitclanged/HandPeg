@@ -2,4 +2,4 @@
 ok: no timed Thread.Join outside ThreadStop (whose result decides what may be freed)
 ok: the compositor client keeps its events and control plane when its supervisor did not stop
 ok: the supervisor's catch touches nothing of a closed client
-ok: the sound engine closes its wake event only after its mixer stopped, and unregisters the device watch before the slow teardown
+ok: the sound engine elects one disposer, its mixer closes the wake event last (after the device watch), even after a timed-out join, and every wake holds a SafeHandle reference (UGLY-10)

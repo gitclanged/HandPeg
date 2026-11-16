@@ -133,14 +133,21 @@ public static class ViewportResizeTests
             "each output slot's content size is at 3176..3199 of the control block, before the cache's counters (3480)");
         var block = new ControlBlock { OutputWidth = 768, OutputHeight = 512 };
         var unwritten = block.OutputContentSize(1);
-        block.SetOutputContentSize(1, 700, 400, 5, readback: false);
-        block.SetOutputContentSize(2, 900, 600, 6, readback: true);
+        block.SetOutputContentSize(1, 700, 400, 5, readback: false, sequence: 41);
+        block.SetOutputContentSize(2, 900, 600, 6, readback: true, sequence: 42);
         expect(unwritten == (768, 512) && block.OutputContentSize(1) == (700, 400) && block.OutputContentSize(2) == (768, 512) && block.OutputContentSize(0) == (768, 512),
             "a slot's content size: what the worker wrote, never more than the ring, the whole ring where nothing was written (an older worker)");
         var tags = new[] { "OutputContentTag0", "OutputContentTag1", "OutputContentTag2" }.Select(name => (int)Marshal.OffsetOf<ControlBlock>(name)).ToArray();
         expect(tags.SequenceEqual([3200, 3204, 3208]) && block.OutputContentTag(1) == 10 && block.OutputContentTag(2) == 13 && block.OutputContentTag(0) == 0,
             "each slot's tag at 3200..3211: its ring's generation * 2, + 1 for a frame read back (a capture the player never shows)");
+        var sequences = new[] { "OutputContentSequence0", "OutputContentSequence1", "OutputContentSequence2" }.Select(name => (int)Marshal.OffsetOf<ControlBlock>(name)).ToArray();
+        expect(sequences.SequenceEqual([296, 304, 312]) && block.OutputContentSequence(1) == 41 && block.OutputContentSequence(2) == 42 && block.OutputContentSequence(0) == 0,
+            "each slot's scene number at 296..319, written with its size under the slot's mutex (UGLY-07)");
         var reader = File.ReadAllText(Path.Combine(SourceProbe.Root, "src", "Services", "CompositorFrameReader.cs"));
+        var centered = SourceProbe.Member(reader, "internal bool CopyPresentedCentered(");
+        expect(SourceProbe.InOrder(centered, "Dxgi.AcquireSync(mutex", "var sequence = control.OutputContentSequence(index);", "Sequence = sequence;", "Dxgi.ReleaseSync(mutex")
+               && !reader.Contains("Sequence = Volatile.Read(ref control.PresentedSequence);", StringComparison.Ordinal),
+            "the player's copy carries the held slot's own scene number, read under its mutex with the copy (never a newer slot's) (UGLY-07)");
         expect(SourceProbe.Member(reader, "internal bool CopyPresentedCentered(").Contains("if (ReadbackIn(index))", StringComparison.Ordinal)
                && SourceProbe.Member(reader, "internal bool CopyPresentedRegionTo(").Contains("if (ReadbackIn(index))", StringComparison.Ordinal)
                && SourceProbe.Member(reader, "internal (int Width, int Height) ContentSize(").Contains("OutputContentTag(index) >> 1 != _generation", StringComparison.Ordinal)

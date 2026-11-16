@@ -112,9 +112,26 @@ public sealed class TrackAudioFilters
     /// off (e.g. a bypassed compressor keeps its threshold). Not serialized.
     /// </summary>
     [JsonIgnore]
-    public bool IsDefault => System.Text.Json.JsonSerializer.Serialize(this) == DefaultJson;
+    public bool IsDefault =>
+        !Compressor && CompressorThreshold == -18 && CompressorRatio == 4 && !NoiseGate && GateThreshold == -40 && !DeNoise && DeNoiseStrength == 12
+        && !BassTreble && BassGain == 0 && TrebleGain == 0 && !HighPass && HighPassHz == 80 && !ShowAdvanced && !Limiter && LimiterCeiling == -1
+        && !Equalizer && GainsAreDefault(EqualizerGains) && !PitchTempo && PitchSemitones == 0 && Tempo == 1 && !StereoWidener && StereoWidth == 1.5
+        && !StudioVoice && StudioVoiceMix == 85 && StudioVoiceMixKeys is null && !DeEsser && DeEsserAmount == 50
+        && EqualizerFrequencies is null && EqualizerWidths is null;
 
-    private static readonly string DefaultJson = System.Text.Json.JsonSerializer.Serialize(new TrackAudioFilters());
+    /// <summary>Default gains: exactly ten bands, all 0 dB (a shorter, longer or null array is a non-default set, as when serialized).</summary>
+    private static bool GainsAreDefault(double[]? gains)
+    {
+        if (gains is not { Length: 10 })
+            return false;
+        foreach (var gain in gains)
+        {
+            if (gain != 0)
+                return false;
+        }
+
+        return true;
+    }
 
     public TrackAudioFilters Clone()
     {

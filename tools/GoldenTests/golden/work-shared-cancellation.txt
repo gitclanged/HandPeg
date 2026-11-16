@@ -1,4 +1,5 @@
 # Shared (keyed) work: one caller's cancel ends only its own wait; the work stops when no caller wants it.
 ok: caller A cancelled: its wait ends; caller B still gets the shared work's result (the work started once)
 ok: both callers cancelled: both waits end, and the work itself is cancelled (no one wants it)
+ok: a caller arriving while the last one leaves gets fresh work and its result (closing item never reused; got 42) (UGLY-08)
 ok: the media browser's still pump reads the hold once per decision (a request is never taken out and then skipped)

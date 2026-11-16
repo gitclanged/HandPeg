@@ -4,3 +4,4 @@ ok: while a drag and drop holds background work, no still is asked for
 ok: let go, the still waiting is made
 ok: Cancel lets go of the request waiting (null)
 ok: a request already cancelled is never made (null)
+ok: a still producer's unexpected Win32Exception settles its request (null) and the next still is made (UGLY-09)

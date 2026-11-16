@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using HandPegApp.Compositor.Native;
 using HandPegApp.Native;
+using Microsoft.Win32.SafeHandles;
 
 namespace HandPegApp.Services.Audio;
 
@@ -76,6 +77,11 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
     private int _reopen;
     private long _pausedBits;
     private volatile bool _stopping;
+    private int _disposing;
+
+    // The wake event. The mixer thread owns its lifetime (closes it last, after the device watch is unregistered); every other signal goes
+    // through Wake, which holds a SafeHandle reference, so a late or concurrent wake never touches a closed or recycled handle (UGLY-10).
+    private readonly SafeWaitHandle _commandEvent;
     private readonly nint _commands;
     private readonly Thread _thread;
     private readonly object _programGate = new();
@@ -145,7 +151,8 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         _deviceId = deviceId ?? "";
         _bufferMs = Math.Clamp(bufferMs, 3, 40);
         _syncOffsetBits = BitConverter.DoubleToInt64Bits(Math.Clamp(syncOffsetMs, -250, 250) / 1000);
-        _commands = Kernel32.CreateEventW(0, 0, 0, 0);
+        _commandEvent = new SafeWaitHandle(Kernel32.CreateEventW(0, 0, 0, 0), ownsHandle: true);
+        _commands = _commandEvent.DangerousGetHandle();
         _thread = new Thread(Run) { IsBackground = true, Name = "HandPeg sound mixer", Priority = ThreadPriority.Highest };
         _thread.Start();
     }
@@ -401,28 +408,36 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
 
     public void Dispose()
     {
-        if (_stopping)
+        // One disposer: a concurrent or later Dispose returns at once.
+        if (Interlocked.Exchange(ref _disposing, 1) != 0)
             return;
         _stopping = true;
-        Kernel32.SetEvent(_commands);
+        Wake();
 
-        // The mixer thread unregisters the device watch (whose callbacks signal _commands) in its finally. If it has not stopped, keep the
-        // event open: closing it would let a late callback or a Wake from a resumed pump signal a recycled handle.
-        if (!ThreadStop.Join(_thread, 3000, "Sound engine mixer"))
-            return;
-        Kernel32.CloseHandle(_commands);
-        Volatile.Write(ref _closed, 1);
+        // The mixer thread closes the wake event itself, after unregistering the device watch (whose callbacks signal it), whether this join
+        // returns in time or the thread finishes later: a stalled shutdown still frees the event once the mixer gets out.
+        _ = ThreadStop.Join(_thread, 3000, "Sound engine mixer");
     }
-
-    // Set once _commands is closed: a late Wake (pump still running after a join timeout) must not signal a recycled handle.
-    private int _closed;
 
     private double SyncOffset => BitConverter.Int64BitsToDouble(Volatile.Read(ref _syncOffsetBits));
 
+    // Signals the mixer through a held SafeHandle reference: after the mixer closed the event, a late wake does nothing.
     private void Wake()
     {
-        if (Volatile.Read(ref _closed) == 0)
-            Kernel32.SetEvent(_commands);
+        var held = false;
+        try
+        {
+            _commandEvent.DangerousAddRef(ref held);
+            Kernel32.SetEvent(_commandEvent.DangerousGetHandle());
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        finally
+        {
+            if (held)
+                _commandEvent.DangerousRelease();
+        }
     }
 
     // ----- Mixer thread -----
@@ -462,8 +477,8 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         }
         finally
         {
-            // Unregister the device watch first: its callbacks signal _commands, and the teardown below (mixer and feeders) can take up to
-            // 2 s, during which Dispose may be deciding whether to close that event.
+            // Unregister the device watch first: its callbacks signal _commands natively, and the event is closed at the end of this block
+            // (the teardown below, mixer and feeders, can take up to 2 s).
             _watch?.Dispose(_enumerator);
             Close();
             Com.Release(ref _enumerator);
@@ -472,6 +487,9 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
                 Kernel32.CloseHandle(_timer);
             if (mmcss != 0)
                 AudioNative.AvRevertMmThreadCharacteristics(mmcss);
+
+            // Last: nothing native signals the event any more (watch unregistered); a held Wake keeps it open until it lets go.
+            _commandEvent.Dispose();
         }
     }
 

@@ -641,9 +641,21 @@ public static class FirstRunStudioTests
             expect(tip.Contains("Asked only when Keep open project tabs suspended between sessions is off (Settings > General > Projects and saving)", StringComparison.Ordinal)
                    && tip.Contains("closing keeps every tab, saved or not, for the next start", StringComparison.Ordinal)
                    && settingsXaml.Contains("<CheckBox Content=\"Keep open project tabs suspended between sessions", StringComparison.Ordinal)
-                   && settingsXaml.IndexOf("<TabItem Header=\"General\">", StringComparison.Ordinal) < settingsXaml.IndexOf("Text=\"Projects and saving\"", StringComparison.Ordinal)
-                   && settingsXaml.IndexOf("Text=\"Projects and saving\"", StringComparison.Ordinal) < settingsXaml.IndexOf("<TabItem Header=\"Timeline &amp; Player\">", StringComparison.Ordinal),
+                   && settingsXaml.IndexOf("<TabItem Header=\"General\" Tag=\"General\">", StringComparison.Ordinal) < settingsXaml.IndexOf("Text=\"Projects and saving\"", StringComparison.Ordinal)
+                   && settingsXaml.IndexOf("Text=\"Projects and saving\"", StringComparison.Ordinal) < settingsXaml.IndexOf("<TabItem Header=\"Timeline &amp; Player\" Tag=\"TimelinePlayer\">", StringComparison.Ordinal),
                 "Prompt to save before closing: asked only when Keep open project tabs suspended between sessions is off (Settings > General > Projects and saving, where that box is); while on, closing keeps every tab");
+
+            // Codex BAD-05: every Settings tab carries its stable category in its Tag, and the stage is chosen by it, not by header text.
+            var categoryTags = System.Text.RegularExpressions.Regex.Matches(settingsXaml, "<TabItem Header=\"[^\"]*\" Tag=\"(\\w+)\"").Select(m => m.Groups[1].Value).ToList();
+            var stageCode = SourceProbe.Src("Dialogs", "SettingsWindow.Stage.cs");
+            var relabelled = new TabItem { Header = "Renamed Hardware", Tag = "ExportHardware" };
+            expect(categoryTags.Count == System.Text.RegularExpressions.Regex.Matches(settingsXaml, "<TabItem ").Count && categoryTags.Count == 8 && categoryTags.Distinct().Count() == 8
+                   && categoryTags.All(t => Enum.TryParse<SettingsCategory>(t, out var c) && c != SettingsCategory.None)
+                   && SettingsWindow.StageKindOf(SettingsWindow.CategoryOf(relabelled)) == StageKind.Hardware
+                   && SettingsWindow.CategoryOf(new TabItem { Header = "Export & Hardware" }) == SettingsCategory.None
+                   && !stageCode.Contains("Header as string) switch", StringComparison.Ordinal) && !stageCode.Contains("\"WideStage\"", StringComparison.Ordinal)
+                   && !System.Text.RegularExpressions.Regex.IsMatch(stageCode, "\\[\\(?\"(General|Timeline & Player|Preview & Cache|Export & Hardware|Auto-Captions|Keybinds & Lightning Dial|Tools & Backup|Automation & Drop Targets)\""),
+                "each of the 8 Settings tabs names its category in its Tag; the stage picture, intro, icon and mirrors follow that id, so a relabelled Export & Hardware tab still shows the hardware cards (BAD-05): " + string.Join(", ", categoryTags));
             expect(tip.Contains("is off (Settings > General > Projects and saving), as it is at first", StringComparison.Ordinal)
                    && tip.Contains("one dialog lists them all and can keep every tab for the next start instead", StringComparison.Ordinal) && !tip.Contains("while that is on, as it is at first", StringComparison.Ordinal),
                 "(5.5A addenda) and that box is off at first, so closing asks: with two tabs or more, in one dialog that can keep every tab for the next start");

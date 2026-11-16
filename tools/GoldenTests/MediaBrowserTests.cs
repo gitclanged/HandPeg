@@ -602,6 +602,15 @@ public static class MediaBrowserTests
         stop.Cancel();
         var cancelled = frames.FrameAsync("D:/media/a.mp4", 6, 270, fast: false, stop.Token);
         expect(cancelled.Wait(2000) && cancelled.Result is null, "a request already cancelled is never made (null)");
+
+        // Codex UGLY-09: an unexpected producer error (outside the IO/argument list) settles its own request and the next one is still made.
+        var faulty = new SourceFrames((path, seconds, height, fast, token) =>
+            seconds == 7 ? throw new System.ComponentModel.Win32Exception(5) : Task.FromResult<BitmapSource?>(Pixel((byte)seconds)));
+        var failed = faulty.FrameAsync("D:/media/a.mp4", 7, 270, fast: false, CancellationToken.None);
+        var settled = failed.Wait(2000) && failed.Result is null;
+        var after = faulty.FrameAsync("D:/media/a.mp4", 8, 270, fast: false, CancellationToken.None);
+        expect(settled && after.Wait(2000) && after.Result is { } e && Shade(e) == 8,
+            "a still producer's unexpected Win32Exception settles its request (null) and the next still is made (UGLY-09)");
     }
 
     private static int Shade(BitmapSource picture)

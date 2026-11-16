@@ -300,6 +300,15 @@ public static class ShellArchitectureTests
         expect(SourceProbe.Member(code, "private void Rebuild()").Contains("if (HiddenNow)", StringComparison.Ordinal) && SourceProbe.Member(code, "private void OnPlayheadMoved()").Contains("if (HiddenNow)", StringComparison.Ordinal)
                && !Regex.IsMatch(Src("Views", "EffectsPane.Audio.cs") + Src("Views", "EffectsPane.Speed.cs") + code, @"_rebuildQueued|_refreshQueued"),
             "loaded but hidden it rebuilds and refreshes nothing until it shows; its queued runs are RunGates, not flags");
+        expect(typeof(ReorderBehavior).GetEvent("Reordered", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static) is null
+               && ReorderBehavior.ReorderedEvent.RoutingStrategy == RoutingStrategy.Bubble
+               && code.Contains("AddHandler(ReorderBehavior.ReorderedEvent,", StringComparison.Ordinal),
+            "card reorders reach the pane as a bubbling routed event on its own panels: no static event roots a pane ever made (BAD-03)");
+        var playhead = SourceProbe.Member(code, "private void OnPlayheadMoved()");
+        expect(!playhead.Contains("_rebuildWhenShown", StringComparison.Ordinal) && !SourceProbe.Member(code, "private void RefreshParams()").Contains("_rebuildWhenShown", StringComparison.Ordinal)
+               && playhead.Contains("_refreshWhenShown |= _params.Any(model => model.Animated);", StringComparison.Ordinal)
+               && SourceProbe.InOrder(code, "if (_rebuildWhenShown)", "Rebuild();", "else if (_refreshWhenShown)", "RefreshParams();"),
+            "hidden playback or value changes only refresh the cards' values when shown (and only with animated values for playback); cards are rebuilt only when their set changed (BAD-03)");
     }
 
     // ----- native-one-declaration -----

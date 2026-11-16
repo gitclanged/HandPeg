@@ -761,23 +761,24 @@ internal sealed unsafe class MfVideoDecoder : IDisposable
         }
 
         var paddedHeight = (int)(size & 0xFFFFFFFF);
+        // The queried 2D interface is owned from here: released whichever lock (if any) succeeds, only the held lock undone.
         var buffer2D = Com.Query(buffer, Iid.Mf2DBuffer);
-        byte* data;
-        int pitch;
-        bool locked2D;
-        if (buffer2D != 0 && Mf.Lock2D(buffer2D, out data, out pitch) >= 0)
-        {
-            locked2D = true;
-        }
-        else
-        {
-            locked2D = false;
-            Com.Check(Mf.Lock(buffer, out data, out _), "IMFMediaBuffer::Lock");
-            pitch = Width * bytesPerSample;
-        }
-
+        bool locked2D = false, lockedPlain = false;
         try
         {
+            byte* data;
+            int pitch;
+            if (buffer2D != 0 && Mf.Lock2D(buffer2D, out data, out pitch) >= 0)
+            {
+                locked2D = true;
+            }
+            else
+            {
+                Com.Check(Mf.Lock(buffer, out data, out _), "IMFMediaBuffer::Lock");
+                lockedPlain = true;
+                pitch = Width * bytesPerSample;
+            }
+
             if (pitch < 0)
                 throw new GpuException(unchecked((int)0x80004005), "A bottom-up frame");
             Upload(data, pitch, data + (long)pitch * Math.Max(paddedHeight, Height), pitch, into);
@@ -786,7 +787,7 @@ internal sealed unsafe class MfVideoDecoder : IDisposable
         {
             if (locked2D)
                 _ = Mf.Unlock2D(buffer2D);
-            else
+            else if (lockedPlain)
                 _ = Mf.Unlock(buffer);
             Com.Release(ref buffer2D);
         }

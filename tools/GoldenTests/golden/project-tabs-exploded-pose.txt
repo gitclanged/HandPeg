@@ -36,3 +36,5 @@ ok: SetExplodedView(on, instant, pose): a tab's way in sets its pose at once (no
 ok: ShowExplodedLayer never hides a tab's still (the overlay children it dims skip it)
 ok: closing the tab in front leaves the 3D view at once (the last tab emptied, or the next one brought forward)
 ok: a duplicate takes its original's window, from its header behind or from the window in front
+ok: 3D textures: a large discrete card (24 GB) keeps them over flat frames until the worker's idle or asked trim; unified memory and WARP free them on the first flat frame (Q1)
+ok: the 3D path is warmed once per player worker after 2 s quiet (never while playing or with the Live Encoded Preview), drawn off screen and let go of at once (Q2)

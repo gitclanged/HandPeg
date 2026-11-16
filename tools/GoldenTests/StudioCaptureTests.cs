@@ -80,6 +80,29 @@ public static class StudioCaptureTests
 
     // ----- voiceover-wav-segments -----
 
+    // The whole-file linear conversion the streamed join must reproduce (the algorithm before UGLY-14 streamed it).
+    private static short[] WholeConversion(short[] samples, int fromRate, int fromChannels, int rate, int channels)
+    {
+        var frames = samples.Length / fromChannels;
+        var outFrames = (int)((long)frames * rate / fromRate);
+        var result = new short[outFrames * channels];
+        for (var f = 0; f < outFrames; f++)
+        {
+            var at = (double)f * fromRate / rate;
+            var (low, mix) = ((int)at, at - (int)at);
+            var high = Math.Min(low + 1, frames - 1);
+            for (var c = 0; c < channels; c++)
+            {
+                double Sample(int frame) => fromChannels == channels ? samples[frame * channels + c]
+                    : fromChannels == 1 ? samples[frame]
+                    : (samples[frame * 2] + samples[frame * 2 + 1]) / 2.0;
+                result[f * channels + c] = (short)Math.Round(Sample(low) * (1 - mix) + Sample(high) * mix);
+            }
+        }
+
+        return result;
+    }
+
     private static void WavSegments(Action<bool, string> expect)
     {
         var folder = Path.Combine(Path.GetTempPath(), $"handpeg-wav-{Guid.NewGuid():N}");
@@ -142,6 +165,22 @@ public static class StudioCaptureTests
                 mirrored &= tail[i] == tail[i + 1];
             expect(converted is { Rate: 48000, Channels: 2 } && Math.Abs(frames - (24000 + 24000)) <= 1 && mirrored,
                 "a 44.1 kHz mono segment joined after a 48 kHz stereo one becomes 48 kHz stereo of its own length, the same in both channels");
+
+            // Codex UGLY-14: joins stream in blocks; a long converted segment (several blocks, a ragged end) gives the samples a whole-file
+            // linear conversion gives, its fractional position carried over every block boundary.
+            var longMono = Tone(44100, 1, (WavFile.JoinBlockFrames * 2.5 + 123) / 44100.0, 310);
+            var d = Write("d.wav", 44100, 1, longMono);
+            var streamed = Path.Combine(folder, "streamed.wav");
+            WavFile.Join([a, d], streamed);
+            var expected = toneA.Concat(WholeConversion(longMono, 44100, 1, 48000, 2)).ToArray();
+            var got = WavFile.Read(streamed)?.Samples ?? [];
+            expect(got.SequenceEqual(expected),
+                $"a {longMono.Length}-frame 44.1 kHz mono segment streamed in {WavFile.JoinBlockFrames}-frame blocks joins to the whole-file conversion, sample for sample ({got.Length} of {expected.Length} samples)");
+            var recorder = SourceProbe.Src("Services", "Audio", "VoiceRecorder.cs");
+            expect(!recorder.Contains("File.ReadAllBytes", StringComparison.Ordinal)
+                   && SourceProbe.InOrder(SourceProbe.Member(recorder, "public static void Join("), "if (total > MostData)", "throw new WavTooLongException(total);", "new WavFile(output, rate, channels)")
+                   && SourceProbe.Member(recorder, "public bool Write(").Contains("_data + (long)bytes.Length > MostData", StringComparison.Ordinal),
+                "no segment is read whole; a join past the 4 GiB RIFF limit fails before writing (segments kept), and a live block past it is refused and logged");
         }
         finally
         {

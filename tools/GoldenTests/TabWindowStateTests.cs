@@ -8,6 +8,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Xml.Linq;
 using HandPegApp;
+using HandPegApp.Compositor;
 using HandPegApp.Docking;
 using HandPegApp.Models;
 using HandPegApp.Services;
@@ -65,6 +66,31 @@ public static class TabWindowStateTests
         Engine(expect);
         Still(expect);
         Window(expect);
+        KeptTextures(expect);
+    }
+
+    // Q1 (5.6.2B): a large discrete card keeps its 3D textures across flat frames until a trim; unified memory lets them go at once.
+    private static void KeptTextures(Action<bool, string> expect)
+    {
+        var exploded = SourceProbe.Src("Compositor", "SceneRenderer.Exploded.cs");
+        var renderer = SourceProbe.Src("Compositor", "SceneRenderer.cs");
+        expect(SourceProbe.InOrder(SourceProbe.Member(exploded, "private void ForgetExplodedTextures("), "if (!KeepsExplodedTextures", "DisposeExploded();")
+               && exploded.Contains("_keepExplodedTextures ??= MemoryTier.IsBigCard(_gpu.IsWarp, _gpu.UnifiedMemory, _gpu.DedicatedVideoMemory);", StringComparison.Ordinal)
+               && SourceProbe.Member(renderer, "public void ReleaseIdleTextures(").Contains("ReleaseExplodedTextures();", StringComparison.Ordinal)
+               && SceneRenderer.ExplodedTexturesPatience == 0
+               && MemoryTier.IsBigCard(warp: false, unified: false, dedicatedBytes: 24L << 30) && !MemoryTier.IsBigCard(warp: false, unified: true, dedicatedBytes: 24L << 30)
+               && !MemoryTier.IsBigCard(warp: true, unified: false, dedicatedBytes: 24L << 30),
+            "3D textures: a large discrete card (24 GB) keeps them over flat frames until the worker's idle or asked trim; unified memory and WARP free them on the first flat frame (Q1)");
+
+        // Q2: the player's worker warms the 3D path once, after 2 s quiet, never while playing or encoding a preview.
+        var second = System.Diagnostics.Stopwatch.Frequency;
+        var worker = SourceProbe.Src("Compositor", "CompositorWorker.cs");
+        expect(CompositorWorker.ExplodedWarmDue(10 * second, 7 * second, playing: false, loopbackOn: false) && !CompositorWorker.ExplodedWarmDue(10 * second, 9 * second, playing: false, loopbackOn: false)
+               && !CompositorWorker.ExplodedWarmDue(10 * second, 0, playing: true, loopbackOn: false) && !CompositorWorker.ExplodedWarmDue(10 * second, 0, playing: false, loopbackOn: true)
+               && SourceProbe.InOrder(worker, "if (!explodedWarmed && !first && ExplodedWarmDue(", "explodedWarmed = true;", "Volatile.Read(ref control.TabParkingRequest) == 1 && header.ViewMode == 0",
+                   "decoders.Drawing(true);", "renderer.WarmExploded(", "decoders.Drawing(false);")
+               && SourceProbe.InOrder(SourceProbe.Member(exploded, "internal void WarmExploded("), "header.ViewMode = 1;", "Render(header, layers, target.Rtv, WarmSide, WarmSide, raw: false);", "DisposeExploded();"),
+            "the 3D path is warmed once per player worker after 2 s quiet (never while playing or with the Live Encoded Preview), drawn off screen and let go of at once (Q2)");
     }
 
     private static void Header(Action<bool, string> expect)
@@ -240,7 +266,7 @@ public static class TabWindowStateTests
         expect(SourceProbe.InOrder(view, "RestoreExplodedForTab(tab);", "OpenInPlayer((long)at, paused: true);"), "RestoreTabView restores the 3D view before the player opens");
         expect(SourceProbe.InOrder(SourceProbe.Member(tabs, "private async Task<bool> ResumeTabAsync("), "DeleteTabFiles(id);", "if (tab.ExplodedOpen)", "_explodedWaitingTab = tab;", "Dispatcher.BeginInvoke(() => RestoreTabView(tab), DispatcherPriority.Background);")
                && SourceProbe.InOrder(SourceProbe.Member(tabs, "private bool AttachHydrated("), "DeleteTabFiles(tab.Id);", "if (tab.ExplodedOpen)", "_explodedWaitingTab = tab;", "RestoreTabView(tab);")
-               && SourceProbe.InOrder(view, "if (ReferenceEquals(tab, _tabs.Active) && ReferenceEquals(_explodedWaitingTab, tab))", "_explodedWaitingTab = null;", "HideTabStill();", "return;", "RestoreExplodedForTab(tab);"),
+               && SourceProbe.InOrder(view, "if (!ReferenceEquals(tab, _tabs.Active))", "return;", "if (ReferenceEquals(_explodedWaitingTab, tab))", "_explodedWaitingTab = null;", "HideTabStill();", "return;", "RestoreExplodedForTab(tab);"),
             "a tab brought back in the 3D view waits for its view to be restored (5.4D review): put behind again before then, it keeps its header's 3D view; in front with nothing to show, it is flat");
         var restore = SourceProbe.Member(tabs, "private void RestoreExplodedForTab(");
         expect(SourceProbe.InOrder(restore, "_explodedWaitingTab = null;", "if (!tab.ExplodedOpen || _explodedUi || !_viewModel.HasSource)", "if (_gpu is null)", "_explodedWaitingTab = tab;", "return;", "if (!VideoView.IsVisible)", "if (_viewModel.IsExportQualityPreview)",

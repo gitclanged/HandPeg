@@ -130,6 +130,9 @@ public sealed unsafe class CompositorFrameReader : IDisposable
                 return false;
             }
 
+            // The held slot's own scene number (UGLY-07), read under its mutex with the copy, so the viewport reports the scene it shows
+            // (never a newer slot's number). A slot already redrawn for a newer scene is shown as before, with that scene's number.
+            var sequence = control.OutputContentSequence(index);
             var content = ContentSize(index);
             if (content.Width < 1 || content.Height < 1)
                 return false;
@@ -150,7 +153,7 @@ public sealed unsafe class CompositorFrameReader : IDisposable
                 }
             }
 
-            Sequence = Volatile.Read(ref control.PresentedSequence);
+            Sequence = sequence;
         }
         finally
         {
@@ -230,7 +233,9 @@ public sealed unsafe class CompositorFrameReader : IDisposable
 
             var box = new Box { Left = 0, Top = 0, Front = 0, Right = (uint)width, Bottom = (uint)height, Back = 1 };
             context.CopySubresourceRegion(_staging, 0, 0, 0, texture, 0, &box);
-            Sequence = Volatile.Read(ref control.PresentedSequence);
+
+            // The held slot's own scene number, read under its mutex with the copy (UGLY-07).
+            Sequence = control.OutputContentSequence(index);
         }
         finally
         {

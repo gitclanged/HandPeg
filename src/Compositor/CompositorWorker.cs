@@ -144,6 +144,9 @@ public static unsafe partial class CompositorWorker
             // tab activated, whose working set GiveBack would discard).
             var giveBackWaiting = false;
             var sceneAfterTrim = false;
+
+            // The 3D path warmed once (Q2, 5.6.2B): see ExplodedWarmDue.
+            var explodedWarmed = false;
             while (true)
             {
                 // A decode lane stuck in a driver for 8 s stops the heartbeat; the client takes over at 10 s.
@@ -246,6 +249,33 @@ public static unsafe partial class CompositorWorker
                     (idleTrimmed, redraw, nextPublish) = (true, true, now + PublishMemoryTicks);
                 }
 
+                // The player's worker warms the 3D path once, quiet after its first flat frames, so the first 3D open in a session does not
+                // pay the driver's first-draw shader builds (87 ms on the Adreno X1-85, ~2 ms on an RX 7900 XTX). Never while playing, with
+                // the Live Encoded Preview on, or for strip, export and test clients (TabParkingRequest 1 is the player).
+                if (!explodedWarmed && !first && ExplodedWarmDue(now, askedLast, decoders.Playing, loopback is not null))
+                {
+                    explodedWarmed = true;
+                    if (Volatile.Read(ref control.TabParkingRequest) == 1 && header.ViewMode == 0 && header.FrameSequenceNumber > 0
+                        && header.CanvasWidth > 0 && header.CanvasHeight > 0 && header.ActiveLayerCount > 0)
+                    {
+                        // Like a frame, it owns the device: decode lanes hold back. A failure is logged, never fatal (the 3D view just opens cold).
+                        var count = Math.Clamp(header.ActiveLayerCount, 0, CompositorProtocol.MaxLayers);
+                        decoders.Drawing(true);
+                        try
+                        {
+                            renderer.WarmExploded(header, MemoryMarshal.CreateReadOnlySpan(ref shared.Layer(slot, 0), count));
+                        }
+                        catch (Exception ex) when (ex is not OutOfMemoryException && ex is not GpuException { IsDeviceLost: true })
+                        {
+                            AppLog.Write("Compositor worker: the 3D warm-up failed", ex);
+                        }
+                        finally
+                        {
+                            decoders.Drawing(false);
+                        }
+                    }
+                }
+
                 // Final phase of a requested trim (must not penalize rapid tab switching): release driver memory and compact the heap once
                 // the worker has been quiet for GiveBackQuietMs and nothing plays. IDXGIDevice3::Trim costs tens of ms (75 ms on Adreno X1-85
                 // after a 1080p tab), which each switch and the new tab's first frames would pay; a burst of switches releases once at its end.
@@ -336,6 +366,13 @@ public static unsafe partial class CompositorWorker
 
     /// <summary>Idle time (paused, no activity) before the worker releases everything but cached frames, seconds.</summary>
     internal const int IdleTrimSeconds = 30;
+
+    /// <summary>Quiet seconds (no scene, hint, playback or decode) before the player's worker warms the 3D path (once per worker).</summary>
+    internal const int ExplodedWarmSeconds = 2;
+
+    /// <summary>True when the one-shot 3D warm-up may run: quiet for <see cref="ExplodedWarmSeconds"/>, not playing, no Live Encoded Preview. Pure.</summary>
+    internal static bool ExplodedWarmDue(long now, long askedLast, bool playing, bool loopbackOn) =>
+        !playing && !loopbackOn && now - askedLast > ExplodedWarmSeconds * Stopwatch.Frequency;
 
     /// <summary>
     /// True when the idle trim is due: no activity (scene, hint, playback or decode) for more than <see cref="IdleTrimSeconds"/> since
@@ -635,7 +672,7 @@ public static unsafe partial class CompositorWorker
                 ? P010Picture(gpu, width, height).Rtv
                 : output.Texture.Rtv;
             var acquired = Stopwatch.GetTimestamp();
-            control.SetOutputContentSize(index, width, height, outputs.Generation, (header.Flags & FrameSceneHeader.FlagReadback) != 0);
+            control.SetOutputContentSize(index, width, height, outputs.Generation, (header.Flags & FrameSceneHeader.FlagReadback) != 0, header.FrameSequenceNumber);
             var count = Math.Clamp(header.ActiveLayerCount, 0, CompositorProtocol.MaxLayers);
             var layers = MemoryMarshal.CreateReadOnlySpan(ref shared.Layer(slot, 0), count);
             try
@@ -718,7 +755,7 @@ public static unsafe partial class CompositorWorker
         }
 
         var acquired = Stopwatch.GetTimestamp();
-        control.SetOutputContentSize(index, width, height, outputs.Generation, (header.Flags & FrameSceneHeader.FlagReadback) != 0);
+        control.SetOutputContentSize(index, width, height, outputs.Generation, (header.Flags & FrameSceneHeader.FlagReadback) != 0, header.FrameSequenceNumber);
         try
         {
             loopback.Draw(header, output.Texture.Rtv, width, height);

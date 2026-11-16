@@ -3,6 +3,23 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v5.6.2 — Hardening: Safer Audio, Stills, Docking and Voiceovers, and a Faster First 3D View
+
+### Fixes
+- **The first 3D Exploded View of a session opens without a hitch.** The player warms the 3D view's drawing once while idle, so the
+  first open costs a normal frame (on an ARM64 laptop the first 3D frame went from 87 ms to 5 ms).
+- **Back into 3D at once on large graphics cards.** Cards with more than 4 GB of their own memory keep the 3D view's planes while
+  you edit flat, and let them go when HandPeg idles or the tab changes; laptops and integrated graphics still free them at once.
+- **Long voiceover takes finish reliably.** Joining a paused take streams its pieces instead of loading them whole, and a take too
+  long for one WAV file stops with a clear message, keeping its pieces.
+- **Media browser stills never stop working.** An unexpected error making one still no longer stops later stills from appearing.
+- **Layouts show the right pane.** Switching to a layout whose chosen tab is hidden shows the same pane a fresh start would.
+- **Settings keeps its pictures when its tabs are renamed.** The live preview beside each Settings category follows the category,
+  not its title.
+- **Steadier internals.** The sound engine's shutdown, shared background work, frame numbering between the GPU worker and the
+  player, Media Foundation buffer handling and the Effects pane's memory use were hardened, and the Effects pane no longer rebuilds
+  its cards after playback while hidden.
+
 ## HandPeg v5.6.1 — Hotfix: One Split-Wipe Line, Sharp Scrubbing, Game Presets That Keep Their Size, and Safer Voiceovers
 
 ### Fixes

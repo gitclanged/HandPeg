@@ -942,23 +942,24 @@ internal sealed unsafe class MfDecoderMft : IDisposable
             Com.Release(ref current);
         }
 
+        // The queried 2D interface is owned from here: released whichever lock (if any) succeeds, only the held lock undone.
         var buffer2D = Com.Query(buffer, Iid.Mf2DBuffer);
-        byte* data;
-        int pitch;
-        bool locked2D;
-        if (buffer2D != 0 && Mf.Lock2D(buffer2D, out data, out pitch) >= 0)
-        {
-            locked2D = true;
-        }
-        else
-        {
-            locked2D = false;
-            MfEncoderMft.Check(Mf.Lock(buffer, out data, out _), "IMFMediaBuffer::Lock (decoder)");
-            pitch = _width;
-        }
-
+        bool locked2D = false, lockedPlain = false;
         try
         {
+            byte* data;
+            int pitch;
+            if (buffer2D != 0 && Mf.Lock2D(buffer2D, out data, out pitch) >= 0)
+            {
+                locked2D = true;
+            }
+            else
+            {
+                MfEncoderMft.Check(Mf.Lock(buffer, out data, out _), "IMFMediaBuffer::Lock (decoder)");
+                lockedPlain = true;
+                pitch = _width;
+            }
+
             if (pitch <= 0)
                 return false;
             if (_luma is null)
@@ -996,7 +997,7 @@ internal sealed unsafe class MfDecoderMft : IDisposable
         {
             if (locked2D)
                 _ = Mf.Unlock2D(buffer2D);
-            else
+            else if (lockedPlain)
                 _ = Mf.Unlock(buffer);
             Com.Release(ref buffer2D);
         }

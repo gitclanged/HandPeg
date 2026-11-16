@@ -2,3 +2,5 @@
 ok: Attach hooks the view model's three handlers once (again: no second set); Detach takes every one off
 ok: the pane's hooks live while it is loaded: unloaded (closed, moved), it holds none
 ok: loaded but hidden it rebuilds and refreshes nothing until it shows; its queued runs are RunGates, not flags
+ok: card reorders reach the pane as a bubbling routed event on its own panels: no static event roots a pane ever made (BAD-03)
+ok: hidden playback or value changes only refresh the cards' values when shown (and only with animated values for playback); cards are rebuilt only when their set changed (BAD-03)

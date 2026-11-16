@@ -649,13 +649,19 @@ public partial class MainViewModel : ObservableObject
 
     private int _iFrameStatusVersion;
 
-    async partial void OnIFrameStatusTextChanged(string value)
+    partial void OnIFrameStatusTextChanged(string value)
     {
         // Progress text persists while indexing; only the result is transient.
         var version = ++_iFrameStatusVersion;
         if (value.Length == 0 || value.StartsWith("Indexing", StringComparison.Ordinal))
             return;
 
+        Faults.Forget(ClearIFrameStatusLaterAsync(version), "I-frame status clear");
+    }
+
+    /// <summary>Clears the I-frame result text after 10 s unless a newer status replaced it.</summary>
+    private async Task ClearIFrameStatusLaterAsync(int version)
+    {
         await Task.Delay(TimeSpan.FromSeconds(10));
         if (version == _iFrameStatusVersion)
             IFrameStatusText = "";

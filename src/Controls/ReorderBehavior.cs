@@ -28,8 +28,11 @@ public static class ReorderBehavior
 
     public static void SetIsGrip(DependencyObject element, bool value) => element.SetValue(IsGripProperty, value);
 
-    /// <summary>Raised after a drag reorders a panel's children.</summary>
-    public static event Action<Panel>? Reordered;
+    /// <summary>
+    /// Bubbles from a panel after a drag reorders its children (source: the panel). A routed event, so each owner listens on its own
+    /// element and nothing static roots it (Codex BAD-03: a static event kept every Effects pane ever made alive).
+    /// </summary>
+    public static readonly RoutedEvent ReorderedEvent = EventManager.RegisterRoutedEvent("Reordered", RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(ReorderBehavior));
 
     // Active drag: panel, child, press point, whether the drag threshold was passed, and the insertion line.
     private static (Panel Panel, UIElement Child, Point Start, bool Moving, InsertionLine? Line)? _drag;
@@ -133,7 +136,7 @@ public static class ReorderBehavior
 
         drag.Panel.Children.RemoveAt(from);
         drag.Panel.Children.Insert(to, drag.Child);
-        Reordered?.Invoke(drag.Panel);
+        drag.Panel.RaiseEvent(new RoutedEventArgs(ReorderedEvent, drag.Panel));
     }
 
     /// <summary>Insertion index for a drop at <paramref name="y"/>: before the first visible child whose midpoint is below it.</summary>

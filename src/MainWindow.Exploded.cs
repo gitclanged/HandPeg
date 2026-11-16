@@ -113,6 +113,7 @@ public partial class MainWindow
                 return;
             }
 
+            ExplodedOpenTrace.Asked();
             HookExplodedInput();
 
             // Player zoom does not apply in 3D: start from the fitted picture, like the camera.
@@ -143,6 +144,7 @@ public partial class MainWindow
             engine.ZSpacing = ExplodedSpacing.Value;
             engine.SetExploded(true);
             ShowExplodedLayer();
+            ExplodedOpenTrace.LayerShown();
             _viewModel.StatusText = "3D Exploded View: right-drag or two-finger scroll to orbit, the wheel or a pinch to zoom, Alt + the wheel or [ ] to pick the layer in front or behind; drag a layer to move it in its plane (its corner handle resizes it), Shift + drag to move it through the stack. Esc goes back.";
         }
         else
@@ -309,12 +311,15 @@ public partial class MainWindow
             return;
         }
 
+        var began = ExplodedOpenTrace.On ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         var key = _explodedUi ? SelectedExplodedKey() : 0;
         if (engine.SelectedClipKey != key)
             engine.SelectedClipKey = key;
         KeepExplodedLayerUnzoomed();
-        if (_explodedUi && engine.TryGetExplodedScene(_explodedScene))
+        var scene = _explodedUi && engine.TryGetExplodedScene(_explodedScene);
+        if (scene)
             PlaceExplodedBadges();
+        ExplodedOpenTrace.UiFrame(began, scene);
     }
 
     /// <summary>
@@ -414,7 +419,10 @@ public partial class MainWindow
             var (badge, text, place) = ExplodedBadge(shown++);
             var selected = (plane.Flags & GpuLayerDescriptor.FlagSelected) != 0;
             var name = plane.BlurFillOnly ? ExplodedBlurName : info.Name;
-            text.Text = selected ? "▲ " + name : name;
+            // Allocation-free while unchanged: the selected label is rebuilt only when its name or selection changes.
+            var label = text.Text;
+            if (selected ? !(label.Length == name.Length + 2 && label.StartsWith("▲ ", StringComparison.Ordinal) && label.EndsWith(name, StringComparison.Ordinal)) : !string.Equals(label, name, StringComparison.Ordinal))
+                text.Text = selected ? "▲ " + name : name;
 
             // Selected badge is accent-filled (as is its plane box); other clips of its track playing at this time get an accent edge.
             var selectedTrack = (plane.Flags & GpuLayerDescriptor.FlagSelectedTrack) != 0;

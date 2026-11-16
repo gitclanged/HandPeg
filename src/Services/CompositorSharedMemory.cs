@@ -263,7 +263,22 @@ public struct ControlBlock
     [FieldOffset(288)] public int LoopbackOnAskedCard;
     [FieldOffset(292)] public int LoopbackPausedOnly;
 
-    // 296..511: free.
+    // ----- 296..319: per-output-slot scene number (Codex UGLY-07) -----
+    // The FrameSceneHeader.FrameSequenceNumber of the frame in each slot, written with its content size under the slot's keyed mutex, so
+    // a reader holding the mutex gets the number of the picture it copies (never the global PresentedSequence of a newer slot).
+    [FieldOffset(296)] public long OutputContentSequence0;
+    [FieldOffset(304)] public long OutputContentSequence1;
+    [FieldOffset(312)] public long OutputContentSequence2;
+
+    /// <summary>Scene number of the frame in output slot <paramref name="index"/> (read under its keyed mutex); 0 if never drawn.</summary>
+    public readonly long OutputContentSequence(int index) => index switch
+    {
+        0 => OutputContentSequence0,
+        1 => OutputContentSequence1,
+        _ => OutputContentSequence2,
+    };
+
+    // 320..511: free.
 
     // 512..1023: per-shader-slot GPU time of the last frame (ms), when the scene requests timing.
     [FieldOffset(512)] public SlotTimings SlotGpuMs;
@@ -377,16 +392,16 @@ public struct ControlBlock
 
     /// <summary>
     /// Worker side of <see cref="OutputContentSize"/> and <see cref="OutputContentTag"/>: written under the slot's keyed mutex before
-    /// release, with the ring generation and whether the frame was a readback.
+    /// release, with the ring generation, whether the frame was a readback, and its scene number (<see cref="OutputContentSequence"/>).
     /// </summary>
-    public void SetOutputContentSize(int index, int width, int height, int generation, bool readback)
+    public void SetOutputContentSize(int index, int width, int height, int generation, bool readback, long sequence)
     {
         var tag = generation * 2 + (readback ? 1 : 0);
         switch (index)
         {
-            case 0: (OutputContentWidth0, OutputContentHeight0, OutputContentTag0) = (width, height, tag); break;
-            case 1: (OutputContentWidth1, OutputContentHeight1, OutputContentTag1) = (width, height, tag); break;
-            default: (OutputContentWidth2, OutputContentHeight2, OutputContentTag2) = (width, height, tag); break;
+            case 0: (OutputContentWidth0, OutputContentHeight0, OutputContentTag0, OutputContentSequence0) = (width, height, tag, sequence); break;
+            case 1: (OutputContentWidth1, OutputContentHeight1, OutputContentTag1, OutputContentSequence1) = (width, height, tag, sequence); break;
+            default: (OutputContentWidth2, OutputContentHeight2, OutputContentTag2, OutputContentSequence2) = (width, height, tag, sequence); break;
         }
     }
 

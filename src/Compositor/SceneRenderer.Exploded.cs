@@ -54,6 +54,9 @@ internal sealed unsafe partial class SceneRenderer
     private long _cameraMovedAt;
     private float _explodedGpuMs, _explodedCpuMs;
 
+    // Preview tracing of a 3D open (Q2, 5.6.2B): null unless ExplodedOpenTrace.On.
+    private readonly ExplodedOpenTrace.Worker? _openTrace = ExplodedOpenTrace.On ? new() : null;
+
     /// <summary>Governor scales, full resolution first: step down while frames are slow, back up while fast.</summary>
     private static readonly float[] MotionScales = [1f, 0.85f, 0.70f, 0.55f];
 
@@ -89,9 +92,10 @@ internal sealed unsafe partial class SceneRenderer
     private const int LastBudgetStep = 16;
 
     /// <summary>
-    /// Frames the plane texture may stay oversized; seconds 3D textures are kept after the view goes flat (0: released on the first flat
-    /// frame so 3D planes never occupy VRAM during 2D editing; the player draws one extra flat frame 0.5 s after exiting,
-    /// GpuPreviewEngine.Exploded.cs, so a paused player whose last 3D frame was at the flat camera releases them too).
+    /// Frames the plane texture may stay oversized; seconds 3D textures are kept after the view goes flat on a device that does not keep
+    /// them (<see cref="KeepsExplodedTextures"/>; 0: released on the first flat frame so 3D planes never occupy unified memory during 2D
+    /// editing; the player draws one extra flat frame 0.5 s after exiting, GpuPreviewEngine.Exploded.cs, so a paused player whose last 3D
+    /// frame was at the flat camera releases them too).
     /// </summary>
     private const int PlaneTargetPatience = 240;
     internal const double ExplodedTexturesPatience = 0;
@@ -138,6 +142,7 @@ internal sealed unsafe partial class SceneRenderer
         var camera = ExplodedCamera.From(header, outputWidth, outputHeight);
         var (canvasWidth, canvasHeight) = (camera.CanvasWidth, camera.CanvasHeight);
         _explodedAt = System.Diagnostics.Stopwatch.GetTimestamp();
+        _openTrace?.Begin(_explodedAt, _gpu.TexturesMade);
 
         // Fitted resolution (canvas as the flat player draws it at no zoom) is each plane's minimum.
         var fit = Math.Min(camera.Fit, (float)MaxPlaneSide / Math.Max(canvasWidth, canvasHeight));
@@ -162,6 +167,7 @@ internal sealed unsafe partial class SceneRenderer
         _gpu.Context.ClearRenderTargetView(_view3D.Rtv, 0, 0, 0, raw ? 0 : 1);
         if (!raw)
             DrawBackdrop(amount, outputWidth, outputHeight);
+        _openTrace?.Setup();
 
         // Back to front by distance along the plane normal; ties keep stack order (at zero spread all planes are equidistant and the
         // stack draws like the flat picture).
@@ -172,6 +178,7 @@ internal sealed unsafe partial class SceneRenderer
         if (!raw && (header.Flags & FrameSceneHeader.FlagDepthRails) != 0 && amount > 0.01f)
             DrawDepthRails(layers, camera, amount, outputWidth, outputHeight);
         DrawCanvasFrame(layers, camera, header, amount, outputWidth, outputHeight);
+        _openTrace?.Laid(count, KeptPlaneTextures());
 
         var (canvas, canvasCopy) = (_canvas, _canvasCopy);
         try
@@ -234,6 +241,7 @@ internal sealed unsafe partial class SceneRenderer
         }
 
         SweepKeptPlanes();
+        _openTrace?.PlanesDrawn();
         var constants = default(PassConstants);
         constants.Color = new Vector4(0, 0, 0, 1);
         constants.Params4 = new Vector4(1, 1, raw ? 1 : 0, (float)_time);
@@ -244,6 +252,7 @@ internal sealed unsafe partial class SceneRenderer
         if (clocked)
             EndExplodedClock();
         _explodedCpuMs = Rolling(_explodedCpuMs, (float)System.Diagnostics.Stopwatch.GetElapsedTime(_explodedAt).TotalMilliseconds);
+        _openTrace?.End(_gpu.TexturesMade, _explodedGpuMs);
         _gpu.Textures.EndFrame();
         _explodedFrame = _gpu.Textures.Frame;
         _timer.EndFrame();
@@ -768,14 +777,55 @@ internal sealed unsafe partial class SceneRenderer
         return mode is > 0 and <= 7;
     }
 
+    // Whether 3D textures outlive flat frames (Q1, 5.6.2B): null until first asked, then MemoryTier.IsBigCard for this device; goldens set it.
+    private bool? _keepExplodedTextures;
+
+    /// <summary>Goldens: forces (true/false) or restores (null) the device rule of <see cref="KeepsExplodedTextures"/>.</summary>
+    internal void KeepExplodedTexturesForTests(bool? keep) => _keepExplodedTextures = keep;
+
     /// <summary>
-    /// Releases 3D textures on the first flat frame (called by every flat draw): its own, per-layer cached planes (KeptPlane), and pool
-    /// working textures unused since the last 3D frame (native-resolution sizes the pool would otherwise keep for 240 more frames, i.e.
-    /// forever while paused).
+    /// A discrete GPU with large VRAM (MemoryTier.IsBigCard) keeps the 3D picture, plane texture and cached planes across flat frames, so
+    /// going back into 3D needs no re-render of every plane; they go with the worker's trims (ReleaseIdleTextures: 30 s idle while paused,
+    /// a tab deactivated, Settings Clear). Unified memory, small and WARP devices release them on the first flat frame.
+    /// </summary>
+    internal bool KeepsExplodedTextures => _keepExplodedTextures ??= MemoryTier.IsBigCard(_gpu.IsWarp, _gpu.UnifiedMemory, _gpu.DedicatedVideoMemory);
+
+    /// <summary>Side of the private target the 3D warm-up draws into (its pictures are thrown away).</summary>
+    internal const int WarmSide = 96;
+
+    /// <summary>
+    /// One-shot warm-up of the 3D path (Q2, 5.6.2B): draws <paramref name="flat"/>'s layers once as the 3D view at the default camera into
+    /// a small private target, then releases what it made (<see cref="DisposeExploded"/>). A driver that builds a shader on its first draw
+    /// (measured on the Adreno X1-85: the first 3D frame of a session took 87 ms of worker time, later first frames 5 ms) pays that here,
+    /// at idle, instead of on the user's first open. Worker thread, between frames; never shown.
+    /// </summary>
+    internal void WarmExploded(in FrameSceneHeader flat, ReadOnlySpan<GpuLayerDescriptor> layers)
+    {
+        var header = flat;
+        header.ViewMode = 1;
+        header.Flags = (header.Flags & ~(FrameSceneHeader.FlagTimePasses | FrameSceneHeader.FlagWaitForTimings | FrameSceneHeader.FlagReadback
+            | FrameSceneHeader.FlagReadbackNv12 | FrameSceneHeader.FlagReadbackP010 | FrameSceneHeader.FlagLoopback | FrameSceneHeader.FlagLoopbackLoupe))
+            | FrameSceneHeader.FlagDepthRails;
+        (header.CameraYaw, header.CameraPitch, header.CameraZoom, header.ExplodedZSpread) =
+            ((float)GpuPreviewEngine.DefaultYaw, (float)GpuPreviewEngine.DefaultPitch, (float)GpuPreviewEngine.DefaultZoom, (float)GpuPreviewEngine.DefaultSpacing);
+        header.LoupeClipKey = 0;
+        using var target = _gpu.CreateTexture(WarmSide, WarmSide, DxgiFormat.B8G8R8A8Unorm, renderTarget: true);
+        Render(header, layers, target.Rtv, WarmSide, WarmSide, raw: false);
+        _gpu.Context.Flush();
+        DisposeExploded();
+        _openTrace?.Flat();
+    }
+
+    /// <summary>
+    /// Releases 3D textures on the first flat frame (called by every flat draw) unless the device keeps them (<see cref="KeepsExplodedTextures"/>):
+    /// its own, per-layer cached planes (KeptPlane), and pool working textures unused since the last 3D frame (native-resolution sizes the
+    /// pool would otherwise keep for 240 more frames, i.e. forever while paused).
     /// </summary>
     private void ForgetExplodedTextures()
     {
-        if ((_planeTarget is not null || _view3D is not null || KeptPlaneTextures() > 0)
+        _openTrace?.Flat();
+        if (!KeepsExplodedTextures
+            && (_planeTarget is not null || _view3D is not null || KeptPlaneTextures() > 0)
             && System.Diagnostics.Stopwatch.GetElapsedTime(_explodedAt).TotalSeconds >= ExplodedTexturesPatience)
         {
             DisposeExploded();

@@ -33,6 +33,7 @@ ok: (5.5.0, Q10 b; 5.6A the full test's) the warning line: hidden while nothing 
 ok: (5.5.0, Q10 b) shown in the warning colour when the hardware test fails (or the cards could not be looked at), hidden again when a later one measures
 ok: (5.5.0, Q10 b) Settings > Export & Hardware > GPU & NPU Roles: Apply Recommended Roles beside the test, for a kept result that holds for these cards (none, a stopped one, or one of other cards: off)
 ok: Prompt to save before closing: asked only when Keep open project tabs suspended between sessions is off (Settings > General > Projects and saving, where that box is); while on, closing keeps every tab
+ok: each of the 8 Settings tabs names its category in its Tag; the stage picture, intro, icon and mirrors follow that id, so a relabelled Export & Hardware tab still shows the hardware cards (BAD-05): General, TimelinePlayer, PreviewCache, ExportHardware, AutoCaptions, Automation, Keybinds, Tools
 ok: (5.5A addenda) and that box is off at first, so closing asks: with two tabs or more, in one dialog that can keep every tab for the next start
 ok: (addenda) the first run offers no existing FFmpeg: the component panel's Use Existing button is not there (OffersExistingFfmpeg off)
 ok: (addenda) none of the words the panel shows mentions one

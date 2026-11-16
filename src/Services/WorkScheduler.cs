@@ -182,8 +182,11 @@ public sealed partial class WorkItem : ObservableObject
         }
     }
 
-    // Joined caller count (Join); the work is cancelled when the last cancellable caller cancels.
+    // Joined caller count, reserved and released under the scheduler's Gate; the work is cancelled when the last cancellable caller cancels.
     internal int Waiters;
+
+    // Set under the Gate when the last caller left: the work is about to be cancelled and is never handed to a new caller (Codex UGLY-08).
+    internal bool Closing;
 }
 
 /// <summary>What the progress chip at the bottom left shows: the lead piece of work, and how many more there are.</summary>
@@ -700,8 +703,10 @@ public static class WorkScheduler
         TaskCompletionSource<T> done;
         lock (Gate)
         {
-            if (spec.Key is { } key && Live.FirstOrDefault(i => i.Key == key && i.Task is Task<T> && !i.Cancellation.IsCancellationRequested) is { Task: Task<T> same } twin)
+            if (spec.Key is { } key && Live.FirstOrDefault(i => i.Key == key && i.Task is Task<T> && !i.Closing && !i.Cancellation.IsCancellationRequested) is { Task: Task<T> same } twin)
             {
+                // The subscription is reserved before the gate opens, so a leaving caller can never see zero and cancel it.
+                twin.Waiters++;
                 // Urgent re-request: promote the existing item (start now, resume its tools). Re-enters the gate on this thread.
                 if (spec.Urgent && !twin.Urgent)
                 {
@@ -748,6 +753,9 @@ public static class WorkScheduler
                 }
             };
 
+            // Keyed work is published with its creator's subscription already reserved (a twin found next joins a live caller count).
+            if (spec.Key is not null)
+                item.Waiters = 1;
             Waiting.Add(item);
             Live.Add(item);
 
@@ -775,21 +783,33 @@ public static class WorkScheduler
         return spec.Key is null ? done.Task : Join(item, done.Task, token);
     }
 
+    /// <summary>Golden seam: runs after the last caller marked shared work closing and before its cancellation (null in the app).</summary>
+    internal static Action<WorkItem>? ClosingSeam;
+
     /// <summary>
-    /// A caller's wait on keyed work; <paramref name="token"/> cancels only this wait. The work cancels when the last cancellable caller
-    /// cancels; a non-cancellable caller keeps it running.
+    /// A caller's wait on keyed work whose subscription the caller already reserved under the Gate; <paramref name="token"/> cancels only
+    /// this wait. The work cancels when the last cancellable caller cancels; a non-cancellable caller keeps its reservation (and the work).
     /// </summary>
     private static Task<T> Join<T>(WorkItem item, Task<T> work, CancellationToken token)
     {
-        Interlocked.Increment(ref item.Waiters);
         if (!token.CanBeCanceled)
             return work;
 
         var registration = token.Register(static state =>
         {
             var shared = (WorkItem)state!;
-            if (Interlocked.Decrement(ref shared.Waiters) == 0)
-                shared.Cancel(evenIfNotCancellable: true);
+            var close = false;
+            lock (Gate)
+            {
+                // Zero callers left: mark it closing in the same step, so no new caller joins work that is about to be cancelled.
+                if (--shared.Waiters == 0)
+                    (shared.Closing, close) = (true, true);
+            }
+
+            if (!close)
+                return;
+            ClosingSeam?.Invoke(shared);
+            shared.Cancel(evenIfNotCancellable: true);
         }, item);
         _ = work.ContinueWith(static (_, state) => ((CancellationTokenRegistration)state!).Dispose(), registration,
                               CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);

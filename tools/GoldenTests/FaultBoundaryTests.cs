@@ -150,7 +150,7 @@ public static partial class FaultBoundaryTests
 
     private static void AsyncVoid(Action<bool, string> expect)
     {
-        var found = Sources().Where(s => !s.Path.EndsWith("/Faults.cs", StringComparison.Ordinal) && s.Text.Contains("async void", StringComparison.Ordinal)).Select(s => s.Path).ToList();
+        var found = Sources().Where(s => !s.Path.EndsWith("/Faults.cs", StringComparison.Ordinal) && (s.Text.Contains("async void", StringComparison.Ordinal) || s.Text.Contains("async partial void", StringComparison.Ordinal))).Select(s => s.Path).ToList();
         expect(found.Count == 0, $"no async void outside Faults.cs: an event handler hands its task to Faults.Forget{(found.Count == 0 ? "" : ": " + string.Join(", ", found))}");
 
         var marker = "golden-forget-" + Guid.NewGuid().ToString("N")[..8];

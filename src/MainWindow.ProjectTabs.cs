@@ -892,10 +892,14 @@ public partial class MainWindow
         if (ReferenceEquals(tab, _tabs.Active))
             _explodedLastPose = new(tab.ExplodedYaw, tab.ExplodedPitch, tab.ExplodedZoom, tab.ExplodedSpacing);
 
-        if (!ReferenceEquals(tab, _tabs.Active) || !_viewModel.HasSource)
+        // Deactivated meanwhile: the now-active tab owns the still (and already cleared the wait); leave both alone.
+        if (!ReferenceEquals(tab, _tabs.Active))
+            return;
+
+        if (!_viewModel.HasSource)
         {
-            // Active but empty: stay flat and clear the wait (a tab deactivated meanwhile already cleared it).
-            if (ReferenceEquals(tab, _tabs.Active) && ReferenceEquals(_explodedWaitingTab, tab))
+            // Active but empty: stay flat and clear the wait.
+            if (ReferenceEquals(_explodedWaitingTab, tab))
                 _explodedWaitingTab = null;
             HideTabStill();
             return;
