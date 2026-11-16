@@ -14,7 +14,9 @@ namespace HandPegApp.ViewModels;
 public partial class MainViewModel
 {
     /// <summary>Whether a clip is on: its own switch, a track header's not counted.</summary>
-    public bool IsClipOn(Layer clip) => ClipOf(clip) is not { } model || !model.IsHidden;
+    public bool IsClipOn(Layer clip) => IsClipOn(ClipOf(clip));
+
+    internal static bool IsClipOn(TimelineClip? model) => model is not { IsHidden: true };
 
     /// <summary>Turns one clip on or off, alone (its children keep their own switches): one step of Undo.</summary>
     public void SetClipOn(Layer clip, bool on)
@@ -36,10 +38,11 @@ public partial class MainViewModel
     /// A child block's Lock: true when it is locked to a parent clip (it moves, trims and splits with it), false when it is free on a
     /// track that lies in another's stack with a clip there to lock to, null for a clip with nothing to be locked to.
     /// </summary>
-    public bool? ClipLock(Layer clip)
+    public bool? ClipLock(Layer clip) => ClipOf(clip) is { } model && Document.TrackOf(model) is { } track ? ClipLock(model, track) : null;
+
+    /// <summary>The same for a clip and its track already resolved.</summary>
+    internal bool? ClipLock(TimelineClip model, TimelineTrackModel track)
     {
-        if (ClipOf(clip) is not { } model || Document.TrackOf(model) is not { } track)
-            return null;
         if (model.ParentClipId is { } parent && Document.FindClip(parent) is not null)
             return true;
         return ParentClipUnder(model, track) is not null ? false : null;

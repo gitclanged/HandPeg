@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Xml.Linq;
 using HandPegApp;
+using HandPegApp.Shell;
 using HandPegApp.Compositor;
 using HandPegApp.Models;
 using HandPegApp.Models.Timeline;
@@ -28,7 +29,6 @@ namespace HandPegGoldenTests;
 /// </summary>
 public static class EncodedPreviewQaTests
 {
-    private const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
     private static readonly XNamespace X = "http://schemas.microsoft.com/winfx/2006/xaml";
 
     /// <summary>The window-free cases (and those on a window of their own), before the UI-scale tests.</summary>
@@ -49,53 +49,7 @@ public static class EncodedPreviewQaTests
         yield break;
     }
 
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>, StringBuilder> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect, text);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
-    }
-
     // ----- Helpers -----
-
-    private static string Root()
-    {
-        for (var folder = new DirectoryInfo(AppContext.BaseDirectory); folder is not null; folder = folder.Parent)
-        {
-            if (File.Exists(Path.Combine(folder.FullName, "HandPegApp.csproj")))
-                return folder.FullName;
-        }
-
-        throw new DirectoryNotFoundException("HandPegApp.csproj was not found above the golden tests' program.");
-    }
-
-    private static string Read(params string[] parts) => File.ReadAllText(Path.Combine([Root(), "src", .. parts]));
-
-    /// <summary>A method's text in a source file: from its signature to the first line that closes it at its own indent.</summary>
-    private static string Method(string source, string signature)
-    {
-        var start = source.IndexOf(signature, StringComparison.Ordinal);
-        if (start < 0)
-            return "";
-        var end = source.IndexOf("\n    }", start, StringComparison.Ordinal);
-        return end < 0 ? source[start..] : source[start..end];
-    }
 
     private static string? Attr(XElement element, string name) => (string?)element.Attribute(name);
 
@@ -134,12 +88,12 @@ public static class EncodedPreviewQaTests
     private static MainViewModel Empty()
     {
         var vm = new MainViewModel();
-        typeof(MainViewModel).GetMethod("InstallDocument", Hidden)!.Invoke(vm, [new TimelineDocument()]);
+        vm.InstallDocument(new TimelineDocument());
         return vm;
     }
 
     private static SequenceExportState ExportState(MainViewModel vm) =>
-        (SequenceExportState)typeof(MainViewModel).GetMethod("CompileExportState", Hidden)!.Invoke(vm, null)!;
+        vm.CompileExportState();
 
     private static EncodingPreset BuiltIn(string name) => ExportPresetCatalog.BuiltIns.First(p => p.Name == name);
 
@@ -157,9 +111,9 @@ public static class EncodedPreviewQaTests
     {
         vm.SourceWidth = probe.Video!.Width;
         vm.SourceHeight = probe.Video.Height;
-        typeof(MainViewModel).GetField("_mediaInfo", Hidden)!.SetValue(vm, probe);
+        vm.SetMediaInfoForTests(probe);
         vm.LocalMediaPath = path;
-        typeof(MainViewModel).GetMethod("PlaceOpenedFile", Hidden)!.Invoke(vm, [""]);
+        vm.PlaceOpenedFile("");
     }
 
     // ----- live-encoded-preview-bar (B-1) -----
@@ -182,30 +136,30 @@ public static class EncodedPreviewQaTests
         expect(!bar["ExportQualityPreview"], "a bar saved at version 3 without it keeps it hidden: the user's choice stands");
 
         // The XAML: the slot right after the 3D view's toggle; the eye is the bar's only E890 (5.4.1A: Render Preview, E7B3, is retired).
-        var xaml = XDocument.Load(Path.Combine(Root(), "src", "MainWindow.xaml"));
+        var xaml = XDocument.Load(Path.Combine(SourceProbe.Root, "src", "MainWindow.xaml"));
         var exploded = Named(xaml, "ExplodedToggle");
         expect(exploded?.ElementsAfterSelf().FirstOrDefault() is { } next && Attr(next, X + "Name") == "ExportQualityPreviewBarSlot",
             "MainWindow.xaml: ExportQualityPreviewBarSlot is the next control after ExplodedToggle in the transport");
         var render = xaml.Descendants().FirstOrDefault(e => Attr(e, "AutomationProperties.Name") == "Render Preview");
         var strayEyes = xaml.Descendants().Count(e => (Attr(e, "Content") == "\uE890" || Attr(e, "Text") == "\uE890")
             && !e.AncestorsAndSelf().Any(a => Attr(a, "AutomationProperties.Name") == "Live Encoded Preview"));
-        expect(MainWindow.LoopbackGlyph == "\uE890" && MainWindow.LoopbackName == "Live Encoded Preview" && render is null && strayEyes == 0,
+        expect(LoopbackPreviewController.LoopbackGlyph == "\uE890" && LoopbackPreviewController.LoopbackName == "Live Encoded Preview" && render is null && strayEyes == 0,
             "the toggle is the eye (Segoe MDL2 E890, View) and named Live Encoded Preview; no other control shows that glyph, and none is named Render Preview (retired)");
 
         // Law 1: the toggle is made with the bar, its flyout on first opening; no pointer hook until the preview and the Magnifier are on.
-        var loopback = Read("MainWindow.LoopbackPreview.cs");
-        var build = Method(loopback, "private void BuildLoopbackToggle()");
+        var loopback = SourceProbe.Src("Shell", "LoopbackPreviewController.cs");
+        var build = SourceProbe.Member(loopback, "private void BuildLoopbackToggle()");
         expect(build.Contains("flyout.Child ??= BuildLoopbackFlyout();", StringComparison.Ordinal) && !build.Contains("Child = BuildLoopbackFlyout()", StringComparison.Ordinal)
                && build.Contains("Content = LoopbackGlyph", StringComparison.Ordinal),
             "BuildLoopbackToggle makes the popup empty and its flyout the first time it opens (Law 1: nothing of the flyout before Frame 1)");
         expect(build.Contains("AutomationProperties.SetName(_loopbackToggle, LoopbackName)", StringComparison.Ordinal)
                && build.Contains("LoopbackName + \" (On)\"", StringComparison.Ordinal) && !loopback.Contains("\"Export Quality Preview", StringComparison.Ordinal),
             "its name, tooltip and overflow menu entry say Live Encoded Preview; no text of the player bar's says Export Quality Preview any more");
-        var hook = Method(loopback, "private void HookLoopback()");
-        var sync = Method(loopback, "private void SyncLoopbackLoupe()");
+        var hook = SourceProbe.Member(loopback, "public LoopbackPreviewController(");
+        var sync = SourceProbe.Member(loopback, "private void SyncLoopbackLoupe()");
         expect(hook.Length > 0 && !hook.Contains("PointerMoved", StringComparison.Ordinal) && loopback.Split("PointerMoved +=").Length == 2
                && sync.Contains("_viewModel.IsExportQualityPreview && _viewModel.ExportQualityPreviewLoupe", StringComparison.Ordinal)
-               && sync.Contains("VideoView.PointerMoved += LoopbackPointerMoved", StringComparison.Ordinal),
+               && sync.Contains("_video.PointerMoved += LoopbackPointerMoved", StringComparison.Ordinal),
             "the pointer hook is attached in one place only, SyncLoopbackLoupe, while the preview and the Magnifier are both on (none at start-up)");
 
         // The preview itself is never saved and starts off; the Magnifier is a saved viewer preference.
@@ -286,32 +240,32 @@ public static class EncodedPreviewQaTests
             "LoupeAt: a pointer near the top left puts a 130-pixel loupe at (498, 218), one near the bottom right at (12, 12); over a 640 x 640 output's bar, none");
 
         // The engine, the worker, the surface and the window: a loupe moved is drawn again, never encoded again; an edge's loupe first.
-        var engine = Read("Services", "GpuPreviewEngine.Loopback.cs");
-        var set = Method(engine, "public void SetLoopbackLoupe(");
-        var write = Method(engine, "private void WriteLoopback(");
+        var engine = SourceProbe.Src("Services", "GpuPreviewEngine.Loopback.cs");
+        var set = SourceProbe.Member(engine, "public void SetLoopbackLoupe(");
+        var write = SourceProbe.Member(engine, "private void WriteLoopback(");
         expect(set.Contains("Volatile.Write(ref _sceneDirty, 1)", StringComparison.Ordinal) && !set.Contains("Invalidate()", StringComparison.Ordinal)
                && write.Contains("header.Flags |= FrameSceneHeader.FlagLoopbackLoupe", StringComparison.Ordinal),
             "SetLoopbackLoupe marks the scene dirty only (the content stamp stays: no new encode, Law 3); WriteLoopback sets the flag and the point");
-        var worker = Read("Compositor", "CompositorWorker.cs");
-        var draw = Method(worker, "private static bool DrawLoopback(");
+        var worker = SourceProbe.Src("Compositor", "CompositorWorker.cs");
+        var draw = SourceProbe.Member(worker, "private static bool DrawLoopback(");
         var edgeFirst = draw.IndexOf("renderer.PrepareLoupe(header", StringComparison.Ordinal);
         var pointerNext = draw.IndexOf("renderer.PrepareLoupeAt(header", StringComparison.Ordinal);
         expect(edgeFirst > 0 && pointerNext > edgeFirst && pointerNext < draw.IndexOf("Dxgi.AcquireSync", StringComparison.Ordinal)
                && draw.Contains("header.LoopbackLoupeX * width, header.LoopbackLoupeY * height", StringComparison.Ordinal),
             "DrawLoopback prepares an edge's loupe first, else the Magnifier's at the fractions made its output's pixels, both before it takes the output");
-        var surface = Read("Controls", "VideoSurface.cs");
-        expect(Method(surface, "protected override IntPtr WndProc(").Contains("msg is WmMouseMove or WmMouseLeave && PointerMoved is not null", StringComparison.Ordinal)
-               && Method(surface, "private IntPtr OverlayMessage(").Contains("TellPointer(hwnd, msg, lParam)", StringComparison.Ordinal)
+        var surface = SourceProbe.Src("Controls", "VideoSurface.cs");
+        expect(SourceProbe.Member(surface, "protected override IntPtr WndProc(").Contains("msg is WmMouseMove or WmMouseLeave && PointerMoved is not null", StringComparison.Ordinal)
+               && SourceProbe.Member(surface, "private IntPtr OverlayMessage(").Contains("TellPointer(hwnd, msg, lParam)", StringComparison.Ordinal)
                && surface.Contains("WmMouseMove = 0x0200, WmMouseLeave = 0x02A3", StringComparison.Ordinal),
             "VideoSurface.PointerMoved is raised from the native window's WM_MOUSEMOVE and WM_MOUSELEAVE and from the layer above it, only while something listens");
-        var window = Read("MainWindow.LoopbackPreview.cs");
-        var moved = Method(window, "private void LoopbackPointerMoved(");
-        expect(moved.Contains("_explodedUi", StringComparison.Ordinal) && moved.Contains("_loopbackWipeHandle?.IsMouseCaptured == true", StringComparison.Ordinal)
+        var window = SourceProbe.Src("Shell", "LoopbackPreviewController.cs");
+        var moved = SourceProbe.Member(window, "private void LoopbackPointerMoved(");
+        expect(moved.Contains("_exploded()", StringComparison.Ordinal) && moved.Contains("_loopbackWipeHandle?.IsMouseCaptured == true", StringComparison.Ordinal)
                && moved.Contains("engine.PictureRect(width, height)", StringComparison.Ordinal) && moved.Contains("engine.SetLoopbackLoupe(null, null)", StringComparison.Ordinal),
             "the window puts the loupe away in the 3D view, while the wipe is dragged and when the pointer leaves; else maps it through the picture's rectangle");
-        var flyout = Method(window, "private FrameworkElement BuildLoopbackFlyout()");
+        var flyout = SourceProbe.Member(window, "private FrameworkElement BuildLoopbackFlyout()");
         expect(flyout.Contains("Content = \"Magnifier (Loupe)\"", StringComparison.Ordinal)
-               && flyout.Contains("new Binding(nameof(ViewModels.MainViewModel.ExportQualityPreviewLoupe)) { Mode = BindingMode.TwoWay }", StringComparison.Ordinal),
+               && flyout.Contains("new Binding(nameof(MainViewModel.ExportQualityPreviewLoupe)) { Mode = BindingMode.TwoWay }", StringComparison.Ordinal),
             "the flyout has a \"Magnifier (Loupe)\" CheckBox bound both ways to ExportQualityPreviewLoupe");
 
         RealWorker(expect);
@@ -509,7 +463,7 @@ public static class EncodedPreviewQaTests
             expect(rewrote && rewritten == wanted, $"the retry of {hardware} at {(wanted.Contains("ultrafast", StringComparison.Ordinal) ? "its fastest step is ultrafast" : "its slowest step is veryslow")}");
         }
 
-        var window = Read("ViewModels", "MainViewModel.EncodeAndLoad.cs");
+        var window = SourceProbe.Src("ViewModels", "MainViewModel.EncodeAndLoad.cs");
         var retry = window[window.IndexOf("VideoEncoders.FirstOrDefault(e => e.Name == software) is { } replacement", StringComparison.Ordinal)..];
         retry = retry[..retry.IndexOf("retry = CommandPreview;", StringComparison.Ordinal)];
         expect(retry.Contains("PlaceSoftwareRetry(replacement, command);", StringComparison.Ordinal),
@@ -558,7 +512,7 @@ public static class EncodedPreviewQaTests
         expect(proxiedFirst && started && !proxied.SpeedFirstHolds && proxied.VideoEncoder.Name == "h264_mf" && proxied.SelectedPreset is null
                && after.Contains(MediaFoundationEncoder.SlowestStepArgument, StringComparison.Ordinal) && !after.Contains(MediaFoundationEncoder.FastestStepArgument, StringComparison.Ordinal),
             "Fast Proxy on h264_mf, then + New Project: the speed-first state ends and the new project exports at -compression_level 100");
-        var defaults = Method(Read("ViewModels", "MainViewModel.Media.cs"), "private void ApplyEncodingDefaults()");
+        var defaults = SourceProbe.Member(SourceProbe.Src("ViewModels", "MainViewModel.Media.cs"), "private void ApplyEncodingDefaults()");
         expect(defaults.Contains("_speedFirst = false;", StringComparison.Ordinal),
             "the encoding defaults (launch, + New Project, a style preset when they override styles) always end a speed-first state");
     }
@@ -567,8 +521,8 @@ public static class EncodedPreviewQaTests
 
     private static void DropOnBlank(Action<bool, string> expect, StringBuilder text)
     {
-        expect(MainWindow.RouteOf(false, false, false, false, false, false, false, ["C:/clips/a.mp4"], onMediaBin: true) == MainWindow.DropRoute.AddToProjectMedia
-               && MainWindow.RouteOf(false, false, false, false, false, false, false, ["C:/clips/a.mp4"], onMediaBin: false) == MainWindow.DropRoute.OpenOrReplace,
+        expect(DropRouter.RouteOf(false, false, false, false, false, false, false, ["C:/clips/a.mp4"], onMediaBin: true) == DropRoute.AddToProjectMedia
+               && DropRouter.RouteOf(false, false, false, false, false, false, false, ["C:/clips/a.mp4"], onMediaBin: false) == DropRoute.OpenOrReplace,
             "with nothing open, a video let go over the Media Browser goes into Project Media; anywhere else it is opened, as before");
 
         var vm = Empty();
@@ -581,15 +535,15 @@ public static class EncodedPreviewQaTests
         // 5.4D review (R12): a project dropped on that window opens in a tab of its own (OpenProjectInTabAsync, as File > Open), never in
         // place of the pool; on a window that holds nothing it is still opened there.
         string[] project = ["C:/clips/edit.hproj"], bundle = ["C:/clips/edit.hpb"];
-        static MainWindow.DropRoute Blank(string[] files, bool holds, bool busy = false, bool onMediaBin = false) =>
-            MainWindow.RouteOf(false, false, busy, false, false, false, false, files, onMediaBin, holdsSomething: holds);
-        expect(Blank(project, !vm.HoldsNothingForTab) == MainWindow.DropRoute.OpenProject && Blank(bundle, true) == MainWindow.DropRoute.OpenProject
-               && Blank(project, true, onMediaBin: true) == MainWindow.DropRoute.OpenProject,
+        static DropRoute Blank(string[] files, bool holds, bool busy = false, bool onMediaBin = false) =>
+            DropRouter.RouteOf(false, false, busy, false, false, false, false, files, onMediaBin, holdsSomething: holds);
+        expect(Blank(project, !vm.HoldsNothingForTab) == DropRoute.OpenProject && Blank(bundle, true) == DropRoute.OpenProject
+               && Blank(project, true, onMediaBin: true) == DropRoute.OpenProject,
             "a project or a bundle dropped on the blank window that holds pooled files (on the player or the bin): opened in a Project Tab of its own");
-        expect(Blank(project, false) == MainWindow.DropRoute.OpenOrReplace && Blank(project, true, busy: true) == MainWindow.DropRoute.OpenOrReplace
-               && Blank(["C:/clips/a.mp4"], true) == MainWindow.DropRoute.OpenOrReplace,
+        expect(Blank(project, false) == DropRoute.OpenOrReplace && Blank(project, true, busy: true) == DropRoute.OpenOrReplace
+               && Blank(["C:/clips/a.mp4"], true) == DropRoute.OpenOrReplace,
             "a window holding nothing opens the project in place, as before; while busy the open path (which says to wait); a video still opens as the source");
-        var drop = Read("MainWindow.Drops.cs");
+        var drop = SourceProbe.Src("MainWindow.Drops.cs");
         expect(drop.Contains("holdsSomething: !_viewModel.HoldsNothingForTab", StringComparison.Ordinal),
             "the window's drop asks the tab in front whether it holds something (MainViewModel.HoldsNothingForTab)");
 
@@ -597,10 +551,10 @@ public static class EncodedPreviewQaTests
         Place(vm, "D:/media/game.mp4", Probe());
         expect(string.Join(", ", vm.Document.MediaPool) == "D:/media/first.mp4, D:/media/voice.wav, D:/media/game.mp4" && vm.ClipsUsing("D:/media/game.mp4") == 1,
             "the first file opened later (a new source, then its clip placed) keeps the pool: the two pooled files, then the opened one's");
-        var load = Method(Read("ViewModels", "MainViewModel.EncodeAndLoad.cs"), "private async Task<(bool Loaded, string Message)> LoadMediaAsync(");
+        var load = SourceProbe.Member(SourceProbe.Src("ViewModels", "MainViewModel.EncodeAndLoad.cs"), "private async Task<(bool Loaded, string Message)> LoadMediaAsync(");
         expect(load.Length > 0 && !load.Contains("InstallDocument", StringComparison.Ordinal) && !load.Contains("MediaPool", StringComparison.Ordinal),
             "opening a file (LoadMediaAsync) never puts a new document in place nor touches the pool");
-        var menu = Method(Read("Views", "MediaBrowserPane.ProjectMedia.cs"), "private void AddProjectMediaItems(");
+        var menu = SourceProbe.Member(SourceProbe.Src("Views", "MediaBrowserPane.ProjectMedia.cs"), "private void AddProjectMediaItems(");
         expect(menu.Length > 0 && !menu.Contains("HasVideo", StringComparison.Ordinal) && !menu.Contains("IsEnabled", StringComparison.Ordinal),
             "the menu's Add to Project Media (and Remove) is no longer greyed out with nothing open");
     }
@@ -668,7 +622,7 @@ public static class EncodedPreviewQaTests
         };
         expect(one.RemoveFromProjectMedia(["D:/media/solo.mp4"]) == 0 && warned && confirmText == "Remove from Project Media & Delete 1 Clip" && one.ClipsUsing("D:/media/solo.mp4") == 1,
             "the window's question (ConfirmWarning, Cancel the default) is asked in place of Confirm; one clip says \"Delete 1 Clip\"");
-        var wiring = Method(Read("MainWindow.MediaBrowser.cs"), "private void InitializeMediaBrowser()");
+        var wiring = SourceProbe.Member(SourceProbe.Src("MainWindow.MediaBrowser.cs"), "private void InitializeMediaBrowser()");
         expect(wiring.Contains("_viewModel.ConfirmWarning = ", StringComparison.Ordinal) && wiring.Contains("DefaultsToCancel = true", StringComparison.Ordinal),
             "the window asks it with the ConfirmDialog, Cancel the button Enter presses");
 
@@ -688,14 +642,14 @@ public static class EncodedPreviewQaTests
 
     private static void FlagGone(Action<bool, string> expect, StringBuilder text)
     {
-        expect(typeof(MainViewModel).GetProperty("IsSubtitleEditorOpen") is null && typeof(MainViewModel).GetField("_isSubtitleEditorOpen", Hidden) is null
-               && typeof(MainViewModel).GetField("_subtitleVisitStep", Hidden) is null && typeof(MainViewModel).GetMethod("BeginSubtitleVisit", Hidden) is null,
+        expect(new[] { "IsSubtitleEditorOpen", "_isSubtitleEditorOpen", "_subtitleVisitStep", "BeginSubtitleVisit" }
+                   .All(name => HasNoMember(typeof(MainViewModel), name, nameof(MainViewModel.Document))),
             "the view model has no IsSubtitleEditorOpen, nor the modal editor's one-step visit");
-        var timeline = Read("ViewModels", "MainViewModel.Timeline.cs");
-        var captions = Read("ViewModels", "MainViewModel.Captions.cs");
-        var subtitles = Read("ViewModels", "MainViewModel.Subtitles.cs");
-        expect(!timeline.Contains("Close the Subtitle Studio first", StringComparison.Ordinal) && !Method(captions, "GpuCaptions()").Contains("SubtitleEditor", StringComparison.Ordinal)
-               && !subtitles.Contains("InSubtitleVisit", StringComparison.Ordinal) && !(Read("ViewModels", "MainViewModel.cs") + Read("ViewModels", "MainViewModel.EncodeAndLoad.cs")).Contains("nameof(IsSubtitleEditorOpen)", StringComparison.Ordinal),
+        var timeline = SourceProbe.Src("ViewModels", "MainViewModel.Timeline.cs");
+        var captions = SourceProbe.Src("ViewModels", "MainViewModel.Captions.cs");
+        var subtitles = SourceProbe.Src("ViewModels", "MainViewModel.Subtitles.cs");
+        expect(!timeline.Contains("Close the Subtitle Studio first", StringComparison.Ordinal) && !SourceProbe.Member(captions, "GpuCaptions()").Contains("SubtitleEditor", StringComparison.Ordinal)
+               && !subtitles.Contains("InSubtitleVisit", StringComparison.Ordinal) && !(SourceProbe.Src("ViewModels", "MainViewModel.cs") + SourceProbe.Src("ViewModels", "MainViewModel.EncodeAndLoad.cs")).Contains("nameof(IsSubtitleEditorOpen)", StringComparison.Ordinal),
             "Undo has no \"Close the Subtitle Studio first\", the captions no editor guard, and NonCommandProperties no entry for it");
     }
 
@@ -703,7 +657,7 @@ public static class EncodedPreviewQaTests
 
     private static void TitleRail(Action<bool, string> expect, StringBuilder text)
     {
-        var xaml = XDocument.Load(Path.Combine(Root(), "src", "MainWindow.xaml"));
+        var xaml = XDocument.Load(Path.Combine(SourceProbe.Root, "src", "MainWindow.xaml"));
         var progress = Named(xaml, "TitleProgress");
         var rail = Named(xaml, "TitleProgressRail");
         var fill = Named(xaml, "TitleProgressFill");
@@ -715,14 +669,14 @@ public static class EncodedPreviewQaTests
                && fill is not null && Attr(fill, "Height") == "{StaticResource CaptionBarHeight}" && Attr(fill, "Opacity") == "0.16",
             "TitleProgressRail is a 2 DIP accent line on the bar's bottom edge; the wash fills the bar's height at 0.16");
         double Constant(string name) => (double)typeof(MainWindow).GetField(name, BindingFlags.NonPublic | BindingFlags.Static)!.GetRawConstantValue()!;
-        var update = Method(Read("MainWindow.TitleBar.cs"), "private void UpdateTitleProgress()");
+        var update = SourceProbe.Member(SourceProbe.Src("MainWindow.TitleBar.cs"), "private void UpdateTitleProgress()");
         expect(Constant("TitleProgressStrength") == 0.16 && Constant("TitleProgressFaint") == 0.08
                && update.Contains("TitleProgressRail.Width = TitleProgressFill.Width", StringComparison.Ordinal),
             "the wash is 0.16 (0.08 while the work's length is unknown), and the rail follows the fill's width");
 
         var panel = Named(xaml, "SettingsFlyoutPanel");
         var button = panel?.Descendants().FirstOrDefault(e => e.Name.LocalName == "Button" && Attr(e, "Click") == "FlyoutGamePresets_Click");
-        var handler = Method(Read("MainWindow.xaml.cs"), "private void FlyoutGamePresets_Click(");
+        var handler = SourceProbe.Member(SourceProbe.Src("MainWindow.xaml.cs"), "private void FlyoutGamePresets_Click(");
         expect(button is not null && Attr(button, "AutomationProperties.Name") == "Game Presets" && (Attr(button, "Content") ?? "").Contains("Game Presets", StringComparison.Ordinal)
                && handler.Contains("ManageStyles_Click(UnifiedTimeline, e)", StringComparison.Ordinal) && handler.Contains("_settingsHover.Close()", StringComparison.Ordinal),
             "the Settings flyout has the Game Presets button (\"Save, Import or Export Game Presets...\"); it closes the flyout and runs ManageStyles_Click");

@@ -555,30 +555,29 @@ internal sealed unsafe class MfVideoDecoder : IDisposable
         {
             Beat?.Invoke();
             var hr = Mf.ReadSample(_reader, Stream, out var flags, out var timestamp, out var sample);
-            if (Com.IsDeviceLost(hr))
-                throw new GpuException(hr, "ReadSample");
-            Com.Check(hr, "ReadSample");
-            if ((flags & Mf.ReaderError) != 0)
-            {
-                Com.Release(ref sample);
-                throw new GpuException(unchecked((int)0x80004005), "The decoder reported an error");
-            }
 
-            if ((flags & Mf.ReaderCurrentMediaTypeChanged) != 0)
-                ReadOutputSize();
-
-            if ((flags & Mf.ReaderEndOfStream) != 0)
-            {
-                Com.Release(ref sample);
-                _endOfStream = true;
-                return false;
-            }
-
-            if (sample == 0)
-                continue; // a stream tick or a gap: read on
-
+            // The sample is owned from here on: every path below (an error, a media-type refresh that throws, the end of the stream, a
+            // frame taken) releases it once, in the finally.
             try
             {
+                if (Com.IsDeviceLost(hr))
+                    throw new GpuException(hr, "ReadSample");
+                Com.Check(hr, "ReadSample");
+                if ((flags & Mf.ReaderError) != 0)
+                    throw new GpuException(unchecked((int)0x80004005), "The decoder reported an error");
+
+                if ((flags & Mf.ReaderCurrentMediaTypeChanged) != 0)
+                    ReadOutputSize();
+
+                if ((flags & Mf.ReaderEndOfStream) != 0)
+                {
+                    _endOfStream = true;
+                    return false;
+                }
+
+                if (sample == 0)
+                    continue; // a stream tick or a gap: read on
+
                 ticks = timestamp;
                 length = Took(timestamp, Mf.SampleDuration(sample) / 1e7, keepAfter, sample);
                 return true;
@@ -671,7 +670,7 @@ internal sealed unsafe class MfVideoDecoder : IDisposable
                 Com.Check(Mf.GetBufferByIndex(sample, 0, out buffer), "GetBufferByIndex");
                 if (Hardware && Com.Query(buffer, Iid.MfDxgiBuffer) is var dxgi and not 0)
                 {
-                    var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("MF.CopyHardwareFrame");
+                    var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.EnterHot("MF.CopyHardwareFrame");
                     CopyHardwareFrame(dxgi, ref frame);
                     crumb.Leave();
                 }

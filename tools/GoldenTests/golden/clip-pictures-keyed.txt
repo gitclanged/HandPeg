@@ -1,0 +1,8 @@
+# The Timeline's strips and waveforms in one keyed store (ClipPictures): shared by file, kept while used, the rest bounded; no model holds a picture.
+ok: a file's strip by its path (any case), each audio stream's waveform by its key (the file for stream 0)
+ok: each picture stored says so (the Timeline draws again, no polling), and a tab's estimate finds all three
+ok: over its bound the oldest unused pictures go; a used file's never
+ok: Release (Empty Bin) drops every picture of a file no Sequence uses
+ok: a file a background tab uses keeps its pictures
+ok: no Layer or AudioTrack carries a picture any more
+ok: the view model owns the store (and the opened file's track waveforms as a list), its old per-file strip cache folded in

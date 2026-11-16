@@ -31,8 +31,6 @@ namespace HandPegGoldenTests;
 /// </summary>
 public static class ProjectSettingsTests
 {
-    private const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
-
     // The settings tabs' pane ids after 5.4B (MainWindow.xaml's SettingsTabs: "Tab:" and the header; 5.4B retired the Video tab).
     private static readonly IReadOnlyList<string> TabIds = ["Tab:Filters", "Tab:Audio", "Tab:Export", "Tab:Command Preview"];
 
@@ -45,29 +43,6 @@ public static class ProjectSettingsTests
         yield return Case("summary-tab-retired", "# The Summary tab is retired: each of its controls has one new home, and an arrangement saved on it opens on the Timeline.", SummaryRetired);
         yield return Case("project-manager-studio", "# The Project Manager's studio: New Project | Open / Manage Projects | Project Settings, frames from the aspect cards, the Media Browser as a picker.", Studio);
         yield return Case("project-settings-fixes", "# Project Settings after review: Undo and Redo bring the frame back, only what was changed is sent, the first clip keeps chosen settings, the picker sorts, names never collide.", Fixes);
-    }
-
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
     }
 
     // ----- dock-startup-timeline-tab -----
@@ -105,8 +80,8 @@ public static class ProjectSettingsTests
             "in the arrangement the side window closed on, it is left as the user made it");
 
         // The window asks for it at start-up, in the one Load before the first frame; the preview's restore does not.
-        var docking = File.ReadAllText(Path.Combine(RepositoryRoot(), "src", "MainWindow.Docking.cs"));
-        var layouts = File.ReadAllText(Path.Combine(RepositoryRoot(), "src", "MainWindow.Layouts.cs"));
+        var docking = File.ReadAllText(Path.Combine(SourceProbe.Root, "src", "MainWindow.Docking.cs"));
+        var layouts = File.ReadAllText(Path.Combine(SourceProbe.Root, "src", "MainWindow.Layouts.cs"));
         // 5.4D: the arrangement is the Default layout's (StartupLayoutJson), still in the one Load, still on the Timeline.
         expect(docking.Contains("saved: TakeFirstRunLayout() ?? StartupLayoutJson(), showFirst: TimelinePaneId);", StringComparison.Ordinal)
                && System.Text.RegularExpressions.Regex.Matches(docking, @"_dock\.Load\(").Count == 1,
@@ -118,7 +93,7 @@ public static class ProjectSettingsTests
 
     private static void Model(Action<bool, string> expect)
     {
-        var options = (JsonSerializerOptions)typeof(ProjectStore).GetField("JsonOptions", BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
+        var options = ProjectStore.JsonOptions;
         var plain = new TimelineDocument { FrameRate = FrameRate.Ntsc2997 };
         var json = JsonSerializer.Serialize(plain, options);
         expect(!json.Contains("colorSpace", StringComparison.Ordinal) && !json.Contains("pixelAspect", StringComparison.Ordinal)
@@ -200,7 +175,7 @@ public static class ProjectSettingsTests
     private static MainViewModel Empty()
     {
         var vm = new MainViewModel();
-        typeof(MainViewModel).GetMethod("InstallDocument", Hidden)!.Invoke(vm, [new TimelineDocument()]);
+        vm.InstallDocument(new TimelineDocument());
         return vm;
     }
 
@@ -209,9 +184,9 @@ public static class ProjectSettingsTests
     {
         vm.SourceWidth = probe.Video!.Width;
         vm.SourceHeight = probe.Video.Height;
-        typeof(MainViewModel).GetField("_mediaInfo", Hidden)!.SetValue(vm, probe);
+        vm.SetMediaInfoForTests(probe);
         vm.LocalMediaPath = path;
-        typeof(MainViewModel).GetMethod("PlaceOpenedFile", Hidden)!.Invoke(vm, [previous]);
+        vm.PlaceOpenedFile(previous);
     }
 
     private static int UndoCount(MainViewModel vm) => ((System.Collections.ICollection)typeof(MainViewModel).GetField("_undo", Hidden)!.GetValue(vm)!).Count;
@@ -391,10 +366,10 @@ public static class ProjectSettingsTests
                 return false;
             };
             var said = saver.SaveProject("Taken");
-            expect(said.StartsWith("Not saved", StringComparison.Ordinal) && asked == 1 && File.ReadAllText(taken) == "kept" && saver.CurrentProjectPath.Length == 0,
+            expect(said.Result == SaveResult.Declined && said.Line.StartsWith("Not saved", StringComparison.Ordinal) && asked == 1 && File.ReadAllText(taken) == "kept" && saver.CurrentProjectPath.Length == 0,
                 "a save by a name already in Projects asks once; declined, nothing is written");
             saver.Confirm = null;
-            expect(saver.SaveProject("Taken").StartsWith("Not saved", StringComparison.Ordinal) && File.ReadAllText(taken) == "kept",
+            expect(saver.SaveProject("Taken").Result == SaveResult.Declined && File.ReadAllText(taken) == "kept",
                 "with no one to ask, it is refused");
 
             saver.KeepNewProjectName("New Project", folder);
@@ -403,7 +378,7 @@ public static class ProjectSettingsTests
                 asked++;
                 return false;
             };
-            expect(saver.SaveProject("New Project").StartsWith("Not saved", StringComparison.Ordinal) && asked == 2
+            expect(saver.SaveProject("New Project").Result == SaveResult.Declined && asked == 2
                    && File.ReadAllText(Path.Combine(folder, "New Project" + ProjectStore.Extension)) == "{}",
                 "the first save into the studio's folder over a project there asks too, and declined writes nothing");
 
@@ -414,7 +389,7 @@ public static class ProjectSettingsTests
                 return true;
             };
             var replaced = saver.SaveProject("Taken");
-            expect(replaced.StartsWith("Project saved", StringComparison.Ordinal) && asked == 3 && File.ReadAllText(taken) != "kept" && saver.CurrentProjectPath == taken,
+            expect(replaced.IsSaved && asked == 3 && File.ReadAllText(taken) != "kept" && saver.CurrentProjectPath == taken,
                 "said yes: it is replaced, and is the open project");
             saver.SaveProject("Taken");
             expect(asked == 3, "saved again under its own name: nothing asked");
@@ -428,7 +403,7 @@ public static class ProjectSettingsTests
     // ----- export-match-project-settings -----
 
     private static SequenceExportState ExportState(MainViewModel vm) =>
-        (SequenceExportState)typeof(MainViewModel).GetMethod("CompileExportState", Hidden)!.Invoke(vm, null)!;
+        vm.CompileExportState();
 
     private static void MatchProjectSettings(Action<bool, string> expect)
     {
@@ -482,13 +457,13 @@ public static class ProjectSettingsTests
 
     private static void SummaryRetired(Action<bool, string> expect)
     {
-        var root = RepositoryRoot();
+        var root = SourceProbe.Root;
         var mainText = File.ReadAllText(Path.Combine(root, "src", "MainWindow.xaml"));
         var main = XDocument.Parse(mainText);
         var timelinePane = File.ReadAllText(Path.Combine(root, "src", "Views", "UnifiedTimelinePane.xaml"));
         var headers = main.Descendants().Where(e => e.Name.LocalName == "TabItem").Select(e => (string?)e.Attribute("Header")).ToList();
-        expect(!headers.Contains("Summary") && headers.SequenceEqual(TabIds.Select(id => id["Tab:".Length..])),
-            "MainWindow.xaml's tabs are Filters, Audio, Export and Command Preview: no Summary (and, 5.4B, no Video)");
+        expect(!headers.Contains("Summary") && headers.SequenceEqual(["Color", "Audio", "Export", "Command Preview"]),
+            "MainWindow.xaml's tabs are Color, Audio, Export and Command Preview: no Summary (and, 5.4B, no Video; 5.6A, Filters is Color)");
         expect(MainWindow.BuiltInLayoutStates(TabIds).All(l => !l.Layout.Main.AllPanes().Contains("Tab:Summary")), "no built-in layout holds Tab:Summary");
         expect(!File.ReadAllText(Path.Combine(root, "src", "MainWindow.Layouts.cs")).Contains("Tab:Summary", StringComparison.Ordinal),
             "and MainWindow.Layouts.cs names it nowhere");
@@ -551,7 +526,7 @@ public static class ProjectSettingsTests
 
     private static void Studio(Action<bool, string> expect)
     {
-        var root = RepositoryRoot();
+        var root = SourceProbe.Root;
         var xaml = XDocument.Load(Path.Combine(root, "src", "Dialogs", "ProjectManagerWindow.xaml"));
         XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
         var automation = xaml.Descendants().Select(e => (string?)e.Attribute("AutomationProperties.Name")).OfType<string>().ToList();
@@ -615,15 +590,4 @@ public static class ProjectSettingsTests
 
     // ----- Files of the repository -----
 
-    /// <summary>The repository's folder (where HandPegApp.csproj is), found upwards from the built program.</summary>
-    private static string RepositoryRoot()
-    {
-        for (var folder = new DirectoryInfo(AppContext.BaseDirectory); folder is not null; folder = folder.Parent)
-        {
-            if (File.Exists(Path.Combine(folder.FullName, "HandPegApp.csproj")))
-                return folder.FullName;
-        }
-
-        throw new DirectoryNotFoundException("HandPegApp.csproj was not found above the golden tests' program.");
-    }
 }

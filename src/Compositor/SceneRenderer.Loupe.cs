@@ -1,4 +1,5 @@
 using HandPegApp.Compositor.Native;
+using HandPegApp.Models.Effects;
 using HandPegApp.Services;
 
 namespace HandPegApp.Compositor;
@@ -73,7 +74,7 @@ internal sealed unsafe partial class SceneRenderer
         {
             ref readonly var candidate = ref layers[i];
             if (candidate.ClipKey == header.LoupeClipKey && (candidate.Flags & GpuLayerDescriptor.FlagVisible) != 0 && candidate.Width != 0 && candidate.Height != 0
-                && (candidate.Flags & (GpuLayerDescriptor.FlagBlurFillOnly | GpuLayerDescriptor.FlagAdjustment)) == 0)
+                && (candidate.Flags & (GpuLayerDescriptor.FlagBlurFillOnly | GpuLayerDescriptor.FlagAdjustment)) == 0 && !IsCompareBefore(candidate))
             {
                 index = i;
                 break;
@@ -133,6 +134,24 @@ internal sealed unsafe partial class SceneRenderer
         var (x, y) = LoupeCorner(pictureRect, outputWidth, outputHeight, side, shownX * pictureScale + pictureX, shownY * pictureScale + pictureY);
         (_loupePlace, _loupePicture, _loupeFocus, _loupeReady) = ((x, y, side), pictureRect, (pointX, pointY, scale), true);
         return true;
+    }
+
+    /// <summary>
+    /// Whether a layer is the grade compare's Before half (GpuScenePlan.WriteSplit writes it just before the graded half, the same
+    /// clip): its wipe a compare's (lane 5 above 0, a hard edge; a real wipe's is 0) keeping the left (lane 4). A split layer holds no other
+    /// wipe (GpuScenePlan.Splittable). Pure, for the golden tests.
+    /// </summary>
+    internal static bool IsCompareBefore(in GpuLayerDescriptor layer)
+    {
+        var count = Math.Clamp(layer.EffectCount, 0, CompositorProtocol.MaxEffectsPerLayer);
+        for (var k = 0; k < count; k++)
+        {
+            ref readonly var packet = ref layer.Effects[k];
+            if (packet.Slot == GpuShaderSlot.TransitionWipe && packet.P5 > 0 && packet.P4 > 0.5f)
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>

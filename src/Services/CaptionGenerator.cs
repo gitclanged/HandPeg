@@ -346,26 +346,7 @@ public static partial class CaptionGenerator
     private static void NoteGpuFellOver()
     {
         var stamp = GpuStamp();
-        void Save()
-        {
-            var settings = AppSettings.Current;
-            settings.WhisperGpuFailedOn = stamp;
-            try
-            {
-                settings.SaveAsCurrent();
-            }
-            catch (Exception ex) when (ex is not OutOfMemoryException)
-            {
-                // Remembered for this session.
-                AppLog.Write("The settings could not be saved after whisper fell over on the graphics card", ex);
-            }
-        }
-
-        // Saved on the window's thread, the one that changes the settings' lists: written from here, one could change under the writer.
-        if (System.Windows.Application.Current?.Dispatcher is { } dispatcher && !dispatcher.CheckAccess())
-            dispatcher.BeginInvoke(Save);
-        else
-            Save();
+        AppSettings.Update(settings => settings.WhisperGpuFailedOn = stamp);
     }
 
     private static double Seconds(Group group) => double.Parse(group.Value, CultureInfo.InvariantCulture);

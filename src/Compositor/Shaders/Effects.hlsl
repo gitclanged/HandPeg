@@ -381,10 +381,74 @@ float4 PSToneCurve(VsOut i) : SV_Target
     return Premul(saturate(float3(r, g, b)), c.a);
 }
 
+// ----- Color Grade (slot 30,: the Color Studio's, two packets) -----
+// ColorGradeMath.Apply step for step, in float, with its constants; a step at its neutral values is skipped. P0 temperature,
+// P1 tint (each -100..100), P2 exposure (stops), P3..P5 lift r g b, P6 gamma r, P7 contrast; Q0 Q1 gamma g b, Q2..Q4 gain
+// r g b, Q5 saturation, Q6 vibrance. Q7 carries the LUT's mix and which tables are the card's: the host reads it and sends
+// Params2.x the LUT's size N (0: no LUT), Params2.y its mix, Params2.z 1 when Aux holds the card's curves (GpuColorTables'
+// layout: R, G and B each a channel's curve with the master after). The host skips the pass when it would change nothing.
+
+float3 StudioToLinear(float3 c) { return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); }
+float3 StudioToSrgb(float3 c) { return c <= 0.0031308 ? c * 12.92 : 1.055 * pow(c, 1 / 2.4) - 0.055; }
+
+// The white-balance gains in linear light (ColorGradeMath.WhiteBalance): red against blue, green against both, luma kept.
+float3 StudioWhiteBalance(float temperature, float tint)
+{
+    float t = clamp(temperature / 100, -1, 1);
+    float n = clamp(tint / 100, -1, 1);
+    float3 w = float3((1 + 0.3 * t) * (1 + 0.125 * n), 1 - 0.25 * n, (1 - 0.3 * t) * (1 + 0.125 * n));
+    return w / Luma(w);
+}
+
+// Lift (half the range at black), gain (2^x) and gamma (exponent 2^-x) on each channel (ColorGradeMath.Wheels).
+float3 StudioWheels(float3 c, float3 lift, float3 gamma, float3 gain)
+{
+    c = c + 0.5 * lift * (1 - c);
+    c *= exp2(gain);
+    return pow(max(c, 0), exp2(-gamma));
+}
+
+float4 PSColorStudio(VsOut i) : SV_Target
+{
+    float4 c = Unpremul(Here(i));
+    float3 v = c.rgb;
+    if (P2 != 0 || P0 != 0 || P1 != 0)
+        v = StudioToSrgb(max(StudioToLinear(max(v, 0)) * StudioWhiteBalance(P0, P1) * exp2(P2), 0));
+
+    float3 lift = float3(P3, P4, P5), gamma = float3(P6, Q0, Q1), gain = float3(Q2, Q3, Q4);
+    if (any(lift != 0) || any(gamma != 0) || any(gain != 0))
+        v = StudioWheels(v, lift, gamma, gain);
+    if (P7 != 1)
+        v = (v - 0.5) * P7 + 0.5;
+    if (Q5 != 1 || Q6 != 0)
+    {
+        float y = Luma(v);
+        float spread = saturate(Max3(v) - Min3(v));
+        v = y + (v - y) * (Q5 * (1 + Q6 * (1 - spread)));
+    }
+
+    v = saturate(v);
+    if (Params2.z > 0.5)
+    {
+        float3 u = v * (255.0 / 256.0) + 0.5 / 256.0;
+        v = saturate(float3(Aux.SampleLevel(LinearClamp, float2(u.r, 0.5), 0).r, Aux.SampleLevel(LinearClamp, float2(u.g, 0.5), 0).g,
+            Aux.SampleLevel(LinearClamp, float2(u.b, 0.5), 0).b));
+    }
+
+    float n = Params2.x;
+    if (n >= 2 && Params2.y > 0)
+    {
+        float3 at = v * ((n - 1) / n) + 0.5 / n;
+        v = lerp(v, saturate(Lut.SampleLevel(LinearClamp, at, 0).rgb), saturate(Params2.y));
+    }
+
+    return Premul(v, c.a);
+}
+
 // Box blur (slot 20), one direction (Params.y) of 2r + 1 equal taps, r = Params.z texels, on premultiplied values. The
 // host works out r and runs it across, down, across, down (boxblur's two passes, or the card's Passes); shadows, the
-// blurred background and blur dissolves use it too. A radius with a fraction f (the blurred background's continuous radius,
-// 5.0-Release) takes one more tap at each end weighing f: from one whole radius to the next, the box grows smoothly.
+// blurred background and blur dissolves use it too. A radius with a fraction f (the blurred background's continuous radius)
+// takes one more tap at each end weighing f: from one whole radius to the next, the box grows smoothly.
 float4 PSBoxBlur(VsOut i) : SV_Target
 {
     float radius = clamp(Params.z, 0, MaxRadius);

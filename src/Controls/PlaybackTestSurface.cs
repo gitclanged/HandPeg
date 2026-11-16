@@ -1,5 +1,9 @@
 using System.Runtime.InteropServices;
 using System.Windows.Interop;
+using HandPegApp.Native;
+using static HandPegApp.Native.User32;
+using static HandPegApp.Native.Gdi32;
+using static HandPegApp.Native.Kernel32;
 
 namespace HandPegApp;
 
@@ -51,32 +55,4 @@ public sealed partial class PlaybackTestSurface : HwndHost
         return base.WndProc(hwnd, msg, wParam, lParam, ref handled);
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct WindowClass
-    {
-        public int Size, Style;
-        public nint Procedure;
-        public int ClassExtra, WindowExtra;
-        public nint Instance, Icon, Cursor, Background, MenuName, ClassName, SmallIcon;
-    }
-
-    [LibraryImport("user32.dll", EntryPoint = "CreateWindowExW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
-    private static partial nint CreateWindowEx(int exStyle, string className, string windowName, int style, int x, int y, int width, int height,
-        nint parent, nint menu, nint instance, nint parameter);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool DestroyWindow(nint window);
-
-    [LibraryImport("user32.dll", EntryPoint = "RegisterClassExW", SetLastError = true)]
-    private static partial ushort RegisterClassEx(in WindowClass windowClass);
-
-    [LibraryImport("kernel32.dll", EntryPoint = "GetModuleHandleW", StringMarshalling = StringMarshalling.Utf16)]
-    private static partial nint GetModuleHandle(string? module);
-
-    [LibraryImport("kernel32.dll", StringMarshalling = StringMarshalling.Utf8)]
-    private static partial nint GetProcAddress(nint module, string name);
-
-    [LibraryImport("gdi32.dll")]
-    private static partial nint GetStockObject(int kind);
 }

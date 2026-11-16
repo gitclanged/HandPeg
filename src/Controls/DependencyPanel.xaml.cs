@@ -262,6 +262,7 @@ public partial class DependencyPanel : UserControl
                 }
                 catch (Exception ex) when (DependencyUpdater.IsInstallFailure(ex))
                 {
+                    AppLog.Write($"Dependencies: {row.Id} could not be checked", ex);
                     problem ??= ex.Message;
                 }
             }
@@ -380,7 +381,9 @@ public partial class DependencyPanel : UserControl
 
     // ----- Installing -----
 
-    private async void Install_Click(object sender, RoutedEventArgs e) => await InstallAsync();
+    private void Install_Click(object sender, RoutedEventArgs e) => Faults.Forget(Install_ClickAsync(sender, e), nameof(Install_Click));
+
+    private async Task Install_ClickAsync(object sender, RoutedEventArgs e) => await InstallAsync();
 
     /// <summary>
     /// Install / Update All Dependencies: installs what is missing and replaces what is not the build to have (the pinned
@@ -434,6 +437,7 @@ public partial class DependencyPanel : UserControl
                 }
                 catch (Exception ex) when (DependencyUpdater.IsInstallFailure(ex))
                 {
+                    AppLog.Write($"Dependencies: {row.Id} could not be checked", ex);
                     row.Status = $"Could not be checked: {ex.Message}";
                     failed.Add(row.Name);
                 }
@@ -575,7 +579,9 @@ public partial class DependencyPanel : UserControl
         }.ShowDialog() == true;
     }
 
-    private async void ForceLatest_Click(object sender, RoutedEventArgs e)
+    private void ForceLatest_Click(object sender, RoutedEventArgs e) => Faults.Forget(ForceLatest_ClickAsync(sender, e), nameof(ForceLatest_Click));
+
+    private async Task ForceLatest_ClickAsync(object sender, RoutedEventArgs e)
     {
         if (_isRunning || ShowBusy() || !ConfirmUnpinned(Window.GetWindow(this), installNow: true))
             return;
@@ -584,7 +590,9 @@ public partial class DependencyPanel : UserControl
         await InstallAsync(installedToolsOnly: true);
     }
 
-    private async void RestorePinned_Click(object sender, RoutedEventArgs e)
+    private void RestorePinned_Click(object sender, RoutedEventArgs e) => Faults.Forget(RestorePinned_ClickAsync(sender, e), nameof(RestorePinned_Click));
+
+    private async Task RestorePinned_ClickAsync(object sender, RoutedEventArgs e)
     {
         if (_isRunning || ShowBusy())
             return;
@@ -604,13 +612,11 @@ public partial class DependencyPanel : UserControl
     /// <summary>Changes and saves the setting, and asks GitHub afresh: the builds wanted are other ones now.</summary>
     private void SetUnpinned(bool allowed)
     {
-        var settings = AppSettings.Current;
-        if (settings.AllowUnpinnedDependencyUpdates != allowed)
+        if (AppSettings.Current.AllowUnpinnedDependencyUpdates != allowed)
         {
-            settings.AllowUnpinnedDependencyUpdates = allowed;
             try
             {
-                settings.SaveAsCurrent();
+                AppSettings.Update(settings => settings.AllowUnpinnedDependencyUpdates = allowed, saveNow: true);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {

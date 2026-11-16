@@ -1,5 +1,5 @@
 # The Summary tab is retired: each of its controls has one new home, and an arrangement saved on it opens on the Timeline.
-ok: MainWindow.xaml's tabs are Filters, Audio, Export and Command Preview: no Summary (and, 5.4B, no Video)
+ok: MainWindow.xaml's tabs are Color, Audio, Export and Command Preview: no Summary (and, 5.4B, no Video; 5.6A, Filters is Color)
 ok: no built-in layout holds Tab:Summary
 ok: and MainWindow.Layouts.cs names it nowhere
 ok: Color & Effects' media group is the Media Browser alone

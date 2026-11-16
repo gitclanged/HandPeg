@@ -116,6 +116,33 @@ internal static class ProcessPipes
 
     public static void Untrack(int processId) => RunningProcesses.TryRemove(processId, out _);
 
+    /// <summary>
+    /// Takes in a tool started with <see cref="Process.Start(ProcessStartInfo)"/> by synchronous code (the bundle's VOD trims, the Clip
+    /// Library's audio cut): into the job of the work it runs for (so it dies with HandPeg however HandPeg ends, and keeps to its lane's
+    /// processors and priority), into the list <see cref="KillAll"/> ends at close, and noted with the scheduler. Disposing the result
+    /// lets it go again once it has exited.
+    /// </summary>
+    public static IDisposable Adopt(int processId)
+    {
+        IntoJob(processId);
+        RunningProcesses[processId] = 0;
+        WorkScheduler.NoteProcess(processId, true);
+        return new Adopted(processId);
+    }
+
+    private sealed class Adopted(int processId) : IDisposable
+    {
+        private int _released;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _released, 1) != 0)
+                return;
+            RunningProcesses.TryRemove(processId, out _);
+            WorkScheduler.NoteProcess(processId, false);
+        }
+    }
+
     /// <summary>Kills every tool still running. Called as the application closes.</summary>
     public static void KillAll()
     {

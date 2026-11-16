@@ -42,6 +42,7 @@ public static unsafe partial class HardwareBenchmark
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
+            AppLog.Write("Hardware test failed", ex);
             result.Error = ex.Message;
         }
 
@@ -119,12 +120,16 @@ public static unsafe partial class HardwareBenchmark
                 }
             }
 
+            // The compositor's all-slots frame on the cards it measured (a card that failed is left out: no role is given to it).
+            TimeCompositors(result, [.. targets.Where(a => !failed.Contains(a.Index))], 0.9, 0.97);
+
             result.MediaFoundationDecodeCodecs = MediaFoundationDecoders();
             result.Fingerprint = GpuAdapters.Fingerprint;
             result.Recommended = QuickRoles(result, listed, failed);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
+            AppLog.Write("Hardware test failed", ex);
             result.Error = ex.Message;
         }
 

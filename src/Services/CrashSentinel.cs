@@ -2,6 +2,8 @@ using System.Globalization;
 using System.IO;
 using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
+using HandPegApp.Native;
+using static HandPegApp.Native.Kernel32;
 
 namespace HandPegApp.Services;
 
@@ -67,15 +69,16 @@ public static partial class CrashSentinel
                 if (!CrashSharedMemory.IsValid(block) || CrashSharedMemory.WatchedPid(block) != pid)
                     return 0;
 
-                var process = OpenProcess(Synchronize | QueryLimitedInformation, 0, pid);
-                if (process == 0)
+                using var owned = OpenProcess(Synchronize | QueryLimitedInformation, false, pid);
+                if (owned.IsInvalid)
                     return 0;
 
-                try
-                {
-                    // The same process, not another one that was given its id after it ended.
-                    if (!Times(process, out var created, out _) || created != CrashSharedMemory.CreationTime(block))
-                        return 0;
+                // The raw handle for the waits below, alive while `owned` is (disposed when this returns).
+                var process = owned.DangerousGetHandle();
+
+                // The same process, not another one that was given its id after it ended.
+                if (!Times(process, out var created, out _) || created != CrashSharedMemory.CreationTime(block))
+                    return 0;
 
                     // HandPeg is told it is seen from now on, and the sentinel gets out of everyone's way until it is
                     // needed: its memory is given back, and it waits, using no processor time, in the lowest priority
@@ -84,39 +87,34 @@ public static partial class CrashSentinel
                     // nothing while it waits and means that when the fault filter wakes it, it answers at once, even
                     // with every core busy with an export: the filter holds the process for it at most two seconds, and
                     // a sentinel woken at idle priority behind an export could miss them.
-                    CrashSharedMemory.SetFlag(block, CrashSharedMemory.FlagSentinelWatching);
-                    _ = SetPriorityClass(GetCurrentProcess(), 0x40); // IDLE_PRIORITY_CLASS
-                    _ = SetThreadPriority(GetCurrentThread(), 15); // THREAD_PRIORITY_TIME_CRITICAL
-                    _ = SetProcessWorkingSetSize(GetCurrentProcess(), -1, -1);
+                CrashSharedMemory.SetFlag(block, CrashSharedMemory.FlagSentinelWatching);
+                _ = SetPriorityClass(GetCurrentProcess(), 0x40); // IDLE_PRIORITY_CLASS
+                _ = SetThreadPriority(GetCurrentThread(), 15); // THREAD_PRIORITY_TIME_CRITICAL
+                _ = SetProcessWorkingSetSize(GetCurrentProcess(), -1, -1);
 
-                    if (!Watch(process, pid, args[2], block))
-                    {
+                if (!Watch(process, pid, args[2], block))
+                {
                         // A fault was recorded and the process has not ended since: it is stuck on its way out (a
                         // dialog, a lock in a broken process). The report is written now, while it hangs, and only once.
-                        var written = TryWrite(Report(block, null, created, 0), folder);
-                        _ = WaitForSingleObject(process, Infinite);
-                        return written ? 1 : 0;
-                    }
+                    var written = TryWrite(Report(block, null, created, 0), folder);
+                    _ = WaitForSingleObject(process, Infinite);
+                    return written ? 1 : 0;
+                }
 
-                    if (GetExitCodeProcess(process, out var exitCode) == 0)
-                        return 0;
-                    _ = Times(process, out _, out var exited);
+                if (!GetExitCodeProcess(owned, out var exitCode))
+                    return 0;
+                _ = Times(process, out _, out var exited);
 
-                    var flags = CrashSharedMemory.Flags(block);
-                    if ((flags & (CrashSharedMemory.FlagCleanExit | CrashSharedMemory.FlagManagedReportWritten)) != 0 || exitCode == 0)
-                        return 0;
+                var flags = CrashSharedMemory.Flags(block);
+                if ((flags & (CrashSharedMemory.FlagCleanExit | CrashSharedMemory.FlagManagedReportWritten)) != 0 || exitCode == 0)
+                    return 0;
 
                     // Ended while the user was closing it (the save prompt up, then closed from the taskbar or Task
                     // Manager): no fault, so no crash to report.
-                    if ((flags & (CrashSharedMemory.FlagUserClosing | CrashSharedMemory.FlagNativeFault)) == CrashSharedMemory.FlagUserClosing)
-                        return 0;
+                if ((flags & (CrashSharedMemory.FlagUserClosing | CrashSharedMemory.FlagNativeFault)) == CrashSharedMemory.FlagUserClosing)
+                    return 0;
 
-                    return TryWrite(Report(block, exitCode, created, exited), folder) ? 1 : 0;
-                }
-                finally
-                {
-                    _ = CloseHandle(process);
-                }
+                return TryWrite(Report(block, exitCode, created, exited), folder) ? 1 : 0;
             }
             finally
             {
@@ -191,38 +189,33 @@ public static partial class CrashSentinel
     private static unsafe void NameFaultingModule(int pid, byte* block)
     {
         var address = CrashSharedMemory.FaultAddress(block);
-        var process = OpenProcess(QueryInformation | VmRead, 0, pid);
-        if (process == 0)
+        using var owned = OpenProcess(QueryInformation | VmRead, false, pid);
+        if (owned.IsInvalid)
             return;
 
-        try
+        var process = owned.DangerousGetHandle();
+
+        var modules = new nint[1024];
+        fixed (nint* list = modules)
         {
-            var modules = new nint[1024];
-            fixed (nint* list = modules)
+            if (EnumProcessModulesEx(process, list, (uint)(modules.Length * sizeof(nint)), out var needed, 3) == 0) // LIST_MODULES_ALL
+                return;
+
+            var count = Math.Min((int)(needed / (uint)sizeof(nint)), modules.Length);
+            var name = stackalloc char[260];
+            for (var i = 0; i < count; i++)
             {
-                if (EnumProcessModulesEx(process, list, (uint)(modules.Length * sizeof(nint)), out var needed, 3) == 0) // LIST_MODULES_ALL
-                    return;
+                if (GetModuleInformation(process, list[i], out var info, (uint)sizeof(ModuleInfo)) == 0)
+                    continue;
 
-                var count = Math.Min((int)(needed / (uint)sizeof(nint)), modules.Length);
-                var name = stackalloc char[260];
-                for (var i = 0; i < count; i++)
-                {
-                    if (GetModuleInformation(process, list[i], out var info, (uint)sizeof(ModuleInfo)) == 0)
-                        continue;
+                var start = (ulong)info.BaseOfDll;
+                if (address < start || address >= start + info.SizeOfImage)
+                    continue;
 
-                    var start = (ulong)info.BaseOfDll;
-                    if (address < start || address >= start + info.SizeOfImage)
-                        continue;
-
-                    var length = GetModuleBaseNameW(process, list[i], name, 260);
-                    CrashSharedMemory.WriteModule(block, length > 0 ? new string(name, 0, (int)length) : "", start, address - start);
-                    return;
-                }
+                var length = GetModuleBaseNameW(process, list[i], name, 260);
+                CrashSharedMemory.WriteModule(block, length > 0 ? new string(name, 0, (int)length) : "", start, address - start);
+                return;
             }
-        }
-        finally
-        {
-            _ = CloseHandle(process);
         }
     }
 
@@ -347,40 +340,13 @@ public static partial class CrashSentinel
     // ----- Windows -----
 
     [LibraryImport("kernel32.dll")]
-    private static partial nint OpenProcess(uint access, int inheritHandle, int processId);
-
-    [LibraryImport("kernel32.dll")]
-    private static partial int CloseHandle(nint handle);
-
-    [LibraryImport("kernel32.dll")]
-    private static partial uint WaitForSingleObject(nint handle, uint milliseconds);
-
-    [LibraryImport("kernel32.dll")]
-    private static unsafe partial uint WaitForMultipleObjects(uint count, nint* handles, int waitAll, uint milliseconds);
-
-    [LibraryImport("kernel32.dll")]
-    private static partial int GetExitCodeProcess(nint process, out uint exitCode);
-
-    [LibraryImport("kernel32.dll")]
-    private static partial int GetProcessTimes(nint process, out long creation, out long exit, out long kernel, out long user);
-
-    [LibraryImport("kernel32.dll")]
-    private static partial nint GetCurrentProcess();
-
-    [LibraryImport("kernel32.dll")]
     private static partial int SetPriorityClass(nint process, uint priorityClass);
-
-    [LibraryImport("kernel32.dll")]
-    private static partial nint GetCurrentThread();
 
     [LibraryImport("kernel32.dll")]
     private static partial int SetThreadPriority(nint thread, int priority);
 
     [LibraryImport("kernel32.dll")]
     private static partial int SetProcessWorkingSetSize(nint process, nint minimum, nint maximum);
-
-    [LibraryImport("kernel32.dll")]
-    private static partial uint SetErrorMode(uint mode);
 
     [LibraryImport("kernel32.dll", EntryPoint = "K32EnumProcessModulesEx")]
     private static unsafe partial int EnumProcessModulesEx(nint process, nint* modules, uint size, out uint needed, uint filter);

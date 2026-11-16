@@ -13,6 +13,9 @@ public sealed record GraphResult(string Golden, string Text, IReadOnlyList<strin
 {
     /// <summary>The command line the text was made from, for a command.</summary>
     public string? CommandLine { get; init; }
+
+    /// <summary>Whether the filter left this case out (<see cref="GoldenKit.Skipped"/>): it never ran and is never compared.</summary>
+    public bool Skipped { get; init; }
 }
 
 /// <summary>
@@ -235,6 +238,9 @@ public static class GraphCases
     /// </summary>
     internal static GraphResult Export(SequenceExportState state, IEnumerable<Media> files, string golden, string description)
     {
+        if (!GoldenFilter.Wanted(golden))
+            return Skipped(golden);
+
         var problems = new List<string>();
         var text = new StringBuilder();
         text.Append("# ").AppendLine(description);

@@ -4,6 +4,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using HandPegApp.Services;
+using static HandPegApp.UiBrushes;
 
 namespace HandPegApp;
 
@@ -476,13 +477,6 @@ public sealed class LightningDialOverlay : FrameworkElement
     // ----- Drawing -----
 
     private Brush Themed(string key, Color fallback) => TryFindResource(key) as Brush ?? Frozen(fallback);
-
-    private static Brush Frozen(Color color)
-    {
-        var brush = new SolidColorBrush(color);
-        brush.Freeze();
-        return brush;
-    }
 
     // The rim's and the spokes' pens, made again only when the theme's outline brush changes.
     private Pen? _edge, _spoke;

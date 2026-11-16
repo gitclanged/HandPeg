@@ -56,7 +56,7 @@ internal static class MfPoster
         catch (Exception ex) when (ex is GpuException or IOException or UnauthorizedAccessException or NotSupportedException or InvalidOperationException
                                        or ArgumentException or DllNotFoundException or EntryPointNotFoundException or System.Runtime.InteropServices.COMException)
         {
-            AppLog.Write($"A poster of {Path.GetFileName(videoPath)} could not be decoded by Media Foundation ({ex.Message}); FFmpeg makes it.");
+            AppLog.Write($"A poster of {Path.GetFileName(videoPath)} could not be decoded by Media Foundation; FFmpeg makes it", ex);
             try
             {
                 File.Delete(imagePath);

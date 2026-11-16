@@ -1,0 +1,6 @@
+# presets.json damaged or locked: set aside and recovered from .prev, or never written over.
+ok: a damaged presets.json: set aside, and the previous copy's presets are used
+ok: a save afterwards never writes over the damaged copy
+ok: a null entry (a hand-edited file) is dropped
+ok: a file another process holds open: the built-ins for this session
+ok: and a save in that session is refused (IOException) and the file left as it was

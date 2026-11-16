@@ -68,34 +68,9 @@ public partial class MainViewModel
         if (get(AppSettings.Current) == steps)
             return;
 
-        set(AppSettings.Current, steps);
+        SaveView(settings => set(settings, steps));
         OnPropertyChanged(name);
         OnPropertyChanged(pixels);
-        SaveSettingsSoon();
-    }
-
-    private CancellationTokenSource? _settingsSave;
-
-    /// <summary>
-    /// Writes the settings to disk once they have stopped changing. A slider reports every step of a drag;
-    /// the file is written once, half a second after the last of them.
-    /// </summary>
-    private async void SaveSettingsSoon()
-    {
-        if (_isBackgroundWorker)
-            return;
-
-        _settingsSave?.Cancel();
-        var wait = _settingsSave = new CancellationTokenSource();
-        try
-        {
-            await Task.Delay(500, wait.Token);
-            AppSettings.Current.SaveAsCurrent();
-        }
-        catch (Exception ex) when (ex is OperationCanceledException or IOException or UnauthorizedAccessException)
-        {
-            // Superseded by a later change, or the file could not be written: the choice holds for this session.
-        }
     }
 
     /// <summary>Height in pixels of the timeline (waveform, I-frame lines, playhead): 16 at its slimmest, 220 at its tallest.</summary>
@@ -111,6 +86,9 @@ public partial class MainViewModel
     /// Draws the timeline's waveform and one for every audio track, in the background, after a load: all of
     /// them from one reading of the file (see Waveforms.RenderManyAsync).
     /// </summary>
+    /// <summary>The waveforms of the opened file's audio tracks, one per track drawn, layered in the Master Mix view.</summary>
+    public System.Collections.ObjectModel.ObservableCollection<System.Windows.Media.ImageSource> SourceWaveforms { get; } = [];
+
     private async Task GenerateWaveformsAsync(string mediaPath)
     {
         _waveformCancellation?.Cancel();
@@ -135,8 +113,13 @@ public partial class MainViewModel
             if (cancellation.IsCancellationRequested)
                 return;
 
-            for (var i = 0; i < tracks.Count; i++)
-                tracks[i].Waveform = pictures[i];
+            SourceWaveforms.Clear();
+            foreach (var picture in pictures.Take(tracks.Count))
+            {
+                if (picture is not null)
+                    SourceWaveforms.Add(picture);
+            }
+
             if (active.Count > 0 && !timeline.IsCancellationRequested)
                 TimelineWaveform = pictures[^1];
         }
@@ -442,6 +425,7 @@ public partial class MainViewModel
         }
         catch (Exception ex) when (ex is InvalidOperationException or IOException or System.ComponentModel.Win32Exception)
         {
+            AppLog.Write($"Voiceover: recording from {SelectedMicrophone}", ex);
             VoiceoverStatus = $"Could not record from {SelectedMicrophone}: {ex.Message}";
             return;
         }
@@ -462,7 +446,13 @@ public partial class MainViewModel
         VoiceoverStatus = "Paused. Record carries on from here; Stop finishes the recording.";
     }
 
-    private bool CanStopVoiceover() => IsRecording || IsRecordingPaused;
+    private bool CanStopVoiceover() => HoldsRecording;
+
+    /// <summary>
+    /// Whether a voiceover take belongs to the open project: recording, or paused (the recorder, its file and the moment it began are
+    /// kept for Record to carry on, and Stop places the take in this project). Project tabs never change while it holds one.
+    /// </summary>
+    public bool HoldsRecording => IsRecording || IsRecordingPaused;
 
     /// <summary>Finishes the recording and takes it as the session's voiceover.</summary>
     [RelayCommand(CanExecute = nameof(CanStopVoiceover))]
@@ -477,6 +467,7 @@ public partial class MainViewModel
         catch (Exception ex) when (ex is InvalidOperationException or IOException or OperationCanceledException)
         {
             recorded = false;
+            AppLog.Write("Voiceover: finishing the recording", ex);
             VoiceoverStatus = $"The recording could not be finished: {ex.Message}";
         }
 
@@ -523,6 +514,7 @@ public partial class MainViewModel
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            AppLog.Write($"Voiceover: saving to {AppPaths.Voiceovers}", ex);
             VoiceoverStatus = $"The recording could not be saved to {AppPaths.Voiceovers}: {ex.Message}";
             return;
         }

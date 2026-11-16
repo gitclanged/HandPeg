@@ -24,29 +24,6 @@ public static class CleaveTests
         yield return Case("export-sound-pairs", "# A surround stream exported as it is: each pair of its channels read as left and right, a lone last channel on both sides.", Pairs);
     }
 
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>, StringBuilder> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "FAILED: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect, text);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
-    }
-
     // ----- export-gif -----
 
     private static void Gif(Action<bool, string> expect, StringBuilder text)

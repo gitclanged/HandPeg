@@ -4,6 +4,7 @@ using System.Windows.Automation.Provider;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using static HandPegApp.UiBrushes;
 
 namespace HandPegApp.Docking;
 
@@ -53,12 +54,6 @@ internal sealed class PaneTab : Border
         if (!IsActive)
             drawing.DrawLine(light, new Point(0.5, 0.5), new Point(w - 0.5, 0.5));
         drawing.DrawLine(dark, new Point(w - 0.5, IsActive ? 2 : 0.5), new Point(w - 0.5, h));
-    }
-
-    private static Pen Frozen(Pen pen)
-    {
-        pen.Freeze();
-        return pen;
     }
 
     protected override void OnKeyDown(KeyEventArgs e)

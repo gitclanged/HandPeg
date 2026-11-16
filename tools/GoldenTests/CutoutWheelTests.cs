@@ -128,14 +128,34 @@ public static partial class CutoutTests
             // A click opens the card, placed against the button, on the inspector card's surface.
             var card = (Popup)typeof(MaskDrawWindow).GetField("_shortcutsCard", Hidden)!.GetValue(window)!;
             expect(!window.ShortcutsOpen, "the card is closed as the window opens");
+            // The card takes the theme's inspector card (ThemeManager's resources, which this run does not apply): a dark theme's, set here.
+            var app = Application.Current ?? new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+            var themed = new Dictionary<string, Color> { ["InspectorCardBrush"] = Color.FromRgb(0x1E, 0x1E, 0x22), ["InspectorCardBorderBrush"] = Color.FromRgb(0x2A, 0x2A, 0x30) };
+            var before = themed.Keys.ToDictionary(key => key, key => app.Resources.Contains(key) ? app.Resources[key] : null);
+            foreach (var (key, color) in themed)
+                app.Resources[key] = UiBrushes.Frozen(color);
             button.IsChecked = true;
             Pump();
             expect(window.ShortcutsOpen && card.Placement == PlacementMode.Custom && ReferenceEquals(card.PlacementTarget, window.Content),
                 "a click opens it, placed by UiScale.PlaceAgainst (a custom placement from the window's content, never Relative or Bottom)");
             var border = card.Child as Border;
-            expect(border is { Background: SolidColorBrush { IsFrozen: true } fill, BorderBrush: SolidColorBrush { IsFrozen: true } edge }
-                   && fill.Color == Color.FromRgb(0x1E, 0x1E, 0x22) && edge.Color == Color.FromRgb(0x2A, 0x2A, 0x30) && border.BorderThickness == new Thickness(1),
-                "on the inspector card's surface (#1E1E22) with its 1 px border (#2A2A30), both brushes frozen");
+            try
+            {
+                expect(border is { Background: SolidColorBrush { IsFrozen: true } fill, BorderBrush: SolidColorBrush { IsFrozen: true } edge }
+                       && fill.Color == themed["InspectorCardBrush"] && edge.Color == themed["InspectorCardBorderBrush"] && border.BorderThickness == new Thickness(1),
+                    "on the theme's inspector card (#1E1E22 edged #2A2A30 on a dark theme) with its 1 px border, both brushes frozen");
+            }
+            finally
+            {
+                foreach (var (key, kept) in before)
+                {
+                    if (kept is null)
+                        app.Resources.Remove(key);
+                    else
+                        app.Resources[key] = kept;
+                }
+            }
+
             var rows = border?.Child is Grid grid ? grid.Children.OfType<TextBlock>().Count() : 0;
             expect(rows == MaskDrawWindow.Shortcuts.Count * 2, $"a name and its keys a row ({rows} words in all)");
             viewport.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left) { RoutedEvent = UIElement.PreviewMouseDownEvent });

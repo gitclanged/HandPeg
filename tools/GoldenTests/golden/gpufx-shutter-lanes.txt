@@ -1,9 +1,11 @@
 # What the plan tells the worker: where a layer is as the shutter opens and closes, only for a layer with the card.
 ok: with no such effect, no shutter is written
 ok: with the card, a keyframed layer has its shutter's places
-ok: the shutter sweeps half a frame of its move
+ok: at its Amount of 100 % the shutter sweeps 2.5 times half a frame of its move (5.6A: the boosted top end)
 ok: either side of where it is at the frame
 ok: and its source's moment a frame ago
+ok: at 50 % the shutter sweeps half a frame of its move, as it always did
+ok: the boost: 1 up to 50 % (and for no number), rising smoothly from there to 2.5 at 100 %, no further
 ok: a layer that does not move has no sub-frames to draw
 ok: the first frame after a cut measures no motion across it
 ok: the frames after it do

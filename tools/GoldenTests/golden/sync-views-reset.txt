@@ -1,0 +1,7 @@
+# An edit tells the views list's listeners once (one Reset), whatever it adds, removes or moves; the order is the document's.
+ok: a trim: at most one notification (0)
+ok: the first clip of the bottom picture track deleted: one Reset (every later view moves up; was one event per view), 1
+ok: the list's order is the order a fresh sync of the same document gives
+ok: one edit splitting 200 clips across the tracks (as Remove Dead Air does): one Reset, 1
+ok: and every view in the document's stacking order, one per clip
+ok: SyncViews replaces the list whole (no per-view Insert or Move)

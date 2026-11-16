@@ -40,6 +40,9 @@ public sealed class GpuResourceBroker : IDisposable
 {
     private readonly CompositorClient? _client;
     private readonly bool _bakeHere;
+
+    // The thread that owns the tables (the one the broker is used from first): checked by every mutating member.
+    private readonly ThreadOwner _owner = new();
     private readonly SynchronizationContext? _home = SynchronizationContext.Current;
     private volatile bool _disposed;
 
@@ -122,6 +125,7 @@ public sealed class GpuResourceBroker : IDisposable
     /// </summary>
     public int SourceFor(string path, int videoStreamOrdinal)
     {
+        _owner.Check();
         var file = path.Trim().Trim('"');
         if (file.Length == 0)
             return -1;
@@ -260,9 +264,23 @@ public sealed class GpuResourceBroker : IDisposable
         return Acquire(hash, hash, GpuResourceKind.Curve1D, () => new Baked(0, 0, GpuResourceKind.Curve1D, 256, 1, 1, table), background: false);
     }
 
+    /// <summary>
+    /// The Color Grade card's curves (Master, Red, Green, Blue) as one table, found again by the four texts (baked only when new:
+    /// a drag on the Color Studio's curve bakes once a plan); none when every curve is the identity.
+    /// </summary>
+    public GpuResourceRef ColorCurves(string? master, string? red, string? green, string? blue)
+    {
+        if (GpuColorTables.CurveIsIdentity(master) && GpuColorTables.CurveIsIdentity(red) && GpuColorTables.CurveIsIdentity(green) && GpuColorTables.CurveIsIdentity(blue))
+            return GpuResourceRef.None;
+        var hash = default(GpuHash).Add("color-curves").Add(master).Add(red).Add(green).Add(blue).Value;
+        return Acquire(hash, hash, GpuResourceKind.Curve1D,
+            () => GpuColorTables.ColorCurves(master, red, green, blue) is { } table ? new Baked(0, 0, GpuResourceKind.Curve1D, 256, 1, 1, table) : default, background: false);
+    }
+
     /// <summary>A picture file (an image clip) as a still at its own size; none when it is not there.</summary>
     public GpuResourceRef StillFromFile(string path)
     {
+        _owner.Check();
         var file = path.Trim().Trim('"');
         var state = FileState.Get(file);
         if (file.Length == 0 || !state.Exists)
@@ -364,6 +382,7 @@ public sealed class GpuResourceBroker : IDisposable
     /// <summary>Hands over what the background lane has made since the last call (the UI thread: <c>GpuScenePlan.Create</c> and the orchestrator's frame tick).</summary>
     public void Pump()
     {
+        _owner.Check();
         if (_disposed)
             return;
 
@@ -435,6 +454,7 @@ public sealed class GpuResourceBroker : IDisposable
     /// </summary>
     public void ReleaseAllBut(IReadOnlySet<int> keep)
     {
+        _owner.Check();
         for (var id = 0; id < _sources.Length; id++)
         {
             if (_sources[id] is not { } slot || keep.Contains(id))
@@ -457,6 +477,7 @@ public sealed class GpuResourceBroker : IDisposable
     /// </summary>
     public void ReleaseKeptUnasked()
     {
+        _owner.Check();
         foreach (var id in _keptAcross)
         {
             if (_sources[id] is { } slot && slot.LastUsed <= _keptAt)

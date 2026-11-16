@@ -139,7 +139,7 @@ public partial class MainViewModel
     private (DeletedClip Clip, System.Windows.Media.ImageSource? Preview) Binned(TimelineClip clip, TimelineTrackModel track, Layer? view)
     {
         FlushLooks();
-        return (new DeletedClip(CopyOfClip(clip), track.Id, track.Kind, Document.Tracks.IndexOf(track)) { TrackParentId = track.ParentTrackId }, view?.Filmstrip ?? view?.Waveform);
+        return (new DeletedClip(CopyOfClip(clip), track.Id, track.Kind, Document.Tracks.IndexOf(track)) { TrackParentId = track.ParentTrackId }, view is null ? null : FilmstripOf(view) ?? WaveformOf(view));
     }
 
     /// <summary>A copy of a clip that nothing done to it reaches, the same id (it is put back as itself), its look shared (never changed in place).</summary>
@@ -173,7 +173,7 @@ public partial class MainViewModel
     }
 
     /// <summary>A picture already made of a layer's file this session: frames of its video, or failing that nothing.</summary>
-    private System.Windows.Media.ImageSource? GetLayerPicture(string path) => _layerFilmstrips.GetValueOrDefault(path);
+    private System.Windows.Media.ImageSource? GetLayerPicture(string path) => ClipPictures.Film(path);
 
     /// <summary>
     /// Deletes a clip: it leaves the timeline, its time left empty, and waits in the recycle bin with what went with it
@@ -316,15 +316,10 @@ public partial class MainViewModel
     /// </summary>
     private int ReleaseUnusedLayerPictures()
     {
-        var used = new HashSet<string>(Layers.Select(l => l.ImagePath), StringComparer.OrdinalIgnoreCase) { LocalMediaPath };
-        var unused = _layerFilmstrips.Keys.Concat(_layerWaveforms.Keys).Where(path => !used.Contains(path)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        foreach (var path in unused)
-        {
-            _layerFilmstrips.Remove(path);
-            _layerWaveforms.Remove(path);
-        }
-
-        return unused.Count;
+        var used = new HashSet<string>(FilesInUse(), StringComparer.OrdinalIgnoreCase);
+        foreach (var key in _layerWaveforms.Keys.Where(key => !used.Contains(key.Split('|')[0])))
+            _layerWaveforms.Remove(key);
+        return ClipPictures.Release();
     }
 
     // ----- Keyframes -----
@@ -531,7 +526,7 @@ public partial class MainViewModel
     partial void OnShowClipKeyframesChanged(bool value)
     {
         SaveView(s => s.ShowClipKeyframes = value);
-        TimelineChanged?.Invoke();
+        RaiseTimelineChanged();
     }
 
     /// <summary>Remembers where a pane was put or how large it was made, for the mode in use.</summary>
@@ -602,8 +597,7 @@ public partial class MainViewModel
         if (_isBackgroundWorker)
             return;
 
-        set(AppSettings.Current);
-        SaveSettingsSoon();
+        AppSettings.Update(set);
     }
 
     private bool _applyingKeys;

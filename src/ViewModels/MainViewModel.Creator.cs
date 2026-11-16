@@ -120,7 +120,6 @@ public partial class MainViewModel
     // Interactive Crop being dragged, and whether its drag has taken its one undo step; when a crop was last typed (a box
     // dragged or typed into sets it on every change: one undo step for changes within a second and a half).
     private bool _cropDragging, _cropDragStepTaken;
-    private long _cropTypedAt;
 
     /// <summary>Interactive Crop's drag begins: its first change of the crop takes one undo step for the whole drag.</summary>
     public void BeginCropDrag() => (_cropDragging, _cropDragStepTaken) = (true, false);
@@ -179,9 +178,7 @@ public partial class MainViewModel
         }
 
         var now = Environment.TickCount64;
-        var again = now - _cropTypedAt < 1500;
-        _cropTypedAt = now;
-        if (!again && now - _checkpointedAt > 500)
+        if (!_gesture.Crop.Continues(this, "crop", now, MergeWindow, newest: null) && now - _checkpointedAt > HandStepGrace)
             Checkpoint("crop the video");
     }
 
@@ -1210,17 +1207,20 @@ public partial class MainViewModel
         // Moved, sized or turned by hand: what that does to its keyframes. (Not a place written into it as the frame changed shape.)
         if (!_placingViews)
             RecordKey(source, e.PropertyName);
-        TimelineChanged?.Invoke();
 
-        // A picture of the clip arriving is something to draw, and nothing to do with the command.
-        if (e.PropertyName is nameof(Layer.Waveform) or nameof(Layer.Filmstrip))
-            return;
+        // An effect parameter's value (its text, its keyframes) changes pixels or sound only (Layer.RaisingEffectValue): look-only.
+        // Clip pictures are not layer properties (ClipPictures), so every change here reaches the command.
+        var change = source.RaisingEffectValue ? PreviewChange.Look : PreviewChange.Rows;
+        var batched = DeferToLookBatch(change, command: true);
+        if (!batched)
+            RaiseTimelineChanged(change);
 
         // Different words, or a different font: its box is measured again.
         if (source.IsText && Layer.IsTextShapeProperty(e.PropertyName))
             LayoutText(source);
 
-        GenerateCommand();
+        if (!batched)
+            GenerateCommand(change);
     }
 
     // Set while a layer is written to by what follows from a change (a text box measured, a placement given), not by the user.
@@ -1241,22 +1241,15 @@ public partial class MainViewModel
         if (_resyncingShowIFrames)
             return;
 
-        var settings = AppSettings.Current;
-        settings.ShowIFrames = value;
-
         // Optionally the pull of the timeline thumb towards I-frames goes on and off with the lines.
         // Snapping of the cut points is a separate matter and is not touched.
-        if (settings.AutoToggleTimelineSnap)
-            settings.SnapTimelineToIFrames = value;
-
-        try
+        AppSettings.Update(current =>
         {
-            settings.SaveAsCurrent();
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            // The choice still holds for this session.
-        }
+            current.ShowIFrames = value;
+            if (current.AutoToggleTimelineSnap)
+                current.SnapTimelineToIFrames = value;
+        });
+        var settings = AppSettings.Current;
 
         if (settings.AutoToggleTimelineSnap)
             StatusText = value ? "I-frames shown; the timeline snaps to them." : "I-frames hidden; timeline snapping is off.";
@@ -1265,17 +1258,15 @@ public partial class MainViewModel
     // ----- Taskbar progress -----
 
     /// <summary>
-    /// Shows an encode's progress on the application's taskbar button. The state has to be set explicitly:
-    /// it starts as None, in which the taskbar draws nothing whatever the value is.
+    /// Shows an encode's progress on the taskbar button of the window that owns this view model (set by the window; null without one).
+    /// The state is set explicitly: from None the taskbar draws nothing whatever the value is. Fraction 0 to 1.
     /// </summary>
-    /// <param name="fraction">0 to 1.</param>
+    public ITaskbarProgress? TaskbarProgress { get; set; }
+
     private void SetTaskbarProgress(System.Windows.Shell.TaskbarItemProgressState state, double fraction = 0)
     {
-        if (_isBackgroundWorker || System.Windows.Application.Current?.MainWindow?.TaskbarItemInfo is not { } taskbar)
-            return;
-
-        taskbar.ProgressState = state;
-        taskbar.ProgressValue = Math.Clamp(fraction, 0, 1);
+        if (!_isBackgroundWorker)
+            TaskbarProgress?.Show(state, Math.Clamp(fraction, 0, 1));
     }
     // ----- Encoder presets -----
     // Each kind of encoder has its own speed/quality steps, and its own FFmpeg option for them.
@@ -1528,18 +1519,6 @@ public partial class MainViewModel
 
     /// <summary>Whether a picture of the video follows the pointer along the timeline.</summary>
     public bool ShowHoverPreviews => AppSettings.Current.GenerateHoverPreviews;
-
-    private static void DeleteSpriteFiles()
-    {
-        try
-        {
-            if (Directory.Exists(SpriteFolder))
-                Directory.Delete(SpriteFolder, recursive: true);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-        }
-    }
 
     // ----- Filters -----
 

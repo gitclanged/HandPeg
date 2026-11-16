@@ -33,7 +33,9 @@ public static class GpuSceneDifferentialTests
 
     public static IEnumerable<GraphResult> All()
     {
-        yield return Plans();
+        yield return Lazy("gpu-scene-plan", Plans);
+        if (!GoldenFilter.Wanted("gpu-scene-differential"))
+            yield break;
 
         var text = new StringBuilder("# The GPU scene (GpuScenePlan) against the export of the same timeline (the GPU's own since 5.2-Audit), at sampled moments (PSNR, dB).\n");
         var problems = new List<string>();

@@ -269,7 +269,8 @@ internal static class NativeKeyFrames
 
     private static byte[]? Body(FileStream file, long body, long end)
     {
-        if (end - body > MostTable)
+        // Never allocated beyond what the file holds, whatever a box's size claims.
+        if (end < body || end - body > MostTable || end > file.Length)
             return null;
         var bytes = new byte[end - body];
         file.Position = body;

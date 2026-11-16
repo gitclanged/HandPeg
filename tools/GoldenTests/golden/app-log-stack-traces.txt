@@ -1,0 +1,8 @@
+# AppLog writes an exception's type, message, stack and inner exceptions once; the same fault again is one line.
+ok: the first time: type, message, the stack's frames and the inner exception
+ok: the same fault again: one line, not the stack a second time
+ok: an entry is capped at 4096 characters
+ok: an exception with no stack (never thrown) is one line
+ok: WriteOnce writes a recurring failure once per key
+ok: appends and the rotation are serialized across the UI process and the compositor worker by a named mutex
+ok: the compositor worker logs an unhandled exception (a decode lane's) and its own failure with the stack, and rethrows a lane's fault with the lane's stack

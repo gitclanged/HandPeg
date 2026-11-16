@@ -332,7 +332,7 @@ public partial class MainWindow
         // cold too: made a JPEG on the thread pool, with the write. Never a 3D still (5.4D): a project's picture is flat.
         write = new TabWrite(tab, live, ProjectTabs.HeaderJson(tab), still is not null && !stillMark.Shown3D ? still : preview);
         live.Write = write;
-        live.ApproxBytes = ApproxBytesOf(live, 0);
+        live.ApproxBytes = ApproxBytesOf(live, 0, _viewModel.ClipPictures);
         return live;
     }
 
@@ -409,6 +409,9 @@ public partial class MainWindow
             _explodedWaitingTab = tab;
         RestoreTabView(tab);
         _viewModel.BackgroundSelected = _selectedClip is Layer { IsBackground: true };
+        // A sound clip selected is the Effects pane's target again (5.6A review: EffectsPane.SelectSound; null gives it back to the key
+        // layer), told once the attach has put the tab's own views and key layer back (before it, Layers holds none of them).
+        EffectsView.SelectSound(_selectedClip as Layer);
         UpdateTimelineInspector();
         UpdatePlayerSelection();
         KeptTabsChanged();
@@ -558,7 +561,7 @@ public partial class MainWindow
         live.MustStay = false;
         if (write.Jpeg is { } jpeg)
             live.Project.Thumbnail ??= jpeg;
-        live.ApproxBytes = ApproxBytesOf(live, write.Bytes);
+        live.ApproxBytes = ApproxBytesOf(live, write.Bytes, _viewModel.ClipPictures);
         if (write.Dirty is { } dirty && dirty != tab.Dirty)
         {
             tab.Dirty = dirty;
@@ -572,13 +575,20 @@ public partial class MainWindow
     /// still and overview sheet, and (the 5.4D-TabPerf review) its clips' views' filmstrips and waveforms, its tracks' waveforms and the
     /// timeline's, each picture once (<see cref="PictureBytes"/>).
     /// </summary>
-    private static long ApproxBytesOf(TabViewContext live, long fileBytes)
+    private static long ApproxBytesOf(TabViewContext live, long fileBytes, ClipPictures clipPictures)
+    {
+        var project = live.Project;
+        var pictures = PictureBytes(FilesOf(live).Distinct(StringComparer.OrdinalIgnoreCase).SelectMany(clipPictures.OfFile)
+            .Concat(project.TrackWaveforms).Append(project.TimelineWaveform).Append(live.Still).Append(live.ProgramSheet?.Picture));
+        return (fileBytes > 0 ? 3 * fileBytes : 4L << 20) + pictures;
+    }
+
+    /// <summary>The files a tab kept live uses: its clips' views' and its opened file's (ClipPictures keeps their pictures while it is open).</summary>
+    private static IEnumerable<string> FilesOf(TabViewContext live)
     {
         var project = live.Project;
         IEnumerable<Layer> views = project.Views is { } kept ? kept.Views.Values.Concat(kept.EmptyTrackViews.Values) : [];
-        var pictures = PictureBytes(views.SelectMany(view => new[] { view.Filmstrip, view.Waveform })
-            .Concat(project.TrackWaveforms.Values).Append(project.TimelineWaveform).Append(live.Still).Append(live.ProgramSheet?.Picture));
-        return (fileBytes > 0 ? 3 * fileBytes : 4L << 20) + pictures;
+        return views.Select(view => view.ImagePath).Append(project.LocalMediaPath).Where(file => file.Length > 0);
     }
 
     /// <summary>
@@ -679,12 +689,26 @@ public partial class MainWindow
             : Dispatcher.Invoke(QuietForMemory, DispatcherPriority.Background, CancellationToken.None, TimeSpan.FromMilliseconds(500));
     }
 
-    /// <summary>One compacting collection of the managed heap asked for, once the editor is quiet (a tab closed or let go to its file).</summary>
-    private void CompactWhenQuiet(string reason)
+    /// <summary>One compacting collection of the managed heap asked for, once the editor is quiet (a tab closed or let go to its file,
+    /// the media browser at rest, the start-up warm-up done), with the process heap compacted too when asked.</summary>
+    private void CompactWhenQuiet(string reason, bool compactProcessHeap = false)
     {
         HookTabMemory();
-        MemoryHygiene.RequestCompactOnce(reason);
+        MemoryHygiene.RequestCompactOnce(reason, compactProcessHeap);
     }
+
+    /// <summary>
+    /// Called once from ContentRendered (after Frame 1, Law 1): the media browser's at-rest give-back goes through the same quiet gate as
+    /// the tabs' (hooked lazily on its first ask), so no blocking collection runs while anything plays, scrubs, records or switches tabs.
+    /// </summary>
+    private void HookMediaMemory() => MediaBrowser.AskCompact = reason => CompactWhenQuiet(reason, compactProcessHeap: true);
+
+    /// <summary>
+    /// Every pane realized after start-up: one compacting collection (large-object heap included) and a process-heap compaction, through
+    /// the quiet gate. A start allocates little after Frame 1, so without it the collector keeps the start-up garbage committed for a long
+    /// time (about 40 MB measured at the 10 s reading of Law 2). The working set is not trimmed: Law 2 reads private bytes.
+    /// </summary>
+    private void GiveBackStartupMemory() => CompactWhenQuiet("start-up warm-up done", compactProcessHeap: true);
 
     private bool QuietForMemory() =>
         !_viewModel.IsPlaying && _gpu is not { IsPlaying: true } && !_switchingTab && !TimelineDragHeld && !_viewModel.IsRecording;
@@ -711,7 +735,9 @@ public partial class MainWindow
     /// picks goes back to its cache file once that is written (its still kept while it is among the most recent), and the heap is compacted
     /// once the editor is quiet (MemoryHygiene). Then it looks again.
     /// </summary>
-    private async void LetGoForMemory()
+    private void LetGoForMemory() => Faults.Forget(LetGoForMemoryAsync(), nameof(LetGoForMemory));
+
+    private async Task LetGoForMemoryAsync()
     {
         if (_letGoing || _hydrated.Count == 0)
             return;

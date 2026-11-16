@@ -1,0 +1,7 @@
+# One key tolerance (inclusive, Layer.KeyTolerance) and one key-time rounding for every editor; one value quantizer for both panes.
+ok: a key exactly KeyTolerance away is the key there (inclusive); half as far again is not
+ok: Upsert at a key: its value set, its time kept
+ok: Upsert elsewhere: a key at the time rounded to the millisecond, never before 0
+ok: Toggle removes a key there, adds one where none is
+ok: Quantize: a whole-step value (Temperature) rounded to its step and held to its range, as both panes store it
+ok: no pane or dialog keeps its own key tolerance literal (KeyEdit, TrackAudioFilters.PutMixKey)

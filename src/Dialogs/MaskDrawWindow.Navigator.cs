@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using static HandPegApp.UiBrushes;
 
 namespace HandPegApp;
 
@@ -141,13 +142,6 @@ public sealed partial class MaskDrawWindow
             {
                 dc.DrawRectangle(null, EdgePen, picture);
             }
-        }
-
-        private static Brush Frozen(Color color)
-        {
-            var brush = new SolidColorBrush(color);
-            brush.Freeze();
-            return brush;
         }
 
         private static Pen FrozenPen(Color color, double thickness)

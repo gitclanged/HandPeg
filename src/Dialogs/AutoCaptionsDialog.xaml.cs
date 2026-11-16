@@ -130,7 +130,9 @@ public partial class AutoCaptionsDialog : Window
     }
 
     /// <summary>What the choice comes to here (the NPU, the graphics card, the processor) and why, worked out on a pool thread.</summary>
-    private async void Accelerator_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void Accelerator_SelectionChanged(object sender, SelectionChangedEventArgs e) => Faults.Forget(Accelerator_SelectionChangedAsync(sender, e), nameof(Accelerator_SelectionChanged));
+
+    private async Task Accelerator_SelectionChangedAsync(object sender, SelectionChangedEventArgs e)
     {
         var choice = AcceleratorBox.SelectedValue as string ?? AppSettings.SpeechOnAuto;
         try
@@ -160,16 +162,7 @@ public partial class AutoCaptionsDialog : Window
         // A changed choice of what it runs on is kept (the same setting as Settings' GPU & NPU Roles).
         if (AcceleratorBox.SelectedValue is string chosen && chosen != AppSettings.Current.CaptionAccelerator)
         {
-            AppSettings.Current.CaptionAccelerator = chosen;
-            try
-            {
-                AppSettings.Current.SaveAsCurrent();
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                // It holds for this session.
-                AppLog.Write("The Auto-Captions accelerator could not be saved", ex);
-            }
+            AppSettings.Update(settings => settings.CaptionAccelerator = chosen);
         }
 
         Source = source;

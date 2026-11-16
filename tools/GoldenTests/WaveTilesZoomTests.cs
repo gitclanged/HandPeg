@@ -20,25 +20,8 @@ public static class WaveTilesZoomTests
 {
     public static IEnumerable<GraphResult> All()
     {
-        var text = new StringBuilder("# The Timeline's waveforms through a zoom (5.4.4): stand-ins while the scale moves, the crisp tiles made once it rests.\n");
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            ZoomGlide(Expect);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        yield return new GraphResult("wave-tiles-zoom", text.ToString(), problems, 0);
+        yield return Case("wave-tiles-zoom", "# The Timeline's waveforms through a zoom (5.4.4): stand-ins while the scale moves, the crisp tiles made once it rests.",
+            ZoomGlide);
     }
 
     /// <summary>The cases that need the WPF Application (run after UiScaleTests made it).</summary>
@@ -180,28 +163,18 @@ public static class WaveTilesZoomTests
         expect(mostKept > 0 && mostKept <= UnifiedTimelineControl.WaveTileCapacity, "the tiles kept never pass the cap (WaveTileCapacity)");
 
         // (f) The source: one timer, stopped by its own tick, made at the first zoom (never before the first frame); no edit outside the drawing.
-        var render = File.ReadAllText(Path.Combine(Root(), "src", "Controls", "UnifiedTimelineControl.Render.cs")).ReplaceLineEndings("\n");
+        var render = SourceProbe.Src("Controls", "UnifiedTimelineControl.Render.cs");
         expect(render.Contains("_waveSettle?.Stop();", StringComparison.Ordinal) && render.Contains("new DispatcherTimer(DispatcherPriority.Background, Dispatcher)", StringComparison.Ordinal)
                && render.IndexOf("new DispatcherTimer(", StringComparison.Ordinal) > render.IndexOf("private void RestartWaveSettle()", StringComparison.Ordinal),
             "the rest is a Background timer made at the first zoom and stopped by its own tick (it never keeps the control alive)");
 
         // (g) 5.4.4-Final (the user's: a wave past its clip's end again): DrawWave cuts its whole tiles to its band, from the sound's first second
         // shown to its last, inside the method itself, so no caller (a closed sound stack's bar has no block shape round it) shows a wave past its segment.
-        var drawWave = render[render.IndexOf("private void DrawWave(", StringComparison.Ordinal)..render.IndexOf("private MatrixTransform Placed(", StringComparison.Ordinal)];
+        var drawWave = SourceProbe.Member(render, "private void DrawWave(");
         var push = drawWave.IndexOf("drawing.PushClip(WaveClip(new Rect(Math.Max(left, origin + start * fileScale), band.Top,", StringComparison.Ordinal);
         var loop = drawWave.IndexOf("for (var tile = (long)Math.Floor(start / tileSeconds)", StringComparison.Ordinal);
-        expect(push > 0 && loop > push && drawWave.IndexOf("drawing.Pop();\n\n        // Silence is still a line", StringComparison.Ordinal) > loop,
+        expect(push > 0 && loop > push && SourceProbe.InOrder(drawWave[loop..], "drawing.Pop();", "var (lineFrom, lineTo) = (Math.Max(left, origin + start * fileScale), Math.Min(right, origin + end * fileScale));"),
             "every wave is clipped to its band and its sound's own stretch before its tiles are drawn (whole tiles never show past the clip's end), and the clip popped after them");
     }
 
-    private static string Root()
-    {
-        for (var folder = new DirectoryInfo(AppContext.BaseDirectory); folder is not null; folder = folder.Parent)
-        {
-            if (File.Exists(Path.Combine(folder.FullName, "HandPegApp.csproj")))
-                return folder.FullName;
-        }
-
-        throw new DirectoryNotFoundException("HandPegApp.csproj was not found above the golden tests' program.");
-    }
 }

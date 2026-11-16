@@ -1,0 +1,10 @@
+# The Color tab: nothing built before shown, no capture while hidden or playing, a wheel drag one step of Undo, the card found again after Undo.
+ok: made, attached and given its target: nothing built, nothing captured (Law 1)
+ok: shown and paused: built, one capture of the input (no card yet: the picture as shown)
+ok: while playing: no capture (Law 3)
+ok: paused again: captured once more
+ok: a Lift drag on a target without a card: the card put on, the drag's values written, one step of Undo for it all
+ok: a second drag: one more step
+ok: a point added to the Master curve and dragged: one step, the curve written
+ok: Undo puts new cards in: the pane follows the new card, its curve back to none
+ok: out of the window (a dock rebuild, the tab behind another): nothing is captured

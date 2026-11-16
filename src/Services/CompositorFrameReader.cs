@@ -7,7 +7,7 @@ namespace HandPegApp.Services;
 /// <summary>
 /// The other end of the compositor's output (Pass 5.0-Core): a Direct3D 11 device of this process on the worker's card,
 /// with the worker's shared output textures opened by name (ID3D11Device1::OpenSharedResourceByName, keyed mutex key 0).
-/// <para>The hot path (5.0D's GpuViewportControl) copies the presented texture into its own swap chain on the card:
+/// <para>The hot path (5.0D's GpuViewport) copies the presented texture into its own swap chain on the card:
 /// <see cref="CopyPresentedCentered"/>, no pixel leaves video memory; a side window's Live Video Preview copies the canvas's part of it
 /// (5.4C, <see cref="CopyPresentedRegionTo"/>) on the same device. <see cref="TryRead"/> brings one frame back to the
 /// processor, for the golden tests and diagnostics only.</para>
@@ -79,7 +79,7 @@ public sealed unsafe class CompositorFrameReader : IDisposable
         // The ring's size from its own textures (never control.OutputWidth: a newer ring's size can be written there before its
         // generation), and kept only if no newer ring was announced meanwhile.
         Texture2DDesc desc;
-        ((delegate* unmanaged<nint, Texture2DDesc*, void>)Com.Table(_opened[0].Texture)[10])(_opened[0].Texture, &desc);
+        ((delegate* unmanaged<nint, Texture2DDesc*, void>)Com.Table(_opened[0].Texture)[ID3D11Texture2DSlot.GetDesc])(_opened[0].Texture, &desc);
         _ring = ((int)desc.Width, (int)desc.Height);
         if (Volatile.Read(ref control.OutputGeneration) != generation)
         {
@@ -114,7 +114,7 @@ public sealed unsafe class CompositorFrameReader : IDisposable
     /// The presented frame copied into a texture of this reader's device (BGRA8, <paramref name="targetWidth"/> x <paramref name="targetHeight"/>):
     /// the player's zero-copy path. A frame of the target's size in a texture of that size is one CopyResource; any other (a resize
     /// under way, a ring larger than its frame) is laid 1:1 in the middle of the target, never scaled (5.4.1A,
-    /// GpuViewportControl.CenteredCopy): the target cleared black through <paramref name="destinationRtv"/> first (0: not cleared),
+    /// GpuViewport.CenteredCopy): the target cleared black through <paramref name="destinationRtv"/> first (0: not cleared),
     /// then the frame's middle copied in whole pixels. Waits at most <paramref name="milliseconds"/> for the frame.
     /// </summary>
     internal bool CopyPresentedCentered(nint destination, nint destinationRtv, int targetWidth, int targetHeight, uint milliseconds = 16)
@@ -148,7 +148,7 @@ public sealed unsafe class CompositorFrameReader : IDisposable
                 // Black only where the frame leaves margins (a ring larger than its frame alone is copied over the whole target).
                 if (destinationRtv != 0 && (content.Width < targetWidth || content.Height < targetHeight))
                     context.ClearRenderTargetView(destinationRtv, 0, 0, 0, 1);
-                var (left, top, right, bottom, x, y) = GpuViewportControl.CenteredCopy(content.Width, content.Height, targetWidth, targetHeight);
+                var (left, top, right, bottom, x, y) = GpuViewport.CenteredCopy(content.Width, content.Height, targetWidth, targetHeight);
                 if (right > left && bottom > top)
                 {
                     var box = new Box { Left = (uint)left, Top = (uint)top, Front = 0, Right = (uint)right, Bottom = (uint)bottom, Back = 1 };

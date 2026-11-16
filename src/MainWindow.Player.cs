@@ -133,7 +133,7 @@ public partial class MainWindow
         _viewModel.StatusText = "Reloading the player...";
         _isScrubbing = false;
         StopShuttle();
-        CloseGpuEngine();
+        ReleaseGpuEngine();
         ForgetGpuFailures();
         _viewModel.IsPlaying = false;
         FollowPlayerByFrame(false);
@@ -147,7 +147,8 @@ public partial class MainWindow
     // drawn, and nothing queued behind a busy UI thread. Paused, the refresh is not followed (it would keep WPF drawing
     // for nothing).
 
-    private volatile bool _followingByFrame;
+    // UI thread only (it guards a CompositionTarget.Rendering subscription).
+    private bool _followingByFrame;
 
     private void FollowPlayerByFrame(bool on)
     {

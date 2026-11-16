@@ -1,0 +1,9 @@
+# The Filters tab is the Color tab: saved arrangements (main, side window, Pane Docker) and hidden tabs follow, the Default layout still alike.
+ok: MainWindow.ReplacedPanes: Tab:Filters is Tab:Color (and Source still Media)
+ok: the main window's tree: Tab:Filters is Tab:Color in its place, still the one shown in its group
+ok: a Pane Docker's tree: its Filters tab is the Color tab, held there once (not put back in the main window)
+ok: the side window of before 5.4C: its Filters tab is the Color tab
+ok: an old Standard Editing loads alike the Standard Editing of now (Frame 1 keeps the user's saved arrangement)
+ok: AppSettings version 13: a hidden Filters tab is a hidden Color tab, the other hidden tabs kept
+ok: MainWindow.xaml: <TabItem Header="Color" x:Name="ColorTab">, the Color Studio in its Tag's template (made when first shown or at idle)
+ok: Tabs and Panes describes the Color tab

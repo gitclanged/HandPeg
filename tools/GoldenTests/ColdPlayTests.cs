@@ -29,29 +29,6 @@ public static class ColdPlayTests
         yield break;
     }
 
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>, StringBuilder> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect, text);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
-    }
-
     private static string F(FormattableString text) => text.ToString(CultureInfo.InvariantCulture);
 
     private static void ColdPlay(Action<bool, string> expect, StringBuilder text)
@@ -255,77 +232,40 @@ public static class ColdPlayTests
 
     private static void Sources(Action<bool, string> expect)
     {
-        var pool = Read("Compositor", "DecoderPool.cs");
-        var lanes = Read("Compositor", "DecoderPool.Lanes.cs");
-        expect(InOrder(Method(lanes, "private Demand? MostUrgent(long pick)"), "if (demand.Kind == DemandKind.Idle && !(idleMayRun ??= IdleMayRunNow(countLanes: true)))",
+        var pool = SourceProbe.Src("Compositor", "DecoderPool.cs");
+        var lanes = SourceProbe.Src("Compositor", "DecoderPool.Lanes.cs");
+        expect(SourceProbe.InOrder(SourceProbe.Member(lanes, "private Demand? MostUrgent(long pick)"), "if (demand.Kind == DemandKind.Idle && !(idleMayRun ??= IdleMayRunNow(countLanes: true)))",
                    "if (HeldForColdPlay(demand))\n                continue;", "BackgroundBusy() >= BackgroundLanes"),
             "MostUrgent skips a held cut before any rank is weighed (it stays a demand: no frame taken, no decoder opened)");
-        expect(InOrder(Method(lanes, "private void WorkOn("), "lock (_gate)", "if (HeldForColdPlay(demand))\n                    return;", "if (frames >= 4 && demand.Rank > 0 && MoreUrgentWaiting(demand, decoder))"),
+        expect(SourceProbe.InOrder(SourceProbe.Member(lanes, "private void WorkOn("), "lock (_gate)", "if (HeldForColdPlay(demand))\n                    return;", "if (frames >= 4 && demand.Rank > 0 && MoreUrgentWaiting(demand, decoder))"),
             "a lane on a far cut gives way at once when a cold play opens (the read is taken up again where it stopped)");
-        expect(InOrder(Method(lanes, "private bool MoreUrgentWaiting("), "if (HeldForColdPlay(d))\n                continue;", "return true;"),
+        expect(SourceProbe.InOrder(SourceProbe.Member(lanes, "private bool MoreUrgentWaiting("), "if (HeldForColdPlay(d))\n                continue;", "return true;"),
             "a held cut never counts as waiting, so nothing gives way to it");
-        expect(InOrder(Method(pool, "public void BeginFrame("), "var jumped = ", "if (!exactOnly)", "_coldArmed |= _jumpProbe && !LastFrameExact;", "_jumpProbe = jumped;",
+        expect(SourceProbe.InOrder(SourceProbe.Member(pool, "public void BeginFrame("), "var jumped = ", "if (!exactOnly)", "_coldArmed |= _jumpProbe && !LastFrameExact;", "_jumpProbe = jumped;",
                    "Volatile.Write(ref _coldPlayUntil, 0);", "Volatile.Write(ref _coldPlayUntil, Stopwatch.GetTimestamp() + (long)(ColdPlaySeconds * Stopwatch.Frequency));", "LastFrameExact = true;"),
             "BeginFrame arms on a jump whose picture missed (before LastFrameExact is reset), closes the window on a pause and opens it on the first playing frame");
-        expect(InOrder(Method(pool, "public void SyncSources()"), "if (version != _sourcesVersion)", "_coldArmed = true;", "Resync();"),
+        expect(SourceProbe.InOrder(SourceProbe.Member(pool, "public void SyncSources()"), "if (version != _sourcesVersion)", "_coldArmed = true;", "Resync();"),
             "SyncSources arms a cold play whenever the sources change (a tab switch, a file opened, a fresh worker)");
-        expect(Method(pool, "private bool HeldForColdPlay(Demand demand)").Contains("demand.HintKind != GpuSeekHintKind.CutEntry || _exactOnly", StringComparison.Ordinal)
-               && !Method(pool, "private bool HeldForColdPlay(Demand demand)").Contains("UnifiedMemory", StringComparison.Ordinal),
+        expect(SourceProbe.Member(pool, "private bool HeldForColdPlay(Demand demand)").Contains("demand.HintKind != GpuSeekHintKind.CutEntry || _exactOnly", StringComparison.Ordinal)
+               && !SourceProbe.Member(pool, "private bool HeldForColdPlay(Demand demand)").Contains("UnifiedMemory", StringComparison.Ordinal),
             "only cut entries are held, never in an exact-frame scene, and on every memory tier (no unified-memory gate)");
 
         // 5.5A review (A3-1): a cut held while the lane waited for the draw gets no decoder opened and no seek.
-        expect(InOrder(Method(lanes, "private void RunLane(int lane)"), "WaitWhileDrawing();", "if (demand.Kind == DemandKind.Idle)", "lock (_gate)", "held = HeldForColdPlay(demand);",
+        expect(SourceProbe.InOrder(SourceProbe.Member(lanes, "private void RunLane(int lane)"), "WaitWhileDrawing();", "if (demand.Kind == DemandKind.Idle)", "lock (_gate)", "held = HeldForColdPlay(demand);",
                    "if (held)\n                            demand.Source.Opening = Math.Max(demand.Source.Opening - 1, 0);", "if (held)\n                        continue;", "decoder = OpenFor(demand.Source, lane);"),
             "RunLane looks again under the lock after waiting for the draw: a held cut opens no decoder (the open it counted on undone, the demand left to a later pick)");
-        expect(InOrder(Method(lanes, "private void WorkOn("), "WaitWhileDrawing();", "lock (_gate)", "if (HeldForColdPlay(demand))\n                return;", "decoder.Prepare(StartOf(demand, decoder, target));"),
+        expect(SourceProbe.InOrder(SourceProbe.Member(lanes, "private void WorkOn("), "WaitWhileDrawing();", "lock (_gate)", "if (HeldForColdPlay(demand))\n                return;", "decoder.Prepare(StartOf(demand, decoder, target));"),
             "WorkOn looks under the lock before its first Prepare: a held cut is never sought on a decoder it was given");
 
         // 5.5A review (A3-2): the lead follows the play rate BeginFrame samples.
-        expect(Method(pool, "private bool HeldForColdPlay(Demand demand)").Contains("_lastPlayhead, Volatile.Read(ref _playRate))", StringComparison.Ordinal)
-               && Method(pool, "internal static bool ColdPlayHoldsBack(").Contains("cutAt - playhead > CutSoon * Math.Max(rate, 1)", StringComparison.Ordinal),
+        expect(SourceProbe.Member(pool, "private bool HeldForColdPlay(Demand demand)").Contains("_lastPlayhead, Volatile.Read(ref _playRate))", StringComparison.Ordinal)
+               && SourceProbe.Member(pool, "internal static bool ColdPlayHoldsBack(").Contains("cutAt - playhead > CutSoon * Math.Max(rate, 1)", StringComparison.Ordinal),
             "HeldForColdPlay holds a cut only more than CutSoon x the play rate ahead (never less than CutSoon)");
-        expect(InOrder(Method(pool, "public void BeginFrame("), "var arrived = Stopwatch.GetTimestamp();", "SyncSources();", "if (!exactOnly)", "SamplePlayRate(playing, jumped, playhead, arrived);")
-               && InOrder(Method(pool, "public void SyncSources()"), "if (version != _sourcesVersion)", "_rateRestart = true;"),
+        expect(SourceProbe.InOrder(SourceProbe.Member(pool, "public void BeginFrame("), "var arrived = Stopwatch.GetTimestamp();", "SyncSources();", "if (!exactOnly)", "SamplePlayRate(playing, jumped, playhead, arrived);")
+               && SourceProbe.InOrder(SourceProbe.Member(pool, "public void SyncSources()"), "if (version != _sourcesVersion)", "_rateRestart = true;"),
             "BeginFrame samples the rate with the clock read as the scene came (before any wait), never in an exact-frame scene; new sources start the sample again");
     }
 
     // ----- Source text -----
 
-    private static string Read(params string[] parts) => File.ReadAllText(Path.Combine([RepositoryRoot(), "src", .. parts])).ReplaceLineEndings("\n");
-
-    private static string RepositoryRoot()
-    {
-        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-        {
-            if (File.Exists(Path.Combine(dir.FullName, "HandPegApp.csproj")))
-                return dir.FullName;
-        }
-
-        throw new DirectoryNotFoundException("the repository (HandPegApp.csproj) above " + AppContext.BaseDirectory);
-    }
-
-    /// <summary>A member's text: from its signature to the end of its body (the next line that closes at its indent).</summary>
-    private static string Method(string source, string signature)
-    {
-        var start = source.IndexOf(signature, StringComparison.Ordinal);
-        if (start < 0)
-            return "";
-        var end = source.IndexOf("\n    }\n", start, StringComparison.Ordinal);
-        return end < 0 ? source[start..] : source[start..(end + 6)];
-    }
-
-    /// <summary>Whether every one of <paramref name="parts"/> is in <paramref name="text"/>, each after the one before.</summary>
-    private static bool InOrder(string text, params string[] parts)
-    {
-        var at = 0;
-        foreach (var part in parts)
-        {
-            var found = text.IndexOf(part, at, StringComparison.Ordinal);
-            if (found < 0)
-                return false;
-            at = found + part.Length;
-        }
-
-        return true;
-    }
 }

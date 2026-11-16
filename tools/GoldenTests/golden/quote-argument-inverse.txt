@@ -1,0 +1,11 @@
+# EncoderCommand.QuoteArgument is the exact inverse of CommandLineToArgvW (FfmpegRunner.SplitArguments).
+ok: "title=My Mic\\"  ->  1 argument(s), as given
+ok: "a \"b\" \\"  ->  1 argument(s), as given
+ok: "x\\\"y"  ->  1 argument(s), as given
+ok: \\server\share\  ->  1 argument(s), as given
+ok: ""  ->  1 argument(s), as given
+ok: plain  ->  1 argument(s), as given
+ok: "two words"  ->  1 argument(s), as given
+ok: "tab	here"  ->  1 argument(s), as given
+ok: -metadata:s:a:0 title=x\ -metadata:s:a:1 "title=. -f mpegts http://evil/ -metadata a=\\" out.mp4  ->  5 argument(s), as given
+ok: the Copy export builds one item per argument and writes the line with QuoteArgument (a title is one argument, whatever it holds)

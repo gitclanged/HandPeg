@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using static HandPegApp.UiBrushes;
 
 namespace HandPegApp;
 
@@ -60,14 +61,8 @@ public sealed class KeyLanesView : TimelineBar
     private const double Reach = 6, EdgeZone = 24;
 
     private static readonly Typeface Face = new("Segoe UI");
-    private static readonly Brush NameBrush = FrozenBrush(Color.FromArgb(220, 255, 255, 255));
-    private static readonly Brush MutedBrush = FrozenBrush(Color.FromArgb(130, 255, 255, 255));
     private static readonly Brush SelectedRow = FrozenBrush(Color.FromArgb(40, 0x4F, 0xC3, 0xF7));
-    private static readonly Brush GraphFill = FrozenBrush(Color.FromArgb(28, 255, 255, 255));
-    private static readonly Pen RowLine = Frozen(new Pen(FrozenBrush(Color.FromArgb(28, 255, 255, 255)), 1));
     private static readonly Pen CurvePen = Frozen(new Pen(FrozenBrush(Color.FromRgb(0x4F, 0xC3, 0xF7)), 1.5));
-    private static readonly Pen GuidePen = Frozen(new Pen(FrozenBrush(Color.FromArgb(50, 255, 255, 255)), 1) { DashStyle = DashStyles.Dash });
-    private static readonly Pen SelectedKeyPen = Frozen(new Pen(Brushes.White, 1.5));
     private static readonly Brush MarqueeFill = FrozenBrush(Color.FromArgb(40, 0x4F, 0xC3, 0xF7));
     private static readonly Pen MarqueePen = Frozen(new Pen(FrozenBrush(Color.FromArgb(200, 0x4F, 0xC3, 0xF7)), 1));
 
@@ -238,11 +233,13 @@ public sealed class KeyLanesView : TimelineBar
 
     protected override void OnRender(DrawingContext drawing)
     {
+        // The theme's text colour looked up once a render (the lanes redraw as the playhead moves).
+        _renderInk = null;
         DrawBackground(drawing);
         var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
         if (_lanes.Count == 0)
         {
-            drawing.DrawText(Text("Select a clip: its keyframes are shown here, a row for each property.", MutedBrush, dpi, ActualWidth - 12), new Point(6, 3));
+            drawing.DrawText(Text("Select a clip: its keyframes are shown here, a row for each property.", Ink().Muted, dpi, ActualWidth - 12), new Point(6, 3));
             return;
         }
 
@@ -266,12 +263,12 @@ public sealed class KeyLanesView : TimelineBar
             var middle = top + LaneHeight / 2;
             if (i == SelectedLane)
                 drawing.DrawRectangle(SelectedRow, null, new Rect(0, top, ActualWidth, LaneHeight));
-            drawing.DrawLine(RowLine, new Point(0, top + LaneHeight - 0.5), new Point(ActualWidth, top + LaneHeight - 0.5));
+            drawing.DrawLine(Ink().RowLine, new Point(0, top + LaneHeight - 0.5), new Point(ActualWidth, top + LaneHeight - 0.5));
 
             // The name, with the diamond that keys the row at the playhead: filled when it has a keyframe there.
             var keyed = KeyedAtPlayhead(lane);
             drawing.DrawGeometry(keyed ? HandPegApp.Services.ThemeManager.KeyFill : HandPegApp.Services.ThemeManager.HollowKeyFill, KeyOutline, Diamonds([NameWidth - 12], double.MaxValue, middle, 5));
-            var name = Text(lane.Name, lane.IsAll ? NameBrush : MutedBrush, dpi, NameWidth - 22);
+            var name = Text(lane.Name, lane.IsAll ? Ink().Name : Ink().Muted, dpi, NameWidth - 22);
             drawing.DrawText(name, new Point(5, middle - name.Height / 2));
 
             // The row's keyframes, the one at the playhead on the selected row outlined in white.
@@ -293,9 +290,9 @@ public sealed class KeyLanesView : TimelineBar
             if (xs.Count > 0)
                 drawing.DrawGeometry(HandPegApp.Services.ThemeManager.KeyFill, KeyOutline, Diamonds(xs, ActualWidth, middle, lane.IsAll ? 6 : 5));
             if (chosen.Count > 0)
-                drawing.DrawGeometry(null, SelectedKeyPen, Diamonds(chosen, ActualWidth, middle, 7));
+                drawing.DrawGeometry(null, Ink().SelectedKey, Diamonds(chosen, ActualWidth, middle, 7));
             if (i == SelectedLane && keyed && !IsSelected(lane.Target, _playhead))
-                drawing.DrawGeometry(null, SelectedKeyPen, Diamonds([X(_playhead)], ActualWidth, middle, 7));
+                drawing.DrawGeometry(null, Ink().SelectedKey, Diamonds([X(_playhead)], ActualWidth, middle, 7));
             drawing.Pop();
 
             if (HasGraph && i == SelectedLane)
@@ -316,7 +313,7 @@ public sealed class KeyLanesView : TimelineBar
     private void DrawGraph(DrawingContext drawing, KeyLane lane, double top, double dpi)
     {
         var area = new Rect(NameWidth, top + 6, TimeWidth, GraphHeight - 12);
-        drawing.DrawRectangle(GraphFill, null, new Rect(0, top, ActualWidth, GraphHeight));
+        drawing.DrawRectangle(Ink().GraphFill, null, new Rect(0, top, ActualWidth, GraphHeight));
         if (lane.ValueAt is not { } valueAt || _span <= 0)
             return;
 
@@ -340,8 +337,8 @@ public sealed class KeyLanesView : TimelineBar
             (low, high) = (low - 1, high + 1);
 
         double Y(double value) => area.Bottom - (value - low) / (high - low) * area.Height;
-        drawing.DrawLine(GuidePen, new Point(area.Left, area.Top), new Point(area.Right, area.Top));
-        drawing.DrawLine(GuidePen, new Point(area.Left, area.Bottom), new Point(area.Right, area.Bottom));
+        drawing.DrawLine(Ink().Guide, new Point(area.Left, area.Top), new Point(area.Right, area.Top));
+        drawing.DrawLine(Ink().Guide, new Point(area.Left, area.Bottom), new Point(area.Right, area.Bottom));
 
         var curve = new StreamGeometry();
         using (var path = curve.Open())
@@ -358,8 +355,8 @@ public sealed class KeyLanesView : TimelineBar
             drawing.DrawEllipse(HandPegApp.Services.ThemeManager.KeyFill, KeyOutline, new Point(X(lane.Times[k]), Y(lane.Values[k])), 3.5, 3.5);
         drawing.Pop();
 
-        var highText = Text(lane.Format(high), MutedBrush, dpi, NameWidth - 10);
-        var lowText = Text(lane.Format(low), MutedBrush, dpi, NameWidth - 10);
+        var highText = Text(lane.Format(high), Ink().Muted, dpi, NameWidth - 10);
+        var lowText = Text(lane.Format(low), Ink().Muted, dpi, NameWidth - 10);
         drawing.DrawText(highText, new Point(NameWidth - 6 - highText.Width, area.Top - highText.Height / 2));
         drawing.DrawText(lowText, new Point(NameWidth - 6 - lowText.Width, area.Bottom - lowText.Height / 2));
     }
@@ -759,6 +756,28 @@ public sealed class KeyLanesView : TimelineBar
         Item("Select All Keyframes", "Ctrl+A", _lanes.Any(l => l.Times.Count > 0), SelectAll);
         menu.IsOpen = true;
         e.Handled = true;
+    }
+
+    /// <summary>
+    /// The ink drawn on the lanes, from the theme's text colours (light on a dark theme, dark on a light one): names, muted labels, the
+    /// graph's band, row lines, guides and the chosen key's outline. Made again only when the theme's text colour changes.
+    /// </summary>
+    private sealed record LaneInk(Color Text, Brush Name, Brush Muted, Brush GraphFill, Pen RowLine, Pen Guide, Pen SelectedKey);
+
+    private LaneInk? _ink, _renderInk;
+
+    private LaneInk Ink() => _renderInk ??= ThemeInk();
+
+    private LaneInk ThemeInk()
+    {
+        var text = (TryFindResource("TextBrush") as SolidColorBrush)?.Color ?? Colors.White;
+        if (_ink is { } ink && ink.Text == text)
+            return ink;
+
+        Color Alpha(byte alpha) => Color.FromArgb(alpha, text.R, text.G, text.B);
+        var muted = TryFindResource("MutedTextBrush") as Brush ?? FrozenBrush(Alpha(130));
+        return _ink = new LaneInk(text, FrozenBrush(Alpha(220)), muted, FrozenBrush(Alpha(28)), Frozen(new Pen(FrozenBrush(Alpha(28)), 1)),
+            Frozen(new Pen(FrozenBrush(Alpha(50)), 1) { DashStyle = DashStyles.Dash }), Frozen(new Pen(FrozenBrush(text), 1.5)));
     }
 
     private static Brush FrozenBrush(Color color)

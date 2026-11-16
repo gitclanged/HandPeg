@@ -13,5 +13,5 @@ ok: the mirror's present never waits: the frame copied with a 0 ms keyed-mutex w
 ok: a mirror shares the player's reader (and so its device), and never disposes it
 ok: the pump takes the attach and detach requests, and gives the mirrors their turn after each of the player's presents (four places)
 ok: AttachMirror and DetachMirror are queued to the pump's thread; the engine disposes its mirrors as it goes
-ok: a new engine has every preview attached afresh; an engine stopped or closed forgets them (its mirrors went with it)
+ok: a new engine has every preview attached afresh; an engine stopped, closed or released forgets them (its mirrors went with it)
 ok: the player's overlay goes under the lowest side window; a mirror's surface lets the pointer through (double-click: full screen)

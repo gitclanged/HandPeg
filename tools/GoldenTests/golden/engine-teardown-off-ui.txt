@@ -1,0 +1,4 @@
+# The GPU engine is torn down on the pool for a Reload or a fault (the next start waits for it); the window's close stays at once.
+ok: the engine tears itself down on the pool after any earlier teardown, and a new engine waits for it (one swap chain per window)
+ok: Reload Player and a worker given up on never wait for the old engine; the window's close disposes at once
+ok: a new engine is told every window input at once (PlayerInputs: volume, mute, rate, zoom and pan, Before/After)

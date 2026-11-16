@@ -77,7 +77,7 @@ public static class GpuColorTables
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
-            AppLog.Write($"A .cube LUT for the GPU engine could not be read ({Path.GetFileName(path)}): {ex.GetType().Name}");
+            AppLog.Write($"A .cube LUT for the GPU engine could not be read ({Path.GetFileName(path)})", ex);
             return null;
         }
     }
@@ -206,6 +206,161 @@ public static class GpuColorTables
         for (var x = (int)(points[^1].X * scale); x < 256; x++)
             y[x] = Clip(points[^1].Y * scale);
         return y;
+    }
+
+    // ----- The Color Grade's curves -----
+
+    /// <summary>
+    /// The Color Grade card's four curves (Master, Red, Green, Blue: "x/y x/y..." from 0 to 1) as one 256 x 1 RGBA32F table, in the
+    /// Curves card's layout: R, G and B each a channel's curve with the master applied after it (what PSColorStudio looks up), A the
+    /// master alone. Each curve is a monotone cubic Hermite through its points (Fritsch-Carlson: never overshoots a point, so a curve
+    /// drawn through points that rise only rises), the same one the Color Studio draws (<see cref="CurveAt"/>). Null when every curve
+    /// is the identity (empty, or every point on the diagonal). A few microseconds: baked as the plan is made.
+    /// </summary>
+    public static byte[]? ColorCurves(string? master, string? red, string? green, string? blue)
+    {
+        if (CurveIsIdentity(master) && CurveIsIdentity(red) && CurveIsIdentity(green) && CurveIsIdentity(blue))
+            return null;
+
+        var (m, r, g, b) = (Hermite.Of(master), Hermite.Of(red), Hermite.Of(green), Hermite.Of(blue));
+        var table = new float[256 * 4];
+        for (var i = 0; i < 256; i++)
+        {
+            var x = i / 255.0;
+            table[i * 4] = (float)m.At(r.At(x));
+            table[i * 4 + 1] = (float)m.At(g.At(x));
+            table[i * 4 + 2] = (float)m.At(b.At(x));
+            table[i * 4 + 3] = (float)m.At(x);
+        }
+
+        var bytes = new byte[table.Length * sizeof(float)];
+        Buffer.BlockCopy(table, 0, bytes, 0, bytes.Length);
+        return bytes;
+    }
+
+    /// <summary>Whether a curve's points change nothing: none, or every one on the diagonal (as ColorGradeMath.CurveIsIdentity says).</summary>
+    public static bool CurveIsIdentity(string? points) => Models.Effects.ColorGradeMath.CurveIsIdentity(points);
+
+    /// <summary>
+    /// A Color Grade curve's points, ascending, with its ends: (0, 0) put first and (1, 1) last where the text gives no point at 0 or 1,
+    /// so a lone point bends the diagonal through it. Empty for none (the identity).
+    /// </summary>
+    public static List<(double X, double Y)> CurvePoints(string? text)
+    {
+        var points = Points(text);
+        if (points.Count == 0)
+            return points;
+        if (points[0].X > 0)
+            points.Insert(0, (0, 0));
+        if (points[^1].X < 1)
+            points.Add((1, 1));
+        return points;
+    }
+
+    /// <summary>A Color Grade curve's value at <paramref name="x"/> (0..1): its monotone Hermite through <see cref="CurvePoints"/>.</summary>
+    public static double CurveAt(string? text, double x) => Hermite.Of(text).At(x);
+
+    /// <summary>A Color Grade curve sampled at <paramref name="count"/> even steps from 0 to 1 (what the Color Studio draws: the baked table's curve).</summary>
+    public static double[] CurveSamples(string? text, int count)
+    {
+        var curve = Hermite.Of(text);
+        var samples = new double[Math.Max(count, 2)];
+        for (var i = 0; i < samples.Length; i++)
+            samples[i] = curve.At(i / (samples.Length - 1.0));
+        return samples;
+    }
+
+    /// <summary>Points as a Color Grade curve's text ("x/y x/y...", three decimals, ascending as given).</summary>
+    public static string FormatCurve(IEnumerable<(double X, double Y)> points) =>
+        string.Join(' ', points.Select(p => string.Create(CultureInfo.InvariantCulture, $"{Math.Round(p.X, 3):0.###}/{Math.Round(p.Y, 3):0.###}")));
+
+    /// <summary>A monotone cubic Hermite through a curve's points (Fritsch and Carlson's tangents), flat outside them; the identity without points.</summary>
+    private sealed class Hermite
+    {
+        private static readonly Hermite Identity = new([0, 1], [0, 1], [1, 1]);
+
+        private readonly double[] _x, _y, _m;
+
+        private Hermite(double[] x, double[] y, double[] m) => (_x, _y, _m) = (x, y, m);
+
+        public static Hermite Of(string? text)
+        {
+            var points = CurvePoints(text);
+            if (points.Count < 2)
+                return Identity;
+
+            var n = points.Count;
+            var (x, y, m) = (new double[n], new double[n], new double[n]);
+            for (var i = 0; i < n; i++)
+                (x[i], y[i]) = points[i];
+
+            // The secants, then each inner point's tangent their mean (0 where the curve turns back), the ends their own secant's.
+            var d = new double[n - 1];
+            for (var i = 0; i < n - 1; i++)
+                d[i] = (y[i + 1] - y[i]) / (x[i + 1] - x[i]);
+            (m[0], m[n - 1]) = (d[0], d[n - 2]);
+            for (var i = 1; i < n - 1; i++)
+                m[i] = d[i - 1] * d[i] > 0 ? (d[i - 1] + d[i]) / 2 : 0;
+
+            // Fritsch-Carlson: a flat secant flattens both its tangents; tangents too steep for their secant are drawn in onto the circle of
+            // radius 3, which keeps every piece monotone (no overshoot).
+            for (var i = 0; i < n - 1; i++)
+            {
+                if (d[i] == 0)
+                {
+                    (m[i], m[i + 1]) = (0, 0);
+                    continue;
+                }
+
+                var (a, b) = (m[i] / d[i], m[i + 1] / d[i]);
+                var s = a * a + b * b;
+                if (s > 9)
+                {
+                    var tau = 3 / Math.Sqrt(s);
+                    (m[i], m[i + 1]) = (tau * a * d[i], tau * b * d[i]);
+                }
+            }
+
+            return new Hermite(x, y, m);
+        }
+
+        public double At(double t)
+        {
+            if (!(t > _x[0]))
+                return _y[0];
+            if (t >= _x[^1])
+                return _y[^1];
+
+            var k = 0;
+            while (k < _x.Length - 2 && t > _x[k + 1])
+                k++;
+            var h = _x[k + 1] - _x[k];
+            var u = (t - _x[k]) / h;
+            var (u2, u3) = (u * u, u * u * u);
+            var value = (2 * u3 - 3 * u2 + 1) * _y[k] + (u3 - 2 * u2 + u) * h * _m[k] + (-2 * u3 + 3 * u2) * _y[k + 1] + (u3 - u2) * h * _m[k + 1];
+            return Math.Max(0, Math.Min(value, 1));
+        }
+    }
+
+    // ----- The Color Grade's last lane -----
+
+    /// <summary>
+    /// The Color Grade card's last lane as the plan sends it: its LUT's mix (0..1), plus 2 when the layer's curve table is this card's,
+    /// plus 4 when the layer's LUT is (one LUT and one curve a layer: another card may hold them). Never below 0 (no PulseMarker).
+    /// </summary>
+    public static float StudioTablesLane(double mix, bool curves, bool lut) =>
+        (float)((double.IsFinite(mix) ? Math.Max(0, Math.Min(mix, 1)) : 0) + (curves ? 2 : 0) + (lut ? 4 : 0));
+
+    /// <summary>The Color Grade card's last lane read back (<see cref="StudioTablesLane"/>): whether its LUT and its curves are bound, and the LUT's mix.</summary>
+    public static (bool Lut, bool Curves, float Mix) StudioTablesOf(float lane)
+    {
+        var lut = lane >= 3.5f;
+        if (lut)
+            lane -= 4;
+        var curves = lane >= 1.5f;
+        if (curves)
+            lane -= 2;
+        return (lut, curves, float.IsFinite(lane) ? Math.Max(0, Math.Min(lane, 1)) : 0);
     }
 
     /// <summary>"x/y x/y ..." from 0 to 1, in the order given (curves wants them ascending; one out of order is left out).</summary>

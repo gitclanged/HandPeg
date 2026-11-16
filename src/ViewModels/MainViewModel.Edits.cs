@@ -1,4 +1,3 @@
-using System.Windows.Input;
 using HandPegApp.Models;
 using HandPegApp.Models.Timeline;
 using HandPegApp.Services;
@@ -414,7 +413,7 @@ public partial class MainViewModel
     [CommunityToolkit.Mvvm.Input.RelayCommand]
     private void ToggleSolo(Layer? row)
     {
-        var alone = AppSettings.Current.SoloIsExclusive || Keyboard.Modifiers.HasFlag(ModifierKeys.Alt);
+        var alone = AppSettings.Current.SoloIsExclusive || IsAltHeld();
         var track = TrackOfRow(row);
         var soloed = Document.Tracks.Where(t => t.IsSoloed).ToList();
         if (track is null && soloed.Count == 0)

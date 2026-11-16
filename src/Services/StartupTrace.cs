@@ -30,7 +30,8 @@ public static class StartupTrace
         {
             if (_clock is null)
             {
-                _clockStartedAt = (DateTime.Now - Process.GetCurrentProcess().StartTime).TotalMilliseconds;
+                using (var self = Process.GetCurrentProcess())
+                    _clockStartedAt = (DateTime.Now - self.StartTime).TotalMilliseconds;
                 _clock = Stopwatch.StartNew();
             }
 

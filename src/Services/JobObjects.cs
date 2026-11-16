@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using HandPegApp.Native;
+using static HandPegApp.Native.Kernel32;
 
 namespace HandPegApp.Services;
 
@@ -68,41 +70,37 @@ public static partial class JobObjects
         if (processId <= 0)
             return false;
 
-        var process = OpenProcess(ProcessSetQuota | ProcessTerminate | ProcessSetInformation | ProcessQueryLimitedInformation, false, processId);
-        if (process == IntPtr.Zero)
+        using var owned = OpenProcess(ProcessSetQuota | ProcessTerminate | ProcessSetInformation | ProcessQueryLimitedInformation, false, processId);
+        if (owned.IsInvalid)
             return false;
 
-        try
-        {
-            IntPtr job;
-            lock (Gate)
-            {
-                if (_foreground == IntPtr.Zero)
-                    Configure(Math.Max(_reservedCores, 0), _idle);
-                job = processClass == ProcessClass.Background ? _background : _foreground;
-            }
+        // The raw handle for the calls below, alive while `owned` is (disposed when this returns).
+        var process = owned.DangerousGetHandle();
 
-            var assigned = job != IntPtr.Zero && AssignProcessToJobObject(job, process);
-            if (processClass == ProcessClass.Background)
-            {
+        IntPtr job;
+        lock (Gate)
+        {
+            if (_foreground == IntPtr.Zero)
+                Configure(Math.Max(_reservedCores, 0), _idle);
+            job = processClass == ProcessClass.Background ? _background : _foreground;
+        }
+
+        var assigned = job != IntPtr.Zero && AssignProcessToJobObject(job, process);
+        if (processClass == ProcessClass.Background)
+        {
                 // Efficiency mode: Windows runs it on the slower cores, at lower clocks, after everything else.
-                if (efficiencyMode)
-                {
-                    var throttle = new PowerThrottlingState { Version = 1, ControlMask = ExecutionSpeedThrottling, StateMask = ExecutionSpeedThrottling };
-                    SetProcessInformation(process, ProcessPowerThrottling, ref throttle, (uint)Marshal.SizeOf<PowerThrottlingState>());
-                }
+            if (efficiencyMode)
+            {
+                var throttle = new PowerThrottlingState { Version = 1, ControlMask = ExecutionSpeedThrottling, StateMask = ExecutionSpeedThrottling };
+                SetProcessInformation(process, ProcessPowerThrottling, ref throttle, (uint)Marshal.SizeOf<PowerThrottlingState>());
+            }
 
                 // Not in the job: low priority at least, set on the process itself.
-                if (!assigned)
-                    LowerPriority(processId);
-            }
+            if (!assigned)
+                LowerPriority(processId);
+        }
 
-            return assigned;
-        }
-        finally
-        {
-            CloseHandle(process);
-        }
+        return assigned;
     }
 
     private static void LowerPriority(int processId)
@@ -148,18 +146,13 @@ public static partial class JobObjects
     /// </summary>
     public static void Suspend(int processId, bool suspended)
     {
-        var process = OpenProcess(ProcessSuspendResume, false, processId);
-        if (process == IntPtr.Zero)
+        using var owned = OpenProcess(ProcessSuspendResume, false, processId);
+        if (owned.IsInvalid)
             return;
 
-        try
-        {
-            _ = suspended ? NtSuspendProcess(process) : NtResumeProcess(process);
-        }
-        finally
-        {
-            CloseHandle(process);
-        }
+        var process = owned.DangerousGetHandle();
+
+        _ = suspended ? NtSuspendProcess(process) : NtResumeProcess(process);
     }
 
     // ----- The interface thread -----
@@ -236,13 +229,6 @@ public static partial class JobObjects
     private static partial bool AssignProcessToJobObject(IntPtr job, IntPtr process);
 
     [LibraryImport("kernel32.dll", SetLastError = true)]
-    private static partial IntPtr OpenProcess(uint access, [MarshalAs(UnmanagedType.Bool)] bool inheritHandle, int processId);
-
-    [LibraryImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool CloseHandle(IntPtr handle);
-
-    [LibraryImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool SetProcessInformation(IntPtr process, int informationClass, ref PowerThrottlingState information, uint length);
 
@@ -253,9 +239,6 @@ public static partial class JobObjects
 
     [LibraryImport("ntdll.dll")]
     private static partial int NtResumeProcess(IntPtr process);
-
-    [LibraryImport("kernel32.dll")]
-    private static partial IntPtr GetCurrentThread();
 
     [LibraryImport("kernel32.dll")]
     private static partial uint SetThreadIdealProcessor(IntPtr thread, uint idealProcessor);

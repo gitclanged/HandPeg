@@ -24,6 +24,12 @@ effects (one full-frame pattern layer, 256 x 144, each slot alone):
   mask, offset (14): within 3/255 of the reference
   mask, grown and inverted (14): within 3/255 of the reference
   tone curve (19): within 3/255 of the reference
+  color studio, neutral (30): exactly the picture it was given
+  color studio, full grade (30): within 3/255 of the reference
+  color studio, curves (30): within 3/255 of the reference
+  color studio, LUT at 50 % (30): within 3/255 of the reference
+  color studio, grade, curves and LUT (30): within 3/255 of the reference
+  color studio, tables not its own (30): within 3/255 of the reference
 composite stage:
   opacity 50 % (1): within 3/255 of the reference
   dissolve at 40 % (64): within 3/255 of the reference
@@ -115,6 +121,9 @@ decode (an H.264 clip made by HandPeg's FFmpeg: 30 grey levels, a key frame ever
   instant seek: frame steps back come from the cache, with no decode
   instant seek: a hinted moment is decoded before it is asked for
   motion blur: the flow of a real clip, by its own speed (22)
+  motion blur at 100 %: the streak reaches 2.5 times as far as half a frame (5.6A)
+  Smooth Slow-Mo 0.5 of the way between two frames: the bar's edges where the motion puts them, each once (5.6A)
+  Smooth Slow-Mo 0.25 of the way between two frames: the bar's edges where the motion puts them, each once (5.6A)
   BT.709 colour within 4/255
 timing (1920 x 1080, every slot on a full-frame layer, GPU timestamps, the best of four frames):
   every pass of every slot under 0.5 ms

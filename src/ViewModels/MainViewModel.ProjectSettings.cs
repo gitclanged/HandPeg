@@ -64,12 +64,18 @@ public partial class MainViewModel
         // with the frame as the view model holds it, which no other step carries: Undo and Redo put the turn and the boxes back too.
         var before = undoable && hasClips && _restoring == 0 ? CaptureSnapshot() with { Frame = CaptureProjectFrame() } : null;
 
-        (Document.ExplicitFrame, Document.ExplicitFrameRate) = (explicitFrame, explicitRate);
-        if (frameRate is { } given)
-            Document.FrameRate = given;
+        // The frame, the rate and the colour space, pixel aspect and sample rate through one transaction (no step of its own: the one
+        // taken above is the step).
+        var (frameWidthNow, frameHeightNow) = framed ? (naturalWidth, naturalHeight) : (Document.NaturalWidth, Document.NaturalHeight);
+        Edit("change the Project Settings", edit =>
+        {
+            edit.SetFrameRate(frameRate ?? Document.FrameRate, explicitRate);
+            edit.SetFrame(frameWidthNow, frameHeightNow, explicitFrame);
+            if (settingsChange)
+                edit.SetProjectSettings(colorSpace, pixelAspect, sampleRate);
+        }, undoable: false);
         if (framed)
         {
-            (Document.NaturalWidth, Document.NaturalHeight) = (naturalWidth, naturalHeight);
 
             // Turned without the boxes swapping on the way, then blank: "Match Project Settings", the Sequence's own size.
             _syncingDimensions = true;
@@ -85,13 +91,9 @@ public partial class MainViewModel
             SetOutputSize("", "");
         }
 
-        // The colour space, pixel aspect and sample rate through a transaction of their own (no step: the one taken above is the step).
-        if (settingsChange)
-            Edit("change the Project Settings", edit => edit.SetProjectSettings(colorSpace, pixelAspect, sampleRate), undoable: false);
-
         NoteDocumentShape();
         GenerateCommand();
-        TimelineChanged?.Invoke();
+        RaiseTimelineChanged();
 
         if (before is not null && (frameChanges || rateChanges || settingsChange))
             Checkpoint("change the Project Settings", before);
@@ -107,11 +109,14 @@ public partial class MainViewModel
     /// </summary>
     public void LeaveToFirstClip(bool frame, bool rate)
     {
-        if (SequenceHasClips)
+        if (SequenceHasClips || (!frame || !Document.ExplicitFrame) && (!rate || !Document.ExplicitFrameRate))
             return;
 
-        Document.ExplicitFrame &= !frame;
-        Document.ExplicitFrameRate &= !rate;
+        Edit("leave the frame to the first clip", edit =>
+        {
+            edit.SetFrame(Document.NaturalWidth, Document.NaturalHeight, Document.ExplicitFrame && !frame);
+            edit.SetFrameRate(Document.FrameRate, Document.ExplicitFrameRate && !rate);
+        }, undoable: false);
     }
 
     // ----- The frame as the view model holds it, in a Project Settings step (5.4A) -----
@@ -263,7 +268,8 @@ public partial class MainViewModel
         if (Document.ExplicitFrame)
             return;
 
-        Document.ColorSpace = info.Video is { } video ? ProjectSettings.ColorSpaceOf(video.ColorTransfer) : ProjectColorSpace.Sdr709;
+        var colorSpace = info.Video is { } video ? ProjectSettings.ColorSpaceOf(video.ColorTransfer) : ProjectColorSpace.Sdr709;
+        Edit("take the first clip's colour space", edit => edit.SetProjectSettings(colorSpace, Document.PixelAspect, Document.SampleRate), undoable: false);
     }
 
     // ----- A New Project from the studio (MainWindow.CreateProjectAsync) -----

@@ -176,7 +176,7 @@ public static class MaskBaker
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException or InvalidOperationException
                                        or System.Runtime.InteropServices.COMException or FileFormatException)
         {
-            AppLog.Write($"A picture for the GPU engine could not be read ({Path.GetFileName(path)}): {ex.GetType().Name}");
+            AppLog.Write($"A picture for the GPU engine could not be read ({Path.GetFileName(path)})", ex);
             return null;
         }
     }

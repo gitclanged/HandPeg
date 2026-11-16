@@ -55,7 +55,10 @@ public static class MemoryHygiene
 
     internal static string LastReason { get; private set; } = "";
 
-    /// <summary>How many waits were let go after <see cref="GiveUpAfter"/> without a quiet moment.</summary>
+    /// <summary>How many collections also compacted the process heap (an ask with compactProcessHeap).</summary>
+    internal static int HeapCompactions { get; private set; }
+
+    /// <summary>How many waits were released after <see cref="GiveUpAfter"/> without a quiet moment.</summary>
     internal static int GivenUp { get; private set; }
 
     /// <summary>The managed thread the last collection ran on (the goldens: the one that said the editor was quiet).</summary>
@@ -76,13 +79,18 @@ public static class MemoryHygiene
     private const int MaximumReasons = 8;
     private static Timer? _timer;
     private static long _dueAt, _giveUpAt;
-    private static bool _collecting;
+    private static bool _collecting, _compactHeap;
 
-    /// <summary>Asks for one compacting collection once the editor is quiet; asks made close together are one.</summary>
-    public static void RequestCompactOnce(string reason)
+    /// <summary>
+    /// Asks for one compacting collection once the editor is quiet; asks made close together are one. With
+    /// <paramref name="compactProcessHeap"/> (any of the merged asks) the process heap's free blocks are also coalesced and decommitted
+    /// after the finalizers ran (HeapCompact: the native side's freed pictures and start-up allocations).
+    /// </summary>
+    public static void RequestCompactOnce(string reason, bool compactProcessHeap = false)
     {
         lock (Gate)
         {
+            _compactHeap |= compactProcessHeap;
             // A few reasons are enough for the log line; the asks themselves are one however many there are.
             if (Reasons.Count < MaximumReasons && !Reasons.Contains(reason, StringComparer.Ordinal))
                 Reasons.Add(reason);
@@ -100,6 +108,7 @@ public static class MemoryHygiene
         lock (Gate)
         {
             Reasons.Clear();
+            _compactHeap = false;
             _timer?.Change(Timeout.Infinite, Timeout.Infinite);
         }
     }
@@ -151,6 +160,7 @@ public static class MemoryHygiene
         }
 
         string reason;
+        var compactHeap = false;
         lock (Gate)
         {
             if (Reasons.Count == 0)
@@ -167,17 +177,19 @@ public static class MemoryHygiene
                 GivenUp++;
                 reason = string.Join(", ", Reasons);
                 Reasons.Clear();
+                _compactHeap = false;
             }
             else
             {
                 reason = string.Join(", ", Reasons);
                 Reasons.Clear();
+                (compactHeap, _compactHeap) = (_compactHeap, false);
                 _collecting = true;
             }
         }
 
         if (quiet)
-            Compact(reason, before);
+            Compact(reason, compactHeap, before);
         else
             AppLog.Write(FormattableString.Invariant($"Memory hygiene ({reason}): no quiet moment within {GiveUpAfter.TotalSeconds:0} s, the compacting collection let go"));
     }
@@ -189,7 +201,7 @@ public static class MemoryHygiene
     /// would fault it back in. The finalizers it finds run on the pool (a finalizer that waits for the window's thread would wait for
     /// ever there), before the second reading, so the native memory they free (pictures, sections) counts in what it gave back.
     /// </summary>
-    private static void Compact(string reason, (long Private, long Heap, TimeSpan Paused) before)
+    private static void Compact(string reason, bool compactHeap, (long Private, long Heap, TimeSpan Paused) before)
     {
         var handedOn = false;
         try
@@ -199,7 +211,7 @@ public static class MemoryHygiene
             GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
             GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
             var paused = GC.GetTotalPauseDuration() - before.Paused;
-            Task.Run(() => AfterCompact(reason, before, paused, watch));
+            Task.Run(() => AfterCompact(reason, compactHeap, before, paused, watch));
             handedOn = true;
         }
         finally
@@ -209,12 +221,18 @@ public static class MemoryHygiene
         }
     }
 
-    // On the pool after the collection: its finalizers, the second reading and the log line.
-    private static void AfterCompact(string reason, (long Private, long Heap, TimeSpan Paused) before, TimeSpan paused, Stopwatch watch)
+    // On the pool after the collection: its finalizers, the process heap when asked, the second reading and the log line.
+    private static void AfterCompact(string reason, bool compactHeap, (long Private, long Heap, TimeSpan Paused) before, TimeSpan paused, Stopwatch watch)
     {
         try
         {
             GC.WaitForPendingFinalizers();
+            if (compactHeap)
+            {
+                _ = Native.Kernel32.HeapCompact(Native.Kernel32.GetProcessHeap(), 0);
+                HeapCompactions++;
+            }
+
             watch.Stop();
 
             var (privateAfter, heapAfter, committed) = (CompositorWorker.PrivateBytes(), GC.GetTotalMemory(forceFullCollection: false), GC.GetGCMemoryInfo().TotalCommittedBytes);

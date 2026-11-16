@@ -1,0 +1,5 @@
+# Text drawn by code reads on a light theme: the Cutout shortcuts card, the keyframe lanes, the keybind map's accent keys and conflicts.
+ok: keys and layers drawn on the accent: white on a dark accent, dark on a light one
+ok: a conflicting key's text: deep red on a light theme, light red on a dark one
+ok: the Cutout Studio's shortcuts card takes the theme's inspector card, as its text takes the theme's
+ok: the keyframe lanes' names, labels and lines are drawn in the theme's text colours, not white

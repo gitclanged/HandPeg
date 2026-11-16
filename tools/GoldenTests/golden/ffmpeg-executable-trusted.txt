@@ -1,0 +1,9 @@
+# FfmpegRunner.ResolveExecutable: a bare ffmpeg or the FFmpeg HandPeg uses; never a path a project chose.
+ok: refused: \\host\share\ffmpeg.exe
+ok: refused: C:\elsewhere\ffmpeg.exe
+ok: refused: media\ffmpeg.bat
+ok: refused: ffmpeg.bat
+ok: refused: ffmpeg2
+ok: refused: media/ffmpeg.exe
+ok: accepted: ffmpeg, "ffmpeg.exe" and the FFmpeg HandPeg uses written in full (as generated commands name it)
+ok: the GPU export resolves its executable the same way

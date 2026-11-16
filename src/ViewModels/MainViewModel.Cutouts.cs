@@ -130,17 +130,18 @@ public partial class MainViewModel
         var file = safe + StyleFile.Extension;
         try
         {
-            Directory.CreateDirectory(AppPaths.Styles);
-            File.WriteAllText(Path.Combine(AppPaths.Styles, file), JsonSerializer.Serialize(preset, LayoutJsonOptions));
+            AtomicFile.WriteAllText(Path.Combine(AppPaths.Styles, file), JsonSerializer.Serialize(preset, LayoutJsonOptions), durable: true);
 
             // Asked to be on the overlay, it is: first of what it offers, and the overlay is made to offer at least one.
-            var settings = AppSettings.Current;
-            settings.SplashStylePresets = [file, .. settings.SplashStylePresets.Where(s => !string.Equals(s, file, StringComparison.OrdinalIgnoreCase))];
-            settings.SplashPresetCount = Math.Max(settings.SplashPresetCount, 1);
-            settings.SaveAsCurrent();
+            AppSettings.Update(settings =>
+            {
+                settings.SplashStylePresets = [file, .. settings.SplashStylePresets.Where(s => !string.Equals(s, file, StringComparison.OrdinalIgnoreCase))];
+                settings.SplashPresetCount = Math.Max(settings.SplashPresetCount, 1);
+            });
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            AppLog.Write($"Save the Game Preset {file}", ex);
             return $"The Game Preset could not be saved: {ex.Message}";
         }
 

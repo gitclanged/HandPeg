@@ -6,7 +6,7 @@ namespace HandPegApp.Services;
 // The player draws at the viewport's own pixels. With Settings' Dynamic Preview Scaling on (AppSettings.DynamicPreviewScaling), a frame
 // drawn while playing or scrubbing may be drawn smaller and stretched over the viewport by the worker's final pass
 // (FrameSceneHeader.PreviewScale, SceneRenderer.DrawScale). The steps (StepScale): 0 whole; 1 "1:1 DIP" (5.4.4), the viewport's pixels
-// over Windows' scale of the monitor the player is on (GpuViewportControl.MonitorScale: a quarter of them at 200 %), never more than
+// over Windows' scale of the monitor the player is on (GpuViewport.MonitorScale: a quarter of them at 200 %), never more than
 // ShortSideCap pixels on the picture's short side nor more than the Sequence's own pixels (DipScale); 2 and 3 three quarters and half of
 // step 1. A run starts at step 1 on battery, or on a card that shares the PC's memory while more than one project tab is open, else
 // whole (StartStep); a second tab or the charger pulled mid-run takes it there at once. Three slow frames of a tumbling StepWindow step

@@ -1,0 +1,6 @@
+# One Frozen helper (UiBrushes), one split-wipe handle for both wipes, and icons by name (Glyphs): no raw private-use glyph in source.
+ok: no raw private-use glyph in source but CrashSanitizer's markers
+ok: Glyphs names each icon once, each one Segoe MDL2 code point
+ok: no private Frozen(Color) copy outside Services: UiBrushes.Frozen
+ok: Frozen brushes are frozen; the wipe handle is an 18-DIP column with the 18 x 34 grip
+ok: the Live Encoded Preview's wipe and the Color Studio's Before/After share it

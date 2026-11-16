@@ -1,0 +1,14 @@
+# The role cards (5.6A): automation ids, each role's menu on a two-card + NPU machine, a pick raised and kept, Settings' stage cards.
+ok: the menus: Compositor Auto (Recommended)=-1 / 0: AMD Radeon RX 7900 XTX=0 / 1: Intel(R) Arc(TM) A310 Graphics=1; Background Auto (Recommended)=-1 / Processor Only=-2 / 0: AMD Radeon RX 7900 XTX=0 / 1: Intel(R) Arc(TM) A310 Graphics=1; NPU Auto (Recommended)=auto / NPU=npu / Graphics Card=gpu / Processor=cpu
+ok: five cards, focusable, with their automation ids: CompositorRole, DecodeRole, BackgroundRole, ExportRole, NpuRole
+ok: the Compositor card: measured, its S pill ("Compositor 0.55 ms a frame · S (92)"); the NPU: no pill, Detected
+ok: Decode's menu: Auto (Recommended) checked, then each card; the NPU's four, NPU offered (there is one)
+ok: choosing the A310 raises RoleChosen(Decode, 1): Decode=1
+ok: picked on the cards: Decode on the A310 (its own pill), Background on the processor, Auto-Captions on the processor; the rest as recommended
+ok: WritePicks writes only what was picked (Decode 1, Background Processor Only, Auto-Captions cpu), a card not listed as Auto
+ok: Settings' stage cards: each role as its copy has it (Decode on the A310, Background on the processor, Auto-Captions on the NPU) with the result's pills; untested: Not tested, no pills
+ok: Settings' stage: the role cards above the picture (which draws no role cards of its own, and lists no cards), a read-only sync line (one Sync Test card), the benchmark lines with the compositor's ms
+ok: F15: opened again, the cards show the roles saved (Decode on the A310, its menu checking it; Export Auto; Auto-Captions on the NPU), a hand pick over them; a first start: none
+ok: F15: the window opened from Settings with Decode on the A310 shows it so; nothing picked, Start Editing writes nothing (the saved roles are display only)
+ok: F17: nothing picked, the Export and Compositor menus check the card shown (the A310 that encodes more; the RX 7900 XTX); Auto picked: Auto; a role on a card not listed: Auto
+ok: F18: Background on Processor Only shows the processor's pill and the green check in both homes (the first run, Settings)

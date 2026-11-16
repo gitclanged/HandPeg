@@ -98,7 +98,7 @@ public partial class MainViewModel
         Checkpoint($"fly {layer.Name} in with a shockwave");
         using (DeferCommand())
         {
-            using (Layer.Echo())
+            using (OwnLookScope())
             {
                 Beat(KeyProperty.X, x);
                 Beat(KeyProperty.Y, y);

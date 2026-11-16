@@ -82,7 +82,7 @@ public static partial class EffectRegistry
                     { IsAdvanced = true, Tip = "Steps along each streak (taken twice over, so 12 is 144 in all). More is smoother and costs a little more." },
                 new("video", "Motion in the Picture", ParamKind.Toggle, Default: 1) { Tip = "Measures what moves inside the video from frame to frame (a whip-turn, a speed ramp) and blurs it along its way." },
                 new("layer", "This Clip's Own Moves", ParamKind.Toggle, Default: 1) { Tip = "Blurs this clip's own keyframed moves, zooms and turns: real sub-frames of it along the way, nothing estimated." },
-                new("amount", "Amount", Min: 0, Max: 100, Default: 100, Step: 1, Unit: "%", Animation: ParamAnimation.Expression) { Tip = "How much of the streak is drawn: keyframe it to bring the blur in and out." },
+                new("amount", "Amount", Min: 0, Max: 100, Default: 100, Step: 1, Unit: "%", Animation: ParamAnimation.Expression) { Tip = "Streak strength; above 50% it reaches further, 2.5x at 100%." },
                 new("longest", "Longest Streak", Min: 1, Max: 50, Default: 12, Step: 1, Unit: "%") { IsAdvanced = true, Tip = "The longest a streak may get, in % of the picture: keeps a wrong measure from smearing a whole frame." },
             ], EffectCost.Amber)
         {

@@ -1,0 +1,6 @@
+# Lowered layers are measured without being changed (ComputeOutputRect); a 500-clip Sequence lowers well inside a frame (the per-clip cache waits for a measured need).
+ok: ComputeOutputRect measures the box and changes nothing on the layer
+ok: GetOutputRect (the editor's view) gives the same box
+ok: the scene plan, which reads lowered layers on several threads, never calls the remembering GetOutputRect
+ok: every clip lowered to a layer
+ok: 500 clips lower in under 50 ms in a debug build: a per-clip cache is not needed yet

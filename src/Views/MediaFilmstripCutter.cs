@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
+using static HandPegApp.UiBrushes;
 
 namespace HandPegApp.Views;
 
@@ -680,13 +681,6 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
 
         Scrubbed?.Invoke(_position, false);
         return true;
-    }
-
-    private static Brush Frozen(Color color)
-    {
-        var brush = new SolidColorBrush(color);
-        brush.Freeze();
-        return brush;
     }
 
     private static Pen FrozenPen(Color color, double thickness)

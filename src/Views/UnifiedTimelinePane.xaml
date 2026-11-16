@@ -155,10 +155,10 @@
                             <TextBlock x:Name="InspectedName" FontWeight="SemiBold" MaxWidth="200" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="0,0,6,0" />
                             <StackPanel x:Name="PictureGroup" Orientation="Horizontal" Visibility="Collapsed">
                                 <StackPanel Orientation="Horizontal" Visibility="{Binding HasSpeed, Converter={StaticResource BoolToVisibility}}"
-                                            ToolTip="Speed: how many times as fast as recorded this clip runs, from 0.1 to 10. Its block gets shorter as it gets faster.">
+                                            ToolTip="Clip speed, 0.1x to 16x: faster makes the block shorter.">
                                     <TextBlock Text="Speed x" Style="{StaticResource PairLabel}" />
                                     <TextBox Style="{StaticResource ValueBox}" Width="48" Text="{Binding ClipSpeed, StringFormat={}{0:0.##}}" AutomationProperties.Name="Clip Speed"
-                                             local:NumericInput.Default="1" local:NumericInput.DragStep="0.01" local:NumericInput.Decimals="2" local:NumericInput.Minimum="0.1" local:NumericInput.Maximum="10" />
+                                             local:NumericInput.Default="1" local:NumericInput.DragStep="0.01" local:NumericInput.Decimals="2" local:NumericInput.Minimum="0.1" local:NumericInput.Maximum="16" />
                                 </StackPanel>
                                 <StackPanel Orientation="Horizontal" Visibility="{Binding HasPlacement, Converter={StaticResource BoolToVisibility}}">
                                     <TextBlock Text="Size %" Style="{StaticResource PairLabel}" />
@@ -229,10 +229,10 @@
                                 <!-- A sound clip's speed (a video clip's is with its picture's values; an output audio track has none). -->
                                 <StackPanel x:Name="SoundSpeedHost" Orientation="Horizontal">
                                     <StackPanel Orientation="Horizontal" Visibility="{Binding HasSpeed, Converter={StaticResource BoolToVisibility}}"
-                                                ToolTip="Speed: how many times as fast as recorded this sound runs, from 0.1 to 10.">
+                                                ToolTip="Sound speed, 0.1x to 16x: faster makes the block shorter.">
                                         <TextBlock Text="Speed x" Style="{StaticResource PairLabel}" />
                                         <TextBox Style="{StaticResource ValueBox}" Width="44" Text="{Binding ClipSpeed, StringFormat={}{0:0.##}}" AutomationProperties.Name="Sound Speed"
-                                                 local:NumericInput.Default="1" local:NumericInput.DragStep="0.01" local:NumericInput.Decimals="2" local:NumericInput.Minimum="0.1" local:NumericInput.Maximum="10" />
+                                                 local:NumericInput.Default="1" local:NumericInput.DragStep="0.01" local:NumericInput.Decimals="2" local:NumericInput.Minimum="0.1" local:NumericInput.Maximum="16" />
                                     </StackPanel>
                                 </StackPanel>
                                 <CheckBox Content="Voice" IsChecked="{Binding IsVoice}" Margin="8,0,0,0" VerticalAlignment="Center"
@@ -410,7 +410,7 @@
                             </Button>
                         </Grid>
                         <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="95" Content="&#xE8C6;" Tag="Split" Click="Tool_Click" IsEnabled="{Binding HasSource}"
-                                AutomationProperties.Name="Split" local:KeyTip.Action="edit.split" local:KeyTip.Text="Split at Playhead{keys}: cuts the selected block in two at the playhead: a clip becomes two clips. With nothing selected, the video clip at the playhead is split. Alt + click on a block splits it there." />
+                                AutomationProperties.Name="Split" local:KeyTip.Action="edit.split" local:KeyTip.Text="Split at Playhead{keys}: cuts the selected clip in two; Alt-click a block splits there." />
                         <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="60" Content="&#xE892;" Tag="TrimStart" Click="Tool_Click" IsEnabled="{Binding HasSource}"
                                 AutomationProperties.Name="Trim Start" local:KeyTip.Action="edit.trimStart" local:KeyTip.Text="Trim Start to Playhead{keys}: the selected clip begins at the playhead; what came before goes." />
                         <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="60" Content="&#xE893;" Tag="TrimEnd" Click="Tool_Click" IsEnabled="{Binding HasSource}"
@@ -427,7 +427,7 @@
                         <Button x:Name="RedoButton" Style="{StaticResource Tool}" local:OverflowStrip.Priority="90" Content="&#xE7A6;" Tag="Redo" Click="Tool_Click" Visibility="Collapsed"
                                 AutomationProperties.Name="Redo" local:KeyTip.Action="edit.redo" local:KeyTip.Text="Redo{keys}: does again what was just undone." />
                         <ToggleButton Style="{StaticResource ToolToggle}" local:OverflowStrip.Priority="75" Margin="6,0,3,0" IsChecked="{Binding SnapClips}" AutomationProperties.Name="Snap"
-                                      local:KeyTip.Action="view.toggleSnap" local:KeyTip.Text="Snap{keys}: a dragged or dropped clip's edges catch on the edges of the other clips, the markers, the end of the sequence and the playhead. Hold Shift while dragging to place it freely, a frame at a time; Shift on a move onto another track keeps the clip's time exactly; Ctrl on an edge ripples.">
+                                      local:KeyTip.Action="view.toggleSnap" local:KeyTip.Text="Snap{keys}: clip edges catch on clips, markers and the playhead; Shift moves freely.">
                             <Path Width="14" Height="13" Stretch="None" StrokeThickness="1.3" StrokeLineJoin="Round"
                                   Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
                                   Data="M 2,1 L 2,7 A 5,5 0 0 0 12,7 L 12,1 L 9,1 L 9,7 A 2,2 0 0 1 5,7 L 5,1 Z M 2,4 L 5,4 M 9,4 L 12,4" />
@@ -446,7 +446,7 @@
                                 AutomationProperties.Name="Timeline Settings"
                                 ToolTip="Timeline Settings: effect lanes, filmstrips, waveforms and keyframes on the clips, snapping, following the playhead, the bars and the track height. The same menu as a right-click on the Timeline's tab." />
                         <ToggleButton Style="{StaticResource ToolToggle}" local:OverflowStrip.Priority="55" Content="&#xE71B;" IsChecked="{Binding AudioLinked, Mode=OneWay}" Tag="LinkAudio" Checked="Tool_Click" Unchecked="Tool_Click"
-                                      AutomationProperties.Name="Link A/V" local:KeyTip.Text="Link Audio and Video: linked, sound follows its picture and is cut with it. Unlinked, a sound can be dragged on its own; linking again offers to snap it back. {key:clip.toggleLink|Link / Unlink A/V on a clip's menu} links or unlinks the selected clip alone." />
+                                      AutomationProperties.Name="Link A/V" local:KeyTip.Text="Link Audio and Video: linked sound moves and is cut with its picture." />
                         <ToggleButton Style="{StaticResource ToolToggle}" local:OverflowStrip.Priority="20" Content="&#xE8D6;" IsChecked="{Binding ShowLinkedAudio}"
                                       AutomationProperties.Name="Show Linked Audio" ToolTip="Show Linked Audio: draws the sound that belongs to a picture across its block, over the pictures (a video clip's own sound, or its sound stack's, on that clip)." />
                         <!-- Where the in point being set is (or that none is), beside its buttons. -->
@@ -460,7 +460,7 @@
                         <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="30" Content="&#xE70F;" Tag="Timecode" Click="Tool_Click" IsEnabled="{Binding HasSource}"
                                 AutomationProperties.Name="Split or Trim at Timecode..." ToolTip="Split or Trim at Timecode: type the time to split the selected clip at (or the video clip at the playhead, with nothing selected), or to trim its start or end to. The I-frames either side of the time are offered." />
                         <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="45" Content="&#xE74F;" Tag="DeadAir" Click="Tool_Click" IsEnabled="{Binding HasSource}"
-                                AutomationProperties.Name="Remove Dead Air..." local:KeyTip.Action="edit.deadAir" local:KeyTip.Text="Remove Dead Air{keys}: finds the silences (or the gaps between captions) of the selected clip's sound (otherwise the sound marked as the voice, else the video clip at the playhead's) and marks or folds them out." />
+                                AutomationProperties.Name="Remove Dead Air..." local:KeyTip.Action="edit.deadAir" local:KeyTip.Text="Remove Dead Air{keys}: finds the selected clip's silences and folds them out." />
                         <Button Padding="9,4" Margin="6,0,3,0" VerticalAlignment="Center" local:OverflowStrip.Priority="40" Tag="CutoutStudio" Click="Tool_Click" IsEnabled="{Binding IsVideoReencoded}"
                                 AutomationProperties.Name="Cutout Studio" ToolTip="Trace a game's HUD by hand on a still of the video, zoomed in to the very pixels, name the Cutouts, and add them to the clip or save them as a Game Preset to drop videos on.">
                             <!-- Scissors cutting along a dashed line in the accent (5.2): the Studio stands out on the row of tools. -->
@@ -504,7 +504,7 @@
                         <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="14" Content="&#xE892;" Margin="6,0,3,0" Tag="PreviousKey" Click="Tool_Click"
                                 AutomationProperties.Name="Previous Keyframe" local:KeyTip.Action="key.prev" local:KeyTip.Text="Previous Keyframe of the selected clip{keys}." />
                         <Button local:OverflowStrip.Priority="26" Content="&#x2666;" FontSize="13" Padding="9,3" Margin="0,0,3,0" VerticalAlignment="Center" Tag="ToggleKey" Click="Tool_Click" Foreground="{DynamicResource KeyAccentBrush}"
-                                AutomationProperties.Name="Add or Remove Keyframe" local:KeyTip.Action="key.toggle" local:KeyTip.Text="Add / Remove Keyframe{keys}: sets a keyframe for the selected clip at the playhead, or removes the one that is there." />
+                                AutomationProperties.Name="Add or Remove Keyframe" local:KeyTip.Action="key.toggle" local:KeyTip.Text="Add / Remove Keyframe{keys}: keys the selected clip at the playhead, or removes that key." />
                         <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="14" Content="&#xE893;" Tag="NextKey" Click="Tool_Click"
                                 AutomationProperties.Name="Next Keyframe" local:KeyTip.Action="key.next" local:KeyTip.Text="Next Keyframe of the selected clip{keys}." />
                         <ToggleButton Style="{StaticResource ToolToggle}" local:OverflowStrip.Priority="12" Content="&#xE7C8;" IsChecked="{Binding KeyframesEnabled}"
@@ -542,7 +542,7 @@
 
                 <StackPanel x:Name="ZoomCorner" Panel.ZIndex="1" Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center" TextElement.FontSize="11">
                     <Button Style="{StaticResource ZoomTool}" Content="&#xE9A6;" Margin="3,0,0,0" Tag="ZoomFit" Click="Tool_Click"
-                            AutomationProperties.Name="Fit Timeline" local:KeyTip.Action="view.fit" local:KeyTip.Text="Fit{keys}: the tracks show the whole sequence, with room after its end to drop clips into." />
+                            AutomationProperties.Name="Fit Timeline" local:KeyTip.Action="view.fit" local:KeyTip.Text="Fit{keys}: the whole sequence, with room after its end for new clips." />
                     <!-- The tracks' height (5.1-Polish, the user's directive): dragged up or down, the wheel, a double-click for the usual one. -->
                     <local:TrackHeightPill Margin="5,0,0,0" VerticalAlignment="Center" Value="{Binding LayerTrackHeight}"
                                            ToolTip="Track height: drag up for taller tracks, down for lower ones (or use the wheel here, or Alt + Shift + the wheel over the tracks, or drag a track's lower edge in its header). A double-click puts the usual height back." />
@@ -551,7 +551,7 @@
                     <local:ExpandablePillSlider x:Name="ZoomSlider" Margin="4,0,0,0" VerticalAlignment="Center" Icon="Magnifier"
                                                 Minimum="0" Maximum="1" SmallChange="0.04" LargeChange="0.1" DefaultValue="0" TrackLength="64"
                                                 AutomationProperties.Name="Timeline Zoom"
-                                                local:KeyTip.Text="Timeline zoom: left shows the whole sequence, right a fraction of a second across. The wheel here steps it, {key:view.zoomIn|the zoom-in key} and {key:view.zoomOut|the zoom-out key} zoom about the playhead (held, {key:nav.forward|the zoom-in key} and {key:nav.back|the zoom-out key} zoom smoothly about the pointer, as the wheel over the ruler does), and a double-click on the track fits." />
+                                                local:KeyTip.Text="Timeline zoom: left shows the whole sequence; double-click the track to fit." />
                 </StackPanel>
                 <local:TimelineRuler x:Name="Ruler" Background="{DynamicResource InsetBrush}" BorderBrush="{DynamicResource WellBorderBrush}" BorderThickness="{DynamicResource WellEdgeThickness}"
                                      LowerBorderBrush="{DynamicResource WellBorderLowerBrush}" Cursor="Hand" ClipToBounds="True" Margin="0,0,0,2"

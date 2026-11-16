@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using static HandPegApp.UiBrushes;
 
 namespace HandPegApp.Docking;
 
@@ -1057,7 +1058,7 @@ public sealed partial class DockManager
             tabs[tab] = pane;
         }
 
-        var more = new System.Windows.Controls.Primitives.ToggleButton { Content = "", FontFamily = new FontFamily("Segoe MDL2 Assets"), FontSize = 10, Padding = new Thickness(6, 2, 6, 2), ToolTip = "The other panes of this group" };
+        var more = new System.Windows.Controls.Primitives.ToggleButton { Content = Glyphs.ChevronDown, FontFamily = new FontFamily("Segoe MDL2 Assets"), FontSize = 10, Padding = new Thickness(6, 2, 6, 2), ToolTip = "The other panes of this group" };
         OverflowStrip.SetIsOverflowButton(more, true);
         host.Strip.Children.Add(more);
         host.Strip.MenuEntryFor = child => tabs.TryGetValue(child, out var pane) ? (_panes[pane].Title, () => Activate(pane)) : null;
@@ -1715,7 +1716,7 @@ public sealed partial class DockManager
     /// </summary>
     private FrameworkElement JoinedBar(string pane)
     {
-        var dots = new TextBlock { Text = "", FontFamily = new FontFamily("Segoe MDL2 Assets"), FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
+        var dots = new TextBlock { Text = Glyphs.GripperBarVertical, FontFamily = new FontFamily("Segoe MDL2 Assets"), FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
         dots.SetResourceReference(TextBlock.ForegroundProperty, "MutedTextBrush");
         var grip = new Border { Child = dots, Padding = new Thickness(5, 6, 3, 6), Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, Background = Brushes.Transparent };
         WireTab(grip, pane, activates: false);

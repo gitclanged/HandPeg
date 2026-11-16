@@ -40,7 +40,7 @@ public partial class LayerToolDialog : Window
         {
             case LayerTool.Filters:
                 Title = $"Filters: {layer.Name}";
-                IntroText.Text = "Filters for this clip alone. The filters of the Filters tab are applied to the finished picture, after every track has been laid on it.";
+                IntroText.Text = "Filters for this clip alone; grade its color on the Color tab.";
                 FiltersPanel.Visibility = Visibility.Visible;
                 break;
 

@@ -49,22 +49,6 @@ public static class AudioSuiteTests
         }
     }
 
-    private static GraphResult Case(string golden, string header, Action<StringBuilder, List<string>> body)
-    {
-        var text = new StringBuilder(header).Append('\n');
-        var problems = new List<string>();
-        try
-        {
-            body(text, problems);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(golden, text.ToString(), problems, 0);
-    }
-
     private static void Line(StringBuilder text, FormattableString line) => text.Append(line.ToString(CultureInfo.InvariantCulture)).Append('\n');
 
     private static void Note(FormattableString line) => Console.WriteLine("        " + line.ToString(CultureInfo.InvariantCulture));

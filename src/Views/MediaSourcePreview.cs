@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Windows;
 using System.Windows.Media;
+using static HandPegApp.UiBrushes;
 
 namespace HandPegApp.Views;
 
@@ -161,10 +162,4 @@ public sealed class MediaSourcePreview : FrameworkElement
     private static FormattedText Text(string text, double size, Brush brush, double dpi) =>
         new(text, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, Face, size, brush, dpi);
 
-    private static Brush Frozen(Color color)
-    {
-        var brush = new SolidColorBrush(color);
-        brush.Freeze();
-        return brush;
-    }
 }

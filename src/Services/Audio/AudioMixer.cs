@@ -245,7 +245,7 @@ public sealed class AudioMixer : IDisposable
         var s = voice.Source;
         var intercept = voice.SequenceStart - voice.MediaStart / voice.Rate;
         return string.Create(CultureInfo.InvariantCulture,
-            $"{s.Path}|{s.Stream}|{s.ChannelPair}|{s.VideoStart:R}|{voice.Rate:R}|{voice.Pitch:R}|{Math.Round(intercept * 1e6):0}");
+            $"{s.Path}|{s.Stream}|{s.ChannelPair}|{s.VideoStart:R}|{voice.Rate:R}|{voice.Pitch:R}|{(voice.Spectral ? "pv" : "ws")}|{Math.Round(intercept * 1e6):0}");
     }
 
     // ----- The transport (the mixer's thread) -----
@@ -634,14 +634,27 @@ public sealed class AudioMixer : IDisposable
 
     public void Dispose()
     {
-        _feeders?.Dispose();
+        var stopped = _feeders?.Stop() ?? true;
+        var kept = 0;
         lock (_programGate)
         {
             foreach (var state in _voiceStates.Values)
-                state.Release(_pool);
+            {
+                // A voice a feeder still holds (it did not stop: inside a decoder's read) is left to it; releasing it would free the
+                // decoder under that call. With both feeders stopped every Busy is 0, so this releases every voice.
+                if (Interlocked.CompareExchange(ref state.Busy, 1, 0) == 0)
+                    state.Release(_pool);
+                else
+                    kept++;
+            }
+
             _voiceStates.Clear();
         }
 
+        if (!stopped || kept > 0)
+            AppLog.Write($"Sound engine: {kept} voice(s) left to a feeder that did not stop; their decoders are disposed when it returns them");
+
+        // Only idle decoders are disposed here; one a stalled feeder returns later is disposed by the pool (Return after Dispose).
         _pool.Dispose();
     }
 }

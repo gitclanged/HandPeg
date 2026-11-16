@@ -17,20 +17,11 @@ using Microsoft.Win32;
 
 namespace HandPegApp;
 
-// ----- MainWindow, continued: LUT files, the keyframe buttons and lanes, where the panes are, the Add Layer kinds, the mixer,
+// ----- MainWindow, continued: the keyframe buttons and lanes, where the panes are, the Add Layer kinds, the mixer,
 // presets and layout files, the bottom bar, the hover sprite sheet and the master filmstrip -----
 public partial class MainWindow
 {
-    // ----- Filter files -----
-
-    private void BrowseLut_Click(object sender, RoutedEventArgs e)
-    {
-        var dialog = new OpenFileDialog { Title = "Select a LUT", Filter = "3D LUT|*.cube|All files|*.*" };
-        if (dialog.ShowDialog(this) == true)
-            _viewModel.LutPath = dialog.FileName;
-    }
-
-    private void ClearLut_Click(object sender, RoutedEventArgs e) => _viewModel.LutPath = "";
+    // (Pass 5.6A: the old Filters tab's LUT box went with the tab; a LUT is the Color Grade card's now, chosen in the Color tab.)
 
     // ----- Keyframes: the pane, and the buttons of the bottom bar -----
 
@@ -249,7 +240,9 @@ public partial class MainWindow
 
     private void EmptyBin_Click(object sender, RoutedEventArgs e) => _viewModel.EmptyBin();
 
-    private async void AddVideo_Click(object sender, RoutedEventArgs e)
+    private void AddVideo_Click(object sender, RoutedEventArgs e) => Faults.Forget(AddVideo_ClickAsync(sender, e), nameof(AddVideo_Click));
+
+    private async Task AddVideo_ClickAsync(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFileDialog
         {
@@ -260,7 +253,9 @@ public partial class MainWindow
             await _viewModel.AddVideoLayerAsync(dialog.FileName);
     }
 
-    private async void AddAudio_Click(object sender, RoutedEventArgs e)
+    private void AddAudio_Click(object sender, RoutedEventArgs e) => Faults.Forget(AddAudio_ClickAsync(sender, e), nameof(AddAudio_Click));
+
+    private async Task AddAudio_ClickAsync(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFileDialog
         {
@@ -387,6 +382,20 @@ public partial class MainWindow
     // ----- Audio mixer -----
 
     /// <summary>
+    /// A sound clip's origin and format for its filters dialog: a voiceover recorded into the Voiceovers folder, a video clip's
+    /// first stream or a sound file's, then the codec and channels when known.
+    /// </summary>
+    private static string SoundDescription(Layer layer)
+    {
+        var recorded = layer.IsAudio && layer.ImagePath.StartsWith(AppPaths.Voiceovers + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        var origin = recorded ? "Voiceover Recording" : layer.IsVideoFile ? "Stream #1 (video clip)" : "Stream #1";
+        if (!layer.IsVideoFile && layer.Name != layer.SourceFileName && !string.IsNullOrWhiteSpace(layer.Name))
+            origin += $" ({layer.Name})";
+        var format = layer.AudioCodec.Length > 0 ? (layer.AudioChannels.Length > 0 ? $"{layer.AudioCodec}, {layer.AudioChannels}" : layer.AudioCodec) : "mixed into the first track";
+        return $"{origin}  ·  {format}";
+    }
+
+    /// <summary>
     /// The filters of one sound, from its row on the timeline or its menu. One step of Undo. An output track has none (5.2A, the user's
     /// Q6: since 5.2-AuditB each Sub-Lane mixes itself, and an output track keeps only its action, codec, bitrate and title).
     /// </summary>
@@ -397,7 +406,7 @@ public partial class MainWindow
             // A sound from a file, or the sound of a video layer: the same filters, kept with the clip.
             case Layer layer:
                 // Studio Voice's mix keys are timed from the clip's start (5.2B): the playhead is where Add Mix Key puts one.
-                var forClip = new TrackAudioFiltersDialog($"{layer.SourceFileName}   {layer.Description}", layer.AudioFilters, _viewModel.PositionMs / 1000 - layer.StartTime) { Owner = this };
+                var forClip = new TrackAudioFiltersDialog($"{layer.SourceFileName}   {SoundDescription(layer)}", layer.AudioFilters, _viewModel.PositionMs / 1000 - layer.StartTime) { Owner = this };
                 if (forClip.ShowDialog() == true)
                 {
                     _viewModel.Checkpoint($"change the audio filters of {layer.Name}");
@@ -419,23 +428,6 @@ public partial class MainWindow
         var visit = _viewModel.UndoMark;
         new LayerPropertiesDialog { Owner = this, DataContext = layer, ToggleVisibility = _viewModel.ToggleHidden }.ShowDialog();
         _viewModel.DropStepIfUnchanged(visit);
-    }
-
-    private void LiveFramePreview_Click(object sender, RoutedEventArgs e)
-    {
-        if (!_viewModel.HasSource)
-        {
-            _viewModel.StatusText = "Load a video first.";
-            return;
-        }
-
-        // The player would only keep running behind a dialog that shows a still frame.
-        if (PlayerIsPlaying)
-            PlayerSetPause(true);
-
-        // Each still is the GPU engine's capture (5.2-Arm64AndNpu), asked of the engine running then: one that starts, or starts
-        // again, while the dialog is open draws the next.
-        new FramePreviewDialog(_viewModel, at => _gpu?.CaptureFrameAsync(at) ?? Task.FromResult<(byte[] Bgra, int Width, int Height)?>(null)) { Owner = this }.ShowDialog();
     }
 
     // ----- Layout files -----
@@ -627,13 +619,6 @@ public partial class MainWindow
 
     // ----- Frame & Layer Engine dialogs -----
 
-    // The eye on a layer's row: its whole track is hidden or shown (as Hide / Show on its menu).
-    private void LayerVisibility_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is FrameworkElement { DataContext: Layer { CanHide: true } layer })
-            _viewModel.ToggleHidden(layer);
-    }
-
     // ----- Timeline hover previews -----
 
     // The opened file's key frames (FFmpeg's hover sheet): what the Sequence Overview Scrubber shows where the GPU cannot draw the
@@ -648,7 +633,9 @@ public partial class MainWindow
     /// thread, and redraws the Sequence Overview Scrubber's strip with it. With no sheet (a file closed, or one without a sheet yet)
     /// the strip is cleared at once (4.4: it kept the last file's pictures until the next change of length).
     /// </summary>
-    private async void LoadSpriteSheet()
+    private void LoadSpriteSheet() => Faults.Forget(LoadSpriteSheetAsync(), nameof(LoadSpriteSheet));
+
+    private async Task LoadSpriteSheetAsync()
     {
         var load = ++_spriteSheetLoads;
         _sourceSheet = null;

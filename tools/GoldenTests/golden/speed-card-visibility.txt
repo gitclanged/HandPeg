@@ -1,0 +1,35 @@
+# The Speed & Time card (5.6A): a video's, a sound's, a Cutout's (its source clip's speed), none for a picture; when the Opacity card shows.
+   video: Speed & Time, Clip Speed Slider, Clip Speed, Speed 0.25x, Speed 0.5x, Speed 1x, Speed 2x, Speed 4x, Target Duration, Ripple Timeline, Smooth Slow-Mo, Interpolation, Keep Pitch, Pitch Shift, Pitch Shift Value, Spectral Audio
+ok: a video clip: the Speed & Time card (speed slider and box, five pills, Target Duration, Ripple Timeline, Smooth Slow-Mo, Interpolation)
+ok: with its sound's rows: it carries sound
+ok: its Target Duration shows its length (00:00:08.000)
+ok: at 100 % with no keys there is no Opacity card, and Add Effect offers Opacity
+ok: added, its card shows (and Add Effect no longer offers it)
+ok: Vendor Hardware is shown, not offered, with why (this GPU, or this build)
+ok: its 17 labels are four words or fewer, its 15 tooltips twelve or fewer
+ok: Smooth Slow-Mo goes on the clip and its Cutout in one undo step
+ok: a speed from the card: the clip and its Cutout at 2x, one undo step
+ok: the card shows it: 2.00x, 00:00:04.000
+ok: Undo: back to 1x, and the card says so
+ok: a Cutout: Speed & Time, following its source clip
+ok: its speed is set on its source clip, and it runs at it
+ok: a clip at 50 %: its Opacity card shows
+ok: one at 100 % with no keys: none
+ok: set to 60 % elsewhere, its card comes
+ok: moved again, nothing is rebuilt
+ok: back at 100 %, it stays for the session (never taken away under the pointer)
+ok: a sound clip selected is the pane's target, and the key layer stays the picture clip it was
+ok: selecting a clip on the timeline tells the Effects pane (SelectClip calls SelectSound with it)
+ok: a tab brought back tells the Effects pane its sound clip once, after a successful AttachTab (nothing on the failed attach's paths)
+   sound: Speed & Pitch, Clip Speed Slider, Clip Speed, Speed 0.25x, Speed 0.5x, Speed 1x, Speed 2x, Speed 4x, Target Duration, Ripple Timeline, Keep Pitch, Pitch Shift, Pitch Shift Value, Spectral Audio
+ok: a sound clip: Speed & Pitch (Keep Pitch, Pitch Shift, Spectral Audio), no Smooth Slow-Mo
+ok: and no Opacity card (its own sound cards follow)
+ok: Pitch Shift +5: the sound's Pitch and Tempo filter at +5 semitones, its tempo 1
+ok: back at 0 the filter is off
+ok: Bypass All is off for a sound clip (no sound path reads it)
+ok: Paste Effects (and with Shift, to its track) puts nothing on it
+ok: pasted onto a picture and a sound together, and onto the sound's track: the picture takes both cards, the sound none (Flip, Chroma Key)
+ok: the More menu's Paste Effects and Paste Some Effects are off for a sound clip
+ok: its speed from the card, undone: the pane still shows the sound clip (its view made anew)
+ok: anything else selected gives the target back to the key layer
+ok: a text clip: no Speed & Time card

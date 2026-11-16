@@ -34,7 +34,6 @@ namespace HandPegGoldenTests;
 /// </summary>
 public static class StudioPanesTests
 {
-    private const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
     private static readonly XNamespace X = "http://schemas.microsoft.com/winfx/2006/xaml";
 
     // The settings tabs' pane ids after 5.4B, and the other panes MainWindow registers.
@@ -51,55 +50,9 @@ public static class StudioPanesTests
         yield return Case("video-scopes-pane", "# The Video Scopes pane: one capture for a burst of changes, none while playing (Updates when paused), another scope drawn from the last frame.", ScopesPane);
     }
 
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
-    }
-
     // Pass 5.4D (Q6 a): the dead modal flag may be gone from the view model; "off" then holds by construction.
     private static bool ModalFlagOff(MainViewModel vm) =>
         typeof(MainViewModel).GetProperty("IsSubtitleEditorOpen") is not { } flag || flag.GetValue(vm) is false;
-
-    private static string RepositoryRoot()
-    {
-        for (var folder = new DirectoryInfo(AppContext.BaseDirectory); folder is not null; folder = folder.Parent)
-        {
-            if (File.Exists(Path.Combine(folder.FullName, "HandPegApp.csproj")))
-                return folder.FullName;
-        }
-
-        throw new DirectoryNotFoundException("HandPegApp.csproj was not found above the golden tests' program.");
-    }
-
-    private static string Read(params string[] parts) => File.ReadAllText(Path.Combine([RepositoryRoot(), "src", .. parts]));
-
-    /// <summary>A method's text in a source file: from its signature to the first line that closes it at its own indent.</summary>
-    private static string Method(string source, string signature)
-    {
-        var start = source.IndexOf(signature, StringComparison.Ordinal);
-        if (start < 0)
-            return "";
-        var end = source.IndexOf("\n    }", start, StringComparison.Ordinal);
-        return end < 0 ? source[start..] : source[start..end];
-    }
 
     /// <summary>Runs the dispatcher for a while: its timers, its queued work and the windows' layout.</summary>
     private static void Pump(int milliseconds)
@@ -152,20 +105,20 @@ public static class StudioPanesTests
             "Standard Editing holds no studio and the arrangement version is 5 (5.4.4-Final: the settings tabs beside Media)");
 
         // What it sets besides the arrangement: the Media Browser's Filmstrip view, when taken up, kept or chosen at first run, never while previewed.
-        var layouts = Read("MainWindow.Layouts.cs");
+        var layouts = SourceProbe.Src("MainWindow.Layouts.cs");
         expect(Regex.IsMatch(layouts, @"new\(""Vertical & Shorts Studio"", ""[^""]*Subtitle Studio[^""]*"", ShortsLayout\(TabIds\), null, ShowShortsMedia\)")
-               && Method(layouts, "private void ShowShortsMedia()").Contains("MediaBrowser.ViewMode = Views.MediaBrowserView.Filmstrip", StringComparison.Ordinal),
+               && SourceProbe.Member(layouts, "private void ShowShortsMedia()").Contains("MediaBrowser.ViewMode = Views.MediaBrowserView.Filmstrip", StringComparison.Ordinal),
             "its choice describes the Subtitle Studio and sets the Media Browser to Filmstrip (ShowShortsMedia)");
         // 5.4D: the Layout menu (and its TakeUpLayout) is retired; Then runs where a layout is put back by Reset Layout or opened in at start-up.
-        expect(Method(layouts, "private void ResetToDefaultLayout(").Contains("choice?.Then?.Invoke();", StringComparison.Ordinal)
-               && Method(layouts, "private void KeepLayout(").Contains("choice.Then?.Invoke();", StringComparison.Ordinal)
-               && Method(layouts, "private string? TakeFirstRunLayout()").Contains("chosen?.Then?.Invoke();", StringComparison.Ordinal)
-               && Method(layouts, "private string? StartupLayoutJson()").Contains("chosen.Then?.Invoke();", StringComparison.Ordinal),
+        expect(SourceProbe.Member(layouts, "private void ResetToDefaultLayout(").Contains("choice?.Then?.Invoke();", StringComparison.Ordinal)
+               && SourceProbe.Member(layouts, "private void KeepLayout(").Contains("choice.Then?.Invoke();", StringComparison.Ordinal)
+               && SourceProbe.Member(layouts, "private string? TakeFirstRunLayout()").Contains("chosen?.Then?.Invoke();", StringComparison.Ordinal)
+               && SourceProbe.Member(layouts, "private string? StartupLayoutJson()").Contains("chosen.Then?.Invoke();", StringComparison.Ordinal),
             "Then runs when a layout is kept from the Layout Selector, put back as the Default by Reset Layout, chosen in the first-run window, and opened in at start-up");
-        expect(!Method(layouts, "private void PreviewLayout(").Contains("Then", StringComparison.Ordinal) && !Method(layouts, "private void RestoreLayoutBeforePreview()").Contains("Then", StringComparison.Ordinal),
+        expect(!SourceProbe.Member(layouts, "private void PreviewLayout(").Contains("Then", StringComparison.Ordinal) && !SourceProbe.Member(layouts, "private void RestoreLayoutBeforePreview()").Contains("Then", StringComparison.Ordinal),
             "never while a card is only previewed, nor when the preview is undone");
 
-        var firstRun = XDocument.Load(Path.Combine(RepositoryRoot(), "src", "Dialogs", "FirstRunWindow.xaml"));
+        var firstRun = XDocument.Load(Path.Combine(SourceProbe.Root, "src", "Dialogs", "FirstRunWindow.xaml"));
         var card = firstRun.Descendants().FirstOrDefault(e => e.Attribute(X + "Name")?.Value == "ShortsLayoutCard");
         expect(card?.Attribute("Tag")?.Value == "Vertical & Shorts Studio" && card.Descendants().Any(e => e.Attribute("Text")?.Value.Contains("Subtitle Studio as tabs", StringComparison.Ordinal) == true),
             "the first-run card keeps its name (its Tag) and tells of the Subtitle Studio as a tab");
@@ -276,7 +229,7 @@ public static class StudioPanesTests
 
     private static void SourceChecks(Action<bool, string> expect)
     {
-        var root = RepositoryRoot();
+        var root = SourceProbe.Root;
         var src = Path.Combine(root, "src");
         var withEditor = Directory.EnumerateFiles(src, "*.*", SearchOption.AllDirectories)
             .Where(f => f.EndsWith(".cs", StringComparison.Ordinal) || f.EndsWith(".xaml", StringComparison.Ordinal))
@@ -295,39 +248,39 @@ public static class StudioPanesTests
                 $"{file}: a UserControl with its title slot for {id}");
         }
 
-        var scopes = Read("Views", "VideoScopesPane.cs");
+        var scopes = SourceProbe.Src("Views", "VideoScopesPane.cs");
         expect(scopes.Contains("new PaneTitleSlot { PaneId = MainWindow.VideoScopesId }", StringComparison.Ordinal), "VideoScopesPane (built in code): its title slot for VideoScopes");
         expect(typeof(IOwnsKeys).IsAssignableFrom(typeof(SubtitleStudioPane)), "the Subtitle Studio claims its keys (IOwnsKeys)");
 
         // Never in PaneLibrary (parsed before the first frame whatever the arrangement says), made by factories, never realized when idle.
-        var main = Read("MainWindow.xaml");
+        var main = SourceProbe.Src("MainWindow.xaml");
         expect(panes.All(t => !main.Contains(t.Name, StringComparison.Ordinal)), "none of them is in MainWindow.xaml (its PaneLibrary is parsed before the first frame: Law 1)");
-        var studios = Read("MainWindow.Studios.cs");
-        var register = Method(studios, "private void RegisterStudioPanes()");
+        var studios = SourceProbe.Src("MainWindow.Studios.cs");
+        var register = SourceProbe.Member(studios, "private void RegisterStudioPanes()");
         expect(Regex.Matches(register, @"_dock\.Register\(StudioPane\((SubtitleStudioId|VoiceoverStudioId|RenderQueueId|VideoScopesId), \(\) => ").Count == 4,
             "RegisterStudioPanes registers the four with factories (made when first shown)");
-        var docking = Read("MainWindow.Docking.cs");
-        var realize = Method(docking, "private void RealizeTabsWhenIdle(");
+        var docking = SourceProbe.Src("MainWindow.Docking.cs");
+        var realize = SourceProbe.Member(docking, "private void RealizeTabsWhenIdle(");
         expect(realize.Length > 0 && !MainWindow.Studios.Any(s => realize.Contains(s.Id, StringComparison.Ordinal) || realize.Contains("Studio", StringComparison.Ordinal)),
             "none is made ahead at idle (RealizeTabsWhenIdle: Law 2)");
-        expect(Regex.IsMatch(Read("MainWindow.Export.cs"), @"\.\. StudioToggles\(\),\s*\];") && Method(studios, "private IEnumerable<ViewToggle> StudioToggles()").Contains("_dock.Contains(s.Id)", StringComparison.Ordinal),
+        expect(Regex.IsMatch(SourceProbe.Src("MainWindow.Export.cs"), @"\.\. StudioToggles\(\),\s*\];") && SourceProbe.Member(studios, "private IEnumerable<ViewToggle> StudioToggles()").Contains("_dock.Contains(s.Id)", StringComparison.Ordinal),
             "Tabs and Panes lists the four (PaneToggles ends with StudioToggles), each ticked while the arrangement holds it");
 
         // The openers open the panes; the Subtitle Studio is not modal and leaves the modal flag (and with it the captions and the main Undo) alone.
-        expect(Method(studios, "private void OpenRenderQueue()").Contains("OpenStudio(RenderQueueId)", StringComparison.Ordinal)
-               && Method(studios, "private void OpenVoiceoverStudio()").Contains("OpenStudio(VoiceoverStudioId)", StringComparison.Ordinal),
+        expect(SourceProbe.Member(studios, "private void OpenRenderQueue()").Contains("OpenStudio(RenderQueueId)", StringComparison.Ordinal)
+               && SourceProbe.Member(studios, "private void OpenVoiceoverStudio()").Contains("OpenStudio(VoiceoverStudioId)", StringComparison.Ordinal),
             "the Render Queue and Voiceover Studio openers open their panes");
-        var captions = Read("MainWindow.Captions.cs");
-        expect(Method(captions, "private async Task OpenSubtitleStudioAsync()").Contains("ConvertCaptionsToCuesAsync", StringComparison.Ordinal)
-               && Method(captions, "private async Task OpenSubtitleStudioAsync()").Contains("OpenStudio(SubtitleStudioId)", StringComparison.Ordinal)
+        var captions = SourceProbe.Src("MainWindow.Captions.cs");
+        expect(SourceProbe.Member(captions, "private async Task OpenSubtitleStudioAsync()").Contains("ConvertCaptionsToCuesAsync", StringComparison.Ordinal)
+               && SourceProbe.Member(captions, "private async Task OpenSubtitleStudioAsync()").Contains("OpenStudio(SubtitleStudioId)", StringComparison.Ordinal)
                && captions.Contains("internal void EditCaptions() => _ = OpenSubtitleStudioAsync();", StringComparison.Ordinal),
             "Edit Captions opens the Subtitle Studio pane, making the cues from the captions first when there are none");
-        var studioCode = Read("Views", "SubtitleStudioPane.xaml.cs");
+        var studioCode = SourceProbe.Src("Views", "SubtitleStudioPane.xaml.cs");
         expect(!captions.Contains("IsSubtitleEditorOpen", StringComparison.Ordinal) && !studioCode.Contains("IsSubtitleEditorOpen =", StringComparison.Ordinal)
                && !studioCode.Contains("ShowDialog", StringComparison.Ordinal) && !studioCode.Contains("CompositionTarget.Rendering", StringComparison.Ordinal)
                && !studioCode.Contains("RestoreSubtitleCues", StringComparison.Ordinal),
             "the Subtitle Studio is not modal, never sets IsSubtitleEditorOpen, runs no clock and keeps no undo of its own");
-        expect(Method(studios, "private void CloseStudio(").Contains("FinishRecording()", StringComparison.Ordinal),
+        expect(SourceProbe.Member(studios, "private void CloseStudio(").Contains("FinishRecording()", StringComparison.Ordinal),
             "closing the Voiceover Studio finishes a recording under way, as closing its window did");
     }
 
@@ -527,6 +480,37 @@ public static class StudioPanesTests
         var (redTop, greenBottom) = (Rgb(paradePicture[VideoScopes.RowOf(255) * paradeWidth + 3]), Rgb(paradePicture[VideoScopes.RowOf(0) * paradeWidth + VideoScopes.ParadeColumns + VideoScopes.ParadeGap + 3]));
         expect(paradeWidth == VideoScopes.ParadeWidth && redTop.R == 255 && redTop.G < 100 && greenBottom.G == 255 && greenBottom.R < 100,
             $"the RGB Parade of flat red: {VideoScopes.ParadeWidth} wide, the red third lit red at the top, the green third lit green at the bottom");
+
+        // 5.6A: the Vectorscope, BT.709's colour difference (Cb across, Cr up) in a square.
+        var (redCb, redCr) = VideoScopes.Chroma(255, 0, 0);
+        var redTargets = VideoScopes.Targets(1);
+        expect(Math.Abs(redCb + 0.1146) < 0.0005 && Math.Abs(redCr - 0.5) < 1e-9 && VideoScopes.Chroma(128, 128, 128) == (0, 0)
+               && redTargets.Select(t => t.Name).SequenceEqual(["R", "Mg", "B", "Cy", "G", "Yl"]) && Math.Abs(redTargets[2].Cb - 0.5) < 1e-9 && Math.Abs(redTargets[5].Cb + 0.5) < 1e-9
+               && Math.Abs(VideoScopes.Targets(0.75)[0].Cr - 0.75 * 0.5) < 0.002,
+            "pure red at Cb -0.1146, Cr 0.5; grey at the centre; the targets R, Mg, B, Cy, G, Yl (blue at Cb 0.5, yellow at -0.5), the 75 % ones three quarters out");
+        var redScope = VideoScopes.Vectorscope(red, 10, 10);
+        var redCell = VideoScopes.VectorscopeCell(redCb, redCr);
+        var greyScope = VideoScopes.Vectorscope(grey, 64, 36);
+        var centre = VideoScopes.VectorscopeCell(0, 0);
+        var greyCells = 0;
+        for (var x = 0; x < VideoScopes.VectorscopeSize; x++)
+            for (var y = 0; y < VideoScopes.VectorscopeSize; y++)
+                greyCells += greyScope[x, y] > 0 ? 1 : 0;
+        expect(redScope[redCell.X, redCell.Y] == 100 && redCell.Y < centre.Y && redCell.X < centre.X && greyScope[centre.X, centre.Y] == 64 * 36 && greyCells == 1
+               && centre == (VideoScopes.VectorscopeSize / 2, VideoScopes.VectorscopeSize / 2),
+            $"flat red counted in one cell, up and to the left of the centre ({redCell.X}, {redCell.Y}); flat grey all in the centre cell ({centre.X}, {centre.Y}) and nowhere else");
+        var skins = new[] { (198, 140, 110), (224, 172, 138) }.Select(s => VideoScopes.HueDegrees(VideoScopes.Chroma(s.Item1, s.Item2, s.Item3).Cb, VideoScopes.Chroma(s.Item1, s.Item2, s.Item3).Cr)).ToList();
+        expect(skins.All(h => Math.Abs(h - VideoScopes.SkinToneDegrees) <= 10) && VideoScopes.SkinToneDegrees == 123,
+            "two skin tones within 10 degrees of the skin-tone line at 123: " + string.Join(", ", skins.Select(h => h.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture))));
+        var (vector, vectorWidth, vectorHeight) = VideoScopes.Render(VideoScopeKind.Vectorscope, red, 10, 10);
+        var targetCell = VideoScopes.VectorscopeCell(redTargets[0].Cb, redTargets[0].Cr);
+        var boxEdge = Rgb(vector[(targetCell.Y - 4) * vectorWidth + targetCell.X]);
+        var dot = Rgb(vector[redCell.Y * vectorWidth + redCell.X]);
+        var skinLine = VideoScopes.VectorscopeCell(0.3 * Math.Cos(123 * Math.PI / 180), 0.3 * Math.Sin(123 * Math.PI / 180));
+        var skinPixel = Rgb(vector[skinLine.Y * vectorWidth + skinLine.X]);
+        expect(vectorWidth == 256 && vectorHeight == 256 && boxEdge.R > 0x34 && dot.G == 255 && skinPixel.R > skinPixel.B + 30
+               && Rgb(vector[centre.Y * vectorWidth + 20]) == (0x34, 0x34, 0x40) && Rgb(vector[3 * vectorWidth + 3]) == (0x10, 0x10, 0x14),
+            "its picture: 256 x 256, the red target's box lit, red's dot bright in its cell, the skin-tone line warm, the crosshair's graticule, the ground in a corner");
     }
 
     // ----- video-scopes-pane -----
@@ -558,6 +542,17 @@ public static class StudioPanesTests
             Pump(80);
             picture = Descendants<Image>(pane).FirstOrDefault()?.Source as WriteableBitmap;
             expect(captures == 1 && picture is { PixelWidth: 256, PixelHeight: 256 }, "another scope is drawn from the last frame, without a capture");
+
+            // 5.6A: the Vectorscope, from the same frame, kept square (Uniform: its circle stays round); a waveform fills the pane again.
+            pane.Kind = VideoScopeKind.Vectorscope;
+            Pump(80);
+            var image = Descendants<Image>(pane).FirstOrDefault();
+            var square = image is { Stretch: System.Windows.Media.Stretch.Uniform, Source: WriteableBitmap { PixelWidth: VideoScopes.VectorscopeSize, PixelHeight: VideoScopes.VectorscopeSize } };
+            pane.Kind = VideoScopeKind.Histogram;
+            Pump(80);
+            expect(captures == 1 && square && image?.Stretch == System.Windows.Media.Stretch.Fill && VideoScopesPane.KindNames.SequenceEqual(["Histogram", "Luma Waveform", "RGB Parade", "Vectorscope"])
+                   && Descendants<ComboBox>(pane).FirstOrDefault()?.ToolTip is string tip && tip.Split(' ').Length <= 12,
+                "another scope (Vectorscope) drawn from the last frame, 256 x 256 and square, no new capture; the scope box's tooltip 12 words at most");
 
             vm.PositionMs = 1000;
             vm.PositionMs = 1040;

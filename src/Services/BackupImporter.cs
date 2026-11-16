@@ -11,11 +11,30 @@ public static class BackupImporter
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
     /// <summary>
+    /// Settings that belong to this PC or decide what HandPeg runs and where its data goes: never taken from a backup (another PC's, or
+    /// one someone else made), never written into one. The tools HandPeg runs and where they are downloaded from (a release address of
+    /// one's own turns pinning off), the crash-report endpoint, folders and files on this PC's drives, and the devices and cards chosen
+    /// here.
+    /// </summary>
+    public static IReadOnlyList<string> ProtectedKeys { get; } =
+    [
+        nameof(AppSettings.FfmpegPath), nameof(AppSettings.FfprobePath), nameof(AppSettings.YtDlpPath), nameof(AppSettings.WhisperPath),
+        nameof(AppSettings.FfmpegReleaseUrl), nameof(AppSettings.YtDlpReleaseUrl), nameof(AppSettings.WhisperReleaseUrl),
+        nameof(AppSettings.AllowUnpinnedDependencyUpdates), nameof(AppSettings.UseFfmpegForOlderNvidiaDrivers),
+        nameof(AppSettings.CrashReportEndpoint), nameof(AppSettings.TrustedProjectCommands),
+        nameof(AppSettings.YtDlpCookiesFilePath), nameof(AppSettings.DownloadFolder), nameof(AppSettings.BrowserFolder), nameof(AppSettings.WatchedCaptureFolder),
+        nameof(AppSettings.AudioOutputDeviceId), nameof(AppSettings.WhisperGpuFailedOn), nameof(AppSettings.CaptionAccelerator),
+        nameof(AppSettings.CompositorGpuAdapter), nameof(AppSettings.DecodeGpuAdapter), nameof(AppSettings.BackgroundGpu), nameof(AppSettings.HardwareDecodeAdapter),
+    ];
+
+    /// <summary>
     /// Replaces appsettings.json and presets.json with the ones in a settings export. Nothing is touched
     /// unless the whole file is sound: both parts are checked and written out as new files first, and only
-    /// then swapped in, each leaving the file it replaces behind as a .bak.
+    /// then swapped in, each leaving the file it replaces behind as a.bak. The <see cref="ProtectedKeys"/> keep
+    /// this PC's values (or stay unset): a backup never changes which programs HandPeg runs.
     /// </summary>
     /// <returns>How many presets the file held.</returns>
+    /// <exception cref="InvalidDataException">Not a settings export, or one made by a newer HandPeg (a higher major schema version).</exception>
     public static int ImportSettingsAndPresets(string path)
     {
         if (ParseObject(File.ReadAllText(path)) is not { } root
@@ -24,15 +43,26 @@ public static class BackupImporter
             throw new InvalidDataException("This is not a HandPeg settings export: it has no AppSettings and Presets sections.");
         }
 
+        // The schema: a missing or unreadable version, or a newer major one, is refused before anything is read further.
+        if (root[BackupExporter.SchemaVersionKey] is not JsonValue schemaValue || !schemaValue.TryGetValue<string>(out var schema)
+            || !Version.TryParse(schema, out var version) || !Version.TryParse(BackupExporter.SchemaVersion, out var supported))
+        {
+            throw new InvalidDataException("This settings export does not say which version of the format it is.");
+        }
+
+        if (version.Major > supported.Major)
+            throw new InvalidDataException("This settings export was made by a newer HandPeg.");
+
+        KeepThisPcsValues(settings);
+
         // Read both the way the application will at its next start, so a file it could not start with is refused here.
         _ = settings.Deserialize<AppSettings>() ?? throw new InvalidDataException("The AppSettings section is empty.");
         var count = (presets.Deserialize<List<EncodingPreset>>() ?? []).Count;
 
         var newSettings = AppSettings.FilePath + ".new";
         var newPresets = PresetStore.FilePath + ".new";
-        Directory.CreateDirectory(AppPaths.Settings);
-        File.WriteAllText(newSettings, settings.ToJsonString(JsonOptions));
-        File.WriteAllText(newPresets, presets.ToJsonString(JsonOptions));
+        AtomicFile.WriteAllText(newSettings, settings.ToJsonString(JsonOptions), durable: true);
+        AtomicFile.WriteAllText(newPresets, presets.ToJsonString(JsonOptions), durable: true);
 
         SwapIn(newSettings, AppSettings.FilePath);
         SwapIn(newPresets, PresetStore.FilePath);
@@ -181,6 +211,19 @@ public static class BackupImporter
 
         File.WriteAllText(target, json);
         return true;
+    }
+
+    /// <summary>The backup's <see cref="ProtectedKeys"/> replaced by this PC's: from its settings file, else the settings in effect.</summary>
+    private static void KeepThisPcsValues(JsonObject imported)
+    {
+        var here = File.Exists(AppSettings.FilePath) ? ParseObject(File.ReadAllText(AppSettings.FilePath)) : null;
+        here ??= JsonSerializer.SerializeToNode(AppSettings.Current, AppSettingsJsonContext.Default.AppSettings) as JsonObject;
+        foreach (var key in ProtectedKeys)
+        {
+            imported.Remove(key);
+            if (here?[key] is { } value)
+                imported[key] = value.DeepClone();
+        }
     }
 
     private static void SwapIn(string newFile, string target)

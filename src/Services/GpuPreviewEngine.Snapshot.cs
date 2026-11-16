@@ -137,7 +137,7 @@ public sealed partial class GpuPreviewEngine
         }
         catch (Exception ex) when (ex is GpuException or InvalidOperationException)
         {
-            AppLog.Write("GPU viewport: the picture on screen could not be read back: " + ex.Message);
+            AppLog.Write("GPU viewport: the picture on screen could not be read back", ex);
             return null;
         }
     }

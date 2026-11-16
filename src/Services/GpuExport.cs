@@ -167,8 +167,17 @@ public sealed class GpuExport : IDisposable
                     names.Add($"{owner}'s unknown effect ({effect.Type})");
                 else if (definition.GpuSlot == GpuShaderSlot.None)
                     names.Add($"{owner}'s {definition.Name}");
-                else if ((definition.GpuSlot == GpuShaderSlot.Lut3D && ++luts > 1) || (definition.GpuSlot == GpuShaderSlot.ToneCurve && ++curves > 1))
-                    names.Add($"{owner}'s second {definition.Name}");
+                else
+                {
+                    // Both tables counted (5.6.0): a Color Grade card can hold a LUT and a curve, and a lost LUT must not hide a Curves card
+                    // dropped after it. A Color Grade card loses only its table (it is drawn without it): named so.
+                    var lostLut = HoldsLut(effect, definition) && ++luts > 1;
+                    var lostCurve = HoldsCurves(effect, definition) && ++curves > 1;
+                    if (lostLut || lostCurve)
+                        names.Add(definition.GpuSlot == GpuShaderSlot.ColorStudio
+                            ? $"{owner}'s Color Grade {(lostLut && lostCurve ? "LUT and curves" : lostLut ? "LUT" : "curves")}"
+                            : $"{owner}'s second {definition.Name}");
+                }
             }
         }
 
@@ -197,11 +206,18 @@ public sealed class GpuExport : IDisposable
         foreach (var effect in effects)
         {
             if (effect is { Enabled: true, Definition: { } definition })
-                (luts, curves) = (luts + (definition.GpuSlot == GpuShaderSlot.Lut3D ? 1 : 0), curves + (definition.GpuSlot == GpuShaderSlot.ToneCurve ? 1 : 0));
+                (luts, curves) = (luts + (HoldsLut(effect, definition) ? 1 : 0), curves + (HoldsCurves(effect, definition) ? 1 : 0));
         }
 
         return Math.Min(luts, 1) + Math.Min(curves, 1);
     }
+
+    // Whether a card needs the layer's LUT, or its curve table: a LUT or Curves card, a Color Grade card with a LUT file or a curve (5.6.0).
+    private static bool HoldsLut(EffectInstance effect, EffectDefinition definition) => definition.GpuSlot == GpuShaderSlot.Lut3D
+        || definition.GpuSlot == GpuShaderSlot.ColorStudio && effect.GetText(ColorGradeKeys.Lut).Trim().Trim('"').Length > 0;
+
+    private static bool HoldsCurves(EffectInstance effect, EffectDefinition definition) => definition.GpuSlot == GpuShaderSlot.ToneCurve
+        || definition.GpuSlot == GpuShaderSlot.ColorStudio && ColorGradeMath.CurvesActive(effect);
 
     /// <summary>
     /// The encode an export of the state runs, as the command box shows it (its sound tracks' renders named by tokens until they
@@ -297,6 +313,7 @@ public sealed class GpuExport : IDisposable
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
+                AppLog.Write("GPU export: the compositor could not be started", ex);
                 whyNot = $"the GPU compositor could not be started: {ex.Message}";
                 client?.Dispose();
                 return null;
@@ -349,6 +366,7 @@ public sealed class GpuExport : IDisposable
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
+            AppLog.Write("GPU export: it could not be prepared", ex);
             whyNot = $"the GPU export could not be prepared: {ex.Message}";
             broker?.Dispose();
             return null;
@@ -521,11 +539,18 @@ public sealed class GpuExport : IDisposable
         _renderer.Start();
         try
         {
-            await _firstFrame.Task.WaitAsync(cancellationToken);
-            if (Command.Encoder == ExportEncoder.Gif)
-                await RunGifAsync(progress, abort.Token);
-            else
-                await RunFfmpegAsync(progress, abort.Token);
+            // The pump (FFmpeg's pipes, the per-frame I420 deinterleave, the GIF quantizer) runs on the thread pool, never on the window's
+            // dispatcher this export was started from: Task.Run, not ConfigureAwait(false), since the first-frame wait completes at once when
+            // the frame is already there and would then stay on the calling thread. Progress<T> was made on the window's thread, so its
+            // reports still reach it; GpuExport's OnLine locks its queue, so stdout and stderr may arrive on two pool threads at once.
+            await Task.Run(async () =>
+            {
+                await _firstFrame.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                if (Command.Encoder == ExportEncoder.Gif)
+                    await RunGifAsync(progress, abort.Token).ConfigureAwait(false);
+                else
+                    await RunFfmpegAsync(progress, abort.Token).ConfigureAwait(false);
+            }, CancellationToken.None);
             if (_fault is { } late)
                 throw late as GpuExportException ?? new GpuExportException(late.Message, late);
             if (Interlocked.Read(ref _piped) < Command.Timing.OutputFrames)
@@ -542,8 +567,14 @@ public sealed class GpuExport : IDisposable
         finally
         {
             abort.Cancel();
-            if (_renderer.IsAlive && !_renderer.Join(10_000))
-                AppLog.Write("GPU export: the render thread did not stop; its compositor is left to end with HandPeg.");
+            // Joined off the window's thread (its frame waits take the abort, so this is milliseconds unless the compositor is stuck). A
+            // render thread that did not stop keeps its compositor (ThreadStop logs it); it ends with HandPeg.
+            if (_renderer.IsAlive)
+            {
+                var renderer = _renderer;
+                _ = await Task.Run(() => ThreadStop.Join(renderer, 10_000, "GPU export render thread"));
+            }
+
             _abort = null;
         }
     }
@@ -556,12 +587,7 @@ public sealed class GpuExport : IDisposable
     /// </summary>
     private async Task RunFfmpegAsync(IProgress<FfmpegProgress> progress, CancellationToken token)
     {
-        var executable = Command.Executable;
-        var isConfigured = DependencyUpdater.IsFfmpegOverridden && executable.Equals(DependencyUpdater.FfmpegPath, StringComparison.OrdinalIgnoreCase);
-        if (!isConfigured && !Path.GetFileNameWithoutExtension(executable).Equals("ffmpeg", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("The command has to start with ffmpeg.");
-        if (Path.GetFileName(executable) == executable && File.Exists(DependencyUpdater.FfmpegPath))
-            executable = DependencyUpdater.FfmpegPath;
+        var executable = FfmpegRunner.ResolveExecutable(Command.Executable);
 
         // Each sound track's token gives way to its render.
         var arguments = EncoderCommand.WithRenders(Command.Arguments, Command.Sound);
@@ -717,7 +743,7 @@ public sealed class GpuExport : IDisposable
         var token = _abort!.Token;
         try
         {
-            WarmUp();
+            WarmUp(token);
             ProbeSources(token);
             _approximateSeen = Volatile.Read(ref _client.Memory.Control.ApproximatePresents);
 
@@ -749,8 +775,12 @@ public sealed class GpuExport : IDisposable
                 {
                     // The last frame's own count is written after its readback: one more scene, and it is there.
                     var closing = Publish(wanted with { Source = -2 });
-                    if (!_client.WaitForFrame(closing, FrameTimeoutMs))
+                    if (!_client.WaitForFrame(closing, FrameTimeoutMs, token.WaitHandle))
+                    {
+                        token.ThrowIfCancellationRequested();
                         throw new GpuExportException($"The GPU compositor did not finish the export's last frame ({_client.State}: {_client.Message}).");
+                    }
+
                     CheckExact();
                 }
 
@@ -910,14 +940,17 @@ public sealed class GpuExport : IDisposable
     /// An empty scene, waited for, before anything else: the worker reads the source table as it draws (its first scene
     /// would draw no video), and makes its output textures at the export's size.
     /// </summary>
-    private void WarmUp()
+    private void WarmUp(CancellationToken token)
     {
         _client.ClearScene();
         ref var header = ref _client.Scene;
         (header.CanvasWidth, header.CanvasHeight) = (_plan.CanvasWidth, _plan.CanvasHeight);
         (header.OutputWidth, header.OutputHeight) = (Command.Width, Command.Height);
-        if (!_client.WaitForFrame(_client.Publish(), StartTimeoutMs))
+        if (!_client.WaitForFrame(_client.Publish(), StartTimeoutMs, token.WaitHandle))
+        {
+            token.ThrowIfCancellationRequested();
             throw new GpuExportException($"The GPU compositor drew nothing ({_client.State}: {_client.Message}).");
+        }
     }
 
     /// <summary>

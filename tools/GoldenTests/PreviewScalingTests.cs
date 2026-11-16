@@ -22,54 +22,17 @@ public static class PreviewScalingTests
 {
     public static IEnumerable<GraphResult> All()
     {
-        var text = new StringBuilder("# Dynamic Preview Scaling at high DPI (5.4.4): 1:1 DIP at Windows' monitor scale, where a run starts, its steps down, whole when paused.\n");
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            Rules(Expect);
-            Wiring(Expect);
-            using var client = new CompositorClient(adapter: -1, keepStandby: false);
-            using var reader = new CompositorFrameReader(client);
-            Worker(client, reader, Expect);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        yield return new GraphResult("dynamic-preview-scaling", text.ToString(), problems, 0);
+        yield return Case("dynamic-preview-scaling", "# Dynamic Preview Scaling at high DPI (5.4.4): 1:1 DIP at Windows' monitor scale, where a run starts, its steps down, whole when paused.",
+            expect =>
+            {
+                Rules(expect);
+                Wiring(expect);
+                using var client = new CompositorClient(adapter: -1, keepStandby: false);
+                using var reader = new CompositorFrameReader(client);
+                Worker(client, reader, expect);
+            });
         yield return Case("dynamic-preview-scaling-blend-copy", "# A blend's copy of the canvas is kept per canvas (5.4.4): drawing whole and smaller by turns makes no texture with a blend on screen.", BlendCopy);
         yield return Case("dynamic-preview-scaling-whole-still", "# A still read while paused is a whole frame (5.4.4); the one drawn smaller while playing or scrubbing only when the whole one is late.", WholeStill);
-    }
-
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
     }
 
     /// <summary>The cases that need the WPF Application (run after UiScaleTests made it).</summary>
@@ -171,8 +134,8 @@ public static class PreviewScalingTests
             "SceneRenderer.DrawScale: a flat letterboxed frame at its scale (never under 0.25); whole for no scale (every other client), the 3D view, the loupe, raw, a readback, exact frames and an unletterboxed frame (the Live Encoded Preview)");
 
         // What the engine reads: the worker's shared-memory answer and the tab count.
-        expect((int)Marshal.OffsetOf<ControlBlock>(nameof(ControlBlock.UnifiedMemory)) == 3212 && CompositorProtocol.Version == 8,
-            "ControlBlock.UnifiedMemory is at 3212 (the worker's answer; the editor never loads DXCore), the protocol still version 8");
+        expect((int)Marshal.OffsetOf<ControlBlock>(nameof(ControlBlock.UnifiedMemory)) == 3212 && CompositorProtocol.Version == 9,
+            "ControlBlock.UnifiedMemory is at 3212 (the worker's answer; the editor never loads DXCore), the protocol version 9");
         var root = Path.Combine(Environment.GetEnvironmentVariable("HANDPEG_DATA_DIR") ?? Path.GetTempPath(), "preview-scaling-tabs");
         var tabs = new ProjectTabs(root, session: "tabs");
         var one = ProjectTabs.OpenCount;
@@ -191,31 +154,31 @@ public static class PreviewScalingTests
 
     private static void Wiring(Action<bool, string> expect)
     {
-        var scaling = Read("Services", "GpuPreviewEngine.Scaling.cs");
-        var forFrame = Method(scaling, "private float PreviewScaleFor(");
+        var scaling = SourceProbe.Src("Services", "GpuPreviewEngine.Scaling.cs");
+        var forFrame = SourceProbe.Member(scaling, "private float PreviewScaleFor(");
         expect(forFrame.Contains("_viewport.MonitorScale", StringComparison.Ordinal) && forFrame.Contains("StartStep(_onBattery, UnifiedMemory, ProjectTabs.OpenCount)", StringComparison.Ordinal)
                && forFrame.Contains("if (start > _scaleStep)", StringComparison.Ordinal) && forFrame.Contains("StepScale(_scaleStep,", StringComparison.Ordinal)
                && !Regex.IsMatch(scaling, @"_native\b"),
             "the pump asks the monitor's scale, the shared-memory answer and the tab count every frame; a run never sits above its start step (a second tab or the charger pulled mid-run); the 5.4.3 'Sequence's pixels' step is gone");
-        var count = Method(scaling, "private void CountFrame(");
+        var count = SourceProbe.Member(scaling, "private void CountFrame(");
         expect(count.Contains("_lateOwed", StringComparison.Ordinal) && count.Contains("NextStep(_scaleStep,", StringComparison.Ordinal) && count.Contains("Counted(", StringComparison.Ordinal),
             "a late frame is counted as it is late and not again as it arrives; a step down goes through NextStep (a step that changes nothing passed over)");
-        expect(Method(scaling, "private void EndScaledRun(").Contains("AppLog.Write(", StringComparison.Ordinal) && scaling.Contains("but for the reset Play asks", StringComparison.Ordinal) is false,
+        expect(SourceProbe.Member(scaling, "private void EndScaledRun(").Contains("AppLog.Write(", StringComparison.Ordinal) && scaling.Contains("but for the reset Play asks", StringComparison.Ordinal) is false,
             "one log line as a run that played ends (its frames, slow ones, start and deepest step); the stale comment on Play is gone");
-        var engine = Read("Services", "GpuPreviewEngine.cs");
+        var engine = SourceProbe.Src("Services", "GpuPreviewEngine.cs");
         expect(engine.Contains("header.PreviewScale = PreviewScaleFor(playing, width, height,", StringComparison.Ordinal)
                && engine.Contains("CountFrame(late: NoteFrame(!_client.WaitForFrame(sequence,", StringComparison.Ordinal),
             "the frame pump still asks PreviewScaleFor for every scene it writes, and counts a frame as late when it misses its refresh");
-        var viewport = Read("Controls", "GpuViewportControl.cs");
+        var viewport = SourceProbe.Src("Services", "GpuViewport.cs");
         expect(viewport.Contains("public double MonitorScale => GetDpiForWindow(_window) is var dpi and > 0 ? dpi / 96.0 : 1;", StringComparison.Ordinal),
-            "GpuViewportControl.MonitorScale is Windows' scale of the monitor its window is on, asked at each call, 1 when the window is gone");
-        var renderer = Read("Compositor", "SceneRenderer.cs");
-        var release = Method(renderer, "public void ReleaseIdleTextures(bool history)");
+            "GpuViewport.MonitorScale is Windows' scale of the monitor its window is on, asked at each call, 1 when the window is gone");
+        var renderer = SourceProbe.Src("Compositor", "SceneRenderer.cs");
+        var release = SourceProbe.Member(renderer, "public void ReleaseIdleTextures(bool history)");
         expect(renderer.Contains("ref var slot = ref scaled ? ref _canvasScaled : ref _canvasWhole;", StringComparison.Ordinal) && release.Contains("_canvasScaled?.Dispose();", StringComparison.Ordinal)
-               && Method(renderer, "internal (int Textures, int History) IdleTexturesForTests()").Contains("_canvasScaled", StringComparison.Ordinal)
+               && SourceProbe.Member(renderer, "internal (int Textures, int History) IdleTexturesForTests()").Contains("_canvasScaled", StringComparison.Ordinal)
                && renderer.Contains("constants.U1 = (outputWidth - 0.5f) / _canvas.Width;", StringComparison.Ordinal),
             "the worker keeps a canvas for frames drawn smaller beside the whole one (let go by the idle trim, counted for the goldens), and takes the stretched picture's far edges half a texel in");
-        var settings = Read("Dialogs", "SettingsWindow.xaml");
+        var settings = SourceProbe.Src("Dialogs", "SettingsWindow.xaml");
         expect(Regex.Matches(settings, @"IsChecked=""\{Binding DynamicPreviewScaling\}""").Count == 1 && !settings.Contains("Render Preview", StringComparison.OrdinalIgnoreCase)
                && settings.Contains("Dynamic Preview Scaling: play at fewer pixels on battery, with several tabs open, or when frames drop", StringComparison.Ordinal),
             "Settings has one Dynamic Preview Scaling checkbox, its words saying when it scales");
@@ -227,7 +190,7 @@ public static class PreviewScalingTests
 
     private static void Worker(CompositorClient client, CompositorFrameReader reader, Action<bool, string> expect)
     {
-        using (var gone = new GpuViewportControl(client, 0))
+        using (var gone = new GpuViewport(client, 0))
             expect(gone.MonitorScale == 1, "MonitorScale of no window is 1 (whole)");
 
         // (a) A 16:9 Sequence filling the 640 x 360 player, a gradient over it (red across, green down): whole, then at half, five times.
@@ -306,8 +269,8 @@ public static class PreviewScalingTests
         expect(drawn && after == made,
             "a layer with a blend mode drawn whole and at half by turns: after the first frame of each size, four more pairs make no texture (each canvas keeps the copy the blend reads)");
 
-        var renderer = Read("Compositor", "SceneRenderer.cs");
-        expect(Method(renderer, "public void ReleaseIdleTextures(bool history)").Contains("_canvasCopyScaled?.Dispose();", StringComparison.Ordinal)
+        var renderer = SourceProbe.Src("Compositor", "SceneRenderer.cs");
+        expect(SourceProbe.Member(renderer, "public void ReleaseIdleTextures(bool history)").Contains("_canvasCopyScaled?.Dispose();", StringComparison.Ordinal)
                && Regex.Matches(renderer, @"_canvasCopyWhole\?\.Dispose\(\);").Count == 2 && Regex.Matches(renderer, @"_canvasCopyScaled\?\.Dispose\(\);").Count == 2,
             "the idle trim and Dispose let go of both canvases' copies");
     }
@@ -344,10 +307,10 @@ public static class PreviewScalingTests
         expect(!GpuPreviewEngine.StillMayBeRead(playing: false, presentedSequence: 40, scaledSequence: 40) && !GpuPreviewEngine.StillMayBeRead(false, 39, 40)
                && GpuPreviewEngine.StillMayBeRead(false, 41, 40) && GpuPreviewEngine.StillMayBeRead(false, 1, 0) && GpuPreviewEngine.StillMayBeRead(true, 40, 40),
             "StillMayBeRead: paused, not while the frame on screen is the last one drawn smaller (or older), at once when a newer one is (whole: the paused turn's); playing, as it is");
-        var snapshot = Read("Services", "GpuPreviewEngine.Snapshot.cs");
-        expect(InOrder(Method(snapshot, "private void TakeSnapshot()"), "Volatile.Read(ref _snapshot) is not { } asked", "if (!StillMayBeRead(_playing, _viewport.PresentedSequence, _scaledSequence))",
+        var snapshot = SourceProbe.Src("Services", "GpuPreviewEngine.Snapshot.cs");
+        expect(SourceProbe.InOrder(SourceProbe.Member(snapshot, "private void TakeSnapshot()"), "Volatile.Read(ref _snapshot) is not { } asked", "if (!StillMayBeRead(_playing, _viewport.PresentedSequence, _scaledSequence))",
                    "if (!asked.SoftTried)", "Volatile.Write(ref asked.Soft, ", "return;", "Interlocked.Exchange(ref _snapshot, null)", "request.Frame = StillOnScreen(request.ShortSide);")
-               && Method(snapshot, "private (byte[] Bgra, int Width, int Height)? StillOnScreen(int shortSide)").Contains("_viewport.TryReadStill(", StringComparison.Ordinal),
+               && SourceProbe.Member(snapshot, "private (byte[] Bgra, int Width, int Height)? StillOnScreen(int shortSide)").Contains("_viewport.TryReadStill(", StringComparison.Ordinal),
             "the pump reads the still asked for only when StillMayBeRead says so (the request read before the player's state), else reads the frame drawn smaller once as its fallback and leaves the request for a later turn");
 
         // The UI's side (5.4.4): what a request gets within its bound, the soft frame the pump read meanwhile when the whole one is late or not read.
@@ -380,38 +343,23 @@ public static class PreviewScalingTests
             "AwaitStill: the whole frame when it is read in time; the soft frame read meanwhile when it is late (the request withdrawn, the UI held no longer than its bound) or not read; null only when neither is");
         expect(lateSoft && !inTimeSoft && unreadSoft && !noneSoft,
             "and it says which: soft for the frame drawn smaller (late or unread), not for the whole frame nor for nothing");
-        var engine = Read("Services", "GpuPreviewEngine.cs");
-        var publish = Method(engine, "private long PublishAt(");
-        expect(InOrder(publish, "header.PreviewScale = PreviewScaleFor(", "var sequence = _client.Publish();", "if (sequence > 0 && _lastScale < 1)", "_scaledSequence = sequence;"),
+        var engine = SourceProbe.Src("Services", "GpuPreviewEngine.cs");
+        var publish = SourceProbe.Member(engine, "private long PublishAt(");
+        expect(SourceProbe.InOrder(publish, "header.PreviewScale = PreviewScaleFor(", "var sequence = _client.Publish();", "if (sequence > 0 && _lastScale < 1)", "_scaledSequence = sequence;"),
             "every scene published drawn smaller is noted as such");
-        var pump = Method(engine, "private void Pump()");
-        expect(InOrder(pump, "TakeSnapshot();", "if (_playing)", "if (CrispOwed())", "PublishAt(pausedPlan, pausedAt, playing: false);", "_viewport.PresentNewest(vsync: false);")
-               && Read("Services", "GpuPreviewEngine.Scaling.cs").Contains("private bool CrispOwed() => !_playing && _lastScale < 1", StringComparison.Ordinal),
+        var pump = SourceProbe.Member(engine, "private void Pump()");
+        expect(SourceProbe.InOrder(pump, "TakeSnapshot();", "if (_playing)", "if (CrispOwed())", "PublishAt(pausedPlan, pausedAt, playing: false);", "_viewport.PresentNewest(vsync: false);")
+               && SourceProbe.Src("Services", "GpuPreviewEngine.Scaling.cs").Contains("private bool CrispOwed() => !_playing && _lastScale < 1", StringComparison.Ordinal),
             "the paused turn draws a picture drawn smaller whole again and shows it, so the still waiting for it is taken at the next turn's top");
-        var still = File.ReadAllText(Path.Combine(Root(), "src", "MainWindow.TabStill.cs"));
+        var still = File.ReadAllText(Path.Combine(SourceProbe.Root, "src", "MainWindow.TabStill.cs"));
         expect(still.Contains("private const int StillOnScreenWaitMs = 40;", StringComparison.Ordinal) && still.Contains("_gpu?.SnapshotPresented(StillShortSide, StillOnScreenWaitMs, out var soft)", StringComparison.Ordinal)
                && snapshot.Contains("return AwaitStill(ref _snapshot, request, timeoutMs, out soft);", StringComparison.Ordinal),
             "the UI thread still waits at most 40 ms for it (the soft frame kept when the whole frame is not read by then)");
-        var cache = File.ReadAllText(Path.Combine(Root(), "src", "MainWindow.TabCache.cs"));
+        var cache = File.ReadAllText(Path.Combine(SourceProbe.Root, "src", "MainWindow.TabCache.cs"));
         expect(cache.Contains("private readonly record struct StillMark(object? UndoMark, double PositionMs, bool Shown3D, bool Soft = false);", StringComparison.Ordinal)
-               && InOrder(Method(still, "private void TakeStillOnScreen()"), "if (_liveStill is not null && (!_liveStillMark.Soft || _tabStill is { Visibility: System.Windows.Visibility.Visible }) && ", "return;", "mark with { Soft = soft }")
-               && InOrder(Method(still, "private async Task TakeLiveStillAsync()"), "var mark = new StillMark(", "if (_liveStill is not null && _liveStillMark == mark)"),
+               && SourceProbe.InOrder(SourceProbe.Member(still, "private void TakeStillOnScreen()"), "if (_liveStill is not null && (!_liveStillMark.Soft || _tabStill is { Visibility: System.Windows.Visibility.Visible }) && ", "return;", "mark with { Soft = soft }")
+               && SourceProbe.InOrder(SourceProbe.Member(still, "private async Task TakeLiveStillAsync()"), "var mark = new StillMark(", "if (_liveStill is not null && _liveStillMark == mark)"),
             "a soft still is marked so: it covers the player, but the next switch away reads the screen again (not while that still is over the player: the screen is not the tab's yet) and the next quiet moment reads a whole still in its place (its mark never equals now's)");
-    }
-
-    /// <summary>Whether every one of <paramref name="parts"/> is in <paramref name="text"/>, each after the one before.</summary>
-    private static bool InOrder(string text, params string[] parts)
-    {
-        var at = 0;
-        foreach (var part in parts)
-        {
-            var found = text.IndexOf(part, at, StringComparison.Ordinal);
-            if (found < 0)
-                return false;
-            at = found + part.Length;
-        }
-
-        return true;
     }
 
     // A scene of one test pattern filling the canvas, letterboxed in the 640 x 360 player at a preview scale; null when it is not read back.
@@ -492,26 +440,4 @@ public static class PreviewScalingTests
         return (first, last);
     }
 
-    private static string Root()
-    {
-        for (var folder = new DirectoryInfo(AppContext.BaseDirectory); folder is not null; folder = folder.Parent)
-        {
-            if (File.Exists(Path.Combine(folder.FullName, "HandPegApp.csproj")))
-                return folder.FullName;
-        }
-
-        throw new DirectoryNotFoundException("HandPegApp.csproj was not found above the golden tests' program.");
-    }
-
-    private static string Read(params string[] parts) => File.ReadAllText(Path.Combine([Root(), "src", .. parts]));
-
-    /// <summary>A member's text in a source file: from its signature to the first line that closes it at its own indent.</summary>
-    private static string Method(string source, string signature)
-    {
-        var start = source.IndexOf(signature, StringComparison.Ordinal);
-        if (start < 0)
-            return "";
-        var end = source.IndexOf("\n    }", start, StringComparison.Ordinal);
-        return end < 0 ? source[start..] : source[start..end];
-    }
 }

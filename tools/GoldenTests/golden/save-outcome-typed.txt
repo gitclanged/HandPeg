@@ -1,0 +1,5 @@
+# Project saves return SaveOutcome; nothing branches on the words of a status line.
+ok: nothing branches on a status line starting "Project saved"
+ok: SaveProject and SaveProjectTo return a SaveOutcome (Saved, Declined or Failed, with the status line)
+ok: IsSaved reads the result, never the words
+ok: a failed save is logged with its path and exception as it is shown

@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Data;
 using System.Windows.Input;
+using HandPegApp.Models;
 
 namespace HandPegApp;
 
@@ -315,6 +316,29 @@ public static class NumericInput
         control.PreviewMouseLeftButtonDown += (_, _) => held(true);
         control.PreviewMouseLeftButtonUp += (_, _) => held(false);
         control.LostMouseCapture += (_, _) => held(false);
+    }
+
+    // ----- The clip edge a control shapes -----
+
+    /// <summary>
+    /// The clip edge a slider or number box shapes (a feather, a mask, a chroma key), set in XAML on each control bound to such a value.
+    /// The control is watched from then on (<see cref="WatchHold"/>): while the pointer holds it, <see cref="EdgeHeld"/> tells the window,
+    /// which magnifies that edge of the clip that is the control's DataContext. None (the default) watches nothing.
+    /// </summary>
+    public static readonly DependencyProperty EdgeKindProperty = DependencyProperty.RegisterAttached(
+        "EdgeKind", typeof(EdgeTuningKind), typeof(NumericInput), new PropertyMetadata(EdgeTuningKind.None, OnEdgeKindChanged));
+
+    public static EdgeTuningKind GetEdgeKind(DependencyObject element) => (EdgeTuningKind)element.GetValue(EdgeKindProperty);
+    public static void SetEdgeKind(DependencyObject element, EdgeTuningKind value) => element.SetValue(EdgeKindProperty, value);
+
+    /// <summary>A control with an <see cref="EdgeKindProperty"/> began (true) or stopped (false) being held by the pointer, in any window.</summary>
+    public static event Action<FrameworkElement, EdgeTuningKind, bool>? EdgeHeld;
+
+    // Watched once, when its first kind is set (a later kind is read as the hold begins).
+    private static void OnEdgeKindChanged(DependencyObject element, DependencyPropertyChangedEventArgs e)
+    {
+        if (element is Control control && e.OldValue is EdgeTuningKind.None && e.NewValue is not EdgeTuningKind.None)
+            WatchHold(control, held => EdgeHeld?.Invoke(control, GetEdgeKind(control), held));
     }
 
     private static void TellHeld(TextBox box, bool held)

@@ -16,11 +16,7 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
-    <LangVersion>14.0</LangVersion>
-    <Nullable>enable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <AssemblyName>HandPegBootstrap</AssemblyName>
     <RootNamespace>HandPegBootstrap</RootNamespace>
     <Product>HandPeg</Product>
@@ -42,12 +38,14 @@
     <DebugType>none</DebugType>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
 
-    <!-- No CET shadow stacks (Pass 5.3-Stage2, the user's answer, a security trade-off): NativeAOT links an x64 program CET-compatible
-         by default (/CETCOMPAT), and Windows then keeps a shadow stack of every call, which cost about 16 ms of HandPeg's start-up on the
-         Desktop's Zen 4. This is the released HandPeg.exe, so HandPeg itself, its GPU worker and its crash sentinel (all started through
-         it) run without. ARM64 has no such mark. Takes effect from a clean obj only (Release.ps1 deletes it). -->
-    <CETCompat>false</CETCompat>
+    <!-- Exploit mitigations: NativeAOT links an x64 program CET-compatible by default (/CETCOMPAT: hardware shadow stacks), and
+         Control Flow Guard checks every indirect call's target. This is the released HandPeg.exe, so HandPeg itself, its GPU worker and
+         its crash sentinel (all started through it) run with both. CET costs about 16 ms of start-up on a Zen 4 desktop; that cost is
+         accepted (docs/DECISIONS.md D-07). Takes effect from a clean obj only (tools\Release.ps1 deletes it). -->
+    <ControlFlowGuard>Guard</ControlFlowGuard>
   </PropertyGroup>
+
+  <Import Project="..\..\build\HandPeg.Common.props" />
 
   <!--
       NativeAOT finds the C++ linker through Visual Studio's vcvarsall.bat, which calls vswhere.exe by name: the Visual Studio Installer

@@ -33,27 +33,15 @@ public sealed partial class Layer
         return stack;
     }
 
-    // ----- Per clip, or the whole track -----
-    // What the Layer Properties and Filters tools change is the track's (every clip on it follows, as it always did);
-    // what the Effects pane changes is the clip's own. A change made from the pane is raised while IsEchoing is set,
-    // and the view model does not copy it to the track.
+    // ----- Effect changes the layer announces -----
 
-    [ThreadStatic] private static int _echo;
+    /// <summary>
+    /// True while this layer announces a change of its effect stack that no view property wrote (a card's value, switch or range set
+    /// directly): the view model takes no look step for the property notifications it raises then.
+    /// </summary>
+    internal bool RaisingEffectChange => _raisingEffect > 0;
 
-    /// <summary>A change being raised belongs to this clip alone: the track's other clips do not follow it.</summary>
-    public static bool IsEchoing => _echo > 0;
-
-    /// <summary>Makes what is changed inside it the clip's own (the Effects pane's edits).</summary>
-    public static EchoScope Echo()
-    {
-        _echo++;
-        return default;
-    }
-
-    public readonly struct EchoScope : IDisposable
-    {
-        public void Dispose() => _echo--;
-    }
+    private int _raisingEffect;
 
     // Set while a view property writes its card: the change is the track's, and is raised as such.
     private int _settingView;
@@ -186,6 +174,14 @@ public sealed partial class Layer
         }
     }
 
+    /// <summary>
+    /// True while this layer announces a change of an effect parameter's value, text or keyframes (not a card added, removed, switched or
+    /// re-ranged): the view model treats it as look-only (<see cref="ViewModels.PreviewChange.Look"/>), which no Timeline row shows.
+    /// </summary>
+    internal bool RaisingEffectValue => _raisingEffectValue > 0;
+
+    private int _raisingEffectValue;
+
     private void OnEffectChanged(EffectInstance? effect, string key)
     {
         if (_loadingEffects)
@@ -193,7 +189,10 @@ public sealed partial class Layer
 
         var echo = _settingView == 0;
         if (echo)
-            _echo++;
+            _raisingEffect++;
+        var valueOnly = effect is not null && key != EffectInstance.EnabledKey && key != EffectInstance.RangeKey;
+        if (valueOnly)
+            _raisingEffectValue++;
         try
         {
             if (key != EffectInstance.EnabledKey)
@@ -210,8 +209,10 @@ public sealed partial class Layer
         }
         finally
         {
+            if (valueOnly)
+                _raisingEffectValue--;
             if (echo)
-                _echo--;
+                _raisingEffect--;
         }
     }
 

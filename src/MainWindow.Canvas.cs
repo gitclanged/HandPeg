@@ -14,6 +14,7 @@ using HandPegApp.Models;
 using HandPegApp.Services;
 using HandPegApp.ViewModels;
 using Microsoft.Win32;
+using static HandPegApp.UiBrushes;
 
 namespace HandPegApp;
 
@@ -434,17 +435,27 @@ public partial class MainWindow
         var onScreen = false;
         foreach (var layer in _viewModel.Layers)
         {
-            if (layer is not { IsAudio: false, IsEmptyTrack: false, IsHidden: false } || !_viewModel.IsPictureDrawn(layer, at))
+            if (layer is not { IsAudio: false, IsEmptyTrack: false, IsHidden: false })
                 continue;
 
-            if (layer.TrackId != track)
+            // The drawn test (a clip lookup and its look evaluated) runs only when its answer can change the pick: once a track has its
+            // clip at the playhead nothing later on it matters, and before that only a later clip at the playhead can replace the
+            // track's first drawn one. O(L + T·C) per playhead move instead of a drawn test for every layer.
+            var same = layer.TrackId == track;
+            if (same && onScreen)
+                continue;
+            var hit = layer.GetSpan(total) is var (start, end) && at >= start - 0.0005 && at < end;
+            if ((same && !hit) || !_viewModel.IsPictureDrawn(layer, at))
+                continue;
+
+            if (!same)
             {
                 if (pick is not null)
                     into.Add(pick);
                 (track, pick, onScreen) = (layer.TrackId, layer, false);
             }
 
-            if (!onScreen && layer.GetSpan(total) is var (start, end) && at >= start - 0.0005 && at < end)
+            if (!onScreen && hit)
                 (pick, onScreen) = (layer, true);
         }
 

@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.Json;
+using HandPegApp.Models;
 
 namespace HandPegApp.Services;
 
@@ -26,6 +27,7 @@ public sealed class SmartRule
     /// <summary>Gives an older rule its type: it was an extension rule when it was written as *.ext, otherwise a folder rule.</summary>
     public void Normalize()
     {
+        (Type, Path, Preset) = (Type ?? "", Path ?? "", Preset ?? "");
         if (!Types.Contains(Type))
             Type = Path.TrimStart().StartsWith("*.", StringComparison.Ordinal) ? Extension : Folder;
     }
@@ -638,8 +640,8 @@ public sealed partial class AppSettings
     public const string ResetToPreset = "Active Game Preset";
     public const string ResetToSystem = "System Default";
 
-    // What ResetToPreset was saved as before 5.2-AuditB (the canonical words: a Game Preset, never a "style"); read as it.
-    private const string LegacyResetToPreset = "Active Style Preset";
+    // What ResetToPreset was saved as by 5.2.0 and earlier (the canonical words are a Game Preset, never a "style"); read as ResetToPreset.
+    internal const string LegacyResetToPreset = "Active Style Preset";
 
     public static IReadOnlyList<string> ResetTargets { get; } = [ResetToPreset, ResetToSystem];
 
@@ -738,6 +740,13 @@ public sealed partial class AppSettings
 
     /// <summary>A ripple edit (Ctrl-drag of a clip's edge, Shift+Delete) moves the later clips of every track, not only its own.</summary>
     public bool RippleAllTracks { get; set; } = true;
+
+    /// <summary>
+    /// The Speed &amp; Time card's Ripple Timeline (5.6.0): a clip's new speed moves the later clips (of every track when
+    /// <see cref="RippleAllTracks"/>) by as much as it grew or shrank. Off, it leaves a gap when it shrinks and moves only its own track's
+    /// next clips out of its way when it grows (as before 5.6.0).
+    /// </summary>
+    public bool SpeedRipplesTimeline { get; set; } = true;
 
     /// <summary>A track's Solo button plays it alone (the others' solo goes off); off, solo is a set of tracks and Alt-click is alone.</summary>
     public bool SoloIsExclusive { get; set; }
@@ -1077,189 +1086,8 @@ public sealed partial class AppSettings
         copy.SavedLayouts = [.. SavedLayouts];
         copy.HiddenTabs = HiddenTabs is null ? null : [.. HiddenTabs];
         copy.DefaultCaptionStyle = DefaultCaptionStyle?.Clone();
+        copy.Extra = Extra is null ? null : new Dictionary<string, JsonElement>(Extra);
         CloneInput(copy);
         return copy;
     }
-
-    /// <summary>Writes the settings to disk and puts them into effect.</summary>
-    public void SaveAsCurrent()
-    {
-        YtDlpPath = Clean(YtDlpPath);
-        FfmpegPath = Clean(FfmpegPath);
-        FfprobePath = Clean(FfprobePath);
-        WhisperPath = Clean(WhisperPath);
-        YtDlpCookiesFilePath = Clean(YtDlpCookiesFilePath);
-        YtDlpReleaseUrl = YtDlpReleaseUrl.Trim();
-        FfmpegReleaseUrl = FfmpegReleaseUrl.Trim();
-
-        WhisperReleaseUrl = WhisperReleaseUrl.Trim();
-        SmartRules = SmartRules.Where(r => !string.IsNullOrWhiteSpace(r.Path) && !string.IsNullOrWhiteSpace(r.Preset)).ToList();
-
-        Directory.CreateDirectory(AppPaths.Settings);
-        File.WriteAllText(FilePath, JsonSerializer.Serialize(this, JsonOptions));
-        Current = this;
-    }
-
-    /// <summary>Reads the file again and puts it into effect: for when it was replaced from outside, by an import.</summary>
-    public static void Reload() => Current = Load();
-
-    private static AppSettings Load()
-    {
-        try
-        {
-            if (File.Exists(FilePath))
-            {
-                var settings = JsonSerializer.Deserialize(File.ReadAllText(FilePath), AppSettingsJsonContext.Default.AppSettings) ?? new AppSettings();
-
-                // A file that spells these out as null, as one written by hand or by an older version might.
-                settings.SmartRules ??= [];
-                settings.SavedLayouts ??= [];
-
-                foreach (var rule in settings.SmartRules)
-                    rule.Normalize();
-                settings.MapLegacyPresetNames();
-
-                // The double-click's reset target as settings from before 5.2-AuditB named it.
-                if (settings.DoubleClickResetsTo == LegacyResetToPreset)
-                    settings.DoubleClickResetsTo = ResetToPreset;
-
-                // Settings saved before the option existed: on (a file of 4.2 or later has it; one saved before 4.2 in Encoder
-                // Mode is read as any other since 5.2-Arm64AndNpu, its mode no longer read).
-                settings.ShowTimelineThumbnails ??= true;
-
-                // The version the file was written with: the steps below raise it.
-                var viewDefaults = settings.ViewDefaultsVersion;
-
-                // Settings from before the panes and the timeline's slider: what they would have started with.
-                if (settings.ViewDefaultsVersion < 1)
-                {
-                    settings.ViewDefaultsVersion = 1;
-                    (settings.ShowKeyframesPane, settings.ShowClipKeyframes) = (false, true);
-                    settings.MasterTimelineHeight = Math.Clamp(4 * settings.TimelineHeight - 3, 1, 50);
-                }
-
-                // Settings from when the color grading was not on the Filters tab to start with: it is switched on there once.
-                // It can still be hidden again, under Interface.
-                if (settings.ViewDefaultsVersion < 2)
-                {
-                    settings.ViewDefaultsVersion = 2;
-                    settings.ShowAdvancedFiltersTab = true;
-                }
-
-                // Version 3 opened the Source pane, which Editor Mode no longer has (Add Media in its header took its place).
-                if (settings.ViewDefaultsVersion < 3)
-                    settings.ViewDefaultsVersion = 3;
-
-                // The Squisher began with one preset; the others came after. Settings saved in between hold just
-                // that one, untouched: they get the full set. A list that was edited is left as it is.
-                if (settings.ViewDefaultsVersion < 4)
-                {
-                    settings.ViewDefaultsVersion = 4;
-                    if (settings.SquisherPresets is not { Count: > 0 }
-                        || settings.SquisherPresets is [{ Name: "Discord (Non-Nitro)", TargetSizeMb: 20 or 25, Icon: "squish" or null }])
-                    {
-                        settings.SquisherPresets = SquishPreset.Defaults();
-                    }
-                }
-
-                // The Sequence Overview Scrubber's steps start two lower since 5.2-AuditB (so a drag reaches 16 px): each saved
-                // height keeps its pixels.
-                if (settings.ViewDefaultsVersion < 5)
-                {
-                    settings.ViewDefaultsVersion = 5;
-                    if (settings.MasterTimelineHeight > 0)
-                        settings.MasterTimelineHeight += 2;
-                }
-
-                // Times read in frames (HH:MM:SS:FF) to start with since 5.3.2: switched once; Milliseconds can be chosen again after.
-                // A file at version 0 is a first start's, whose choice is its own (a 5.3.2 one starts in frames anyway).
-                if (settings.ViewDefaultsVersion < 6)
-                {
-                    settings.ViewDefaultsVersion = 6;
-                    if (viewDefaults >= 1)
-                        settings.ShowTimesAsFrames = true;
-                }
-
-                // The Squisher's first preset is the chat's own 10 MB limit since 5.4C ("Discord (10 MB)"): an untouched "Discord
-                // (Non-Nitro)" (20 MB, or the 25 MB of before) takes its name and size once. One the user changed stays theirs.
-                if (settings.ViewDefaultsVersion < 7)
-                {
-                    settings.ViewDefaultsVersion = 7;
-                    foreach (var preset in settings.SquisherPresets ?? [])
-                    {
-                        if (preset is { Name: "Discord (Non-Nitro)", TargetSizeMb: 20 or 25, AudioKbps: 96 })
-                            (preset.Name, preset.TargetSizeMb) = ("Discord (10 MB)", 10);
-                    }
-                }
-
-                // The Export GPU is where exports are composited since 5.4C; a card saved before then meant something else (the card an
-                // export decoded on, or nothing at all in 5.4B), often the second card a hardware test chose: it goes back to Auto once.
-                if (settings.ViewDefaultsVersion < 8)
-                {
-                    settings.ViewDefaultsVersion = 8;
-                    if (viewDefaults >= 1)
-                        settings.HardwareDecodeAdapter = -1;
-                }
-
-                // HandPeg opens in the Default layout since 5.4D (DefaultStartupLayout, Standard Editing to start with). A file from before it
-                // that kept an arrangement has no Default: none is set (null), so the arrangement the user left is kept (MainWindow.StartupLayoutJson
-                // makes the built-in layout of its shape the Default). A first start's file (version 0) and a Default chosen since stay as they are.
-                if (settings.ViewDefaultsVersion < 9)
-                {
-                    settings.ViewDefaultsVersion = 9;
-                    if (viewDefaults >= 1 && settings.DockLayout is not null && settings.DefaultStartupLayout == "Standard Editing")
-                        settings.DefaultStartupLayout = null;
-                }
-
-                // The status bar is hidden once for everyone (5.4D, the user's call: no second progress row at the bottom; the title bar's
-                // wash and rail carry the work). Tabs and Panes, or the title bar status's right-click, still brings it back.
-                if (settings.ViewDefaultsVersion < 10)
-                {
-                    settings.ViewDefaultsVersion = 10;
-                    settings.ShowStatusBar = false;
-                }
-
-                // 5.4.4 (the Desktop's 0x116 VIDEO_TDR_FAILURE in the Arc A310's driver): Auto is the Compositor GPU for the background and
-                // decode roles now, never a second card. A card saved for either (a hardware test's pick, most often the second card) goes
-                // back to Auto once; Processor Only (-2) is the user's own and stays.
-                if (settings.ViewDefaultsVersion < 11)
-                {
-                    settings.ViewDefaultsVersion = 11;
-                    if (settings.BackgroundGpu >= 0)
-                        settings.BackgroundGpu = -1;
-                    if (settings.DecodeGpuAdapter >= 0)
-                        settings.DecodeGpuAdapter = -1;
-                }
-
-                // Keep open project tabs between sessions is off as HandPeg comes since 5.5A's addenda (the user's call: closing asks whether
-                // to save the tabs, keep them or close them), and the 5.5A previews saved it on: it goes off once. A first start's file
-                // (version 0) is its own choice, as above.
-                if (settings.ViewDefaultsVersion < 12)
-                {
-                    settings.ViewDefaultsVersion = 12;
-                    if (viewDefaults >= 1)
-                        settings.KeepOpenTabsOnClose = false;
-                }
-
-                // (4.1.1 brought Editor Mode's saved views to its own once, by the mode a file named. Every file written since
-                // says it was done; one from before is read as it stands, 5.2-Arm64AndNpu.)
-                settings.Migrated411Defaults = true;
-
-                // The keys, the dial and the tour (4.4, AppSettings.Input.cs): a shortcut that can never work is dropped.
-                settings.CleanUpInput();
-                return settings;
-            }
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
-        {
-            // An unreadable settings file must not stop the app from starting; defaults apply.
-        }
-
-        // No settings yet: already as 4.1.1 starts, so there is nothing to bring over. The first-run window comes first.
-        NoteFirstRun();
-        return new AppSettings { ShowTimelineThumbnails = false, Migrated411Defaults = true };
-    }
-
-    // Paths are often pasted with the quotes Explorer's "Copy as path" adds.
-    private static string Clean(string path) => path.Trim().Trim('"');
 }

@@ -4,6 +4,7 @@ using System.Windows.Automation;
 using System.Windows.Automation.Peers;
 using System.Windows.Input;
 using System.Windows.Media;
+using static HandPegApp.UiBrushes;
 
 namespace HandPegApp;
 
@@ -518,11 +519,6 @@ public static class TimelineMetrics
         return brush;
     }
 
-    private static Pen Frozen(Pen pen)
-    {
-        pen.Freeze();
-        return pen;
-    }
 }
 
 /// <summary>

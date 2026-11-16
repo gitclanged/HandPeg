@@ -203,9 +203,9 @@ public partial class MainViewModel
         using var whole = DeferCommand();
         foreach (var clip in targets)
         {
-            using (Layer.Echo())
+            using (OwnLookScope())
             {
-                var pasted = cards.Select(clip.AdoptEffect).ToList();
+                var pasted = TakenBy(clip, cards).Select(clip.AdoptEffect).ToList();
                 if (!append)
                 {
                     clip.SetEffects(pasted);

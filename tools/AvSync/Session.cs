@@ -43,10 +43,25 @@ internal static class Session
         var state = project.State();
 
         // --onscreen (Pass 5.5.2-Release): a 320x180 window in a corner of the main screen, never activated, so DXGI reports when each frame
-        // was really shown (frame statistics) and the pump's measured display lead (GpuViewportControl.MeasureLead) runs as it does in the app.
+        // was really shown (frame statistics) and the pump's measured display lead (GpuViewport.MeasureLead) runs as it does in the app.
         var onscreen = options.Has("onscreen");
         using var window = OffscreenWindow.Create((int)options.Number("width", onscreen ? 320 : 1280), (int)options.Number("height", onscreen ? 180 : 720), onscreen);
         Console.WriteLine(onscreen ? "Player window: on screen (320x180, bottom-right corner, never activated)." : "Player window: off screen.");
+
+        // --lead-seed-ms N --lead-seed-hz H (Pass 5.6A, Q2 b): a saved Playback & A/V Sync Test as the app would have one, so the player's first
+        // play starts from that display lead when the refresh matches (the harness's data folder never holds one of its own).
+        if (options.Has("lead-seed-ms"))
+        {
+            AppSettings.Current.LastPlaybackSyncTest = new PlaybackSyncResult
+            {
+                MeasuredAt = DateTime.UtcNow.ToString("o", System.Globalization.CultureInfo.InvariantCulture),
+                DisplayLeadMs = options.Number("lead-seed-ms", 0),
+                RefreshHz = options.Number("lead-seed-hz", 0),
+                FrameStatistics = true,
+            };
+            Console.WriteLine(System.FormattableString.Invariant($"Saved display lead: {options.Number("lead-seed-ms", 0):0.###} ms at {options.Number("lead-seed-hz", 0):0.##} Hz (seeds the first play)."));
+        }
+
         var starting = GpuPreviewEngine.StartAsync(window.Handle);
         if (!ProjectSession.WaitUntil(() => starting.IsCompleted, TimeSpan.FromSeconds(30)) || starting.Result is not { } engine)
             throw new InvalidOperationException($"The GPU engine did not start: {GpuPreviewEngine.LastStartFailure}");

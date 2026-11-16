@@ -94,7 +94,7 @@ public partial class MediaBrowserPane
         {
             _tileSize = Math.Clamp(double.IsFinite(value) ? value : 0, 0, 100);
             if (!PickerMode)
-                AppSettings.Current.BrowserTileSize = (int)Math.Round(_tileSize);
+                AppSettings.Set(s => s.BrowserTileSize, (s, v) => s.BrowserTileSize = v, (int)Math.Round(_tileSize));
             ApplyTileWidth(_tileSize);
             SetView(_tileSize < ListBelow ? MediaBrowserView.List : MediaBrowserView.Grid, remember: true);
 
@@ -144,7 +144,7 @@ public partial class MediaBrowserPane
         if (!Enum.IsDefined(view) || (PickerMode && view == MediaBrowserView.Filmstrip))
             view = MediaBrowserView.Grid;
         if (remember && !PickerMode)
-            AppSettings.Current.BrowserView = view.ToString();
+            AppSettings.Set(s => s.BrowserView, (s, v) => s.BrowserView = v, view.ToString());
         if (ViewBox.SelectedIndex != (int)view)
         {
             _syncingView = true;
@@ -325,7 +325,7 @@ public partial class MediaBrowserPane
     {
         var width = Math.Round(ListColumn.ActualWidth);
         if (!PickerMode && width >= FilmstripListNarrow)
-            AppSettings.Current.BrowserFilmstripListWidth = width;
+            AppSettings.Set(s => s.BrowserFilmstripListWidth, (s, v) => s.BrowserFilmstripListWidth = v, width);
     }
 
     /// <summary>
@@ -338,7 +338,7 @@ public partial class MediaBrowserPane
             return;
 
         e.Handled = true;
-        AppSettings.Current.BrowserFilmstripListWidth = FilmstripListDefault;
+        AppSettings.Set(s => s.BrowserFilmstripListWidth, (s, v) => s.BrowserFilmstripListWidth = v, FilmstripListDefault);
         LayOutColumns();
     }
 
@@ -452,7 +452,7 @@ public partial class MediaBrowserPane
         var descending = string.Equals(_sortKey, key, StringComparison.Ordinal) && SortDirectionButton.IsChecked != true;
         _sortKey = key;
         if (!PickerMode)
-            AppSettings.Current.BrowserSort = key;
+            AppSettings.Set(s => s.BrowserSort, (s, v) => s.BrowserSort = v, key);
         _syncingSort = true;
         try
         {
@@ -481,7 +481,7 @@ public partial class MediaBrowserPane
     {
         var descending = SortDirectionButton.IsChecked == true;
         foreach (var (key, glyph) in _headerGlyphs)
-            glyph.Text = key == _sortKey ? descending ? "" : "" : "";
+            glyph.Text = key == _sortKey ? descending ? Glyphs.ChevronDown : Glyphs.ChevronUp : "";
     }
 
     // ----- The details of the rows in sight (List and Filmstrip) -----
@@ -541,7 +541,7 @@ public partial class MediaBrowserPane
         }
         catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
-            AppLog.Write($"Media browser: details: {ex.Message}");
+            AppLog.Write("Media browser: details", ex);
         }
         finally
         {

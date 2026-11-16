@@ -3,6 +3,9 @@ using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
+using static HandPegApp.UiBrushes;
+using HandPegApp.Native;
+using static HandPegApp.Native.User32;
 
 namespace HandPegApp;
 
@@ -103,13 +106,6 @@ public sealed partial class XRayOverlay : FrameworkElement
     private static FormattedText Text(string text, Typeface face, double size, Brush brush, double dpi) =>
         new(text, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, face, size, brush, dpi);
 
-    private static Brush Frozen(Color color)
-    {
-        var brush = new SolidColorBrush(color);
-        brush.Freeze();
-        return brush;
-    }
-
     private static Pen FrozenPen(Brush brush, double thickness, bool dashed)
     {
         var pen = new Pen(brush, thickness);
@@ -122,9 +118,4 @@ public sealed partial class XRayOverlay : FrameworkElement
     private const int GwlExStyle = -20;
     private const long WsExTransparent = 0x20, WsExLayered = 0x80000, WsExNoActivate = 0x8000000;
 
-    [LibraryImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
-    private static partial IntPtr GetWindowLongPtr(IntPtr window, int index);
-
-    [LibraryImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
-    private static partial IntPtr SetWindowLongPtr(IntPtr window, int index, IntPtr value);
 }

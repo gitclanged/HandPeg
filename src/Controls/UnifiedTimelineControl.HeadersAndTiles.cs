@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Media;
 using System.Windows.Threading;
 using HandPegApp.Services;
+using static HandPegApp.UiBrushes;
 
 namespace HandPegApp;
 
@@ -233,10 +234,10 @@ public sealed partial class UnifiedTimelineControl
     {
         var text = flag switch
         {
-            RowSwitches.Hidden => on ? "" : "",
-            RowSwitches.Muted => on ? "" : "",
-            RowSwitches.Locked => on ? "" : "",
-            RowSwitches.Voice => "",
+            RowSwitches.Hidden => on ? Glyphs.Hide : Glyphs.View,
+            RowSwitches.Muted => on ? Glyphs.Mute : Glyphs.Volume,
+            RowSwitches.Locked => on ? Glyphs.Lock : Glyphs.Unlock,
+            RowSwitches.Voice => Glyphs.Microphone,
             _ => "S",
         };
         var brush = !on ? _muted
@@ -571,18 +572,6 @@ public sealed partial class UnifiedTimelineControl
     // ----- Made once -----
 
     private static SolidColorBrush Solid(byte alpha, byte red, byte green, byte blue) => FrozenBrush(Color.FromArgb(alpha, red, green, blue));
-
-    private static Pen Frozen(Pen pen)
-    {
-        pen.Freeze();
-        return pen;
-    }
-
-    private static DashStyle Frozen(DashStyle dashes)
-    {
-        dashes.Freeze();
-        return dashes;
-    }
 
     private static Geometry FrozenTriangle()
     {

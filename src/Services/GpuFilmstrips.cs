@@ -672,10 +672,12 @@ public static class GpuFilmstrips
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException or System.Runtime.InteropServices.COMException)
         {
             // The strip's file (or the readback's section) could not be written: this strip is FFmpeg's.
+            AppLog.Write("GPU filmstrips: a strip could not be written", ex);
             return new Result(Outcome.NotDrawn, ex.Message);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
+            AppLog.Write("GPU filmstrips: the engine failed", ex);
             return new Result(Outcome.EngineFault, $"{ex.GetType().Name}: {ex.Message}");
         }
     }

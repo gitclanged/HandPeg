@@ -1,0 +1,21 @@
+# The saved Playback & A/V Sync Test's display lead seeds a player's first play when the refresh matches (5.6A, Q2 b).
+ok: the Desktop's 500 Hz test on its 500 Hz monitor: 5.811 ms
+ok: a refresh DWM gives as 499.5 Hz against EnumDisplaySettings' 500: 5.811 ms
+ok: 59.94 Hz against 60 Hz: 16.4 ms
+ok: a test made on another refresh (144 Hz): none
+ok: no lead measured: none
+ok: a test without real frame statistics (DWM's grid assumed): none
+ok: a lead of 0: none
+ok: a lead over 100 ms: none
+ok: a lead not a number: none
+ok: a monitor whose refresh is not known: none
+ok: a test whose refresh was not known (0): none
+ok: a seed counts as four samples, and is dropped after 60 new frames with no real sample
+ok: one real sample after the seed: the published lead is still the seed's (5.811 ms)
+ok: five real samples outvote the four seeds: 6 ms
+ok: a cold play's backed-up first sample (19.8 ms, the 11-13 overshoot) no longer moves the lead: 5.811 ms
+ok: SeedLead only starts an unmeasured lead, as SeedCopies samples, and publishes it at once
+ok: a new frame counts the seed down; a real sample ends the countdown; with none after 60 the seed is forgotten (the lead unknown again)
+ok: the pump seeds at a play's first turn, once the monitor's refresh is read
+ok: only a player engine seeds, only at its first play, from the saved test, through SeedLeadFor's rule
+ok: the Playback & A/V Sync Test's own engine (player: false) is never seeded

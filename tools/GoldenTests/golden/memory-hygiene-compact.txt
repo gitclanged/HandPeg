@@ -3,6 +3,9 @@ ok: five asks close together: a collection follows
 ok: and only one
 ok: not before the wait after the last ask was over
 ok: its reasons, each once: tab closed, tab let go
+ok: no ask wanted the process heap compacted: HeapCompact not called
+ok: a burst with a process-heap ask: a collection follows
+ok: one collection, and the process heap compacted once after its finalizers
 ok: while the editor is busy, no collection
 ok: it is asked again, every 200 ms at most
 ok: once it is quiet, the collection follows

@@ -392,7 +392,7 @@ public partial class MainWindow
     {
         var why = _switchingTab ? $"Wait for the project tab to finish switching before {doing}."
             : _viewModel.HasPendingAdds ? "Adding clips: switch tabs when they are in."
-            : _viewModel.IsRecording ? $"Stop the voiceover recording before {doing}."
+            : _viewModel.HoldsRecording ? $"Stop the voiceover recording before {doing}."
             : _viewModel.IsBusy ? $"Wait for the running operation to finish, or cancel it, before {doing}."
             : TimelineDragHeld ? $"Let go of the drag on the timeline before {doing}."
             : null;
@@ -1337,9 +1337,9 @@ public partial class MainWindow
             return true;
 
         if (KeptInFile(tab) && tab.ProjectPath.Length > 0)
-            return SaveTabInPlace(tab, tab.Title).StartsWith("Project saved", StringComparison.Ordinal);
+            return SaveTabInPlace(tab, tab.Title).IsSaved;
         if (!KeptInFile(tab) && _viewModel.CurrentProjectPath.Length > 0)
-            return _viewModel.SaveProjectTo(_viewModel.CurrentProjectPath).StartsWith("Project saved", StringComparison.Ordinal);
+            return _viewModel.SaveProjectTo(_viewModel.CurrentProjectPath).IsSaved;
 
         // Never saved: in front first (a click on it, or a retry of one that could not be brought back); the status line says why not.
         if (KeptInFile(tab))
@@ -1370,24 +1370,25 @@ public partial class MainWindow
     /// Saves a tab behind the one in front from its cache file (5.4D-TabPerf: from memory when it is kept live, after its cache file's
     /// write: the same frozen copy), without bringing it back, where the view model's own save would put it
     /// (<see cref="TabSavePath"/>: its project file, a fully portable folder when Settings say so, the New Project studio's folder, else the
-    /// Projects folder under <paramref name="name"/>). Another project's file is never written over without the user's word. A line for the
-    /// status bar ("Project saved: ..." when it was).
+    /// Projects folder under <paramref name="name"/>). Another project's file is never written over without the user's word. The outcome
+    /// and its status bar line.
     /// </summary>
-    private string SaveTabInPlace(ProjectTabHeader tab, string name)
+    private SaveOutcome SaveTabInPlace(ProjectTabHeader tab, string name)
     {
+        var path = tab.ProjectPath;
         try
         {
             var title = name.Trim().Length > 0 ? name.Trim() : tab.Title;
-            var (path, portable) = TabSavePath(tab.ProjectPath, tab.NewProjectFolder, title, AppSettings.Current.FullyPortableProjectSave);
+            (path, var portable) = TabSavePath(tab.ProjectPath, tab.NewProjectFolder, title, AppSettings.Current.FullyPortableProjectSave);
             if (!SameProjectFile(path, tab.ProjectPath) && File.Exists(path) && !MayReplaceProject(path))
-                return _viewModel.StatusText = $"Not saved: {Path.GetFileNameWithoutExtension(path)} is another project, and it was left as it is.";
+                return new(SaveResult.Declined, _viewModel.StatusText = $"Not saved: {Path.GetFileNameWithoutExtension(path)} is another project, and it was left as it is.");
 
             // Kept live (5.4D-TabPerf review): after its cache file's write, never beside it (still under way after 5 s: not saved, said so),
             // and from a copy of its frozen state with the save's name and time: the frozen copy itself is never written to (the thread pool,
             // or HandPeg falling over, may be writing the cache file from it).
             var live = _hydrated.GetValueOrDefault(tab.Id);
             if (live is not null && !_tabs.WaitFor(tab.Id, IoWaitMs))
-                return _viewModel.StatusText = "Still writing this tab's recovery copy: try again in a moment.";
+                return new(SaveResult.Declined, _viewModel.StatusText = "Still writing this tab's recovery copy: try again in a moment.");
             var state = live is not null ? live.Project.Frozen.ShallowCopy() : _tabs.ReadState(tab.Id);
             if (live is not null)
                 state.ThumbnailJpeg ??= live.Project.Thumbnail;
@@ -1409,11 +1410,11 @@ public partial class MainWindow
 
             ProjectStore.NotifyChanged();
             ShowTabs();
-            return _viewModel.StatusText = $"Project saved: {Path.GetFileNameWithoutExtension(path)}";
+            return new(SaveResult.Saved, _viewModel.StatusText = $"Project saved: {Path.GetFileNameWithoutExtension(path)}");
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidDataException or NotSupportedException or ArgumentException)
         {
-            return _viewModel.StatusText = $"Could not save the project: {ex.Message}";
+            return new(SaveResult.Failed, _viewModel.Fail($"Could not save the project: {ex.Message}", $"Save tab \"{tab.Title}\" to {path}", ex));
         }
     }
 
@@ -1610,7 +1611,9 @@ public partial class MainWindow
     /// the most recently used. Pass 5.5A addenda (AD-1, MainWindow.TabExit.cs): with the start-up tab still blank and untouched, the tab
     /// that was in front last time comes to the front instead, and the blank tab goes.
     /// </summary>
-    private async void RecoverProjectTabs()
+    private void RecoverProjectTabs() => Faults.Forget(RecoverProjectTabsAsync(), nameof(RecoverProjectTabs));
+
+    private async Task RecoverProjectTabsAsync()
     {
         try
         {

@@ -13,10 +13,12 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using System.Windows.Threading;
+using HandPegApp.Controls;
 using HandPegApp.Models;
 using HandPegApp.Models.Effects;
 using HandPegApp.Services;
 using HandPegApp.ViewModels;
+using static HandPegApp.UiBrushes;
 
 namespace HandPegApp.Views;
 
@@ -40,6 +42,10 @@ public partial class EffectsPane : UserControl
     // it would be drawn nowhere.
     private bool _noClip;
 
+    // 5.6A review: the sound clip selected on the timeline (MainWindow.SelectClip, SelectSound): the target while the key layer it was
+    // selected over is still the key layer (KeyLayer holds pictures only: the Keyframes pane, the text tools and the crop keep theirs).
+    private Layer? _sound, _soundOver;
+
     private readonly List<ParamModel> _params = [];
     private readonly HashSet<Guid> _collapsed = [];
 
@@ -49,11 +55,13 @@ public partial class EffectsPane : UserControl
     // The Advanced section's chevron: a right-pointing stroke, turned down while the section is open.
     private static readonly Geometry Chevron = FrozenGeometry("M 0,0 L 4,4 L 0,8");
 
-    // A slider dragged writes its value at most this often (the user's call, 5.0-Release: the pointer sampled at a limited
-    // rate): each write is a new scene for the preview and a new command, and a pointer reports far more often than that.
-    private const double DragWritesPerSecond = 30;
-    private readonly DispatcherTimer _dragWrite = new() { Interval = TimeSpan.FromSeconds(1 / DragWritesPerSecond) };
-    private (ParamModel Model, double Value)? _pendingWrite;
+    // The pane's editing writes (its rows, a sound's filters, the Pitch Shift): paced at Pacing.GestureWritesPerSecond, written as
+    // one look batch and grouped into undo steps in one place (GestureWriter: one step per drag, a run rule for lone writes). A drag on
+    // a slider or number box is a gesture while it holds the mouse capture (CaptureThrottle).
+    private readonly TimerScope _timers = new();
+    private readonly GestureWriter<object> _writes;
+    private readonly CaptureThrottle _drag;
+    private static readonly object AudioWriteKey = new(), PitchWriteKey = new();
 
     // Copy Effects's cards, for Paste Effects and Paste Some Effects...: shared by every target.
     private static List<EffectState>? _clipboard;
@@ -65,12 +73,13 @@ public partial class EffectsPane : UserControl
     private Window? _addOwner;
 
     // The Add Effect flyout closes a moment after the pointer leaves it and its button (the Settings button's 260 ms).
-    private readonly DispatcherTimer _addClose = new() { Interval = TimeSpan.FromMilliseconds(260) };
+    private readonly DispatcherTimer _addClose;
 
-    // A run of changes to values (a slider dragged) is one undo step: a checkpoint when the first comes after a pause.
-    private DateTime _lastWrite;
+    // One queued rebuild of the cards, and one queued refresh of their values, however often they are asked for before they run.
+    private readonly RunGate _rebuild, _refresh;
 
-    private bool _rebuildQueued, _refreshQueued;
+    // The view model's handlers are on (Attach, then while the pane is loaded); a rebuild skipped while the loaded pane was hidden.
+    private bool _hooked, _rebuildWhenShown;
 
     /// <summary>The Mask card's Edit Mask... button: the window opens the layer's mask tools.</summary>
     public event Action<Layer>? EditMaskRequested;
@@ -78,23 +87,30 @@ public partial class EffectsPane : UserControl
     private static readonly SolidColorBrush GreenCost = Frozen(Color.FromRgb(0x4C, 0xAF, 0x50));
     private static readonly SolidColorBrush AmberCost = Frozen(Color.FromRgb(0xF0, 0xA8, 0x30));
     private static readonly SolidColorBrush RedCost = Frozen(Color.FromRgb(0xE0, 0x4B, 0x4B));
-    private static readonly FontFamily Glyphs = new("Segoe MDL2 Assets");
 
     public EffectsPane()
     {
         InitializeComponent();
-        _dragWrite.Tick += (_, _) => FlushDragWrite();
-        _addClose.Tick += AddClose_Tick;
+        _writes = new GestureWriter<object>(() => _vm, _timers);
+        _drag = new CaptureThrottle(_writes);
+        _addClose = _timers.Make(TimeSpan.FromMilliseconds(260), DispatcherPriority.Background, AddClose_Tick);
+        _rebuild = new RunGate(Dispatcher, Rebuild, DispatcherPriority.Background);
+        _refresh = new RunGate(Dispatcher, RefreshParams, DispatcherPriority.Background);
         AddPopup.Opened += AddPopup_Opened;
         AddPopup.Closed += AddPopup_Closed;
         ReorderBehavior.Reordered += OnReordered;
-    }
 
-    private static SolidColorBrush Frozen(Color color)
-    {
-        var brush = new SolidColorBrush(color);
-        brush.Freeze();
-        return brush;
+        // A pane closed or moved out of the window holds no view-model handlers; loaded again it hooks them and follows the target.
+        Loaded += (_, _) => Hook();
+        Unloaded += (_, _) => Unhook();
+        IsVisibleChanged += (_, e) =>
+        {
+            if (e.NewValue is true && _rebuildWhenShown)
+            {
+                _rebuildWhenShown = false;
+                Rebuild();
+            }
+        };
     }
 
     private static Geometry FrozenGeometry(string path)
@@ -104,32 +120,88 @@ public partial class EffectsPane : UserControl
         return geometry;
     }
 
+    /// <summary>Works on <paramref name="viewModel"/>: its handlers hooked now (and again whenever the pane is loaded), its target followed.</summary>
     public void Attach(MainViewModel viewModel)
     {
+        if (ReferenceEquals(_vm, viewModel))
+            return;
+        Detach();
         _vm = viewModel;
         DataContext = viewModel;
-        viewModel.PropertyChanged += (_, e) =>
-        {
-            switch (e.PropertyName)
-            {
-                case nameof(MainViewModel.ActiveKeyLayer) or nameof(MainViewModel.BackgroundSelected):
-                    Retarget();
-                    break;
-                case nameof(MainViewModel.PositionMs):
-                    OnPlayheadMoved();
-                    break;
-                case nameof(MainViewModel.SequenceEffectsBypassed):
-                    UpdateHeader();
-                    break;
+        Hook();
+    }
 
-                // The blur fill's own values, set elsewhere (Blur Settings..., the timeline's inspector, Undo).
-                case nameof(MainViewModel.BlurRadius) or nameof(MainViewModel.BlurPasses) or nameof(MainViewModel.BackgroundDim) or nameof(MainViewModel.BackgroundZoom)
-                    when _layer is { IsBackground: true }:
-                    QueueRefresh();
-                    break;
-            }
-        };
-        viewModel.Layers.CollectionChanged += (_, _) => Retarget();
+    /// <summary>Lets go of the view model: every handler <see cref="Attach"/> and the target hooked is taken off, pending writes made.</summary>
+    public void Detach()
+    {
+        Unhook();
+        _vm = null;
+        DataContext = null;
+    }
+
+    // The view model's and the target's handlers on; the target looked at again (a rebuild when it changed meanwhile).
+    private void Hook()
+    {
+        if (_hooked || _vm is not { } viewModel)
+            return;
+        _hooked = true;
+        viewModel.PropertyChanged += ViewModel_PropertyChanged;
+        viewModel.Layers.CollectionChanged += Layers_CollectionChanged;
+        viewModel.EditTargetChanged += FollowSequenceOutput;
+        Retarget();
+    }
+
+    // The exact mirror of Hook, and of Retarget's own handlers: the target is let go, so a later Hook rebuilds for whatever it is then.
+    private void Unhook()
+    {
+        if (!_hooked || _vm is not { } viewModel)
+            return;
+        _hooked = false;
+        _writes.Flush();
+        _timers.StopAll();
+        viewModel.PropertyChanged -= ViewModel_PropertyChanged;
+        viewModel.Layers.CollectionChanged -= Layers_CollectionChanged;
+        viewModel.EditTargetChanged -= FollowSequenceOutput;
+        if (_stack is not null)
+            _stack.CollectionChanged -= Stack_CollectionChanged;
+        if (_layer is not null)
+            _layer.PropertyChanged -= Layer_PropertyChanged;
+        (_layer, _stack) = (null, null);
+    }
+
+    private void ViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        switch (e.PropertyName)
+        {
+            case nameof(MainViewModel.ActiveKeyLayer) or nameof(MainViewModel.BackgroundSelected):
+                Retarget();
+                break;
+            case nameof(MainViewModel.PositionMs):
+                OnPlayheadMoved();
+                break;
+            case nameof(MainViewModel.SequenceEffectsBypassed):
+                UpdateHeader();
+                break;
+
+            // The blur fill's own values, set elsewhere (Blur Settings..., the timeline's inspector, Undo).
+            case nameof(MainViewModel.BlurRadius) or nameof(MainViewModel.BlurPasses) or nameof(MainViewModel.BackgroundDim) or nameof(MainViewModel.BackgroundZoom)
+                when _layer is { IsBackground: true }:
+                QueueRefresh();
+                break;
+        }
+    }
+
+    private void Layers_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e) => Retarget();
+
+    // Loaded but not shown (a tab behind another, a collapsed column): nothing is drawn for it; it is made again once it shows.
+    private bool HiddenNow => IsLoaded && !IsVisible;
+
+    // The Sequence Output switched from the Color Studio's toggle (MainViewModel.EditSequenceOutput): this pane's toggle follows it.
+    private void FollowSequenceOutput()
+    {
+        if (_vm is null || SequenceToggle.IsChecked == _vm.EditSequenceOutput)
+            return;
+        SequenceToggle.IsChecked = _vm.EditSequenceOutput;
         Retarget();
     }
 
@@ -147,16 +219,22 @@ public partial class EffectsPane : UserControl
 
         // The blur fill's settings row (5.0-Release; 5.2-AuditB: the look every video clip's own blur fill takes) is no clip of the
         // timeline, and has a stack of effects all the same.
-        var layer = IsSequence ? null : _vm.BackgroundSelected ? _vm.BackgroundLayer : _vm.ActiveKeyLayer;
+        // A sound clip selected is the target too (5.6A: its Speed & Pitch card and its SOUND cards; ActiveKeyLayer is pictures only).
+        // 5.6A review: the timeline's selection tells the pane which (SelectSound, SoundTarget).
+        var layer = IsSequence ? null
+            : _vm.BackgroundSelected ? _vm.BackgroundLayer
+            : SoundTarget() ?? _vm.ActiveKeyLayer;
         var noClip = layer is { IsBackground: false } && !_vm.Layers.Contains(layer);
         if (noClip)
             layer = null;
         var stack = noClip ? null : layer?.Effects ?? _vm.SequenceEffects;
         if (ReferenceEquals(layer, _layer) && ReferenceEquals(stack, _stack) && noClip == _noClip)
+        {
+            _vm.SetEditTarget(EditTarget);
             return;
+        }
 
-        FlushDragWrite();
-        FlushAudioWrite();
+        _writes.Flush();
         if (_stack is not null)
             _stack.CollectionChanged -= Stack_CollectionChanged;
         if (_layer is not null)
@@ -167,25 +245,65 @@ public partial class EffectsPane : UserControl
         if (_layer is not null)
             _layer.PropertyChanged += Layer_PropertyChanged;
         Rebuild();
+        _vm.SetEditTarget(EditTarget);
     }
 
-    private void SequenceToggle_Click(object sender, RoutedEventArgs e) => Retarget();
-
-    private void Stack_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    private void SequenceToggle_Click(object sender, RoutedEventArgs e)
     {
-        if (_rebuildQueued)
+        if (_vm is not null)
+            _vm.EditSequenceOutput = SequenceToggle.IsChecked == true;
+        Retarget();
+    }
+
+    /// <summary>
+    /// The timeline's selection (MainWindow.SelectClip, every selection): a sound clip selected becomes the pane's target (5.6A review),
+    /// anything else (null) gives the target back to the key layer. Through the pane, not KeyLayer: that one is the picture the
+    /// Keyframes pane, the keyframe buttons, the text tools and the crop work on, which a sound selected leaves as they were.
+    /// </summary>
+    public void SelectSound(Layer? clip)
+    {
+        var sound = clip is { IsAudio: true, IsDeleted: false, IsEmptyTrack: false } && _vm?.Layers.Contains(clip) == true ? clip : null;
+        if (ReferenceEquals(sound, _sound) && (sound is null || ReferenceEquals(_soundOver, _vm?.KeyLayer)))
             return;
 
-        _rebuildQueued = true;
-        Dispatcher.BeginInvoke(() =>
-        {
-            _rebuildQueued = false;
-            Rebuild();
-        }, DispatcherPriority.Background);
+        (_sound, _soundOver) = (sound, sound is null ? null : _vm?.KeyLayer);
+        Retarget();
     }
+
+    /// <summary>
+    /// The sound clip selected, while it is the target (5.6A review): none once another key layer was set since (a clip added, a tab's
+    /// own); followed by its clip's id, as KeyLayer is (FollowSelection), when an undo or redo made every view anew; none while its clip
+    /// is not on this timeline (deleted, another tab's), so that it comes back with it.
+    /// </summary>
+    private Layer? SoundTarget()
+    {
+        if (_vm is null || _sound is null)
+            return null;
+        if (!SameClip(_vm.KeyLayer, _soundOver))
+        {
+            (_sound, _soundOver) = (null, null);
+            return null;
+        }
+
+        _soundOver = _vm.KeyLayer;
+        if (!_vm.Layers.Contains(_sound) && _sound.ClipId != Guid.Empty && _vm.Document.FindClip(_sound.ClipId) is { } clip && _vm.ViewOf(clip) is { } view)
+            _sound = view;
+        return _sound is { IsAudio: true, IsDeleted: false, IsEmptyTrack: false } && _vm.Layers.Contains(_sound) ? _sound : null;
+
+        static bool SameClip(Layer? a, Layer? b) => ReferenceEquals(a, b) || a is { ClipId: var id } && id != Guid.Empty && id == b?.ClipId;
+    }
+
+    // ----- The target, published to the view model (MainViewModel.EditTarget) -----
+
+    /// <summary>What the pane works on now: the clip, the Sequence Output, or nothing.</summary>
+    private ColorGradeTarget EditTarget =>
+        _noClip || _stack is null ? ColorGradeTarget.None : _layer is null ? ColorGradeTarget.ForSequence : ColorGradeTarget.For(_layer);
+
+    private void Stack_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e) => _rebuild.Request();
 
     private void Layer_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        SpeedLayerChanged(e.PropertyName);
         switch (e.PropertyName)
         {
             case nameof(Layer.Name) or nameof(Layer.EffectsBypassed):
@@ -202,22 +320,28 @@ public partial class EffectsPane : UserControl
         }
     }
 
-    private void QueueRefresh()
-    {
-        if (_refreshQueued)
-            return;
+    private void QueueRefresh() => _refresh.Request();
 
-        _refreshQueued = true;
-        Dispatcher.BeginInvoke(() =>
+    private void RefreshParams()
+    {
+        if (HiddenNow)
         {
-            _refreshQueued = false;
-            foreach (var model in _params)
-                model.Refresh();
-        }, DispatcherPriority.Background);
+            _rebuildWhenShown = true;
+            return;
+        }
+
+        foreach (var model in _params)
+            model.Refresh();
     }
 
     private void OnPlayheadMoved()
     {
+        if (HiddenNow)
+        {
+            _rebuildWhenShown = true;
+            return;
+        }
+
         foreach (var model in _params)
         {
             if (model.Animated)
@@ -230,8 +354,9 @@ public partial class EffectsPane : UserControl
         var bypassed = _layer?.EffectsBypassed ?? _vm?.SequenceEffectsBypassed ?? false;
         TargetLabel.Text = _noClip ? "No clip" : _layer is null ? "Sequence Output" : _layer.IsBackground ? _layer.Name : $"Clip: {_layer.Name}";
         BypassButton.IsChecked = bypassed;
-        BypassButton.IsEnabled = !_noClip;
-        BypassButton.Content = bypassed ? "" : "";
+        // 5.6A review: no sound path reads a sound clip's EffectsBypassed (its SOUND cards are Audio Filters): nothing to bypass.
+        BypassButton.IsEnabled = !_noClip && _layer is not { IsAudio: true };
+        BypassButton.Content = bypassed ? Glyphs.Hide : Glyphs.RedEye;
         AddButton.IsEnabled = EffectRegistry.All.Any(d => Fits(d, ignorePresent: true));
     }
 
@@ -239,8 +364,15 @@ public partial class EffectsPane : UserControl
 
     private void Rebuild()
     {
+        if (HiddenNow)
+        {
+            _rebuildWhenShown = true;
+            return;
+        }
+
         CardsPanel.Children.Clear();
         PinnedPanel.Children.Clear();
+        SpeedPanel.Children.Clear();
         _params.Clear();
         UpdateHeader();
         if (_stack is null)
@@ -271,8 +403,11 @@ public partial class EffectsPane : UserControl
             CardsPanel.Children.Add(BuildCard(card));
         }
 
-        // The opacity: always there for a picture, animated by the clip's own Opacity keyframes.
-        if (_layer is { HasStyle: true, IsAdjustment: false } && EffectRegistry.Find(EffectRegistry.Opacity) is { } opacity)
+        // The Speed & Time card (Pass 5.6A: Speed & Pitch for a sound), above the stack (EffectsPane.Speed.cs).
+        AddSpeedCard();
+
+        // The opacity: for a picture, animated by the clip's own Opacity keyframes; shown as ShowsOpacityCard says (Pass 5.6A).
+        if (_layer is { HasStyle: true, IsAdjustment: false } && ShowsOpacityCard(_layer) && EffectRegistry.Find(EffectRegistry.Opacity) is { } opacity)
             PinnedPanel.Children.Add(BuildCard(null, opacity));
 
         // The blur fill's own blur and zoom (5.0-Release): the sequence's, at the top of its stack.
@@ -330,20 +465,20 @@ public partial class EffectsPane : UserControl
         {
             var eye = new ToggleButton
             {
-                Content = card.Enabled ? "" : "", FontFamily = Glyphs, FontSize = 11, Padding = new Thickness(4, 2, 4, 2), Margin = new Thickness(0, 0, 6, 0),
+                Content = card.Enabled ? Glyphs.RedEye : Glyphs.Hide, FontFamily = Glyphs.Font, FontSize = 11, Padding = new Thickness(4, 2, 4, 2), Margin = new Thickness(0, 0, 6, 0),
                 IsChecked = card.Enabled, IsEnabled = !card.IsMissing, ToolTip = "On / off: an effect that is off does nothing, and keeps its values.",
             };
             AutomationProperties.SetName(eye, $"{title} On");
             eye.Click += (_, _) =>
             {
                 _vm?.Checkpoint($"switch {title} {(eye.IsChecked == true ? "on" : "off")}");
-                using (Layer.Echo())
+                using (OwnLooks())
                     card.Enabled = eye.IsChecked == true;
-                eye.Content = card.Enabled ? "" : "";
+                eye.Content = card.Enabled ? Glyphs.RedEye : Glyphs.Hide;
             };
             header.Children.Add(eye);
 
-            var remove = new Button { Content = "", FontFamily = Glyphs, FontSize = 10, Padding = new Thickness(5, 3, 5, 3), Margin = new Thickness(4, 0, 0, 0), ToolTip = "Remove this effect." };
+            var remove = new Button { Content = Glyphs.Cancel, FontFamily = Glyphs.Font, FontSize = 10, Padding = new Thickness(5, 3, 5, 3), Margin = new Thickness(4, 0, 0, 0), ToolTip = "Remove this effect." };
             AutomationProperties.SetName(remove, $"Remove {title}");
             remove.Click += (_, _) => Remove(card);
             DockPanel.SetDock(remove, Dock.Right);
@@ -351,7 +486,7 @@ public partial class EffectsPane : UserControl
         }
 
         var collapsed = card is not null && _collapsed.Contains(card.Id);
-        var collapse = new ToggleButton { Content = collapsed ? "" : "", FontFamily = Glyphs, FontSize = 10, Padding = new Thickness(5, 3, 5, 3), Margin = new Thickness(4, 0, 0, 0), IsChecked = !collapsed, ToolTip = "Show or hide this effect's values." };
+        var collapse = new ToggleButton { Content = collapsed ? Glyphs.ChevronDown : Glyphs.ChevronUp, FontFamily = Glyphs.Font, FontSize = 10, Padding = new Thickness(5, 3, 5, 3), Margin = new Thickness(4, 0, 0, 0), IsChecked = !collapsed, ToolTip = "Show or hide this effect's values." };
         AutomationProperties.SetName(collapse, $"Expand {title}");
         DockPanel.SetDock(collapse, Dock.Right);
         header.Children.Add(collapse);
@@ -381,7 +516,7 @@ public partial class EffectsPane : UserControl
         {
             var open = collapse.IsChecked == true;
             body.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
-            collapse.Content = open ? "" : "";
+            collapse.Content = open ? Glyphs.ChevronUp : Glyphs.ChevronDown;
             if (card is not null && !open)
                 _collapsed.Add(card.Id);
             else if (card is not null)
@@ -402,12 +537,15 @@ public partial class EffectsPane : UserControl
 
         foreach (var param in definition.Params)
         {
-            if (!param.IsAdvanced)
+            if (!param.IsAdvanced && !param.StudioOnly)
                 body.Children.Add(BuildRow(card, param, title));
         }
 
         if (definition.HasAdvanced)
             body.Children.Add(BuildAdvanced(card, definition, title));
+        // The Color Grade card's indicators and Open Color Studio (Pass 5.6A, EffectsPane.ColorGrade.cs).
+        if (card is not null && definition.Type == EffectRegistry.ColorStudio)
+            body.Children.Add(BuildColorGradeFooter(card, title));
         if (card is not null)
             body.Children.Add(BuildRangeRow(card, title));
         return border;
@@ -442,7 +580,7 @@ public partial class EffectsPane : UserControl
         var rows = new StackPanel { Margin = new Thickness(10, 2, 0, 0), Visibility = open ? Visibility.Visible : Visibility.Collapsed };
         foreach (var param in definition.Params)
         {
-            if (param.IsAdvanced)
+            if (param.IsAdvanced && !param.StudioOnly)
                 rows.Children.Add(BuildRow(card, param, title));
         }
 
@@ -489,7 +627,7 @@ public partial class EffectsPane : UserControl
             AutomationProperties.SetName(box, $"{title} Range {label}");
             row.Children.Add(box);
 
-            var trim = new Button { Content = glyph, FontFamily = Glyphs, FontSize = 10, Padding = new Thickness(4, 2, 4, 2), Margin = new Thickness(2, 0, 0, 0), ToolTip = $"Trim to Playhead: the range {label.ToLowerInvariant()}s at the playhead." };
+            var trim = new Button { Content = glyph, FontFamily = Glyphs.Font, FontSize = 10, Padding = new Thickness(4, 2, 4, 2), Margin = new Thickness(2, 0, 0, 0), ToolTip = $"Trim to Playhead: the range {label.ToLowerInvariant()}s at the playhead." };
             trim.Click += (_, _) => model.TrimToPlayhead(property == nameof(RangeModel.End));
             AutomationProperties.SetName(trim, $"{title} Range {label} at Playhead");
             row.Children.Add(trim);
@@ -506,8 +644,8 @@ public partial class EffectsPane : UserControl
         if (card.Range == range)
             return;
 
-        Burst(what);
-        using (Layer.Echo())
+        Step(card, EffectInstance.RangeKey, what);
+        using (OwnLooks())
             card.SetRange(range);
     }
 
@@ -636,7 +774,7 @@ public partial class EffectsPane : UserControl
         Grid.SetColumn(buttons, 3);
         var watch = new ToggleButton
         {
-            Content = "", FontFamily = Glyphs, FontSize = 11, Padding = new Thickness(4, 2, 4, 2),
+            Content = Glyphs.Stopwatch, FontFamily = Glyphs.Font, FontSize = 11, Padding = new Thickness(4, 2, 4, 2),
             ToolTip = "Animate: on, this value gets keyframes (one at the playhead now; changing the value writes another). Off: the keyframes go and the value stays as it is here.",
         };
         watch.SetBinding(ToggleButton.IsCheckedProperty, new Binding(nameof(ParamModel.Animated)) { Source = model, Mode = BindingMode.OneWay });
@@ -689,77 +827,60 @@ public partial class EffectsPane : UserControl
 
     // ----- Writing values -----
 
-    private void Burst(string what)
+    /// <summary>The undo step for a write about to be made (see <see cref="MainViewModel.StepForLook"/>): one per drag, a run rule otherwise.</summary>
+    private void Step(object? target, string field, string what, bool startRun = false)
     {
-        var now = DateTime.UtcNow;
-        if ((now - _lastWrite).TotalMilliseconds > 1000)
-            _vm?.Checkpoint(what);
-        _lastWrite = now;
+        if (_vm is { } vm && (target ?? _layer ?? (object)vm) is { } owner)
+            vm.StepForLook(owner, field, what, _writes.Gesture, startRun);
     }
 
+    /// <summary>Writes every paced value still waiting (a row's drag, a sound's filters, the Pitch Shift) now.</summary>
+    internal void FlushWrites() => _writes.Flush();
+
+    /// <summary>What the pane writes outside its paced batches is its own look too: the view model takes no step for it.</summary>
+    private MainViewModel.OwnedLooks? OwnLooks() => _vm?.OwnLookScope();
+
     /// <summary>
-    /// A value from a row. While the pointer drags a slider, at most <see cref="DragWritesPerSecond"/> a second: the newest
-    /// is held (and shown) until the next write, and the last is written when the pointer lets go (or the pane moves on).
+    /// A value from a row, paced (<see cref="GestureWriter{TKey}"/>): the newest is held (and shown) until it is written, and a drag's
+    /// last value is written when the pointer lets go (or the pane moves on).
     /// </summary>
     private void WriteValue(ParamModel model, double value)
     {
-        if (Mouse.LeftButton == MouseButtonState.Pressed && Mouse.Captured is Thumb or Slider or RepeatButton or TextBoxBase)
+        _drag.Follow();
+        model.Pending = value;
+        _writes.Queue(model, () =>
         {
-            if (_pendingWrite is { } pending && !ReferenceEquals(pending.Model, model))
-                FlushDragWrite();
-            _pendingWrite = (model, value);
-            model.Pending = value;
-            if (!_dragWrite.IsEnabled)
-                _dragWrite.Start();
-            return;
-        }
-
-        if (_pendingWrite is { } held && ReferenceEquals(held.Model, model))
-            (_pendingWrite, model.Pending) = (null, null);
-        Write(model, value);
-    }
-
-    /// <summary>The value held back from a drag written now; the timer stops once the pointer has let go.</summary>
-    private void FlushDragWrite()
-    {
-        if (_pendingWrite is not { } pending)
-        {
-            _dragWrite.Stop();
-            return;
-        }
-
-        _pendingWrite = null;
-        pending.Model.Pending = null;
-        Write(pending.Model, pending.Value);
-        if (Mouse.LeftButton != MouseButtonState.Pressed)
-            _dragWrite.Stop();
+            model.Pending = null;
+            Write(model, value);
+        });
     }
 
     private void Write(ParamModel model, double value)
     {
         var param = model.Param;
-        value = Math.Clamp(param.Step >= 1 ? Math.Round(value / param.Step) * param.Step : Math.Round(value, param.Decimals + 1), param.Min, param.Max);
+        value = param.Quantize(value);
         if (Math.Abs(value - model.Value) < 1e-9)
             return;
 
-        // A value of the view model's own (the blur fill's blur): it takes its own undo step.
+        // A value of the view model's own (the blur fill's blur): its step taken here, as the pane writes it.
         if (model.Bound is { } own)
         {
+            Step(_vm, param.Key, $"change {param.Label}");
             own.Set(value);
             model.Refresh();
             return;
         }
 
-        Burst($"change {param.Label}");
-        using (Layer.Echo())
+        Step(model.Card, param.Key, $"change {param.Label}");
+        using (OwnLooks())
         {
             // A value of the layer's own that is animated by commands (the key's) keeps its keyframes on the card.
             if (model.Card is { } keyed && param.Bind != nameof(Layer.Opacity) && keyed.HasKeys(param.Key))
-                keyed.SetKeys(param.Key, WithKey(keyed.GetKeys(param.Key), ClipTime, value));
+                keyed.SetKeys(param.Key, KeyEdit.Upsert(keyed.GetKeys(param.Key), ClipTime, value));
             else if (param.Bind is { } bind && _layer is not null && typeof(Layer).GetProperty(bind) is { } property)
                 property.SetValue(_layer, property.PropertyType == typeof(int) ? (int)Math.Round(value) : property.PropertyType == typeof(bool) ? value >= 0.5 : value);
             else if (model.Card is { } card && card.HasKeys(param.Key))
-                card.SetKeys(param.Key, WithKey(card.GetKeys(param.Key), ClipTime, value));
+                card.SetKeys(param.Key, KeyEdit.Upsert(card.GetKeys(param.Key), ClipTime, value));
             else
                 model.Card?.Set(param.Key, value);
         }
@@ -773,7 +894,7 @@ public partial class EffectsPane : UserControl
             return;
 
         _vm?.Checkpoint($"change {model.Param.Label}");
-        using (Layer.Echo())
+        using (OwnLooks())
         {
             if (model.Param.Bind is { } bind && _layer is not null && typeof(Layer).GetProperty(bind) is { PropertyType: var type } property && type == typeof(string))
                 property.SetValue(_layer, value);
@@ -784,23 +905,12 @@ public partial class EffectsPane : UserControl
         model.Refresh();
     }
 
-    private static List<Keyframe> WithKey(IReadOnlyList<Keyframe> keys, double time, double value)
-    {
-        var list = keys.ToList();
-        var at = list.FindIndex(k => Math.Abs(k.Time - time) < 0.02);
-        if (at >= 0)
-            list[at] = list[at] with { Value = value };
-        else
-            list.Add(new Keyframe(Math.Max(time, 0), value));
-        return list;
-    }
-
     private void ToggleAnimated(ParamModel model)
     {
         var (param, time, value) = (model.Param, Math.Max(ClipTime, 0), model.Value);
         var on = !model.Animated;
         _vm?.Checkpoint($"{(on ? "animate" : "stop animating")} {param.Label}");
-        using (Layer.Echo())
+        using (OwnLooks())
         {
             if (param.Bind == nameof(Layer.Opacity) && _layer is not null)
             {
@@ -823,15 +933,10 @@ public partial class EffectsPane : UserControl
     private void ToggleKeyAtPlayhead(ParamModel model)
     {
         var (param, time, value) = (model.Param, Math.Max(ClipTime, 0), model.Value);
-        var keys = model.Keys.ToList();
-        var at = keys.FindIndex(k => Math.Abs(k.Time - time) < 0.02);
-        if (at >= 0)
-            keys.RemoveAt(at);
-        else
-            keys.Add(new Keyframe(time, value));
+        var keys = KeyEdit.Toggle(model.Keys, time, value, out var removed);
 
-        _vm?.Checkpoint($"{(at >= 0 ? "remove a keyframe of" : "add a keyframe to")} {param.Label}");
-        using (Layer.Echo())
+        _vm?.Checkpoint($"{(removed ? "remove a keyframe of" : "add a keyframe to")} {param.Label}");
+        using (OwnLooks())
         {
             if (param.Bind == nameof(Layer.Opacity) && _layer is not null)
             {
@@ -857,8 +962,10 @@ public partial class EffectsPane : UserControl
     /// <summary>Whether an effect can go on the target: the whole picture takes the Look effects; a clip what its kind allows, and a bound effect once.</summary>
     private bool Fits(EffectDefinition definition, bool ignorePresent = false)
     {
-        if (definition.Pinned || _stack is null)
+        if (_stack is null)
             return false;
+        if (definition.Pinned)
+            return PinnedFits(definition);
         return _layer is null ? definition.ForWholePicture : _layer.CanTake(definition, ignorePresent);
     }
 
@@ -868,10 +975,16 @@ public partial class EffectsPane : UserControl
             return;
 
         CloseAdd();
+        if (definition.Pinned)
+        {
+            AddPinned(definition);
+            return;
+        }
+
         if (_layer is null)
         {
             _vm.Checkpoint($"add {definition.Name}");
-            using (Layer.Echo())
+            using (OwnLooks())
             {
                 var card = definition.NewEffect();
                 _stack.Insert(Layer.InsertionIndex(_stack, card), card);
@@ -893,7 +1006,7 @@ public partial class EffectsPane : UserControl
             return;
 
         _vm.Checkpoint($"remove {card.Title}");
-        using (Layer.Echo())
+        using (OwnLooks())
         {
             if (_layer is not null)
                 _layer.RemoveEffect(card);
@@ -919,7 +1032,7 @@ public partial class EffectsPane : UserControl
         }
 
         _vm.Checkpoint("reorder the effects");
-        using (Layer.Echo())
+        using (OwnLooks())
         {
             for (var i = 0; i < order.Count; i++)
             {
@@ -939,7 +1052,7 @@ public partial class EffectsPane : UserControl
 
         var on = BypassButton.IsChecked == true;
         _vm.Checkpoint(on ? "bypass the effects" : "bring the effects back");
-        using (Layer.Echo())
+        using (OwnLooks())
         {
             if (_layer is not null)
                 _layer.EffectsBypassed = on;
@@ -961,7 +1074,8 @@ public partial class EffectsPane : UserControl
         }
 
         var has = _stack is { Count: > 0 };
-        var canPaste = _clipboard is { Count: > 0 } && _stack is not null;
+        // (5.6A review: a sound clip takes none of a stack's cards, which are pictures' effects.)
+        var canPaste = _clipboard is { Count: > 0 } && _stack is not null && _layer is not { IsAudio: true };
         Item("Copy Effects", "Copies every effect of this stack, with its values, to paste onto another clip or the Sequence Output.", has, CopyStack);
         Item("Paste Effects", "Replaces this clip's stack with the effects copied. Hold Shift while clicking (or tick Apply Paste to All Clips on Track) to give every clip on this track the copied stack.",
             canPaste, () => PasteEffects(_pasteToTrack || Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)));
@@ -1003,7 +1117,7 @@ public partial class EffectsPane : UserControl
     /// <summary>Paste Effects (4.1.1-B, Paste Stack and Paste to Track in one): the copied stack replaces the clip's, or every clip's on its track.</summary>
     private void PasteEffects(bool toTrack)
     {
-        if (_clipboard is null || _vm is null)
+        if (_clipboard is null || _vm is null || _layer is { IsAudio: true })
             return;
 
         // Clips selected together (Ctrl / Shift on the timeline): every one of them, one undo step.
@@ -1026,7 +1140,7 @@ public partial class EffectsPane : UserControl
     /// <summary>Paste Some Effects... (4.1.1-B; named so in 4.4): the copied effects ticked in a list are added to the clip, or to every clip on its track.</summary>
     private void PasteSelected()
     {
-        if (_clipboard is null || _vm is null || _stack is null)
+        if (_clipboard is null || _vm is null || _stack is null || _layer is { IsAudio: true })
             return;
 
         var owner = Window.GetWindow(this) ?? Application.Current.MainWindow;
@@ -1058,7 +1172,7 @@ public partial class EffectsPane : UserControl
         if (_stack is null)
             return;
 
-        using (Layer.Echo())
+        using (OwnLooks())
         {
             var keep = append ? _stack.ToList() : [];
             var cards = new List<EffectInstance>(keep);
@@ -1115,7 +1229,7 @@ public partial class EffectsPane : UserControl
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             if (_vm is not null)
-                _vm.StatusText = $"The effect preset could not be saved: {ex.Message}";
+                _vm.Fail($"The effect preset could not be saved: {ex.Message}", "Save an effect preset", ex);
         }
     }
 
@@ -1131,7 +1245,7 @@ public partial class EffectsPane : UserControl
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
             if (_vm is not null)
-                _vm.StatusText = $"The effect preset could not be read: {ex.Message}";
+                _vm.Fail($"The effect preset could not be read: {ex.Message}", "Read an effect preset", ex);
         }
     }
 
@@ -1141,7 +1255,7 @@ public partial class EffectsPane : UserControl
             return;
 
         _vm.Checkpoint("reset the effects");
-        using (Layer.Echo())
+        using (OwnLooks())
         {
             foreach (var card in _stack.ToList())
             {
@@ -1377,7 +1491,7 @@ public partial class EffectsPane : UserControl
             set => pane.WriteText(this, value ?? "");
         }
 
-        public string Diamond => Keys.Any(k => Math.Abs(k.Time - Math.Max(pane.ClipTime, 0)) < 0.02) ? "◆" : "◇";
+        public string Diamond => KeyEdit.HasKeyAt(Keys, Math.Max(pane.ClipTime, 0)) ? "◆" : "◇";
 
         public Visibility DiamondVisibility => Animated ? Visibility.Visible : Visibility.Collapsed;
 

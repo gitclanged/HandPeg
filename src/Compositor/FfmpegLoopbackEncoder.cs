@@ -250,6 +250,7 @@ internal sealed unsafe class FfmpegLoopbackEncoder : ILoopbackEncoder
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or InvalidOperationException)
         {
+            AppLog.Write($"Live Encoded Preview: {Name} failed", ex);
             return (null, time, ex.Message);
         }
     }

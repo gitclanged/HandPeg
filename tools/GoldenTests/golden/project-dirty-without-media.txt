@@ -1,0 +1,5 @@
+# Unsaved changes in a project with no media file: its last clip deleted, a new project's first clip.
+ok: a project of one text clip and no media file, just saved and touched: no unsaved changes
+ok: its last clip deleted: unsaved changes (the deletion is saved on close, and recovery keeps its copy)
+ok: a new project set up and touched, nothing in it: no unsaved changes
+ok: its first clip added: unsaved changes, before it was ever saved

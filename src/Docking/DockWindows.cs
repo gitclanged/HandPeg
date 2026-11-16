@@ -5,6 +5,9 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Shell;
+using HandPegApp.Shell;
+using HandPegApp.Native;
+using static HandPegApp.Native.User32;
 
 namespace HandPegApp.Docking;
 
@@ -16,16 +19,6 @@ public sealed partial class DockGuide : Window
 {
     private const int GwlExStyle = -20, WsExTransparent = 0x20, WsExNoActivate = 0x08000000, WsExToolWindow = 0x80;
     private const uint SwpNoZOrder = 0x4, SwpNoActivate = 0x10, SwpShowWindow = 0x40;
-
-    [LibraryImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
-    private static partial IntPtr GetWindowLongPtr(IntPtr window, int index);
-
-    [LibraryImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
-    private static partial IntPtr SetWindowLongPtr(IntPtr window, int index, IntPtr value);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
 
     private readonly TextBlock _label = new() { Foreground = Brushes.White, FontWeight = FontWeights.SemiBold, Margin = new Thickness(10, 6, 10, 6), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
     private readonly Border _shape, _words;
@@ -90,7 +83,7 @@ public sealed partial class DockGuide : Window
 /// Preview (a mirror of the player's picture, fitted at the canvas's shape: MainWindow.SyncMirrors and GpuPreviewEngine.AttachMirror),
 /// or a Pane Docker holding any panes dragged to it, arranged as freely as in the main window. Keys, files dropped and the save
 /// shortcuts are the main window's, as if it had them (MainWindow.HookSideWindow).
-/// <para>Its frame is HandPeg's own (5.4C): WindowChrome and the main window's frame hook (MainWindow.FrameHook), a dark 26 DIP title
+/// <para>Its frame is HandPeg's own (5.4C): WindowChrome and the main window's frame hook (WindowFrame.FrameHook), a dark 26 DIP title
 /// bar (its number, the mode, Minimize, Maximize and Close in the caption buttons' styles), kept inside its monitor while maximized as
 /// the Settings screen is (ApplyFrame). F11, or a double-click on the picture, makes it cover its whole monitor (Escape or F11 again
 /// gives it back). Its place is kept as Windows keeps it (Get/SetWindowPlacement: pixels of the monitor it was on, whatever that one's
@@ -123,9 +116,9 @@ public sealed partial class SideWindow : Window
     private readonly TextBlock _title = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 8, 0), FontSize = 12 };
     private readonly TextBlock _status = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 8, 0), FontSize = 11.5, TextTrimming = TextTrimming.CharacterEllipsis };
     private readonly ComboBox _mode = new() { Width = 150, Height = 20, FontSize = 11.5, Padding = new Thickness(6, 1, 4, 1), VerticalAlignment = VerticalAlignment.Center, Focusable = false };
-    private readonly Button _minimize = new() { Content = "", ToolTip = "Minimize" };
-    private readonly Button _maximize = new() { Content = "", ToolTip = "Maximize" };
-    private readonly Button _close = new() { Content = "", ToolTip = "Close (a Pane Docker's panes go back to the main window)" };
+    private readonly Button _minimize = new() { Content = Glyphs.ChromeMinimize, ToolTip = "Minimize" };
+    private readonly Button _maximize = new() { Content = Glyphs.ChromeMaximize, ToolTip = "Maximize" };
+    private readonly Button _close = new() { Content = Glyphs.ChromeClose, ToolTip = "Close (a Pane Docker's panes go back to the main window)" };
 
     private VideoSurface? _surface;
     private SideWindowMode _shown;
@@ -189,7 +182,7 @@ public sealed partial class SideWindow : Window
         {
             Services.ThemeManager.SetCloaked(this, true);
             var source = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);
-            source?.AddHook(MainWindow.FrameHook);
+            source?.AddHook(WindowFrame.FrameHook);
 
             // A taskbar set to hide itself or not to (the working area changes): inset again for where it is now.
             source?.AddHook((IntPtr _, int message, IntPtr wParam, IntPtr _, ref bool _) =>
@@ -408,7 +401,7 @@ public sealed partial class SideWindow : Window
     /// <summary>A short word in the title bar beside the mode (the player hidden: its last picture is kept); null for none.</summary>
     public void SetStatus(string? status) => _status.Text = status ?? "";
 
-    // ----- The frame (WindowChrome, MainWindow.FrameHook) -----
+    // ----- The frame (WindowChrome, WindowFrame.FrameHook) -----
 
     // Maximized, a window that draws its own frame reaches past the screen's edges by its frame: its content is kept inside (as the
     // Settings screen's, SettingsWindow.Stage.cs); Windows 11 squares its corners then, and rounds them again restored.
@@ -418,10 +411,10 @@ public sealed partial class SideWindow : Window
     {
         var maximized = WindowState == WindowState.Maximized;
         if (maximized && !_fullScreen)
-            MainWindow.KeepClearOfHiddenTaskbarNow(new WindowInteropHelper(this).Handle, placeLater);
+            WindowFrame.KeepClearOfHiddenTaskbarNow(new WindowInteropHelper(this).Handle, placeLater);
         Services.ThemeManager.ApplyCorners(this);
-        _root.Margin = maximized && !_fullScreen ? MainWindow.MaximizedFrameInset(this) : new Thickness(0);
-        _maximize.Content = maximized ? "" : "";
+        _root.Margin = maximized && !_fullScreen ? WindowFrame.MaximizedFrameInset(this) : new Thickness(0);
+        _maximize.Content = maximized ? Glyphs.ChromeRestore : Glyphs.ChromeMaximize;
         _maximize.ToolTip = maximized ? "Restore Down" : "Maximize";
         System.Windows.Automation.AutomationProperties.SetName(_maximize, maximized ? "Restore" : "Maximize");
     }
@@ -431,54 +424,12 @@ public sealed partial class SideWindow : Window
     private const int SwHide = 0, SwShowNormal = 1, SwShowMaximized = 3;
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct NativeRect
-    {
-        public int Left, Top, Right, Bottom;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct NativePoint
-    {
-        public int X, Y;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MonitorInfo
-    {
-        public int Size;
-        public NativeRect Monitor, Work;
-        public uint Flags;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
     private struct WindowPlacement
     {
         public int Length, Flags, ShowCmd;
         public NativePoint MinPosition, MaxPosition;
         public NativeRect NormalPosition;
     }
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GetCursorPos(out NativePoint point);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GetWindowRect(IntPtr window, out NativeRect rect);
-
-    [LibraryImport("user32.dll")]
-    private static partial IntPtr MonitorFromRect(in NativeRect rect, uint flags);
-
-    [LibraryImport("user32.dll")]
-    private static partial IntPtr MonitorFromWindow(IntPtr window, uint flags);
-
-    [LibraryImport("user32.dll", EntryPoint = "GetMonitorInfoW")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
 
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]

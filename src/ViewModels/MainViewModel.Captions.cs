@@ -302,7 +302,9 @@ public partial class MainViewModel
     private CancellationTokenSource? _liveCaptionsWait;
 
     /// <summary>Makes the previewed captions again once the caption box has stopped being moved, resized or restyled.</summary>
-    private async void RefreshLiveCaptionsSoon()
+    private void RefreshLiveCaptionsSoon() => Faults.Forget(RefreshLiveCaptionsSoonAsync(), nameof(RefreshLiveCaptionsSoon));
+
+    private async Task RefreshLiveCaptionsSoonAsync()
     {
         _liveCaptionsWait?.Cancel();
         var wait = _liveCaptionsWait = new CancellationTokenSource();
@@ -373,7 +375,7 @@ public partial class MainViewModel
             return problem;
 
         _generatedCaptions = CaptionProjection.ProjectLines(words, CaptionSpans(source), CaptionStyle);
-        TimelineChanged?.Invoke();
+        RaiseTimelineChanged();
         return null;
     }
 
@@ -960,22 +962,22 @@ public partial class MainViewModel
         if (_loadingAutomation || _isBackgroundWorker)
             return;
 
-        var settings = AppSettings.Current;
-        settings.SmartRules = SmartRules
+        var rules = SmartRules
             .Where(r => !string.IsNullOrWhiteSpace(r.Path) && PresetNames.Contains(r.Preset))
             .Select(r => new SmartRule { Type = SmartRule.Types.Contains(r.Type) ? r.Type : SmartRule.Folder, Path = r.Path.Trim(), Preset = r.Preset })
             .ToList();
-        settings.DefaultPreset = DefaultPresetChoice is { } choice && choice != NoPreset ? choice : "";
+        var defaultPreset = DefaultPresetChoice is { } choice && choice != NoPreset ? choice : "";
 
         try
         {
-            settings.SaveAsCurrent();
+            AppSettings.Update(current => (current.SmartRules, current.DefaultPreset) = (rules, defaultPreset), saveNow: true);
+            var settings = AppSettings.Current;
             StatusText = $"Automation saved: {settings.SmartRules.Count} rule{(settings.SmartRules.Count == 1 ? "" : "s")}"
                          + (settings.DefaultPreset.Length > 0 ? $", default preset \"{settings.DefaultPreset}\"." : ", no default preset.");
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            StatusText = $"Could not write {AppSettings.FilePath}: {ex.Message}";
+            Fail($"Could not write {AppSettings.FilePath}: {ex.Message}", "Save the automation rules", ex);
         }
     }
 }

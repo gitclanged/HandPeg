@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Media;
 using System.Windows.Threading;
 using HandPegApp.Services;
+using static HandPegApp.UiBrushes;
 
 namespace HandPegApp;
 
@@ -31,8 +32,8 @@ public sealed partial class UnifiedTimelineControl
 
     // Segoe MDL2 Assets: ChevronRight (E76C), ChevronDown (E70D), View (E890), Hide (ED1A), Volume (E767), Mute (E74F),
     // Microphone (E720), Lock (E72E), Unlock (E785); Switch (E8AB) for the Hide pill's two arrows.
-    private const string ChevronRight = "", ChevronDown = "";
-    private const string SwitchGlyphText = "";
+    private const string ChevronRight = Glyphs.ChevronRight, ChevronDown = Glyphs.ChevronDown;
+    private const string SwitchGlyphText = Glyphs.Switch;
 
     // How far a header's second chevron (its sound's stack, beside its layers') is from its first.
     private const double ChevronStep = 16;

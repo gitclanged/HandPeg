@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -24,13 +25,12 @@ public partial class TrackAudioFiltersDialog : Window
         InitializeComponent();
         SourceInitialized += (_, _) => Services.ThemeManager.ApplyTitleBar(this);
 
-        // Ctrl+Z and Ctrl+Y take back and redo what is changed here, a press at a time (4.3E).
-        _ = new BoundUndo(this);
+        // Ctrl+Z and Ctrl+Y take back and redo what is changed here, a press at a time, as whole snapshots of the filters: Reset (a new set)
+        // and the mix keys (a list no control is bound to) are steps like any slider.
+        History = new SnapshotUndo<TrackAudioFilters>(this, () => Filters!.Clone(), ShowFilters, state => JsonSerializer.Serialize(state));
         TrackText.Text = heading;
         _keyTime = keyTime is { } at && double.IsFinite(at) ? Math.Max(at, 0) : null;
-        DataContext = Filters = filters.Clone();
-        EqCurve.Filters = Filters;
-        UpdateMixKeys();
+        ShowFilters(filters);
 
         // The curve follows every value it is drawn from (the sliders, the high-pass and the shelves, their switches, Ctrl+Z): it is made again
         // at the next render, once the bindings have handed the values on.
@@ -41,15 +41,24 @@ public partial class TrackAudioFiltersDialog : Window
     }
 
     /// <summary>The filters as edited. Only meaningful once the dialog has been confirmed.</summary>
-    public TrackAudioFilters Filters { get; private set; }
+    public TrackAudioFilters Filters { get; private set; } = null!;
 
-    // A fresh set, keeping only whether the advanced part is showing.
-    private void Reset_Click(object sender, RoutedEventArgs e)
+    /// <summary>The dialog's own Undo over the filters.</summary>
+    internal SnapshotUndo<TrackAudioFilters> History { get; }
+
+    // Shows a copy of a set of filters: every control and the curve rebound to it, the mix keys' line told again.
+    private void ShowFilters(TrackAudioFilters filters)
     {
-        DataContext = Filters = new TrackAudioFilters { ShowAdvanced = Filters.ShowAdvanced };
+        DataContext = Filters = filters.Clone();
         EqCurve.Filters = Filters;
         UpdateMixKeys();
+        EqCurve.Refresh();
     }
+
+    private void Reset_Click(object sender, RoutedEventArgs e) => ResetFilters();
+
+    /// <summary>A fresh set, keeping only whether the advanced part is showing.</summary>
+    internal void ResetFilters() => ShowFilters(new TrackAudioFilters { ShowAdvanced = Filters.ShowAdvanced });
 
     private void Ok_Click(object sender, RoutedEventArgs e) => DialogResult = true;
 
@@ -65,16 +74,16 @@ public partial class TrackAudioFiltersDialog : Window
 
     // ----- Studio Voice's mix keys (5.2B) -----
 
-    private void AddMixKey_Click(object sender, RoutedEventArgs e)
+    private void AddMixKey_Click(object sender, RoutedEventArgs e) => AddMixKey();
+
+    /// <summary>A mix key at the playhead, with the mix as it is set now (one key a moment).</summary>
+    internal void AddMixKey()
     {
         if (_keyTime is not { } at)
             return;
 
         // One key a moment: a key already there takes the mix as it is set now.
-        var keys = Filters.StudioVoiceMixKeys ??= [];
-        keys.RemoveAll(k => Math.Abs(k.Time - at) < 0.001);
-        keys.Add(new Keyframe(at, Math.Clamp(Filters.StudioVoiceMix, 0, 100), EasingType.Linear));
-        keys.Sort((a, b) => a.Time.CompareTo(b.Time));
+        Filters.PutMixKey(at);
         UpdateMixKeys();
     }
 

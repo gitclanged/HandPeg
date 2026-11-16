@@ -125,6 +125,15 @@ public interface ITimelineTransaction : IDisposable
     /// </summary>
     void DeleteClip(TimelineClip clip, bool withChildren = true);
 
+    /// <summary>
+    /// Takes the stretch of <paramref name="clip"/> between <paramref name="from"/> and <paramref name="to"/> (sequence seconds) off
+    /// its track as one edit: a cut at each end that lies more than <see cref="TimelineDocument.MinimumClipSeconds"/> inside the clip
+    /// (an end nearer its edge takes the stretch to that edge), then the piece between lifted out with its children. Returns the
+    /// length removed. When either cut is refused (too near another cut, the shortest clip at this frame rate, its sound's lead-in),
+    /// it throws <see cref="TimelineEditException"/> and nothing is changed: never one cut without the other.
+    /// </summary>
+    double DeleteStretchOf(TimelineClip clip, double from, double to);
+
     /// <summary>Takes a clip off its track and closes the gap it leaves. Returns how far the clips after it moved back.</summary>
     double RippleDelete(TimelineClip clip, bool rippleAllUnlockedTracks);
 
@@ -177,8 +186,28 @@ public interface ITimelineTransaction : IDisposable
     /// </summary>
     void SetProjectSettings(ProjectColorSpace colorSpace, ProjectPixelAspect pixelAspect, int sampleRate);
 
+    /// <summary>The Sequence's markers, replaced by a copy of <paramref name="markers"/>. Committed on its own, like the master gain.</summary>
+    void SetMarkers(IReadOnlyList<TimelineMarker> markers);
+
+    /// <summary>The Sequence Output's effect stack (a copy of the list; the states shared) and whether it is bypassed.</summary>
+    void SetSequenceEffects(IReadOnlyList<EffectState> effects, bool bypassed);
+
     /// <summary>
-    /// Puts files into Project Media (5.4C, <see cref="TimelineDocument.MediaPool"/>), each once (compared without case), at the end, in
+    /// The Sequence's natural frame (its landscape width and height before any turn to tall) and whether it was chosen on purpose (kept by
+    /// the first file opened onto an empty Sequence, <see cref="TimelineDocument.ExplicitFrame"/>).
+    /// </summary>
+    void SetFrame(int naturalWidth, int naturalHeight, bool explicitFrame);
+
+    /// <summary>
+    /// The Sequence's frame rate and whether it was chosen on purpose (<see cref="TimelineDocument.ExplicitFrameRate"/>); refused
+    /// (<see cref="TimelineEditException"/>) when not positive. Clips are not requantized: whether any may stay on the old rate's frames
+    /// is the caller's rule (Project Settings refuses a rate change once the Sequence has clips; a file opened over the last file's clips
+    /// replaces them in the same open).
+    /// </summary>
+    void SetFrameRate(FrameRate rate, bool explicitRate);
+
+    /// <summary>
+    /// Puts files into Project Media (5.4.0, <see cref="TimelineDocument.MediaPool"/>), each once (compared without case), at the end, in
     /// the order given; an empty path or a web address is left out. Like the master gain, a change of it alone still raises
     /// <see cref="TimelineDocument.Committed"/>. False when every one was there already.
     /// </summary>
@@ -191,9 +220,11 @@ public interface ITimelineTransaction : IDisposable
     /// How fast a clip that plays its file runs (<see cref="Layer.SlowestSpeed"/> to <see cref="Layer.FastestSpeed"/>):
     /// it plays the same stretch of its file, so its end moves; the clips after it on its track that it would run into
     /// move on as far as it grew; its keyframes, its effects' keyframes and ranges and its J/L cut are scaled with it.
+    /// With <paramref name="ripple"/> (5.6.0), everything after its old end moves by as much as it grew or shrank, on every
+    /// unlocked track (<paramref name="rippleAll"/>) or on its own and the Sub-Lanes under it, as a ripple trim moves it.
     /// Returns the speed set (the one it had, for a clip that does not play a file).
     /// </summary>
-    double SetClipSpeed(TimelineClip clip, double speed, bool freeUnquantized = false);
+    double SetClipSpeed(TimelineClip clip, double speed, bool freeUnquantized = false, bool ripple = false, bool rippleAll = true);
 
     /// <summary>Whether its sound moves and trims with its picture, and how far it is slipped while it does not (seconds, later when positive; not on frames).</summary>
     void SetAudioLink(TimelineClip clip, bool linked, double slipSeconds);
@@ -391,6 +422,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
             (_doc.ColorSpace, _doc.PixelAspect, _doc.SampleRate) = settings;
         if (_mediaPoolBefore is { } pool)
             _doc.MediaPool = pool;
+        RestoreDocumentFields();
         Close();
     }
 
@@ -398,6 +430,8 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
     {
         _closed = true;
         _doc.OpenTransactions.Remove(this);
+        if (_doc.OpenTransactions.Count == 0)
+            _doc.InvalidateClipIndex(); // the outermost change is over (committed or rolled back): its clips moved, split or changed ids
     }
 
     private void EnsureInnermost()
@@ -773,6 +807,18 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
 
     public void DeleteClip(TimelineClip clip, bool withChildren = true) => Step(() => Lift(clip, family: withChildren));
 
+    public double DeleteStretchOf(TimelineClip clip, double from, double to) => Step(() =>
+    {
+        var piece = clip;
+        if (to < piece.End - TimelineDocument.MinimumClipSeconds)
+            Split(piece, to, free: false);
+        if (from > piece.Start + TimelineDocument.MinimumClipSeconds)
+            piece = Split(piece, from, free: false);
+        var removed = piece.Duration;
+        Lift(piece, family: true);
+        return removed;
+    });
+
     public double RippleDelete(TimelineClip clip, bool rippleAllUnlockedTracks) =>
         Step(() => LiftRippling(clip, rippleAllUnlockedTracks));
 
@@ -858,7 +904,8 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
         return true;
     });
 
-    public double SetClipSpeed(TimelineClip clip, double speed, bool freeUnquantized = false) => Step(() => Respeed(clip, speed, freeUnquantized));
+    public double SetClipSpeed(TimelineClip clip, double speed, bool freeUnquantized = false, bool ripple = false, bool rippleAll = true) =>
+        Step(() => ripple ? RespeedRippling(clip, speed, freeUnquantized, rippleAll) : Respeed(clip, speed, freeUnquantized));
 
     public void SetAudioLink(TimelineClip clip, bool linked, double slipSeconds) => Step(() => Change(clip, c =>
     {

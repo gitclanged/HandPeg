@@ -83,6 +83,7 @@ internal sealed partial class DecoderPool
             {
                 // A file that fails part way (a broken stream): its decoder goes; the source is tried again from scratch,
                 // that stretch of it only after three seconds.
+                AppLog.WriteOnce($"decode|{demand.Source.Path}|{ex.HResult}", $"Decode: {Path.GetFileName(demand.Source.Path)} failed", ex);
                 LastError = $"{Path.GetFileName(demand.Source.Path)}: {ex.Message}";
                 (demand.Source.FailedAt, demand.Source.FailedUntil) = (demand.Target, Stopwatch.GetTimestamp() + 3 * Stopwatch.Frequency);
                 lock (_gate)
@@ -223,7 +224,7 @@ internal sealed partial class DecoderPool
             // moment is within CutSoon (5.4.3, the XPS 13's Overwatch freeze: five layers of one file, a lookahead decoder sought
             // at every one-second key frame, and the Adreno's decoder lock held up the playing one for 40-100 ms each time).
             if (_lastWasPlaying && demand.Kind is DemandKind.PreRoll or DemandKind.Hover or DemandKind.Hinted &&
-                !(demand.At - _lastPlayhead <= CutSoon) && PlaybackReads(demand.Source))
+                !(demand.At - _lastPlayhead <= CutReadAhead(_gpu.UnifiedMemory, Volatile.Read(ref _playRate))) && PlaybackReads(demand.Source))
                 continue;
 
             // The pre-roll and the pointer's work wait while a frame on screen is being chased (and, paused, the cuts'): the
@@ -700,8 +701,7 @@ internal sealed partial class DecoderPool
             Interlocked.Increment(ref _decoded);
             if (demand.Kind == DemandKind.Visible && until > target - 1e-6 && time <= target + 1e-6 || _waitingExact > 0 || ShownSoon(source, time, until))
                 _arrived.Set();
-            if (Paced(demand, decoder))
-                WaitForNextDraw();
+            Pace(demand, decoder);
 
             // Past the target without a frame that covers it (FrameCache.CloseGap already joined frames read in a row):
             // - a seek that landed after it (a container's coarse index, an open GOP whose first pictures the decoder
@@ -709,7 +709,7 @@ internal sealed partial class DecoderPool
             // - else a frame or two the decoder dropped: the frame after stands for the moment;
             // - else a hole in the stream: the moment is missing (shown with the nearest frame; an export fails on it and
             //   is made by FFmpeg) and is not decoded for again for a while. Never a key frame stretched over frames
-            //   nothing decoded (5.0-Verify: the user's export held each key frame).
+            // nothing decoded (an export held each key frame).
             if (!double.IsNaN(time) && time > target + 1e-6 && !demand.Stretch && !_cache.Has(source.Serial, target))
             {
                 if (decoder.LastWasLanding && lateTries < 3)

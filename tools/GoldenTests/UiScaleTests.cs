@@ -26,26 +26,22 @@ public static class UiScaleTests
         yield return Case("ui-scale-popups", "# A window on this PC's monitor at HandPeg's scale, and every kind of popup over it (5.2: drawn at the window's scale, placed unmirrored).", Popups);
     }
 
+    // The shared case with the UI-scale settings each case changes put back after it.
     private static GraphResult Case(string golden, string header, Action<StringBuilder, List<string>> body)
     {
-        var text = new StringBuilder(header).Append('\n');
-        var problems = new List<string>();
+        if (!GoldenFilter.Wanted(golden))
+            return Skipped(golden);
+
         var settings = AppSettings.Current;
         var (follow, percent) = (settings.FollowWindowsDpiScaling, settings.UiScalePercent);
         try
         {
-            body(text, problems);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
+            return GoldenKit.Case(golden, header, body);
         }
         finally
         {
             (settings.FollowWindowsDpiScaling, settings.UiScalePercent) = (follow, percent);
         }
-
-        return new GraphResult(golden, text.ToString(), problems, 0);
     }
 
     private static void Line(StringBuilder text, FormattableString line) => text.Append(line.ToString(CultureInfo.InvariantCulture)).Append('\n');

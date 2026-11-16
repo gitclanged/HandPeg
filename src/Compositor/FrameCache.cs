@@ -401,19 +401,38 @@ internal sealed unsafe class FrameCache : IDisposable
         }
 
         var frame = new CachedFrame { Width = width, Height = height, TenBit = tenBit, Software = software };
-        if (!software)
+        try
         {
-            frame.Planar = _gpu.CreateTexture(width, height, tenBit ? DxgiFormat.P010 : DxgiFormat.Nv12, renderTarget: false);
-            var luma = new ShaderResourceViewDesc { Format = tenBit ? DxgiFormat.R16Unorm : DxgiFormat.R8Unorm, ViewDimension = D3D11.SrvTexture2D, U0 = 0, U1 = 1 };
-            var chroma = new ShaderResourceViewDesc { Format = tenBit ? DxgiFormat.R16G16Unorm : DxgiFormat.R8G8Unorm, ViewDimension = D3D11.SrvTexture2D, U0 = 0, U1 = 1 };
-            frame.LumaSrv = _gpu.Device.CreateShaderResourceView(frame.Planar.Texture, &luma);
-            frame.ChromaSrv = _gpu.Device.CreateShaderResourceView(frame.Planar.Texture, &chroma);
+            if (!software)
+            {
+                frame.Planar = _gpu.CreateTexture(width, height, tenBit ? DxgiFormat.P010 : DxgiFormat.Nv12, renderTarget: false);
+                var luma = new ShaderResourceViewDesc { Format = tenBit ? DxgiFormat.R16Unorm : DxgiFormat.R8Unorm, ViewDimension = D3D11.SrvTexture2D, U0 = 0, U1 = 1 };
+                var chroma = new ShaderResourceViewDesc { Format = tenBit ? DxgiFormat.R16G16Unorm : DxgiFormat.R8G8Unorm, ViewDimension = D3D11.SrvTexture2D, U0 = 0, U1 = 1 };
+                frame.LumaSrv = _gpu.Device.CreateShaderResourceView(frame.Planar.Texture, &luma);
+                frame.ChromaSrv = _gpu.Device.CreateShaderResourceView(frame.Planar.Texture, &chroma);
+            }
+            else
+            {
+                frame.Luma = _gpu.CreateTexture(width, height, tenBit ? DxgiFormat.R16Unorm : DxgiFormat.R8Unorm, renderTarget: false);
+                frame.Chroma = _gpu.CreateTexture(width / 2, height / 2, tenBit ? DxgiFormat.R16G16Unorm : DxgiFormat.R8G8Unorm, renderTarget: false);
+                (frame.LumaSrv, frame.ChromaSrv) = (frame.Luma.Srv, frame.Chroma.Srv);
+            }
         }
-        else
+        catch
         {
-            frame.Luma = _gpu.CreateTexture(width, height, tenBit ? DxgiFormat.R16Unorm : DxgiFormat.R8Unorm, renderTarget: false);
-            frame.Chroma = _gpu.CreateTexture(width / 2, height / 2, tenBit ? DxgiFormat.R16G16Unorm : DxgiFormat.R8G8Unorm, renderTarget: false);
-            (frame.LumaSrv, frame.ChromaSrv) = (frame.Luma.Srv, frame.Chroma.Srv);
+            if (!software)
+            {
+                Com.Release(ref frame.ChromaSrv);
+                Com.Release(ref frame.LumaSrv);
+                frame.Planar?.Dispose();
+            }
+            else
+            {
+                frame.Chroma?.Dispose();
+                frame.Luma?.Dispose();
+            }
+
+            throw;
         }
 
         frame.Bytes = (long)width * height * 3 / 2 * (tenBit ? 2 : 1);
@@ -835,23 +854,6 @@ internal sealed unsafe class FrameCache : IDisposable
         }
 
         return false;
-    }
-
-    /// <summary>The time of the last frame of a source at or before <paramref name="seconds"/> that is a key frame, NaN if none is known.</summary>
-    public double KeyFrameAtOrBefore(int source, double seconds)
-    {
-        lock (_gate)
-        {
-            if (!_bySource.TryGetValue(source, out var list))
-                return double.NaN;
-            for (var i = IndexAtOrBefore(list, seconds + 1e-6); i >= 0; i--)
-            {
-                if (list[i].KeyFrame)
-                    return list[i].Time;
-            }
-
-            return double.NaN;
-        }
     }
 
     /// <summary>Whether every frame from <paramref name="from"/> to <paramref name="to"/> is there (an ambient window decoded).</summary>

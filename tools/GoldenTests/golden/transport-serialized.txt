@@ -1,0 +1,6 @@
+# Play, Pause, Seek, the priming hand-off and the end of the sequence change the transport under one lock.
+ok: Seek, Play, Pause, the end of the sequence and the priming hand-off each change the transport under _transport
+ok: no file I/O under the lock: the play session's log line is written after it
+ok: the pump's end of sequence yields to a Seek, Play or Pause made after it measured the end (no stale Ended)
+ok: the sound engine's seek is one 8-byte value published before the serial's fence (the two-writer seqlock is gone)
+ok: a queued Ended does nothing when Play was pressed again before it ran

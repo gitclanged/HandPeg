@@ -1,3 +1,4 @@
+using HandPegApp.Models;
 using HandPegApp.Services.Gpu;
 using HandPegApp.ViewModels;
 

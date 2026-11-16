@@ -1,0 +1,6 @@
+# The loupe's edge declared on each control (NumericInput.EdgeKind); drags exempt from holding the boxes declared too (DragHold.Exempt).
+ok: a slider that declares its edge says when it is held and let go; one that declares none says nothing
+ok: DragHold.Exempt is inherited by the thumbs under the element that sets it
+ok: the window listens to the declared edges only: no class handler on every slider, no binding-path reflection, no seek-bar identity test
+ok: the 9 edge sliders of Layer Properties and the mask tools and their 9 value boxes declare their edge
+ok: every scroll bar (its style) and the seek bar are exempt

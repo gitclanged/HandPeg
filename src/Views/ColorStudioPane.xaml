@@ -1,0 +1,11 @@
+<UserControl x:Class="HandPegApp.Views.ColorStudioPane"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             AutomationProperties.Name="Color Studio">
+    <!--
+        The Color tab (Pass 5.6A): the Color Grade of the Effects pane's target (a clip, the blur fill or the Sequence Output). Light
+        to make (it is realized at idle with the other tabs): the header, the wheels, the curves and the rest are built in code
+        (ColorStudioPane.xaml.cs) the first time the tab is shown, and nothing is captured until then.
+    -->
+    <DockPanel x:Name="Root" />
+</UserControl>

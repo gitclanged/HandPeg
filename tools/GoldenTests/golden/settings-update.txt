@@ -1,0 +1,4 @@
+# AppSettings.Update from many threads at once, one debounced write, and UpdateIf that changes nothing.
+ok: 8 threads x 250 in-place increments through Update: none lost (2000)
+ok: the debounced write, flushed, holds the final value
+ok: UpdateIf and Set that change nothing raise no Changed and schedule no write; a real change raises one

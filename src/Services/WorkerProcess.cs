@@ -4,6 +4,8 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
+using HandPegApp.Native;
+using static HandPegApp.Native.Kernel32;
 
 namespace HandPegApp.Services;
 
@@ -41,7 +43,7 @@ internal sealed partial class WorkerProcess : IDisposable
 
     public bool HasExited => WaitForSingleObject(_process, 0) == 0;
 
-    public int ExitCode => GetExitCodeProcess(_process, out var code) ? code : -1;
+    public int ExitCode => GetExitCodeProcess(_process, out var code) ? (int)code : -1;
 
     /// <summary>
     /// Starts the program with these arguments (already quoted where needed). With <paramref name="readOutput"/>, its
@@ -90,12 +92,25 @@ internal sealed partial class WorkerProcess : IDisposable
             fixed (char* directory = Environment.SystemDirectory)
             {
                 var flags = CreateNoWindow | CreateSuspended | (readOutput ? ExtendedStartupInfoPresent : 0u);
-                if (!CreateProcessW(null, command, 0, 0, inherit, flags, 0, directory, &startup, &started))
+                if (!CreateProcess(null, command, 0, 0, inherit, flags, 0, directory, (StartupInfo*)&startup, &started))
                     throw new Win32Exception(Marshal.GetLastPInvokeError());
             }
 
-            // Into the job before it runs a single instruction, then on its way.
-            JobObjects.Assign(started.ProcessId, jobClass, efficiencyMode: false);
+            // Into the job before it runs a single instruction, then on its way. A compositor worker (the foreground class) outside the
+            // kill-on-close job would outlive a HandPeg crash holding a GPU device: one that cannot be put in is ended before it runs,
+            // and the start fails. A background-class worker (the hardware test) also waits on HandPeg, so it is only logged.
+            if (!JobObjects.Assign(started.ProcessId, jobClass, efficiencyMode: false))
+            {
+                AppLog.Write($"Worker process: {started.ProcessId} could not be put in its job ({jobClass})");
+                if (jobClass == ProcessClass.Foreground)
+                {
+                    using (var unjobbed = new SafeWaitHandle(started.Process, ownsHandle: true))
+                        _ = TerminateProcess(unjobbed, 1);
+                    _ = CloseHandle(started.Thread);
+                    throw new Win32Exception(Marshal.GetLastPInvokeError(), "The worker could not be put in HandPeg's job.");
+                }
+            }
+
             _ = ResumeThread(started.Thread);
             _ = CloseHandle(started.Thread);
 
@@ -186,27 +201,10 @@ internal sealed partial class WorkerProcess : IDisposable
     private const nuint ProcThreadAttributeHandleList = 0x00020002;
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct StartupInfo
-    {
-        public int Size;
-        public nint Reserved, Desktop, Title;
-        public int X, Y, Width, Height, CountChars, CountCharsY, FillAttribute, Flags;
-        public short ShowWindow, Reserved2;
-        public nint Reserved3, StdInput, StdOutput, StdError;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
     private struct StartupInfoEx
     {
         public StartupInfo StartupInfo;
         public nint AttributeList;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct ProcessInformation
-    {
-        public nint Process, Thread;
-        public int ProcessId, ThreadId;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -216,11 +214,6 @@ internal sealed partial class WorkerProcess : IDisposable
         public nint SecurityDescriptor;
         public int InheritHandle;
     }
-
-    [LibraryImport("kernel32.dll", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static unsafe partial bool CreateProcessW(string? application, char* commandLine, nint processAttributes, nint threadAttributes,
-        int inheritHandles, uint flags, nint environment, char* currentDirectory, StartupInfoEx* startup, ProcessInformation* information);
 
     [LibraryImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -244,18 +237,4 @@ internal sealed partial class WorkerProcess : IDisposable
     [LibraryImport("kernel32.dll")]
     private static partial uint ResumeThread(nint thread);
 
-    [LibraryImport("kernel32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool CloseHandle(nint handle);
-
-    [LibraryImport("kernel32.dll")]
-    private static partial uint WaitForSingleObject(SafeWaitHandle handle, uint milliseconds);
-
-    [LibraryImport("kernel32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GetExitCodeProcess(SafeWaitHandle process, out int exitCode);
-
-    [LibraryImport("kernel32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool TerminateProcess(SafeWaitHandle process, uint exitCode);
 }

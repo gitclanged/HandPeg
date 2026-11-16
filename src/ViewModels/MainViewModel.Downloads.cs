@@ -93,7 +93,7 @@ public partial class MainViewModel
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or OperationCanceledException)
         {
-            StatusText = $"The downloaded videos could not all be copied: {ex.Message}";
+            Fail($"The downloaded videos could not all be copied: {ex.Message}", "Copy the downloaded videos", ex);
             if (copies.Count == 0)
                 return;
         }
@@ -128,7 +128,7 @@ public partial class MainViewModel
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
         {
-            StatusText = $"The videos were copied, but the project could not be saved with them: {ex.Message}";
+            Fail($"The videos were copied, but the project could not be saved with them: {ex.Message}", "Save the project with its copied videos", ex);
         }
     }
 

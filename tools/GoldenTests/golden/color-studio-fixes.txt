@@ -1,0 +1,10 @@
+# Pass 5.6A's review fixes that need no window: the 3D view keeps graded planes, the export names a lost table, the loupe skips the Before half.
+ok: 3D view: a Color Grade (slot 30) does not vary with the clock (its plane kept while playing); Film Grain still does
+ok: export: [LUT 3D, Color Grade with a LUT and a curve, Curves]: the Color Grade's lost LUT and the dropped Curves both named (the Sequence Output's Color Grade LUT; the Sequence Output's second Curves)
+ok: loupe: the compare's Before half (its hard-edged wipe keeping the left) is passed over; the After half, a real wipe and an unsplit layer are not
+ok: Reload Player or a restart: the new engine gets the window's compare (StartGpuAsync's PlayerInputs, after SetView)
+ok: the Color Studio keeps no moved LUT and puts nothing back on a restore (no project or tab can get another's LUT)
+ok: boxes: an unfocused box follows; a focused one follows while unedited (an Undo after Enter), never over typed text
+ok: ...the value boxes and the LUT box both refresh through it (RefreshControls)
+ok: the Legacy Grade fold's Reset takes the sliders and the LUT, one step of Undo (Reset the legacy sliders and LUT)
+ok: microcopy: the Color tab's tooltip in 10 words; the Filters dialog says where a clip's color is graded

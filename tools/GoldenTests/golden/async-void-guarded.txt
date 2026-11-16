@@ -1,0 +1,5 @@
+# No async void outside Faults.cs; Faults.Forget logs a fault and drops a cancellation.
+ok: no async void outside Faults.cs: an event handler hands its task to Faults.Forget
+ok: a fault in forgotten work is logged with its stack, not rethrown on the dispatcher
+ok: a cancellation is not a fault
+ok: Export Frame (the review's first unguarded async void) goes through Faults.Forget

@@ -1,0 +1,17 @@
+using HandPegApp.Models;
+
+namespace HandPegApp.ViewModels;
+
+/// <summary>A deleted clip as the recycle bin's drawer lists it.</summary>
+public sealed class BinItem(DeletedClip clip, string name, string timeText, System.Windows.Media.ImageSource? preview)
+{
+    public DeletedClip Clip { get; } = clip;
+
+    public string Name { get; } = name;
+
+    /// <summary>When it was on the timeline, from where to where.</summary>
+    public string TimeText { get; } = timeText;
+
+    /// <summary>A picture of it: a frame of its video or the shape of its sound, when one has been made.</summary>
+    public System.Windows.Media.ImageSource? Preview { get; } = preview;
+}

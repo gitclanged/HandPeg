@@ -1,6 +1,9 @@
 # The memory hygiene's quiet test is set after the first frame; a compaction is asked for after a tab is closed or let go.
 ok: MemoryHygiene.IsQuiet is set in one place only (HookTabMemory), once (_memoryHooked)
 ok: it is hooked only as tabs kept live change or a compaction is asked for, never from the window's start (Law 1: after the first frame)
+ok: the media browser at rest and the start-up warm-up ask through the same quiet gate (CompactWhenQuiet), with the process heap
+ok: the media browser's ask is routed once, from ContentRendered (after the first frame)
+ok: the media browser collects nothing itself: no GC.Collect, no pool task, no HeapCompact (the picker's instance asks MemoryHygiene directly)
 ok: nothing of it in InitializeProjectTabs (before the first frame)
 ok: quiet: nothing playing, switching, dragged on the Timeline or recording
 ok: a compaction is asked for after each way a tab is closed (behind, the last one emptied, the one in front), once it is let go and the switch is over

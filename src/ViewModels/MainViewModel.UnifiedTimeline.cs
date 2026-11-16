@@ -11,18 +11,24 @@ namespace HandPegApp.ViewModels;
 public partial class MainViewModel
 {
     /// <summary>Whether a clip's sound follows its picture: true for one with no sound of its own (there is nothing to unlink).</summary>
-    public bool IsClipAudioLinked(Layer clip) => ClipOf(clip) is not { HasSound: true } model || model.AudioLinked;
+    public bool IsClipAudioLinked(Layer clip) => IsClipAudioLinked(ClipOf(clip));
+
+    /// <summary>The same for a clip already resolved (a row rebuild resolves each clip once).</summary>
+    internal static bool IsClipAudioLinked(TimelineClip? model) => model is not { HasSound: true } || model.AudioLinked;
 
     /// <summary>How far a clip's unlinked sound was slipped from its picture, in seconds; 0 while it is linked or has none.</summary>
-    public double ClipAudioSlip(Layer clip) =>
-        ClipOf(clip) is { HasSound: true, AudioLinked: false } model ? model.AudioSlipSeconds : 0;
+    public double ClipAudioSlip(Layer clip) => ClipAudioSlip(ClipOf(clip));
+
+    internal static double ClipAudioSlip(TimelineClip? model) => model is { HasSound: true, AudioLinked: false } ? model.AudioSlipSeconds : 0;
 
     /// <summary>
     /// A clip's J/L cut, while its sound is linked: how much sooner its sound starts than its picture, and how much longer it
     /// lasts (seconds; negative for later and shorter). Null for a clip with no sound, or an unlinked one.
     /// </summary>
-    public (double LeadIn, double TailOut)? ClipAudioSplit(Layer clip) =>
-        ClipOf(clip) is { HasSound: true, AudioLinked: true } model ? (model.AudioLeadInSeconds, model.AudioTailOutSeconds) : null;
+    public (double LeadIn, double TailOut)? ClipAudioSplit(Layer clip) => ClipAudioSplit(ClipOf(clip));
+
+    internal static (double LeadIn, double TailOut)? ClipAudioSplit(TimelineClip? model) =>
+        model is { HasSound: true, AudioLinked: true } ? (model.AudioLeadInSeconds, model.AudioTailOutSeconds) : null;
 
     /// <summary>
     /// Links a clip's sound to its picture, or unlinks it (the U key, and Toggle A/V Link on a clip's menu). Unlinked, its

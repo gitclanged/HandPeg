@@ -1,0 +1,27 @@
+# Color Match (5.6A): OKLab, the bilateral patch, the inverse of a grade, the solver against the Color Grade card's own model.
+ok: OKLab of white (1.0000, 0.0000, 0.0000) and black (L 0.0000)
+ok: sRGB to OKLab and back over a 9 x 9 x 9 cube: worst 9.4e-7
+ok: OKLab of pure red (0.628, 0.225, 0.126), as Ottosson gives it (0.628, 0.225, 0.126)
+ok: a point beside an edge (half its patch the other colour): the bilateral mean (0.784, 0.353, 0.235) is the side it is on; a plain mean would be (0.492, 0.316, 0.510)
+ok: a noisy patch with a white stray pixel at the point: (0.471, 0.549, 0.393), the colour under the noise (the point's colour is its 3 x 3 median)
+ok: at the frame's corner the patch is cut there; a point off the frame, or no frame: nothing
+ok: a graded colour ungraded (white balance, exposure, wheels, contrast, saturation, vibrance) and graded again: worst 5.6e-7; a neutral card gives it back as it is
+ok: exposure +0.7 EV on a midtone: target (0.350, 0.400, 0.300) to (0.441, 0.502, 0.380): dE 0.000, within 0.01; the target ungraded first; contrast, saturation, vibrance and LUT mix kept
+ok: exposure -1.2 EV on a highlight: target (0.800, 0.780, 0.740) to (0.550, 0.535, 0.507): dE 0.000, within 0.01; the target ungraded first; contrast, saturation, vibrance and LUT mix kept
+ok: warmer (+40) and greener (-25): target (0.500, 0.500, 0.500) to (0.507, 0.502, 0.453): dE 0.001, within 0.01; the target ungraded first; contrast, saturation, vibrance and LUT mix kept
+ok: cooler (-60), darker (-0.3): target (0.620, 0.550, 0.480) to (0.521, 0.506, 0.476): dE 0.001, within 0.01; the target ungraded first; contrast, saturation, vibrance and LUT mix kept
+ok: Gain red +0.2 on a highlight: target (0.750, 0.720, 0.700) to (0.862, 0.720, 0.700): dE 0.002, within 0.01; the target ungraded first; contrast, saturation, vibrance and LUT mix kept
+ok: Lift blue +0.15 in a shadow: target (0.080, 0.090, 0.100) to (0.080, 0.090, 0.168): dE 0.000, within 0.01; the target ungraded first; contrast, saturation, vibrance and LUT mix kept
+ok: Gamma green -0.3 on a midtone: target (0.450, 0.500, 0.400) to (0.450, 0.426, 0.400): dE 0.000, within 0.01; the target ungraded first; contrast, saturation, vibrance and LUT mix kept
+ok: a skin tone to a warmer reference, from a graded card: target (0.648, 0.437, 0.237) to (0.731, 0.480, 0.256): dE 0.000, within 0.01; the target ungraded first; contrast, saturation, vibrance and LUT mix kept
+ok: a teal sky from a graded card, cooler and brighter: target (0.354, 0.508, 0.552) to (0.426, 0.613, 0.779): dE 0.001, within 0.01; the target ungraded first; contrast, saturation, vibrance and LUT mix kept
+ok: the target already the reference: the card is left as it is, no step taken
+ok: a red target to a blue reference (far beyond white balance): closer than it was, dE 0.155, converged False
+ok: F20: matched, undone, matched again to a new reference from the target kept ungraded: dE 0.000; the old stale target would leave dE 0.070 while saying Matched (True)
+ok: Solve is Ungrade then SolveFrom: the same values and distance (its iterations count the ungrading too)
+ok: F22: the curves stage is the GPU's table (each channel's curve, then the master; 256 entries, linear between): within 8.6e-6 of the curves themselves; identity curves: no stage
+ok: F22: a colour graded and curved is ungraded through both (worst 5.4e-7); a card with only curves too (without them it would be taken as ungraded)
+ok: F22: solved through the curves the picture matches (dE 0.000); a model without them would leave dE 0.021 on screen while saying Matched (True)
+ok: F22, F24: refused: a LUT mixed in ("LUT blocks match"; at 0 % it is not), any of the 16 numbers keyframed ("Grade is keyframed"); curves are matched through
+ok: G3: the grade's curves are modelled only while it holds the curve table: not under an enabled Curves card that changes the picture (a preset or its own points); yes under an identity or switched-off one, above one, or alone
+ok: G3: a grade not drawn refuses ("Grade is off"): its card switched off, or its stack bypassed (with or without a card); an enabled card, or none, on a live stack may match

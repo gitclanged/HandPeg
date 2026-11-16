@@ -1,6 +1,8 @@
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using HandPegApp.Native;
+using static HandPegApp.Native.Kernel32;
 
 namespace HandPegApp;
 
@@ -183,14 +185,8 @@ public static partial class Program
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool PostThreadMessageW(uint thread, uint message, nint wParam, nint lParam);
 
-    [LibraryImport("kernel32.dll")]
-    private static partial uint GetCurrentThreadId();
-
     // SEM_FAILCRITICALERRORS (no critical-error box, a DLL not found among them) and SEM_NOGPFAULTERRORBOX.
     private const uint FailCriticalErrors = 0x0001, NoGpFaultErrorBox = 0x0002;
-
-    [LibraryImport("kernel32.dll")]
-    private static partial uint SetErrorMode(uint mode);
 
     /// <summary>
     /// Velopack's bootstrap on an ordinary start, run beside the window's start: the update checker waits for it before

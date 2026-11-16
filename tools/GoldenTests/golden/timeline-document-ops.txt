@@ -1,0 +1,7 @@
+# Markers, Sequence Output effects, frame and frame rate change through the transaction: committed on their own, rolled back with it; the view model writes none directly.
+ok: one commit, no clip or track touched (a step of Undo like the master gain's)
+ok: the markers, the Sequence Output's effects and bypass, the frame and the rate set
+ok: a transaction disposed uncommitted puts every one of them back, and raises nothing
+ok: the same values again change nothing and raise nothing
+ok: a rate that is not positive is refused
+ok: the view model writes no document-level value itself outside the mirror flush (FlushLooks)

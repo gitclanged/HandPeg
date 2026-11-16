@@ -73,7 +73,7 @@ public partial class MainViewModel
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or FormatException)
         {
-            StatusText = $"The subtitles could not be read: {ex.Message}";
+            Fail($"The subtitles could not be read: {ex.Message}", "Read subtitles", ex);
             return false;
         }
 
@@ -298,13 +298,9 @@ public partial class MainViewModel
             return;
 
         // There are subtitles on the timeline already, and whatever was done to them by hand would go with them: asked first.
-        if (HasSubtitleCues || _captionAnchorSource is not null)
+        if ((HasSubtitleCues || _captionAnchorSource is not null) && (ConfirmWarning ?? Confirm) is { } ask)
         {
-            var answer = System.Windows.MessageBox.Show(
-                System.Windows.Application.Current?.MainWindow!,
-                "Generating new captions will overwrite your existing subtitle track and discard any manual timing or text edits. Do you want to proceed?",
-                "Generate Captions", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning, System.Windows.MessageBoxResult.No);
-            if (answer != System.Windows.MessageBoxResult.Yes)
+            if (!ask("Generate Captions", "Generating new captions will overwrite your existing subtitle track and discard any manual timing or text edits.", "Overwrite"))
             {
                 StatusText = "Generate Captions cancelled: the subtitle track is as it was.";
                 return;
@@ -398,9 +394,9 @@ public partial class MainViewModel
         OnPropertyChanged(nameof(HasTextCues));
         OnPropertyChanged(nameof(SubtitleTrackSummary));
         OnPropertyChanged(nameof(CaptionHint));
-        TimelineChanged?.Invoke();
+        RaiseTimelineChanged();
 
-        // The player takes the track's words again (5.4.1A): also while an operation runs (Edit Captions..., a transcription, an
+        // The player takes the track's words again (5.4.1): also while an operation runs (Edit Captions..., a transcription, an
         // import during another), when the sync below waits. ScheduleGpuState's 8 ms timer joins a burst of them into one push.
         if (!_isBackgroundWorker)
             CaptionsChanged?.Invoke();
@@ -440,7 +436,7 @@ public partial class MainViewModel
     {
         if (HasSubtitleCues)
         {
-            TimelineChanged?.Invoke();
+            RaiseTimelineChanged();
             RefreshSubtitlePreview();
         }
     }

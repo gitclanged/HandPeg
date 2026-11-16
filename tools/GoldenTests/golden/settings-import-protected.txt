@@ -1,0 +1,6 @@
+# Import Settings keeps this PC's tool paths, sources, folders and devices; a newer backup is refused; export leaves them out.
+ok: the backup's ordinary settings and its preset are imported
+ok: its FFmpeg path, release address, unpinned switch, crash endpoint and folders are not: this PC's values stay (or stay unset)
+ok: the file it replaced is kept as appsettings.json.bak
+ok: a backup of a newer major format is refused and changes nothing
+ok: an export leaves this PC's tool paths, cookies file and the other protected keys out

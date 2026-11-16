@@ -106,6 +106,106 @@ internal sealed partial class TimelineTransaction
         return moves ? delta : 0;
     }
 
+    // ----- A speed that ripples (5.6.0) -----
+
+    /// <summary>
+    /// A clip's speed set (<see cref="Respeed"/>), and everything that started at or after its old end on the ripple tracks moved by
+    /// as much as its end moved, earlier or later (as far as a ripple can move them earlier: <see cref="Ripple"/>). Respeed itself moves
+    /// what the clip grows into on its own track; when it did, the ripple moves the other tracks alone, so nothing moves twice. Grown,
+    /// its speed family grows here too, after the ripple (5.6.0); shrunk, the caller has set theirs first.
+    /// </summary>
+    private double RespeedRippling(TimelineClip clip, double speed, bool free, bool all)
+    {
+        var track = Editable(TrackOf(clip));
+        var (start, oldEnd) = (clip.Start, clip.End);
+        var index = track.IndexOf(clip);
+        var next = index >= 0 && index + 1 < track.Clips.Count ? track.Clips[index + 1] : null;
+        var nextStart = next?.Start ?? 0;
+
+        // 5.6.0: what rides it, as what rides a ripple trim of its end does (Riders): its children on its end or in the stretch it may give
+        // up, taken on its old span (from its start: one that ends before its new end is never run into, as every clip that moves lands at
+        // or after that end), so that none holds the ripple back. Its speed family is not among them: the caller sets their speed as its own
+        // (first when it shrinks), and when it grows they are respeeded here, after the ripple (below).
+        var riders = Riders(clip, head: false, lostFrom: start);
+        riders?.RemoveAll(r => IsSpeedFamily(clip, r.Clip));
+        if (riders is { Count: 0 })
+            riders = null;
+
+        var set = Respeed(clip, speed, free);
+        var delta = clip.End - oldEnd;
+        if (Math.Abs(delta) <= Slack / 1000)
+            return set;
+
+        var tracks = RippleTracks(track, all);
+        if (next is not null && Math.Abs(next.Start - nextStart) > Slack / 1000)
+            tracks.RemoveAll(t => ReferenceEquals(t, track));
+        var whole = WholeFrames(delta);
+
+        // 5.6.0: shrunk, how far what follows can come back (the answer Ripple's own Limit gives after the Ride: Staying passes over
+        // riders, and none starts at or after its old end). Held back (another track's clips meet across the cut), nothing comes back into
+        // a rider's place: one left too short stays where it is, unlinked, as on a track the ripple does not close up, and never goes.
+        // Only those still linked then pass for riders, so one left where it was holds back what would slide into it on its own track.
+        var held = delta < 0 && RippleLimit(tracks, oldEnd, delta, clip, riders) > delta + Slack / 1000;
+        if (riders is not null && delta < 0)
+            Ride(riders, start, oldEnd, clip.End, delta, whole, head: false, free, held ? [] : tracks);
+        var seams = SeamsAt(tracks, oldEnd);
+        var riding = held ? riders?.Where(r => r.Clip.ParentClipId is not null).ToList() : riders;
+        Ripple(tracks, oldEnd, delta, clip, riding is { Count: > 0 } ? riding : null);
+        if (riders is not null && delta > 0)
+            Ride(riders, start, oldEnd, clip.End, delta, whole, head: false, free, tracks);
+
+        // 5.6.0: grown, its speed family (its streams' lanes, its Cutouts) grows now, after the ripple moved what follows (so nothing
+        // moves twice) and before the crossfades are looked at, so that a lane's clip meets the one after it again and keeps its crossfade.
+        // The caller's own pass over them afterwards finds each at its speed already (and still sets them when its end could not move).
+        if (delta > 0)
+        {
+            foreach (var child in _doc.Tracks.SelectMany(t => t.Clips).Where(c => IsSpeedFamily(clip, c)).ToList())
+                Respeed(child, speed, free);
+        }
+        KeepCrossfades(seams);
+        return set;
+    }
+
+    /// <summary>A clip of a speed's family (5.6.0): its child that plays its own file, at the same moment (MainViewModel.SetClipSpeed's test).</summary>
+    private static bool IsSpeedFamily(TimelineClip clip, TimelineClip child) =>
+        child.ParentClipId == clip.Id && child.PlaysFile && string.Equals(child.SourcePath, clip.SourcePath, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>On each track, the clip a ripple from <paramref name="from"/> moves first and the clip just before it (5.6.0), where both exist.</summary>
+    private static List<(TimelineTrackModel Track, TimelineClip Before, TimelineClip First)> SeamsAt(IReadOnlyList<TimelineTrackModel> tracks, double from)
+    {
+        var first = FirstMovers(tracks, from);
+        var seams = new List<(TimelineTrackModel Track, TimelineClip Before, TimelineClip First)>();
+        for (var t = 0; t < tracks.Count; t++)
+        {
+            if (first[t] > 0 && first[t] < tracks[t].Clips.Count)
+                seams.Add((tracks[t], tracks[t].Clips[first[t] - 1], tracks[t].Clips[first[t]]));
+        }
+        return seams;
+    }
+
+    /// <summary>
+    /// The crossfades a speed's ripple closed up again (5.6.0): its Respeed (and its family's, set first when it shrinks) parted each
+    /// seam before the ripple brought what follows back, or (grown) the ripple moved what follows before its family grew back up to it
+    /// (RespeedRippling), and Reconcile took their crossfades. Where two clips that met before this
+    /// transaction meet again, the crossfade they had comes back, held to what fits (as Crossfade holds it).
+    /// </summary>
+    private void KeepCrossfades(List<(TimelineTrackModel Track, TimelineClip Before, TimelineClip First)> seams)
+    {
+        foreach (var (track, before, first) in seams)
+        {
+            var at = track.IndexOf(first);
+            if (at <= 0 || !ReferenceEquals(track.Clips[at - 1], before) || !Meet(before, first))
+                continue;
+
+            var (was, wasFirst) = (_clipsBefore.GetValueOrDefault(before, before), _clipsBefore.GetValueOrDefault(first, first));
+            if (Math.Abs(was.End - wasFirst.Start) > Slack || !(wasFirst.TransitionIn > first.TransitionIn))
+                continue;
+
+            Remember(first);
+            first.TransitionIn = Math.Min(wasFirst.TransitionIn, Math.Min(TimelineDocument.LongestCrossfade, Math.Min(before.Duration, first.Duration)));
+        }
+    }
+
     // ----- A clip's look, copied before it is changed -----
 
     internal static readonly JsonSerializerOptions CopyOptions = new() { NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals };
@@ -127,8 +227,8 @@ internal sealed partial class TimelineTransaction
             return state;
 
         var look = inPlace ? state : CopyOf(state);
-        (look.KeysX, look.KeysY, look.KeysScale) = (Shift(look.KeysX), Shift(look.KeysY), Shift(look.KeysScale));
-        (look.KeysRotation, look.KeysOpacity) = (Shift(look.KeysRotation), Shift(look.KeysOpacity));
+        foreach (var channel in LayerState.MotionChannels)
+            channel.Set(look, Shift(channel.Get(look)));
         foreach (var effect in look.Effects ?? [])
         {
             if (effect.Keys is { } keys)
@@ -155,8 +255,7 @@ internal sealed partial class TimelineTransaction
     /// clip's clock, as its motion is).
     /// </summary>
     private static bool IsTimed(LayerState state) =>
-        state.KeysX is { Count: > 0 } || state.KeysY is { Count: > 0 } || state.KeysScale is { Count: > 0 }
-        || state.KeysRotation is { Count: > 0 } || state.KeysOpacity is { Count: > 0 }
+        LayerState.MotionChannels.Any(channel => channel.Get(state) is { Count: > 0 })
         || state.Effects?.Any(e => e.Keys is { Count: > 0 } || e.Range is not null) == true
         || state.AudioFilters?.StudioVoiceMixKeys is { Count: > 0 };
 
@@ -177,11 +276,13 @@ internal sealed partial class TimelineTransaction
             return (state, CopyOf(state));
 
         var (first, second) = (CopyOf(state), CopyOf(state));
-        (first.KeysX, second.KeysX) = SplitKeys(state.KeysX, cut);
-        (first.KeysY, second.KeysY) = SplitKeys(state.KeysY, cut);
-        (first.KeysScale, second.KeysScale) = SplitKeys(state.KeysScale, cut);
-        (first.KeysRotation, second.KeysRotation) = SplitKeys(state.KeysRotation, cut);
-        (first.KeysOpacity, second.KeysOpacity) = SplitKeys(state.KeysOpacity, cut);
+        foreach (var channel in LayerState.MotionChannels)
+        {
+            var (a, b) = SplitKeys(channel.Get(state), cut);
+            channel.Set(first, a);
+            channel.Set(second, b);
+        }
+
         for (var i = 0; i < (state.Effects?.Count ?? 0); i++)
         {
             var (effect, firstEffect, secondEffect) = (state.Effects![i], first.Effects![i], second.Effects![i]);
@@ -260,16 +361,20 @@ internal sealed partial class TimelineTransaction
         if (!IsTimed(first) && !IsTimed(second))
             return keepSecond ? second : first;
 
-        if (!JoinKeys(first.KeysX, second.KeysX, cut, out var x) || !JoinKeys(first.KeysY, second.KeysY, cut, out var y)
-            || !JoinKeys(first.KeysScale, second.KeysScale, cut, out var scale) || !JoinKeys(first.KeysRotation, second.KeysRotation, cut, out var rotation)
-            || !JoinKeys(first.KeysOpacity, second.KeysOpacity, cut, out var opacity)
-            || !JoinKeys(first.AudioFilters?.StudioVoiceMixKeys, second.AudioFilters?.StudioVoiceMixKeys, cut, out var mix))
+        var joinedChannels = new List<Keyframe>?[LayerState.MotionChannels.Length];
+        for (var c = 0; c < joinedChannels.Length; c++)
         {
-            return null;
+            var channel = LayerState.MotionChannels[c];
+            if (!JoinKeys(channel.Get(first), channel.Get(second), cut, out joinedChannels[c]))
+                return null;
         }
 
+        if (!JoinKeys(first.AudioFilters?.StudioVoiceMixKeys, second.AudioFilters?.StudioVoiceMixKeys, cut, out var mix))
+            return null;
+
         var look = CopyOf(first);
-        (look.KeysX, look.KeysY, look.KeysScale, look.KeysRotation, look.KeysOpacity) = (x, y, scale, rotation, opacity);
+        for (var c = 0; c < joinedChannels.Length; c++)
+            LayerState.MotionChannels[c].Set(look, joinedChannels[c]);
         if (look.AudioFilters is { } filters)
             filters.StudioVoiceMixKeys = mix;
         for (var i = 0; i < (look.Effects?.Count ?? 0); i++)
@@ -300,8 +405,8 @@ internal sealed partial class TimelineTransaction
         var node = JsonSerializer.SerializeToNode(look, CopyOptions);
         if (node is JsonObject json)
         {
-            foreach (var name in (string[])[nameof(LayerState.KeysX), nameof(LayerState.KeysY), nameof(LayerState.KeysScale), nameof(LayerState.KeysRotation), nameof(LayerState.KeysOpacity)])
-                json.Remove(name);
+            foreach (var channel in LayerState.MotionChannels)
+                json.Remove(channel.Name);
             if (json[nameof(LayerState.AudioFilters)] is JsonObject filters)
                 filters.Remove(nameof(TrackAudioFilters.StudioVoiceMixKeys));
 
@@ -430,8 +535,8 @@ internal sealed partial class TimelineTransaction
             return state;
 
         var look = CopyOf(state);
-        (look.KeysX, look.KeysY, look.KeysScale) = (Scale(look.KeysX), Scale(look.KeysY), Scale(look.KeysScale));
-        (look.KeysRotation, look.KeysOpacity) = (Scale(look.KeysRotation), Scale(look.KeysOpacity));
+        foreach (var channel in LayerState.MotionChannels)
+            channel.Set(look, Scale(channel.Get(look)));
         foreach (var effect in look.Effects ?? [])
         {
             if (effect.Keys is { } keys)

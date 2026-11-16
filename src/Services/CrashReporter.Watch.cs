@@ -4,6 +4,8 @@ using System.Globalization;
 using System.IO;
 using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
+using HandPegApp.Native;
+using static HandPegApp.Native.Kernel32;
 
 namespace HandPegApp.Services;
 
@@ -103,8 +105,8 @@ public static partial class CrashReporter
                 return;
 
             _sentinelProcess = 0;
-            _ = TerminateProcess(process, 0);
-            _ = CloseHandle(process);
+            using var owned = new Microsoft.Win32.SafeHandles.SafeWaitHandle(process, ownsHandle: true);
+            _ = TerminateProcess(owned, 0);
             Note("crash", "sentinel stopped");
         }
     }
@@ -271,11 +273,11 @@ public static partial class CrashReporter
         fixed (char* directory = Environment.SystemDirectory)
         {
             var flags = CreateNoWindow | CreateBreakawayFromJob;
-            var ok = CreateProcessW(null, command, 0, 0, 0, flags, 0, directory, &startup, &started);
+            var ok = CreateProcess(null, command, 0, 0, 0, flags, 0, directory, &startup, &started);
 
             // A job that does not let its processes leave refuses the breakaway: then the sentinel stays in it.
             if (!ok && Marshal.GetLastPInvokeError() == AccessDenied)
-                ok = CreateProcessW(null, command, 0, 0, 0, flags & ~CreateBreakawayFromJob, 0, directory, &startup, &started);
+                ok = CreateProcess(null, command, 0, 0, 0, flags & ~CreateBreakawayFromJob, 0, directory, &startup, &started);
             if (!ok)
                 throw new Win32Exception(Marshal.GetLastPInvokeError());
         }
@@ -284,31 +286,4 @@ public static partial class CrashReporter
         _sentinelProcess = started.Process;
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct StartupInfo
-    {
-        public int Size;
-        public nint Reserved, Desktop, Title;
-        public int X, Y, Width, Height, CountChars, CountCharsY, FillAttribute, Flags;
-        public short ShowWindow, Reserved2;
-        public nint Reserved3, StdInput, StdOutput, StdError;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct ProcessInformation
-    {
-        public nint Process, Thread;
-        public int ProcessId, ThreadId;
-    }
-
-    [LibraryImport("kernel32.dll", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static unsafe partial bool CreateProcessW(string? application, char* commandLine, nint processAttributes, nint threadAttributes,
-        int inheritHandles, uint flags, nint environment, char* currentDirectory, StartupInfo* startup, ProcessInformation* information);
-
-    [LibraryImport("kernel32.dll")]
-    private static partial int TerminateProcess(nint process, uint exitCode);
-
-    [LibraryImport("kernel32.dll")]
-    private static partial int CloseHandle(nint handle);
 }

@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
+using static HandPegApp.UiBrushes;
 
 namespace HandPegApp;
 
@@ -33,7 +34,7 @@ public sealed partial class MaskDrawWindow
         private (Point From, Point To)? _box;
         private (double Step, Rect Seen)? _grid;
 
-        private static readonly Brush[] PieceFills = Frozen(0x55), PieceLines = Frozen(0xFF);
+        private static readonly Brush[] PieceFills = PieceBrushes(0x55), PieceLines = PieceBrushes(0xFF);
         private static readonly Pen[] PiecePens = PieceLines.Select(line => (Pen)new Pen(line, 1.5).GetAsFrozen()).ToArray();
         private static readonly Brush DrawingLine = Frozen(Color.FromRgb(0xFF, 0x8A, 0x3D));
         private static readonly Brush RegionLine = Frozen(Color.FromArgb(0xC0, 0xFF, 0xD0, 0x40));
@@ -578,17 +579,10 @@ public sealed partial class MaskDrawWindow
             }
         }
 
-        private static Brush[] Frozen(byte alpha)
+        private static Brush[] PieceBrushes(byte alpha)
         {
             Color[] colors = [Color.FromRgb(0x3D, 0xD6, 0xF5), Color.FromRgb(0x7C, 0xE0, 0x6A), Color.FromRgb(0xF5, 0xC2, 0x3D), Color.FromRgb(0xF5, 0x6F, 0xA8), Color.FromRgb(0xB0, 0x8C, 0xFF), Color.FromRgb(0xFF, 0x8A, 0x3D)];
             return colors.Select(c => Frozen(Color.FromArgb(alpha, c.R, c.G, c.B))).ToArray();
-        }
-
-        private static SolidColorBrush Frozen(Color color)
-        {
-            var brush = new SolidColorBrush(color);
-            brush.Freeze();
-            return brush;
         }
 
         private static RadialGradientBrush MakeGlow()

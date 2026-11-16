@@ -2,6 +2,7 @@ using System.IO;
 using System.Text;
 using System.Windows;
 using HandPegApp;
+using HandPegApp.Shell;
 using HandPegApp.Compositor;
 using HandPegApp.Compositor.Native;
 using HandPegApp.Services;
@@ -20,31 +21,17 @@ public static class LiveEncodedFidelityTests
 {
     public static IEnumerable<GraphResult> All()
     {
-        var text = new StringBuilder("# Live Encoded Preview, full export fidelity (5.4.4-Final): routing, pill, size, software command, P010, watched settings, player menu.\n");
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            Routing(Expect);
-            Pill(Expect);
-            Sizes(Expect);
-            Software(Expect);
-            TenBit(Expect);
-            Watched(Expect);
-            PlayerMenu(Expect);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        yield return new GraphResult("live-encoded-fidelity", text.ToString(), problems, 0);
+        yield return Case("live-encoded-fidelity", "# Live Encoded Preview, full export fidelity (5.4.4-Final): routing, pill, size, software command, P010, watched settings, player menu.",
+            expect =>
+            {
+                Routing(expect);
+                Pill(expect);
+                Sizes(expect);
+                Software(expect);
+                TenBit(expect);
+                Watched(expect);
+                PlayerMenu(expect);
+            });
     }
 
     private static void Routing(Action<bool, string> expect)
@@ -83,10 +70,10 @@ public static class LiveEncodedFidelityTests
         expect(x264.PillText == "ENCODED · x264 veryslow · CRF 22" && svt.ShortName == "SVT-AV1 6" && nvencCq.RateShort == "CQ 28",
             $"a software encoder by its library and preset (\"{x264.PillText}\", \"{svt.ShortName}\"); a hardware CQ as CQ ({nvencCq.RateShort})");
         var running = new ExportLoopbackStatus(ExportLoopbackState.Running, "Intel Quick Sync Video H.265 Encoder MFT", 6, 10, 0, 0);
-        expect(MainWindow.EncodedPillText(qsv, running, playing: false) == qsv.PillText
-               && MainWindow.EncodedPillText(qsv, running with { OnAskedCard = false }, false) == "ENCODED · HEVC · STAND-IN · 12 Mbps"
-               && MainWindow.EncodedPillText(x264, running with { PausedOnly = true }, playing: true) == "RAW WHILE PLAYING · x264 veryslow"
-               && MainWindow.EncodedPillText(x264, running with { PausedOnly = true }, playing: false) == x264.PillText,
+        expect(LoopbackPreviewController.EncodedPillText(qsv, running, playing: false) == qsv.PillText
+               && LoopbackPreviewController.EncodedPillText(qsv, running with { OnAskedCard = false }, false) == "ENCODED · HEVC · STAND-IN · 12 Mbps"
+               && LoopbackPreviewController.EncodedPillText(x264, running with { PausedOnly = true }, playing: true) == "RAW WHILE PLAYING · x264 veryslow"
+               && LoopbackPreviewController.EncodedPillText(x264, running with { PausedOnly = true }, playing: false) == x264.PillText,
             "EncodedPillText: running on the card asked for, the settings' pill; a stand-in says so; a software encoder while playing says the picture is the plain one");
         expect(ExportLoopbackSettings.BitrateText(800) == "800 kbps" && ExportLoopbackSettings.BitrateText(35000) == "35 Mbps", "bitrates in words: 800 kbps, 35 Mbps");
     }
@@ -160,7 +147,7 @@ public static class LiveEncodedFidelityTests
             "UseVerticalResolution", "SelectedPreset", "EffectiveBitrateKbps", "FrameWidth", "FrameHeight"];
         var missing = asked.Where(n => !MainViewModel.LoopbackSettingNames.Contains(n)).ToList();
         expect(missing.Count == 0, $"every Export tab member the user listed sends the preview new settings ({(missing.Count == 0 ? "all watched" : "missing: " + string.Join(", ", missing))})");
-        var source = File.ReadAllText(Path.Combine(Src, "MainWindow.LoopbackPreview.cs"));
+        var source = File.ReadAllText(Path.Combine(Src, "Shell", "LoopbackPreviewController.cs"));
         expect(source.Contains("private const int LoopbackSettingsGatherMs = 25;", StringComparison.Ordinal) && source.Contains("GatherLoopbackSettings();", StringComparison.Ordinal),
             "a run of changes is gathered for 25 ms, then sent once (PushLoopbackSettings)");
         var engine = File.ReadAllText(Path.Combine(Src, "Services", "GpuPreviewEngine.Loopback.cs"));

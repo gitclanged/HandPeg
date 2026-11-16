@@ -1,0 +1,10 @@
+# The grade's Before/After in the plan: the bypass drops the grade's packets only, the split writes two halves, export and stills unaffected.
+ok: off: the colour sliders' entry, then the Sequence Output's blur and Color Grade (ColorGrade | BoxBlur,ColorStudio,ColorStudio)
+ok: Before (Hold \): every Color Grade card and the sliders' grade left out, the blur kept (BoxBlur)
+ok: the Color Studio's input still: that card alone left out (ColorGrade | BoxBlur)
+ok: split at the middle: the sliders' entry right of the divider alone (nothing to draw without its grade), the Sequence Output's twice: its blur left, blur and grade right (ColorGrade,TransitionWipe | BoxBlur,TransitionWipe | BoxBlur,ColorStudio,ColorStudio,TransitionWipe)
+ok: each half's wipe: at 0.5 of the box, across, a 1-pixel hard edge (lane 5), the Before kept left (fade-in lane 1), the After kept right
+ok: the divider at the left edge: all graded, no extra layer; at the right edge: all Before
+ok: Evaluate without a compare is the graded picture (the export's, the strips', every still's)
+ok: GpuPreviewEngine: the player's frame (PublishAt) passes the player's compare, the project still the input still's (its own request alone), Export Frame none
+ok: the export, the program strip and SeekBench evaluate plans with no compare

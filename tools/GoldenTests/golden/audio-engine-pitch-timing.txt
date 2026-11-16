@@ -1,0 +1,6 @@
+# Pitch Shift keeps the timing (FFmpeg's asetrate and atempo net the tempo alone), on any strip; Keep Pitch off plays as tape (5.6A).
++12 semitones: bursts at 1.0, 3.0 s, each within 20 ms, 2000 Hz within 5 %, 50 ms long within 20 ms, heard once
+-12 semitones: bursts at 1.0, 3.0 s, each within 20 ms, 500 Hz within 5 %, 50 ms long within 20 ms, heard once
++12 semitones on a track with filters: bursts at 1.0, 3.0 s, each within 20 ms, 2000 Hz within 5 %, 50 ms long within 20 ms, heard once
+2x with Keep Pitch off: bursts at 0.5, 1.5 s, each within 20 ms, 2000 Hz within 5 %, 25 ms long within 20 ms, heard once
+0.5x with Keep Pitch off: bursts at 2.0, 6.0 s, each within 20 ms, 500 Hz within 5 %, 100 ms long within 20 ms, heard once

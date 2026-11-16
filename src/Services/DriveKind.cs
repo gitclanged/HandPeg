@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using System.IO;
 using System.Runtime.InteropServices;
+using HandPegApp.Native;
+using static HandPegApp.Native.Kernel32;
 
 namespace HandPegApp.Services;
 
@@ -17,6 +19,15 @@ namespace HandPegApp.Services;
 public static partial class DriveKind
 {
     private static readonly ConcurrentDictionary<string, bool> Known = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, bool> Pluggable = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Whether a file's volume can be unplugged (removable media, or a device on a USB, 1394, SD, MMC or iSCSI bus, which external
+    /// SSDs and HDDs are although Windows reports them as fixed drives), learnt with <see cref="Learn"/>: null while not known yet.
+    /// A UNC path or a volume that will not say counts as pluggable. Touches no disk.
+    /// </summary>
+    public static bool? IsHotPluggable(string path) =>
+        RootOf(path) is not { } root ? true : Pluggable.TryGetValue(root, out var pluggable) ? pluggable : null;
     private static readonly ConcurrentDictionary<string, Task<bool>> Learning = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Whether a file's volume is known to be a fast local SSD (false while it is not known yet). Touches no disk.</summary>
@@ -38,9 +49,10 @@ public static partial class DriveKind
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
-                AppLog.Write($"Drive kind of {key}: {ex.Message}");
+                AppLog.Write($"Drive kind of {key}", ex);
             }
 
+            Pluggable.TryAdd(key, true);
             Known[key] = answer;
             Learning.TryRemove(key, out _);
             return answer;
@@ -69,36 +81,43 @@ public static partial class DriveKind
     {
         // A mapped network drive, a removable drive, an optical drive: not, without opening anything.
         if (GetDriveTypeW(root) != DriveFixed)
+        {
+            Pluggable[root] = true;
             return false;
+        }
 
         var device = $@"\\.\{root[..2]}";
-        var handle = CreateFileW(device, 0, FileShareRead | FileShareWrite, 0, OpenExisting, 0, 0);
-        if (handle == -1 || handle == 0)
-            return false;
-        try
+        using var file = CreateFile(device, 0, FileShareRead | FileShareWrite, 0, OpenExisting, 0, 0);
+        if (file.IsInvalid)
         {
-            // The device behind the volume: on a bus inside the machine, its media not removable.
-            var query = stackalloc int[3];
-            (query[0], query[1], query[2]) = (StorageDeviceProperty, 0, 0);
-            var descriptor = stackalloc byte[1024];
-            if (DeviceIoControl(handle, IoctlStorageQueryProperty, query, 12, descriptor, 1024, out var returned, 0) == 0 || returned < 32)
-                return false;
-            var removable = descriptor[10] != 0;
-            var bus = *(int*)(descriptor + 28);
-            if (removable || ExternalBus(bus))
-                return false;
+            Pluggable[root] = true;
+            return false;
+        }
+
+        // The raw handle for the device queries below, alive while `file` is (disposed when this returns).
+        var handle = file.DangerousGetHandle();
+        // The device behind the volume: on a bus inside the machine, its media not removable.
+        var query = stackalloc int[3];
+        (query[0], query[1], query[2]) = (StorageDeviceProperty, 0, 0);
+        var descriptor = stackalloc byte[1024];
+        if (DeviceIoControl(handle, IoctlStorageQueryProperty, query, 12, descriptor, 1024, out var returned, 0) == 0 || returned < 32)
+        {
+            Pluggable[root] = true;
+            return false;
+        }
+
+        var removable = descriptor[10] != 0;
+        var bus = *(int*)(descriptor + 28);
+        Pluggable[root] = removable || ExternalBus(bus);
+        if (removable || ExternalBus(bus))
+            return false;
 
             // DEVICE_SEEK_PENALTY_DESCRIPTOR: Version, Size, IncursSeekPenalty.
-            (query[0], query[1], query[2]) = (StorageDeviceSeekPenaltyProperty, 0, 0);
-            var penalty = stackalloc byte[12];
-            if (DeviceIoControl(handle, IoctlStorageQueryProperty, query, 12, penalty, 12, out returned, 0) == 0 || returned < 9)
-                return false;
-            return penalty[8] == 0;
-        }
-        finally
-        {
-            CloseHandle(handle);
-        }
+        (query[0], query[1], query[2]) = (StorageDeviceSeekPenaltyProperty, 0, 0);
+        var penalty = stackalloc byte[12];
+        if (DeviceIoControl(handle, IoctlStorageQueryProperty, query, 12, penalty, 12, out returned, 0) == 0 || returned < 9)
+            return false;
+        return penalty[8] == 0;
     }
 
     private const uint FileShareRead = 1, FileShareWrite = 2, OpenExisting = 3;
@@ -106,12 +125,7 @@ public static partial class DriveKind
     [LibraryImport("kernel32.dll", StringMarshalling = StringMarshalling.Utf16)]
     private static partial uint GetDriveTypeW(string root);
 
-    [LibraryImport("kernel32.dll", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
-    private static partial nint CreateFileW(string name, uint access, uint share, nint security, uint disposition, uint flags, nint template);
-
     [LibraryImport("kernel32.dll", SetLastError = true)]
     private static unsafe partial int DeviceIoControl(nint device, uint code, void* input, int inputSize, void* output, int outputSize, out int returned, nint overlapped);
 
-    [LibraryImport("kernel32.dll")]
-    private static partial int CloseHandle(nint handle);
 }

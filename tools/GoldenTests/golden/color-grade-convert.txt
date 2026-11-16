@@ -1,0 +1,27 @@
+# The old Filters grade as Sequence Output cards: the same picture within 1/255, the legacy fields zeroed, one step of Undo.
+ok: sliders moved and a LUT: the project has a legacy grade (the Color tab shows its fold)
+ok: before: the whole picture's entry draws the LUT, eq, the hue turn and the sharpening (Lut3D,ColorGrade,HueSaturation,Sharpen)
+ok: Convert: one step of Undo, the sliders neutral and the LUT path empty
+ok: the Sequence Output's first cards: Color Grade (the LUT), Brightness & Contrast, Hue, Sharpen, in the order they were drawn
+ok: after: the Sequence Output's entry alone (ColorStudio,ColorStudio,ColorGrade,HueSaturation,Sharpen); the whole picture's has nothing left to draw
+ok: the same picture within 1/255 on eight colours (the LUT at 100 %, eq with its channel balance, the hue turn)
+ok: the sharpening's lanes as they were (strength, unsharp's radius at the frame's width)
+ok: Undo: the sliders back, the cards gone and the LUT path back (the step holds it, the Color tab shown or not)
+ok: Redo: the cards back and the LUT path empty again
+ok: the card's LUT cleared, then an unrelated step undone: the legacy LUT stays gone (never put back outside Undo)
+ok: the sequence's look holds the LUT path; an older step's look (no path written: null) leaves it as it is
+ok: nothing to convert: no card
+ok: a Color Grade card already there: the LUT as a LUT 3D card first, no second Color Grade, the Color Studio still on the user's card
+ok: ...the same picture within 1/255 (before Lut3D,ColorGrade,HueSaturation | ColorStudio,ColorStudio; after Lut3D,ColorGrade,HueSaturation,ColorStudio,ColorStudio)
+ok: ...and nothing left out of an export
+ok: a LUT 3D card already there: the sliders alone become cards, the legacy LUT path kept (the fold stays for it), one LUT on the stack
+ok: ...the same picture within 1/255, both LUTs drawn (before Lut3D,ColorGrade,HueSaturation | Lut3D; after Lut3D | ColorGrade,HueSaturation,Lut3D)
+ok: ...nothing left out of an export; Convert again: nothing to move (the kept LUT stays)
+ok: Reset with the LUT kept (Convert off): the legacy LUT path empty, the fold gone, one step of Undo, the cards as they were, the user's LUT alone drawn (ColorGrade,HueSaturation,Lut3D)
+ok: ...Undo: the kept LUT back, the cards as they were
+ok: Reset with the sliders moved and the LUT kept: the sliders neutral and the LUT path empty in one step of Undo, the user's card left alone
+ok: ...Undo: the LUT path and every slider back as they were
+ok: ...Redo: both reset again
+ok: ...Reset again: nothing to reset, no step taken
+ok: a Color Grade card holding a LUT: the sliders alone become cards, the legacy LUT path kept, the card's LUT its own
+ok: ...the same picture within 1/255 (the card's LUT at 60 %), nothing left out (before Lut3D,ColorGrade,HueSaturation | ColorStudio,ColorStudio; after Lut3D | ColorGrade,HueSaturation,ColorStudio,ColorStudio)

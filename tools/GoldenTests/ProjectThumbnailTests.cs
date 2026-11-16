@@ -45,39 +45,29 @@ public static unsafe partial class ProjectThumbnailTests
         Case("explorer-thumbnails", "# Explorer's preview of a project (5.2D): the thumbnail handler over a .hproj and a .hpb, and its registration for the user.",
             RunExplorerPreviews);
 
+    // The shared case with a scratch folder of its own, deleted after it.
     private static GraphResult Case(string name, string title, Action<string, StringBuilder, Action<bool, string>> run)
     {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
         var folder = Path.Combine(Path.GetTempPath(), "HandPeg.GoldenTests.Thumbnails", Environment.ProcessId.ToString(CultureInfo.InvariantCulture), name);
         try
         {
-            Directory.CreateDirectory(folder);
-            run(folder, text, Expect);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
+            return GoldenKit.Case(name, title, (expect, text) =>
+            {
+                Directory.CreateDirectory(folder);
+                run(folder, text, expect);
+            });
         }
         finally
         {
             try
             {
-                Directory.Delete(folder, recursive: true);
+                if (Directory.Exists(folder))
+                    Directory.Delete(folder, recursive: true);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
             }
         }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
     }
 
     // ----- project-thumbnail -----
@@ -122,7 +112,7 @@ public static unsafe partial class ProjectThumbnailTests
             $"the thumbnail is written right after the header, the timeline still last ({string.Join(", ", names.Take(5))} ...)");
         var path = Path.Combine(folder, "Thumbnail.hproj");
         ProjectStore.SaveTo(state, path);
-        expect(ProjectStore.PeekHeader(path) is { Format: ProjectFile.FormatName, Version: ProjectFile.CurrentVersion, WrittenBy.Length: > 0 },
+        expect(ProjectStore.PeekHeader(path) is { Format: ProjectFile.FormatName, Version: ProjectFile.BaseVersion, WrittenBy.Length: > 0 },
             "PeekHeader still reads the format, the version and the writer from the first 8 KB");
         expect(ProjectThumbnail.ReadFromProject(path) is { } quick && quick.AsSpan().SequenceEqual(wide), "ReadFromProject gives the same bytes");
         var loaded = ProjectStore.Load(path, unpackMasks: false);

@@ -8,7 +8,7 @@ namespace HandPegApp.Services;
 // frames in an 11 s play). Drawing ahead, each turn first shows the frame the worker drew during the refresh before (waiting only for what is
 // left of it), then hands the worker the next frame at once: the worker draws while the frame before is on the screen, and a turn is a present
 // and a publish. The next frame is drawn for its own moment on the screen: the swap chain's measured lead from the turn that handed it over
-// (GpuViewportControl.DisplayLeadSeconds, which then holds the refresh it waits), at least two refreshes until that is known. Off unless
+// (GpuViewport.DisplayLeadSeconds, which then holds the refresh it waits), at least two refreshes until that is known. Off unless
 // HANDPEG_DRAW_AHEAD=1 (DrawsAhead: the bench did not show it helping); without it every turn draws its own frame, as before.
 public sealed partial class GpuPreviewEngine
 {
@@ -32,11 +32,11 @@ public sealed partial class GpuPreviewEngine
     /// The lead a frame drawn ahead is drawn for (pure, for the golden test): the measured one when known and within reason, at least two
     /// refreshes (its turn's, and the one it waits in the worker's hands); two refreshes until it is known.
     /// </summary>
-    internal static double AheadLead(double refresh, double measured) => GpuViewportControl.PlayingLead(2 * refresh, measured);
+    internal static double AheadLead(double refresh, double measured) => GpuViewport.PlayingLead(2 * refresh, measured);
 
     /// <summary>
     /// One playing turn while drawing ahead: the frame drawn during the last refresh presented, then the next one handed over. <paramref name="now"/>
-    /// is the turn's lead origin (its QPC, or 0 for a stalled turn: GpuViewportControl.LeadOrigin).
+    /// is the turn's lead origin (its QPC, or 0 for a stalled turn: GpuViewport.LeadOrigin).
     /// </summary>
     private void DrawAheadTurn(GpuScenePlan plan, long now, Span<GpuSeekHint> hints, ref bool owedTurn, ref bool presentedLast)
     {
@@ -60,17 +60,14 @@ public sealed partial class GpuPreviewEngine
         PresentMirrors();
 
         // 2. The next frame, for its own moment on the screen, handed to the worker now: drawn while this one is shown.
+        var serial = Volatile.Read(ref _transportSerial);
         var at = _audio.Position + AheadLead(_refresh, _viewport.DisplayLeadSeconds) * Math.Max(_rate, 0);
         if (_rate >= 0 && at >= plan.SequenceSeconds - 1e-3 || _rate < 0 && at <= 0)
         {
             // Its moment is past the end: the end is reached on the next turn's clock, as without drawing ahead.
             var heard = _audio.Position;
             if (_rate >= 0 && heard >= plan.SequenceSeconds - 1e-3 || _rate < 0 && heard <= 0)
-            {
-                Pause();
-                Volatile.Write(ref _pausedAt, _rate >= 0 ? plan.SequenceSeconds : 0);
-                Ended?.Invoke();
-            }
+                PauseAtEnd(serial, _rate >= 0 ? plan.SequenceSeconds : 0);
 
             return;
         }

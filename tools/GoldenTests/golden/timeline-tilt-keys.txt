@@ -1,0 +1,5 @@
+# A clip's tilt keyframes through a split and a trim, as its place and opacity keys go.
+ok: a tilt-only animation split at its middle: the second half starts at 30 degrees, its keys on its own clock (0 to 5 s)
+ok: the first half ends on the cut at 30 degrees
+ok: Tilt Y is cut at its value there too (15 degrees)
+ok: a trim of the start moves the tilt keys with what the clip shows (2 s earlier on the clip's clock)

@@ -24,10 +24,11 @@ namespace HandPegGoldenTests;
 /// a lagged copy has no saved fingerprint (two edits since a save still come back unsaved) and says how far back it is (StepsBack).
 /// autosave-lag-front-tab-save (the review's fixes): a save of the tab in front lets its recovery file go at once, even while playing; the 20 s
 /// tick drops one left after a save it was not told of before anything holds it back, and waits out a press, a modal dialog or a close.
+/// autosave-lag-legacy-lut (5.6A fix round 2): a Legacy Grade Convert as N-1 and an edit as N: the copy keeps the legacy LUT path of N-2
+/// with no Color Grade card, round-trips through a file, and Redo moves the LUT into its card again.
 /// </summary>
 public static class LaggedRecoveryTests
 {
-    private const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
     private const string First = "D:/media/first.mkv", Second = "D:/media/second.mkv";
 
     /// <summary>The cases that need no WPF Application (run before UiScaleTests makes one).</summary>
@@ -38,35 +39,13 @@ public static class LaggedRecoveryTests
         yield return Case("autosave-lag-project-frame", "# A Project Settings step among the last two: the copy has the frame before it, and Redo puts each frame back with its step.", ProjectFrame);
         yield return Case("autosave-lag-front-tab", "# The tab in front's crash-recovery file: written two actions back on its queue, deleted when clean, and opened by the next start at N-2.", FrontTab);
         yield return Case("autosave-lag-front-tab-save", "# A save of the tab in front lets its crash-recovery file go at once, even while playing; the tick drops a stale one first and waits out a press.", FrontTabSaved);
+        yield return Case("autosave-lag-legacy-lut", "# A Legacy Grade Convert among the last two actions: the copy keeps the legacy LUT path from before it, and Redo moves it into the card again.", LegacyLut);
     }
 
     /// <summary>The cases on the WPF Application UiScaleTests made (run after it).</summary>
     public static IEnumerable<GraphResult> Live()
     {
         yield break;
-    }
-
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
     }
 
     private static string Fresh(string name)
@@ -92,7 +71,7 @@ public static class LaggedRecoveryTests
         two.Clips.Add(DogfoodTests.FileClip(Second, 0, 6));
         document.Tracks.AddRange([one, two]);
         document.MediaPool.AddRange([First, Second]);
-        typeof(MainViewModel).GetMethod("InstallDocument", Hidden)!.Invoke(vm, [document]);
+        vm.InstallDocument(document);
         vm.MarkSaved();
         return vm;
     }
@@ -258,7 +237,7 @@ public static class LaggedRecoveryTests
         var path = Path.Combine(Fresh("autosave-lag-threshold"), "Saved.hproj");
         var line = held.SaveProjectTo(path);
         var file = ProjectStore.Load(path);
-        expect(line.StartsWith("Project saved", StringComparison.Ordinal) && Shape(file.Timeline) == Shape(held.Document) && file.UndoHistory?.Count == 3 && file.RedoHistory is null,
+        expect(line.IsSaved && Shape(file.Timeline) == Shape(held.Document) && file.UndoHistory?.Count == 3 && file.RedoHistory is null,
             "Save with three fresh steps writes the project as it is (N), its three steps to undo, nothing to redo");
         expect(held.FreshSteps == 0 && !held.CanLagRecovery, "and after the save no step is fresh: the next copy is exact until two more steps");
     }
@@ -365,6 +344,51 @@ public static class LaggedRecoveryTests
         expect(Frame(openedLast) == tall && StateJson(openedLast) == StateJson(last), "Ctrl+Y again gives N: tall, exactly as it was live" + Differs(StateJson(openedLast), StateJson(last)));
     }
 
+    // ----- autosave-lag-legacy-lut (5.6A fix round 2) -----
+
+    private static int Graded(MainViewModel vm) => vm.SequenceEffects.Count(c => c.Type == HandPegApp.Models.Effects.EffectRegistry.ColorStudio);
+
+    private static void LegacyLut(Action<bool, string> expect)
+    {
+        // An old project opened with the Filters tab's LUT (the file is never read: the path alone moves).
+        var folder = Fresh("autosave-lag-legacy-lut");
+        var lut = Path.Combine(folder, "legacy.cube");
+        var vm = Open();
+        vm.LutPath = lut;
+        vm.MarkSaved();
+        var s0 = Shape(vm.Document);
+
+        expect(vm.ConvertLegacyGrade() && vm.LutPath == "" && Graded(vm) == 1
+               && vm.SequenceEffects[0].GetText(HandPegApp.Models.Effects.ColorGradeKeys.Lut) == lut,
+            "action N-1: Convert, the legacy LUT moved into a Color Grade card (the legacy path empty)");
+        expect(vm.TrimClip(vm.ViewOf(vm.Document.Tracks[0].Clips[0]), start: false, seconds: 3), "action N: a trim");
+        var s2 = Shape(vm.Document);
+        expect(vm.FreshSteps == 2 && vm.CanLagRecovery && vm.LutPath == "" && Graded(vm) == 1, "two steps since the save: the copy lags");
+
+        // The copy's Sequence Output cards come from the step before the Convert, so its legacy LUT path must too (Lagged, the look's LutPath).
+        var lagged = vm.CaptureStateForRecovery("Lagged");
+        expect(Shape(lagged.Timeline) == s0 && lagged.Settings.LutPath == lut
+               && !(lagged.Settings.SequenceEffects ?? []).Any(c => c.Type == HandPegApp.Models.Effects.EffectRegistry.ColorStudio),
+            "the copy is before the Convert: the legacy LUT path kept, no Color Grade card");
+
+        var path = Path.Combine(folder, "Lagged.autosave.hproj");
+        ProjectStore.SaveTo(lagged, path);
+        var opened = Opened(path);
+        expect(opened.LutPath == lut && opened.HasLegacyGrade && Graded(opened) == 0 && Shape(opened.Document) == s0,
+            "written and opened at N-2: the legacy LUT back (the Color tab's fold shows it), no card");
+        vm.Undo();
+        vm.Undo();
+        expect(vm.LutPath == lut && StateJson(opened) == StateJson(vm), "exactly the project two Undos leave" + Differs(StateJson(opened), StateJson(vm)));
+        vm.Redo();
+        vm.Redo();
+        expect(vm.LutPath == "" && Graded(vm) == 1 && Shape(vm.Document) == s2, "(the view model's two Undos redone)");
+
+        opened.Redo();
+        expect(opened.LutPath == "" && Graded(opened) == 1 && Shape(opened.Document) == s0, "Ctrl+Y gives N-1: the Convert back, the LUT in its card again");
+        opened.Redo();
+        expect(Shape(opened.Document) == s2 && StateJson(opened) == StateJson(vm), "Ctrl+Y again gives N: exactly as it was live" + Differs(StateJson(opened), StateJson(vm)));
+    }
+
     // ----- autosave-lag-front-tab -----
 
     private static void FrontTab(Action<bool, string> expect)
@@ -462,13 +486,13 @@ public static class LaggedRecoveryTests
             "the status line as it comes back: \"Opened 2 actions back from where HandPeg stopped: Ctrl+Y twice brings the last edits back.\"");
 
         // The window's wiring.
-        var window = Source("MainWindow.xaml.cs");
-        var cache = Source("MainWindow.TabCache.cs");
-        var tabsSource = Source("MainWindow.ProjectTabs.cs");
-        expect(Ordered(MemberOf(window, "private void Autosave_Tick("), "if (_viewModel.IsPlaying || _gpu is { IsPlaying: true } || IsScrubHeld || TimelineDragHeld || _switchingTab)",
+        var window = SourceProbe.Src("MainWindow.xaml.cs");
+        var cache = SourceProbe.Src("MainWindow.TabCache.cs");
+        var tabsSource = SourceProbe.Src("MainWindow.ProjectTabs.cs");
+        expect(SourceProbe.InOrder(SourceProbe.Member(window, "private void Autosave_Tick("), "if (_viewModel.IsPlaying || _gpu is { IsPlaying: true } || IsScrubHeld || TimelineDragHeld || _switchingTab)",
                    "return;", "KeepFrontRecovery();", "settings.AutosaveEnabled", "_lastAutosave = DateTime.UtcNow;", "_viewModel.AutosaveAsync();"),
             "the 20 s tick: nothing while playing, scrubbing, dragging or switching (the autosave neither); the tab in front's file whatever the autosave says");
-        expect(Ordered(MemberOf(cache, "private void KeepFrontRecovery("), "if (_frontRecovery is { } last && last.Id != tab.Id)", "if (_viewModel.BusyWithDocument || _viewModel.IsRecording)",
+        expect(SourceProbe.InOrder(SourceProbe.Member(cache, "private void KeepFrontRecovery("), "if (_frontRecovery is { } last && last.Id != tab.Id)", "if (_viewModel.BusyWithDocument || _viewModel.IsRecording)",
                    "FrontRecoveryFor(_unresumed.Contains(tab.Id),", "WriteFrontRecovery(tab, position);", "DeleteTabFiles(tab.Id);"),
             "the tick follows the table, never for a tab not brought back");
 
@@ -479,34 +503,34 @@ public static class LaggedRecoveryTests
         var exporting = busyVm.BusyWithDocument;
         loads.SetValue(busyVm, true);
         var opening = busyVm.BusyWithDocument;
-        var vmSource = Source(Path.Combine("ViewModels", "MainViewModel.EncodeAndLoad.cs")) + Source(Path.Combine("ViewModels", "MainViewModel.Project.cs"))
-            + Source(Path.Combine("ViewModels", "MainViewModel.OutputAndDeadAir.cs"));
+        var vmSource = SourceProbe.Src(Path.Combine("ViewModels", "MainViewModel.EncodeAndLoad.cs")) + SourceProbe.Src(Path.Combine("ViewModels", "MainViewModel.Project.cs"))
+            + SourceProbe.Src(Path.Combine("ViewModels", "MainViewModel.OutputAndDeadAir.cs"));
         expect(!exporting && opening
                && new[] { "\"Opening a project\"", "\"Loading the source\"", "\"Loading with a Game Preset\"", "\"Downloading a link\"", "\"Removing dead air\"" }
                    .All(t => vmSource.Contains($"RunOperationAsync({t}, WorkLane.Interactive, loadsDocument: true,", StringComparison.Ordinal))
-               && new[] { "\"Exporting\"", "\"Encoding the queue\"" }.All(t => vmSource.Contains($"RunOperationAsync({t}, WorkLane.Foreground, async", StringComparison.Ordinal) || Source(Path.Combine("ViewModels", "MainViewModel.Queue.cs")).Contains($"RunOperationAsync({t}, WorkLane.Foreground, async", StringComparison.Ordinal)),
+               && new[] { "\"Exporting\"", "\"Encoding the queue\"" }.All(t => vmSource.Contains($"RunOperationAsync({t}, WorkLane.Foreground, async", StringComparison.Ordinal) || SourceProbe.Src(Path.Combine("ViewModels", "MainViewModel.Queue.cs")).Contains($"RunOperationAsync({t}, WorkLane.Foreground, async", StringComparison.Ordinal)),
             "(5.5.0, Q9 b) the tab in front's recovery copy is written while an export, the queue or captions run, and held while a project or file is opened, loaded or rewritten (Remove Dead Air)");
-        expect(Ordered(MemberOf(cache, "private void WriteFrontRecovery("), "TakeHeaderForTab(header);", "_viewModel.CaptureStateForTab(", "_viewModel.TakeRecoveryLag()",
+        expect(SourceProbe.InOrder(SourceProbe.Member(cache, "private void WriteFrontRecovery("), "TakeHeaderForTab(header);", "_viewModel.CaptureStateForTab(", "_viewModel.TakeRecoveryLag()",
                    "_tabs.Enqueue(id, () =>", "WriteRecoveryFile(_tabs, id, state, lag, saved, json)"),
             "captured on the window's thread, lagged and written on the tab's own queue (the queue every write and delete of its files is on)");
-        expect(Ordered(MemberOf(cache, "private void DeleteTabFiles("), "_frontRecovery = null;", "_tabs.Enqueue(id, () => _tabs.DeleteFiles(id));")
-               && MemberOf(tabsSource, "private void RefreshActiveTab(").Contains("DropFrontRecovery(tab);", StringComparison.Ordinal)
-               && MemberOf(tabsSource, "private ProjectTabHeader PutActiveBehind(").Contains("DropFrontRecovery(tab);", StringComparison.Ordinal),
+        expect(SourceProbe.InOrder(SourceProbe.Member(cache, "private void DeleteTabFiles("), "_frontRecovery = null;", "_tabs.Enqueue(id, () => _tabs.DeleteFiles(id));")
+               && SourceProbe.Member(tabsSource, "private void RefreshActiveTab(").Contains("DropFrontRecovery(tab);", StringComparison.Ordinal)
+               && SourceProbe.Member(tabsSource, "private ProjectTabHeader PutActiveBehind(").Contains("DropFrontRecovery(tab);", StringComparison.Ordinal),
             "deleted with the tab's files (brought back, closed), at once when it is saved or undone back to the save, and when an emptied tab goes behind");
-        expect(MemberOf(cache, "internal static bool? WriteRecoveryFile(").Contains("tabs.WriteTab(id, lagged ?? state, back ? null : saved, ProjectTabs.WithStepsBack(header, back ? MainViewModel.RecoveryLagSteps : 0));", StringComparison.Ordinal)
-               && MemberOf(tabsSource, "private void TakeHeaderForTab(").Contains("tab.StepsBack = 0;", StringComparison.Ordinal)
-               && Ordered(MemberOf(tabsSource, "private async Task<bool> ResumeTabAsync("), "DeleteTabFiles(id);", "else if (tab.StepsBack > 0)", "_viewModel.StatusText = StepsBackLine(tab.StepsBack);", "tab.StepsBack = 0;")
-               && MemberOf(Source("MainWindow.TabExit.cs"), "private List<TabExitRow> RowsOf(").Contains("RowDetail(path, tab.StepsBack)", StringComparison.Ordinal),
+        expect(SourceProbe.Member(cache, "internal static bool? WriteRecoveryFile(").Contains("tabs.WriteTab(id, lagged ?? state, back ? null : saved, ProjectTabs.WithStepsBack(header, back ? MainViewModel.RecoveryLagSteps : 0));", StringComparison.Ordinal)
+               && SourceProbe.Member(tabsSource, "private void TakeHeaderForTab(").Contains("tab.StepsBack = 0;", StringComparison.Ordinal)
+               && SourceProbe.InOrder(SourceProbe.Member(tabsSource, "private async Task<bool> ResumeTabAsync("), "DeleteTabFiles(id);", "else if (tab.StepsBack > 0)", "_viewModel.StatusText = StepsBackLine(tab.StepsBack);", "tab.StepsBack = 0;")
+               && SourceProbe.Member(SourceProbe.Src("MainWindow.TabExit.cs"), "private List<TabExitRow> RowsOf(").Contains("RowDetail(path, tab.StepsBack)", StringComparison.Ordinal),
             "a lagged copy is marked in its header (every exact write of the tab clears it), said once as the tab comes back, and named in the exit dialog's row");
 
         // Only the autosave and this file lag: every other write is exact.
-        var src = Path.Combine(RepositoryRoot(), "src");
+        var src = Path.Combine(SourceProbe.Root, "src");
         var lagging = Directory.EnumerateFiles(src, "*.cs", SearchOption.AllDirectories)
             .Where(f => File.ReadAllText(f).Contains("TakeRecoveryLag()", StringComparison.Ordinal)).Select(Path.GetFileName).OrderBy(n => n, StringComparer.Ordinal).ToList();
-        var project = Source("ViewModels", "MainViewModel.Project.cs");
+        var project = SourceProbe.Src("ViewModels", "MainViewModel.Project.cs");
         expect(lagging.SequenceEqual(["MainViewModel.Project.cs", "MainViewModel.Recovery.cs", "MainWindow.TabCache.cs"])
-               && project.Split("TakeRecoveryLag()").Length == 2 && MemberOf(project, "public async Task AutosaveAsync(").Contains("TakeRecoveryLag()", StringComparison.Ordinal)
-               && cache.Split("TakeRecoveryLag()").Length == 2 && MemberOf(cache, "private void WriteFrontRecovery(").Contains("TakeRecoveryLag()", StringComparison.Ordinal),
+               && project.Split("TakeRecoveryLag()").Length == 2 && SourceProbe.Member(project, "public async Task AutosaveAsync(").Contains("TakeRecoveryLag()", StringComparison.Ordinal)
+               && cache.Split("TakeRecoveryLag()").Length == 2 && SourceProbe.Member(cache, "private void WriteFrontRecovery(").Contains("TakeRecoveryLag()", StringComparison.Ordinal),
             "the lag is taken only by the autosave and the tab in front's recovery file (Save, Save As, portable, bundle, tabs put behind or kept, duplicates and the crash writer stay exact)");
     }
 
@@ -544,7 +568,7 @@ public static class LaggedRecoveryTests
         vm.ProjectSaved += Saved;
         vm.IsPlaying = true;
         var line = vm.SaveProjectTo(Path.Combine(root, "Saved.hproj"));
-        expect(line.StartsWith("Project saved", StringComparison.Ordinal) && Gone(),
+        expect(line.IsSaved && Gone(),
             "a save made while playing: the recovery file and its header are gone (deleted on its queue, after any write of it)");
         expect(typeof(MainWindow).GetField("_frontRecovery", Hidden)!.GetValue(window) is null, "and the tick's last look is let go: the next tick looks afresh");
         vm.ProjectSaved -= Saved;
@@ -567,60 +591,23 @@ public static class LaggedRecoveryTests
         tabs.ForgetSession();
 
         // The wiring: every save of the project raises it, an open or an autosave never; the window hears it from its constructor.
-        var project = Source("ViewModels", "MainViewModel.Project.cs");
-        var mainSource = Source("MainWindow.xaml.cs");
-        var cache = Source("MainWindow.TabCache.cs");
-        expect(new[] { "public string SaveProjectTo(", "private string SavePortable(", "public string SaveProject(string name)", "private string WriteBackConverted(" }
-                   .All(m => Ordered(MemberOf(project, m), "MarkSaved();", "ProjectSaved?.Invoke();"))
-               && project.Split("ProjectSaved?.Invoke();").Length == 5 && !MemberOf(project, "public async Task AutosaveAsync(").Contains("ProjectSaved", StringComparison.Ordinal),
+        var project = SourceProbe.Src("ViewModels", "MainViewModel.Project.cs");
+        var mainSource = SourceProbe.Src("MainWindow.xaml.cs");
+        var cache = SourceProbe.Src("MainWindow.TabCache.cs");
+        expect(new[] { "public SaveOutcome SaveProjectTo(", "private SaveOutcome SavePortable(", "public SaveOutcome SaveProject(string name)", "private string WriteBackConverted(" }
+                   .All(m => SourceProbe.InOrder(SourceProbe.Member(project, m), "MarkSaved();", "ProjectSaved?.Invoke();"))
+               && project.Split("ProjectSaved?.Invoke();").Length == 5 && !SourceProbe.Member(project, "public async Task AutosaveAsync(").Contains("ProjectSaved", StringComparison.Ordinal),
             "MainViewModel.ProjectSaved is raised by Save, Save As, a portable save and a converted project written back (four places), never by the autosave");
         expect(mainSource.Contains("_viewModel.ProjectSaved += ViewModel_ProjectSaved;", StringComparison.Ordinal)
-               && MemberOf(cache, "private void ViewModel_ProjectSaved(").Contains("DropFrontRecovery(_tabs.Active)", StringComparison.Ordinal),
+               && SourceProbe.Member(cache, "private void ViewModel_ProjectSaved(").Contains("DropFrontRecovery(_tabs.Active)", StringComparison.Ordinal),
             "the window lets the tab in front's recovery file go on it");
-        expect(Ordered(MemberOf(mainSource, "private void Autosave_Tick("), "if (_frontRecovery is { Written: true } && !_viewModel.MayHaveUnsavedChanges && !_switchingTab)",
+        expect(SourceProbe.InOrder(SourceProbe.Member(mainSource, "private void Autosave_Tick("), "if (_frontRecovery is { Written: true } && !_viewModel.MayHaveUnsavedChanges && !_switchingTab)",
                    "DropFrontRecovery(_tabs.Active);", "if (_viewModel.IsPlaying || _gpu is { IsPlaying: true } || IsScrubHeld || TimelineDragHeld || _switchingTab)", "return;",
                    "if (!FrontRecoveryHeld)", "KeepFrontRecovery();"),
             "the tick: a stale file dropped first (O(1)); the recovery copy never while playing, scrubbing, dragging or switching, nor while held");
-        expect(Ordered(cache[cache.IndexOf("private bool FrontRecoveryHeld =>", StringComparison.Ordinal)..], "Mouse.LeftButton == System.Windows.Input.MouseButtonState.Pressed",
+        expect(SourceProbe.InOrder(cache[cache.IndexOf("private bool FrontRecoveryHeld =>", StringComparison.Ordinal)..], "Mouse.LeftButton == System.Windows.Input.MouseButtonState.Pressed",
                    "Mouse.Captured is not null", "ComponentDispatcher.IsThreadModal", "_closeAsked;"),
             "held: the left button down or the mouse captured anywhere (the player's handles, the 3D view, a slider), a modal dialog up, or a close under way");
     }
 
-    private static string RepositoryRoot()
-    {
-        for (var folder = new DirectoryInfo(AppContext.BaseDirectory); folder is not null; folder = folder.Parent)
-        {
-            if (File.Exists(Path.Combine(folder.FullName, "HandPegApp.csproj")))
-                return folder.FullName;
-        }
-
-        throw new DirectoryNotFoundException("HandPegApp.csproj was not found above the golden tests' program.");
-    }
-
-    private static string Source(params string[] parts) => File.ReadAllText(Path.Combine([RepositoryRoot(), "src", .. parts])).ReplaceLineEndings("\n");
-
-    /// <summary>A member's text: from its signature to the end of its body (the next line that closes at its indent).</summary>
-    private static string MemberOf(string source, string signature)
-    {
-        var start = source.IndexOf(signature, StringComparison.Ordinal);
-        if (start < 0)
-            return "";
-        var end = source.IndexOf("\n    }\n", start, StringComparison.Ordinal);
-        return end < 0 ? source[start..] : source[start..(end + 6)];
-    }
-
-    /// <summary>Whether every one of <paramref name="parts"/> is in <paramref name="text"/>, each after the one before.</summary>
-    private static bool Ordered(string text, params string[] parts)
-    {
-        var at = 0;
-        foreach (var part in parts)
-        {
-            var found = text.IndexOf(part, at, StringComparison.Ordinal);
-            if (found < 0)
-                return false;
-            at = found + part.Length;
-        }
-
-        return true;
-    }
 }

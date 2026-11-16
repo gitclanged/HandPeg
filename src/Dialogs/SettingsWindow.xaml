@@ -240,6 +240,25 @@
                             <Border x:Name="StageCaptionFrame" Visibility="Collapsed" Margin="0,0,0,14" SizeChanged="StageCaptionFrame_SizeChanged">
                                 <local:CaptionPreview x:Name="StageCaptions" />
                             </Border>
+                            <!--
+                                5.6A, Export & Hardware only: the GPU and NPU role cards as the first run has them (RoleCardsPanel: a click on a card
+                                picks its role, into this window's copy, the role lists following), the System tier, and the Playback & A/V Sync
+                                Test's last result, read-only (its test is the GPU & NPU Roles section's own card). SettingsWindow.Hardware.cs fills it.
+                            -->
+                            <StackPanel x:Name="StageHardwarePanel" Visibility="Collapsed" Margin="0,0,0,14">
+                                <DockPanel Margin="0,0,0,8">
+                                    <Border x:Name="StageSystemTier" DockPanel.Dock="Right" Visibility="Collapsed" VerticalAlignment="Center"
+                                            AutomationProperties.AutomationId="StageSystemTier" />
+                                    <TextBlock Text="GPU &amp; NPU Roles" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                </DockPanel>
+                                <local:RoleCardsPanel x:Name="StageRoleCards" AutomationProperties.Name="Stage GPU and NPU Roles" />
+                                <DockPanel Margin="0,2,0,0">
+                                    <TextBlock x:Name="StageSyncCheck" DockPanel.Dock="Left" Text="&#xE73E;" FontFamily="Segoe MDL2 Assets" FontSize="12" Visibility="Collapsed"
+                                               VerticalAlignment="Center" Margin="0,0,6,0" ToolTip="In sync" />
+                                    <TextBlock x:Name="StageSyncText" Foreground="{DynamicResource MutedTextBrush}" FontSize="12" TextTrimming="CharacterEllipsis"
+                                               VerticalAlignment="Center" AutomationProperties.AutomationId="StageSyncSummary" />
+                                </DockPanel>
+                            </StackPanel>
                             <local:SettingsStagePreview x:Name="StagePreview" />
                             <!-- The keys of the main window, drawn for the Keybinds & Lightning Dial page (filled by InitializeKeybindsPage) -->
                             <ContentControl x:Name="StageKeybindsHost" Visibility="Collapsed" Focusable="False" />
@@ -556,8 +575,6 @@
                     <TextBlock Text="Tabs and bars" Style="{StaticResource SectionTitle}" />
                     <CheckBox Content="Show Command Preview Tab" IsChecked="{Binding ShowCommandPreviewTab}"
                               ToolTip="Adds a tab showing the FFmpeg command that will run, which can also be edited by hand." />
-                    <CheckBox Content="Show color grading on the Filters tab" IsChecked="{Binding ShowAdvancedFiltersTab}"
-                              ToolTip="Shows colour correction (contrast, brightness, saturation, gamma) and sharpening on the Filters tab. Values already set there keep applying while they are hidden." />
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Preset Bar Location:" Style="{StaticResource FieldLabel}" />
                         <ComboBox x:Name="PresetBarBox" MinWidth="220" Margin="0" SelectedItem="{Binding PresetBarLocation}" AutomationProperties.Name="Preset Bar Location"
@@ -818,13 +835,12 @@
                     <!-- The four GPU roles (5.0-0): each card's job, set by hand or by Test & Auto-Tune Hardware (HardwareBenchmarkService);
                          the NPUs and what Auto-Captions run on (5.2-Arm64AndNpu, SettingsWindow.Hardware.cs) -->
                     <TextBlock Text="GPU &amp; NPU Roles" Style="{StaticResource SectionTitle}" />
-                    <TextBlock Style="{StaticResource Hint}"
-                               Text="Which graphics card does what, and what the NPU is for. Auto suits most computers. Test &amp; Auto-Tune Hardware measures every card in a few seconds (decoding speed, seeking, accuracy, and how fast frames cross between cards), lists the NPUs, and sets the four GPU roles from what it finds; each stays yours to change." />
+                    <TextBlock Style="{StaticResource Hint}" Text="Which graphics card does what. Auto suits most computers." />
                     <!-- One option: the button, its status, and (after a test) why each role went where it did -->
                     <StackPanel>
                         <StackPanel Style="{StaticResource Row}">
                             <Button x:Name="BenchmarkButton" Padding="12,4" Margin="0" Click="Benchmark_Click" AutomationProperties.Name="Test &amp; Auto-Tune Hardware"
-                                    ToolTip="Runs the hardware benchmark: each graphics card decodes a short 1080p60 test clip in hardware and the processor decodes it too, for speed, seek time and accuracy against the processor's picture, then frames are sent to and from each card and between two cards. The results are drawn beside this list, kept, and the four GPU roles below are set from them. It runs in a process of its own, so a driver that falls over cannot take HandPeg with it. Press again to stop it.">
+                                    ToolTip="Measures decoding, the compositor and the bus; sets the GPU roles">
                                 <StackPanel Orientation="Horizontal">
                                     <TextBlock Text="&#xE945;" FontFamily="Segoe MDL2 Assets" FontSize="12" VerticalAlignment="Center" />
                                     <TextBlock x:Name="BenchmarkButtonText" Text="Test &amp; Auto-Tune Hardware" Margin="7,0,0,0" VerticalAlignment="Center" />

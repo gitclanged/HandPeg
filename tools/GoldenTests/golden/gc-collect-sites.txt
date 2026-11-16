@@ -1,0 +1,5 @@
+# Blocking collections only behind the quiet gate (MemoryHygiene), the worker's idle trim and the crash path; no working-set trim anywhere.
+ok: GC.Collect only in MemoryHygiene (the quiet gate), the worker's idle trim and the crash path: Compositor/CompositorWorker.cs, Services/CrashReporter.Reports.cs, Services/MemoryHygiene.cs
+ok: no working-set trim (K32EmptyWorkingSet): Law 2 reads private bytes, not a trimmed working set
+ok: the process heap is compacted only after a quiet-gated collection: Native/Kernel32.cs, Services/MemoryHygiene.cs
+ok: Aggressive collections only in the worker (no frame pump or audio there); the editor's are Forced (keeps the 64 MB gen-0 budget)

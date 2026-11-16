@@ -2,6 +2,7 @@
 ok: made, it captures nothing (Law 1)
 ok: shown and paused: one capture, drawn as the Luma Waveform (384 x 256)
 ok: another scope is drawn from the last frame, without a capture
+ok: another scope (Vectorscope) drawn from the last frame, 256 x 256 and square, no new capture; the scope box's tooltip 12 words at most
 ok: three moves of the playhead in a burst: one capture
 ok: while playing: no capture, the last picture kept and "Updates when paused" said
 ok: paused again: captured once more, the note gone

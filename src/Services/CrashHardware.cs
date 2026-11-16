@@ -4,6 +4,9 @@ using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics.X86;
 using System.Text;
 using Microsoft.Win32;
+using HandPegApp.Native;
+using static HandPegApp.Native.Kernel32;
+using static HandPegApp.Native.User32;
 
 namespace HandPegApp.Services;
 
@@ -234,7 +237,7 @@ public static partial class CrashHardware
         var mode = stackalloc byte[DevModeSize];
         new Span<byte>(mode, DevModeSize).Clear();
         *(ushort*)(mode + 68) = DevModeSize;
-        if (EnumDisplaySettingsW(null, EnumCurrentSettings, mode) != 0)
+        if (EnumDisplaySettings(null, EnumCurrentSettings, mode))
         {
             DisplayWidth = *(int*)(mode + 172);
             DisplayHeight = *(int*)(mode + 176);
@@ -289,7 +292,7 @@ public static partial class CrashHardware
             // Older Windows has no power mode.
         }
 
-        if (GetSystemPowerStatus(out var status) != 0)
+        if (GetSystemPowerStatus(out var status))
         {
             if (status.ACLineStatus is 0 or 1)
                 parts.Add(status.ACLineStatus == 1 ? "on AC" : "on battery");
@@ -425,9 +428,6 @@ public static partial class CrashHardware
     private static partial int GetPhysicallyInstalledSystemMemory(out ulong kilobytes);
 
     [LibraryImport("user32.dll")]
-    private static unsafe partial int EnumDisplaySettingsW(char* device, int mode, byte* devMode);
-
-    [LibraryImport("user32.dll")]
     private static partial uint GetDpiForSystem();
 
     [LibraryImport("powrprof.dll")]
@@ -436,20 +436,4 @@ public static partial class CrashHardware
     [LibraryImport("powrprof.dll")]
     private static partial uint PowerGetEffectiveOverlayScheme(out Guid overlay);
 
-    [LibraryImport("kernel32.dll")]
-    private static partial nint LocalFree(nint memory);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct SystemPowerStatus
-    {
-        public byte ACLineStatus;
-        public byte BatteryFlag;
-        public byte BatteryLifePercent;
-        public byte SystemStatusFlag;
-        public uint BatteryLifeTime;
-        public uint BatteryFullLifeTime;
-    }
-
-    [LibraryImport("kernel32.dll")]
-    private static partial int GetSystemPowerStatus(out SystemPowerStatus status);
 }

@@ -64,8 +64,17 @@ public sealed class ProjectFile
 {
     public const string FormatName = "handpeg-project";
 
-    /// <summary>The format this version writes, and the only one it opens (a newer one too, as far as it knows it, when asked).</summary>
-    public const int CurrentVersion = 6;
+    /// <summary>The newest format this version reads and writes (a newer one opens too, as far as it is known, when the user asks).</summary>
+    public const int CurrentVersion = 7;
+
+    /// <summary>
+    /// The format of a project that uses nothing newer than 5.5 can store: still written as 6, so a 5.5 release opens it. A
+    /// project that uses a 5.6 feature (<see cref="ProjectStore.FormatFor"/>) is written as 7, which 5.5 refuses to overwrite.
+    /// </summary>
+    public const int BaseVersion = 6;
+
+    /// <summary>The oldest format this version opens: formats 1 to 5 (HandPeg 4.4 and earlier) are refused, not converted.</summary>
+    public const int OldestReadable = 6;
 
     // No defaults here: a file that does not say what it is must not pass for one that does. These three come first in the
     // file (its values are written in the order they are declared here), where PeekHeader finds them.
@@ -75,8 +84,12 @@ public sealed class ProjectFile
     /// <summary>The HandPeg that wrote the file ("HandPeg 4.3.0"). Named when a version too old for the file refuses it.</summary>
     public string? WrittenBy { get; set; }
 
+    /// <summary>Fields this version does not know (a newer HandPeg's), kept so that saving does not drop them.</summary>
+    [JsonExtensionData]
+    public Dictionary<string, System.Text.Json.JsonElement>? Extra { get; set; }
+
     /// <summary>
-    /// The project's thumbnail (Pass 5.2D): a small JPEG of the Sequence at the playhead as it was saved, in Base64,
+    /// The project's thumbnail (5.2.0): a small JPEG of the Sequence at the playhead as it was saved, in Base64,
     /// for the Project Manager, the launch window and Windows Explorer's preview (ProjectThumbnail, the HandPeg.ShellThumbnails handler).
     /// Right after the three above, so that a reader finds it in the file's first hundred kilobytes or so without reading the rest
     /// (PeekHeader has stopped by then). Absent when the save had none; an older HandPeg reads past it.
@@ -267,6 +280,10 @@ public sealed class ProjectSource
 
     public string DownloadResolution { get; set; } = "Best";
     public bool DownloadSubtitles { get; set; }
+
+    /// <summary>Fields this version does not know (a newer HandPeg's), kept so that saving does not drop them.</summary>
+    [JsonExtensionData]
+    public Dictionary<string, System.Text.Json.JsonElement>? Extra { get; set; }
 }
 
 public sealed class ProjectOutput
@@ -286,11 +303,19 @@ public sealed class ProjectOutput
     /// <summary>The subtitle track (imported, or edited by hand): its cues, its offset, where it came from. Left out when there is none.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public SubtitleTrackData? Subtitles { get; set; }
+
+    /// <summary>Fields this version does not know (a newer HandPeg's), kept so that saving does not drop them.</summary>
+    [JsonExtensionData]
+    public Dictionary<string, System.Text.Json.JsonElement>? Extra { get; set; }
 }
 
 /// <summary>What of the sequence is not on its timeline.</summary>
 public sealed class ProjectSequence
 {
+    /// <summary>Fields this version does not know (a newer HandPeg's), kept so that saving does not drop them.</summary>
+    [JsonExtensionData]
+    public Dictionary<string, System.Text.Json.JsonElement>? Extra { get; set; }
+
     /// <summary>Splits and the playhead keep to the main video's I-frames.</summary>
     public bool SnapToIFrames { get; set; }
 
@@ -340,6 +365,10 @@ public sealed class ProjectBackground
     public List<Models.Effects.EffectState>? Effects { get; set; }
 
     public bool EffectsBypassed { get; set; }
+
+    /// <summary>Fields this version does not know (a newer HandPeg's), kept so that saving does not drop them.</summary>
+    [JsonExtensionData]
+    public Dictionary<string, System.Text.Json.JsonElement>? Extra { get; set; }
 }
 
 /// <summary>
@@ -365,7 +394,7 @@ public static class ProjectStore
         ? $"HandPeg {version.Major}.{version.Minor}.{Math.Max(version.Build, 0)}"
         : "HandPeg";
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
+    internal static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         Converters = { new JsonStringEnumConverter() },
@@ -442,7 +471,7 @@ public static class ProjectStore
 
         var path = Path.Combine(Folder, fileName + Extension);
         RefuseNewer(path);
-        WriteProject(state, path);
+        WriteProject(state, path, durable: true);
         return path;
     }
 
@@ -450,24 +479,28 @@ public static class ProjectStore
     public const string AutosaveSuffix = ".autosave";
 
     /// <summary>Saves the state to a file of the user's choosing, wherever it is.</summary>
-    public static string SaveTo(ProjectState state, string path)
+    /// <param name="durable">
+    /// Flush the file to the disk before it replaces the old one (<see cref="AtomicFile"/>): true for the user's project saves and
+    /// autosaves; false for the project-tab cache, which is rewritten on every tab switch and only has to survive a process crash.
+    /// </param>
+    public static string SaveTo(ProjectState state, string path, bool durable = true)
     {
         RefuseNewer(path);
-        WriteProject(state, path);
+        WriteProject(state, path, durable);
         return path;
     }
 
     /// <summary>
     /// The state written as <see cref="Serialize"/> would make its text, the very same bytes (UTF-8, no byte order mark), but
-    /// straight into the file (5.4D-TabPerf): the JSON goes out to it in pieces of about 16 KB as it is made, so the whole text is
+    /// straight into the file (5.4.0): the JSON goes out to it in pieces of about 16 KB as it is made, so the whole text is
     /// never held, nor a buffer of all of it (a tab put behind writes one of these, on the pool, at every switch). Only the undo
     /// history goes out as one piece (UndoStepsConverter writes it whole), its steps' Base64 made as it goes. Whole or not at all
-    /// (<see cref="WriteWhole(string, Action{Stream})"/>): what goes wrong while it is written leaves the old file as it was.
+    /// (<see cref="AtomicFile.Write"/>): what goes wrong while it is written leaves the old file as it was.
     /// </summary>
-    private static void WriteProject(ProjectState state, string path)
+    private static void WriteProject(ProjectState state, string path, bool durable)
     {
         var file = ToFile(state);
-        WriteWhole(path, stream => JsonSerializer.Serialize(stream, file, JsonOptions));
+        AtomicFile.Write(path, stream => JsonSerializer.Serialize(stream, file, JsonOptions), durable);
     }
 
     /// <summary>
@@ -576,67 +609,37 @@ public static class ProjectStore
     }
 
     /// <summary>
-    /// Writes a file so that it is either the old one or the new one, never half of each: beside it first, then moved over it. Should
-    /// it fail part of the way, the half-written one beside it is deleted and the failure is passed on.
+    /// Writes a file whole (<see cref="AtomicFile"/>): the target holds either its old or its new content, never part of each.
+    /// Not flushed to the disk: for caches and side files that only have to survive a process crash. Project saves go through
+    /// <see cref="SaveTo"/>, which flushes.
     /// </summary>
-    public static void WriteWhole(string path, string content)
-    {
-        if (Path.GetDirectoryName(path) is { Length: > 0 } folder)
-            Directory.CreateDirectory(folder);
-        var partial = PartialPath(path);
-        try
-        {
-            File.WriteAllText(partial, content);
-            File.Move(partial, path, overwrite: true);
-        }
-        catch
-        {
-            TryDeletePartial(partial);
-            throw;
-        }
-    }
+    public static void WriteWhole(string path, string content, bool durable = false) => AtomicFile.WriteAllText(path, content, durable);
+
+    /// <summary>The temporary file a whole write goes into before it replaces <paramref name="path"/> (<see cref="AtomicFile.PartialPath"/>).</summary>
+    internal static string PartialPath(string path) => AtomicFile.PartialPath(path);
 
     /// <summary>
-    /// The file a whole write goes into before it is moved over <paramref name="path"/>: a name of its own each time (5.4D-TabPerf review),
-    /// <c>&lt;path&gt;.&lt;32 hex digits&gt;.tmp</c>, so two writes of the same file at once (a tab's cache file written on the thread pool
-    /// and again as HandPeg falls over) never open the same one; the last to be moved in wins, whole. Still a ".tmp" for the clean-ups.
+    /// <see cref="WriteWhole(string, string, bool)"/> for content produced while it is written: <paramref name="write"/> streams it into
+    /// the temporary file, which then replaces the target. A failure part of the way leaves the target as it was.
     /// </summary>
-    internal static string PartialPath(string path) => path + "." + Guid.NewGuid().ToString("N") + ".tmp";
-
-    private static void TryDeletePartial(string partial)
-    {
-        try
-        {
-            File.Delete(partial);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            // Left for the tabs' own clean-up of a half-written file (any ".tmp" in a session's folder).
-        }
-    }
+    public static void WriteWhole(string path, Action<Stream> write, bool durable = false) => AtomicFile.Write(path, write, durable);
 
     /// <summary>
-    /// <see cref="WriteWhole(string, string)"/> for content made as it is written (5.4D-TabPerf): <paramref name="write"/> writes it
-    /// into the file beside the old one, which is then moved over it. Should it fail part of the way (it throws, the disk fills),
-    /// the old file is left as it was and the half-written one beside it is deleted, and the failure is passed on.
+    /// The format a project is written in: <see cref="ProjectFile.BaseVersion"/> (6) unless it uses something only 5.6 and later
+    /// can store, then <see cref="ProjectFile.CurrentVersion"/> (7), so a 5.5 release refuses to save over it instead of silently
+    /// dropping it. 5.6 additions: a clip faster than 10x (5.5 plays at most 10x), and a look with Keep Pitch off, Smooth Slow-Mo
+    /// or Spectral Audio. Every pass that adds a field 5.5 would lose extends this test (the <c>project-format-7</c> golden).
     /// </summary>
-    public static void WriteWhole(string path, Action<Stream> write)
+    internal static int FormatFor(TimelineDocument timeline, IEnumerable<DeletedClip> deleted)
     {
-        if (Path.GetDirectoryName(path) is { Length: > 0 } folder)
-            Directory.CreateDirectory(folder);
-        var partial = PartialPath(path);
-        try
-        {
-            // As File.WriteAllText opens it (shared for reading); unbuffered, since what writes into it hands it pieces of 16 KB or more.
-            using (var stream = new FileStream(partial, FileMode.Create, FileAccess.Write, FileShare.Read, bufferSize: 0))
-                write(stream);
-            File.Move(partial, path, overwrite: true);
-        }
-        catch
-        {
-            TryDeletePartial(partial);
-            throw;
-        }
+        const double FastestBefore56 = 10;
+        static bool Needs7(TimelineClip clip) =>
+            clip.Speed > FastestBefore56
+            || clip.State is { KeepPitch: false } or { SmoothSlowMo: true } or { SpectralAudio: true };
+
+        var needs7 = timeline.Tracks.Any(track => track.Clips.Any(Needs7) || track.TrackLook is { KeepPitch: false } or { SmoothSlowMo: true } or { SpectralAudio: true })
+                     || deleted.Any(d => d?.Clip is { } clip && Needs7(clip));
+        return needs7 ? ProjectFile.CurrentVersion : ProjectFile.BaseVersion;
     }
 
     /// <summary>The state as a format 6 file. The state is left as it was: its timeline is written from a copy of its own.</summary>
@@ -685,11 +688,11 @@ public static class ProjectStore
             throw new NewerProjectFormatException(header.Version, header.WrittenBy);
         if (header.Version < 1)
             throw new InvalidDataException("This HandPeg project does not say which format it is in.");
-        if (header.Version < ProjectFile.CurrentVersion)
+        if (header.Version < ProjectFile.OldestReadable)
         {
             var writer = header.WrittenBy is { Length: > 0 } by ? $" (saved by {by})" : "";
-            throw new InvalidDataException($"This project is in format {header.Version}{writer}. This version of HandPeg opens format {ProjectFile.CurrentVersion} "
-                                           + "projects only: projects of formats 1 to 5 (HandPeg 4.4 and earlier) are not converted.");
+            throw new InvalidDataException($"This project is in format {header.Version}{writer}. This version of HandPeg opens format {ProjectFile.OldestReadable} "
+                                           + $"to {ProjectFile.CurrentVersion} projects only: projects of formats 1 to 5 (HandPeg 4.4 and earlier) are not converted.");
         }
 
         var file = JsonSerializer.Deserialize<ProjectFile>(json, JsonOptions) ?? throw new InvalidDataException("The project file is empty.");
@@ -772,9 +775,9 @@ public static class ProjectStore
     /// <summary>Whether a piece of JSON says it is a .hproj project of a format this version opens: 6, or a newer one (which asks before it opens).</summary>
     public static bool IsProject(System.Text.Json.Nodes.JsonObject node) =>
         node["format"] is System.Text.Json.Nodes.JsonValue format && format.TryGetValue<string>(out var name) && name == ProjectFile.FormatName
-        && node["version"] is System.Text.Json.Nodes.JsonValue version && version.TryGetValue<int>(out var number) && number >= ProjectFile.CurrentVersion;
+        && node["version"] is System.Text.Json.Nodes.JsonValue version && version.TryGetValue<int>(out var number) && number >= ProjectFile.OldestReadable;
 
-    /// <summary>Whether a file is one to open as a project (typed in, dropped, chosen): a .hproj, or a project bundle (.hpb, 5.0-Release), that is there.</summary>
+    /// <summary>Whether a file is one to open as a project (typed in, dropped, chosen): a .hproj, or a project bundle (.hpb, 5.0.0), that is there.</summary>
     public static bool IsProjectFile(string path) =>
         (path.EndsWith(Extension, StringComparison.OrdinalIgnoreCase) || path.EndsWith(ProjectBundle.Extension, StringComparison.OrdinalIgnoreCase)) && File.Exists(path);
 
@@ -831,11 +834,14 @@ public static class ProjectStore
         // The file's own timeline, its looks too: they are pointed at the masks carried with them (below), while the state's
         // (the window's, a queued job's) go on naming the files on the disk.
         var timeline = state.Timeline.Clone(deep: true);
+        var extras = state.Timeline.CarriedProjectFields;
+        rest.Extra ??= extras?.Settings;
         var file = new ProjectFile
         {
             Format = ProjectFile.FormatName,
-            Version = ProjectFile.CurrentVersion,
+            Version = FormatFor(timeline, state.Deleted),
             WrittenBy = WriterName,
+            Extra = extras?.File,
             ThumbnailJpeg = state.ThumbnailJpeg is { Length: > 0 } thumbnail ? Convert.ToBase64String(thumbnail) : null,
             Name = state.Name,
             SavedAt = state.SavedAt,
@@ -845,6 +851,7 @@ public static class ProjectStore
                 LocalPath = state.LocalMediaPath == state.SourcePath ? "" : state.LocalMediaPath,
                 DownloadResolution = state.DownloadResolution,
                 DownloadSubtitles = state.DownloadSubtitles,
+                Extra = extras?.Source,
             },
             Output = new ProjectOutput
             {
@@ -857,6 +864,7 @@ public static class ProjectStore
                 Subtitles = WrittenOnce(state.Subtitles),
                 TargetFileSize = state.TargetFileSize,
                 ManualCommand = state.ManualCommand,
+                Extra = extras?.Output,
             },
             Sequence = new ProjectSequence
             {
@@ -865,7 +873,7 @@ public static class ProjectStore
                 {
                     Hidden = settings.BackgroundHidden, Radius = settings.BlurRadius, Passes = settings.BlurPasses, Dim = settings.BackgroundDim,
                     Zoom = settings.BackgroundZoom, Effects = settings.BackgroundEffects is { Count: > 0 } effects ? effects : null,
-                    EffectsBypassed = settings.BackgroundEffectsBypassed,
+                    EffectsBypassed = settings.BackgroundEffectsBypassed, Extra = extras?.Background,
                 },
                 Audio = state.AudioTracks,
                 Subtitles = state.SubtitleTracks,
@@ -876,6 +884,7 @@ public static class ProjectStore
                 CaptionAudioPath = state.CaptionAudioPath,
                 CaptionUseExternalAudio = state.CaptionUseExternalAudio ?? false,
                 CaptionAudioTrack = state.CaptionAudioTrackIndex,
+                Extra = extras?.Sequence,
             },
             Settings = rest,
             Timeline = timeline,
@@ -1033,6 +1042,9 @@ public static class ProjectStore
         var settings = file.Settings;
         settings.Name = file.Name;
         var background = sequence.Background ?? new ProjectBackground();
+
+        // What this version does not know of the objects the editor rebuilds on save goes with the timeline, to be written back.
+        timeline.CarriedProjectFields = ProjectExtras.Of(file.Extra, file.Source.Extra, file.Output.Extra, sequence.Extra, background.Extra, settings.Extra);
         (settings.BackgroundHidden, settings.AudioTracks) = (background.Hidden, audio);
         (settings.BlurRadius, settings.BlurPasses, settings.BackgroundDim, settings.BackgroundZoom, settings.BackgroundEffects, settings.BackgroundEffectsBypassed) =
             (background.Radius, background.Passes, background.Dim, background.Zoom, background.Effects, background.EffectsBypassed);

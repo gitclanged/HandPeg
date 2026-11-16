@@ -114,7 +114,8 @@ ok: Microsoft's installer's exit code: 0 installed; 3010 and 1641 installed with
 ok: it looks for .NET 10, the .NET HandPeg is built for (.NETCoreApp,Version=v10.0)
 ok: and asks Microsoft's .NET 10 release list over https, from its download site and the site's older address
 ok: its self-contained copy is HandPeg's own: portable.txt beside the program or --portable, as AppPaths reads them
-ok: HandPeg.exe is never marked CET-compatible: CETCompat false, unconditional, for the app's own HandPeg.exe and for the bootstrapper that is the released one (no shadow stacks: about 16 ms of an x64 start; ARM64 has no such mark)
-ok: Explorer's thumbnail handler keeps NativeAOT's CET-compatible default (Explorer's surrogate may enforce shadow stacks)
+ok: no project opts out of CET shadow stacks: HandPeg.exe (the app's and the released bootstrapper) and Explorer's thumbnail handler keep the CET-compatible default
+ok: the released HandPeg.exe (the bootstrapper) is linked with Control Flow Guard, unconditionally
+ok: the app and the bootstrapper carry one release version (Version X.Y.Z, AssemblyVersion and FileVersion X.Y.Z.0, the same in both projects)
 ok: each published HandPeg.exe is a native window program of its processor (x64 0x8664, ARM64 0xAA64), with no .NET header, under 4 MB
-ok: and neither is marked CET-compatible (a publish from a clean obj takes CETCompat false)
+ok: and each carries Control Flow Guard, the x64 one CET-compatible too (a publish from a clean obj takes both)

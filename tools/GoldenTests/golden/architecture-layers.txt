@@ -1,0 +1,5 @@
+# Layer edges: Models use no Services or WPF, Services no window or UI type, Docking no MainWindow, ViewModels no message box or main window; today's edges allow-listed, shrinking only.
+ok: the UI types are read from the Controls and Dialogs folders (more than 100)
+ok: no new layer edge
+ok: every allow-listed edge still exists (0; a fixed one leaves the list)
+ok: the moves are in: StyleFile and GpuViewport in Services, TextDefaults in Models, the icon geometry in Controls

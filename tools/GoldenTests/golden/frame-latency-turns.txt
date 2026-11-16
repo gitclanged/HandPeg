@@ -7,5 +7,5 @@ ok: two frames queued with no turn free owe two; the next waits take them back a
 ok: a wait while a turn is held keeps it and takes no second one (the turn freed meanwhile is still there)
 ok: a frame queued uses the turn held
 ok: a new swap chain starts with nothing taken or owed
-ok: GpuViewportControl: WaitForTurn waits through FrameLatencyTurns, PresentNewest's queued frames take their turn, a new swap chain resets them
+ok: GpuViewport: WaitForTurn waits through FrameLatencyTurns, PresentNewest's queued frames take their turn, a new swap chain resets them
 ok: a present that queued nothing (an occluded window) keeps its turn, so the playing pump's next wait is paced by the clock, never spinning

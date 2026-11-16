@@ -571,6 +571,76 @@ internal static partial class CompositorReference
     }
 
     /// <summary>
+    /// PSColorStudio (slot 30, Pass 5.6A: the Color Grade, two packets; ColorGradeMath.Apply step for step in float, each step skipped at its
+    /// neutral values): P0 temperature, P1 tint, P2 exposure, P3..P5 lift, P6 gamma red, P7 contrast, Q0 Q1 gamma green and blue, Q2..Q4 gain,
+    /// Q5 saturation, Q6 vibrance; then the curves (<see cref="RefPass.Aux"/>, when Params2.Z is 1) and the LUT (<see cref="RefPass.Lut"/>,
+    /// N = Params2.X, lerped by Params2.Y). Neutral with no table, the input as it came (the host draws no pass).
+    /// </summary>
+    public static RefImage ColorStudio(RefImage input, ReadOnlySpan<float> p, RefPass pass)
+    {
+        var l = Lanes(p);
+        var n = pass.Params2.X;
+        var size = (int)n;
+        var lut = n >= 2 && pass.Params2.Y > 0 ? pass.Lut ?? throw new ArgumentException("The grade's LUT pass needs its LUT.") : null;
+        var curve = pass.Params2.Z > 0.5f ? pass.Aux ?? throw new ArgumentException("The grade's curves need their table (Aux, 256 x 1).") : null;
+        var neutral = l[0] == 0 && l[1] == 0 && l[2] == 0 && l[3] == 0 && l[4] == 0 && l[5] == 0 && l[6] == 0 && l[7] == 1
+            && l[8] == 0 && l[9] == 0 && l[10] == 0 && l[11] == 0 && l[12] == 0 && l[13] == 1 && l[14] == 0;
+        if (neutral && lut is null && curve is null)
+            return input;
+
+        // The white balance's gains (ColorGradeMath.WhiteBalance), luma kept.
+        var (t, k) = (Math.Clamp(l[0] / 100, -1f, 1f), Math.Clamp(l[1] / 100, -1f, 1f));
+        var balance = new Vector3((1 + 0.3f * t) * (1 + 0.125f * k), 1 - 0.25f * k, (1 - 0.3f * t) * (1 + 0.125f * k));
+        balance /= Luma(balance);
+        static float ToLinear(float c) => c <= 0.04045f ? c / 12.92f : MathF.Pow((c + 0.055f) / 1.055f, 2.4f);
+        static float ToSrgb(float c) => c <= 0.0031308f ? c * 12.92f : 1.055f * MathF.Pow(c, 1 / 2.4f) - 0.055f;
+        static float Wheel(float c, float lift, float gamma, float gain)
+        {
+            c += 0.5f * lift * (1 - c);
+            c *= MathF.Pow(2, gain);
+            return MathF.Pow(MathF.Max(c, 0), MathF.Pow(2, -gamma));
+        }
+
+        return Map(input, (x, y) =>
+        {
+            var c = Unpremul(input.Get(x, y));
+            var v = Rgb(c);
+            if (l[2] != 0 || l[0] != 0 || l[1] != 0)
+            {
+                var gain = MathF.Pow(2, l[2]);
+                v = new Vector3(ToSrgb(MathF.Max(ToLinear(MathF.Max(v.X, 0)) * balance.X * gain, 0)), ToSrgb(MathF.Max(ToLinear(MathF.Max(v.Y, 0)) * balance.Y * gain, 0)),
+                    ToSrgb(MathF.Max(ToLinear(MathF.Max(v.Z, 0)) * balance.Z * gain, 0)));
+            }
+
+            if (l[3] != 0 || l[4] != 0 || l[5] != 0 || l[6] != 0 || l[8] != 0 || l[9] != 0 || l[10] != 0 || l[11] != 0 || l[12] != 0)
+                v = new Vector3(Wheel(v.X, l[3], l[6], l[10]), Wheel(v.Y, l[4], l[8], l[11]), Wheel(v.Z, l[5], l[9], l[12]));
+            if (l[7] != 1)
+                v = (v - new Vector3(0.5f)) * l[7] + new Vector3(0.5f);
+            if (l[13] != 1 || l[14] != 0)
+            {
+                var luma = Luma(v);
+                var spread = Sat(Max3(v) - Min3(v));
+                v = new Vector3(luma) + (v - new Vector3(luma)) * (l[13] * (1 + l[14] * (1 - spread)));
+            }
+
+            v = Sat(v);
+            if (curve is not null)
+            {
+                var u = v * (255f / 256f) + new Vector3(0.5f / 256f);
+                v = Sat(new Vector3(curve.Bilinear(u.X, 0.5f).X, curve.Bilinear(u.Y, 0.5f).Y, curve.Bilinear(u.Z, 0.5f).Z));
+            }
+
+            if (lut is not null)
+            {
+                var at = v * ((n - 1) / n) + new Vector3(0.5f / n);
+                v = Lerp(v, Sat(Rgb(Trilinear(lut, size, at))), Sat(pass.Params2.Y));
+            }
+
+            return Premul(v, c.W);
+        });
+    }
+
+    /// <summary>
     /// PSBoxBlur (slot 20), one direction: 2r + 1 equal taps, r = Params.Z texels, on premultiplied values; a radius with a
     /// fraction f takes one more tap at each end weighing f (5.0-Release: the blurred background's continuous radius).
     /// </summary>

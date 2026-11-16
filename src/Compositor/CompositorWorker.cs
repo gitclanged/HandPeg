@@ -4,6 +4,8 @@ using System.Runtime.InteropServices;
 using HandPegApp.Compositor.Native;
 using HandPegApp.Services;
 using Microsoft.Win32.SafeHandles;
+using HandPegApp.Native;
+using static HandPegApp.Native.Kernel32;
 
 namespace HandPegApp.Compositor;
 
@@ -54,6 +56,18 @@ public static unsafe partial class CompositorWorker
         using var shared = CompositorSharedMemory.Open(baseName);
         if (shared is null)
             return CompositorProtocol.BadControlPlaneExitCode;
+
+        // An exception nothing caught (a decode lane's, which has no catch-all on purpose) ends this process. It is logged with its
+        // stack first, and the client's one-line note names it and the frame that threw, not the adapter text written at start-up.
+        // CreateNoWindow and SetErrorMode above hide the CLR's own report, so this is the only record.
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+        {
+            if (e.ExceptionObject is not Exception unhandled)
+                return;
+            AppLog.Write("Compositor worker: unhandled exception", unhandled);
+            Note(shared, FaultLine(unhandled));
+        };
+
         using var client = OpenProcess(Synchronize, false, shared.Control.ClientPid);
         if (client.IsInvalid)
             return 0;
@@ -136,7 +150,7 @@ public static unsafe partial class CompositorWorker
                 if (!decoders.LaneStuckFor(8))
                     Interlocked.Increment(ref control.Heartbeat);
                 if (decoders.LaneFault is { } fault)
-                    throw fault;
+                    System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(fault);
                 switch ((CompositorCommand)Interlocked.Exchange(ref control.Command, 0))
                 {
                     case CompositorCommand.SimulateDeviceLost:
@@ -279,14 +293,16 @@ public static unsafe partial class CompositorWorker
         catch (GpuException ex) when (ex.IsDeviceLost)
         {
             control.LastError = ex.Code;
-            Note(shared, ex.Message);
+            AppLog.Write("Compositor worker: device lost", ex);
+            Note(shared, FaultLine(ex));
             Volatile.Write(ref control.WorkerState, (int)CompositorWorkerState.DeviceLost);
             return CompositorProtocol.DeviceLostExitCode;
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             control.LastError = ex is GpuException gpuFault ? gpuFault.Code : ex.HResult;
-            Note(shared, ex.Message);
+            AppLog.Write("Compositor worker failed", ex);
+            Note(shared, FaultLine(ex));
             Volatile.Write(ref control.WorkerState, (int)CompositorWorkerState.Failed);
             return 1;
         }
@@ -605,10 +621,6 @@ public static unsafe partial class CompositorWorker
         ref var control = ref shared.Control;
         ref var header = ref shared.SceneHeader(slot);
 
-        // An HDR export's frame read back as P010 (5.4B) is drawn into a 16-bit float picture of the worker's own, for its ten bits.
-        var target = (header.Flags & (FrameSceneHeader.FlagReadback | FrameSceneHeader.FlagReadbackP010)) == (FrameSceneHeader.FlagReadback | FrameSceneHeader.FlagReadbackP010)
-            ? P010Picture(gpu, width, height).Rtv
-            : output.Texture.Rtv;
         decoders.Drawing((header.Flags & FrameSceneHeader.FlagExactFrames) == 0);
         var decodedBefore = decoders.FramesDecoded;
         try
@@ -626,6 +638,12 @@ public static unsafe partial class CompositorWorker
                 }
             }
 
+            // The render target is chosen only now, from the output texture actually held: the fallback above may have moved to the
+            // next slot, and drawing into the first one (whose mutex was never acquired) published a stale or black frame. An HDR
+            // export's frame read back as P010 is drawn into a 16-bit float picture of the worker's own, for its ten bits.
+            var target = (header.Flags & (FrameSceneHeader.FlagReadback | FrameSceneHeader.FlagReadbackP010)) == (FrameSceneHeader.FlagReadback | FrameSceneHeader.FlagReadbackP010)
+                ? P010Picture(gpu, width, height).Rtv
+                : output.Texture.Rtv;
             var acquired = Stopwatch.GetTimestamp();
             control.SetOutputContentSize(index, width, height, outputs.Generation, (header.Flags & FrameSceneHeader.FlagReadback) != 0);
             var count = Math.Clamp(header.ActiveLayerCount, 0, CompositorProtocol.MaxLayers);
@@ -787,14 +805,20 @@ public static unsafe partial class CompositorWorker
 
         try
         {
-            if (generation != _readbackGeneration || _readbackView is null)
+            if (generation != _readbackGeneration || _readbackView is null || _readbackView.Capacity < needed)
             {
                 _readbackView?.Dispose();
                 _readbackFile?.Dispose();
+                (_readbackView, _readbackFile, _readbackGeneration) = (null, null, -1);
                 _readbackFile = System.IO.MemoryMappedFiles.MemoryMappedFile.OpenExisting(CompositorProtocol.ReadbackSection(shared.BaseName, generation), System.IO.MemoryMappedFiles.MemoryMappedFileRights.ReadWrite);
                 _readbackView = _readbackFile.CreateViewAccessor(0, capacity, System.IO.MemoryMappedFiles.MemoryMappedFileAccess.ReadWrite);
                 _readbackGeneration = generation;
             }
+
+            // The frame is written through a raw pointer: never past the view actually mapped, whatever capacity the client's control
+            // block claims now (a capacity raised without a new section would otherwise write beyond it).
+            if (needed > _readbackView.Capacity)
+                return;
 
             var (chromaWidth, chromaHeight) = ((width + 1) / 2, (height + 1) / 2);
             if (_readbackStaging == 0 || _readbackSize != (width, height) || _readbackIsNv12 != nv12 || _readbackIsP010 != p010)
@@ -894,6 +918,7 @@ public static unsafe partial class CompositorWorker
         }
         catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException or ArgumentException)
         {
+            AppLog.Write("Compositor worker: readback", ex);
             Note(shared, "Readback: " + ex.Message);
         }
     }
@@ -930,6 +955,16 @@ public static unsafe partial class CompositorWorker
     private static void Note(CompositorSharedMemory shared, string message) =>
         CompositorSharedMemory.WriteString(shared.Control.Message, message);
 
+    /// <summary>
+    /// A fault in one line for the shared note the client logs when the worker ends (511 characters at most): the exception's type,
+    /// its message and the frame that threw. The full stack is in HandPeg.log, written by this process.
+    /// </summary>
+    internal static string FaultLine(Exception ex)
+    {
+        var top = ex.StackTrace?.TrimStart().Split('\n', 2)[0].Trim();
+        return top is { Length: > 0 } ? $"{ex.GetType().Name}: {ex.Message} {top}" : $"{ex.GetType().Name}: {ex.Message}";
+    }
+
     /// <summary>The three shared output textures of one worker generation, each with its keyed mutex and its named handle.</summary>
     private sealed class OutputRing : IDisposable
     {
@@ -963,7 +998,7 @@ public static unsafe partial class CompositorWorker
                 var (texture, mutex, handle) = _ring[i];
                 Com.Release(ref mutex);
                 if (handle != 0)
-                    Dxgi.CloseHandle(handle);
+                    HandPegApp.Native.Kernel32.CloseHandle(handle);
                 texture?.Dispose();
             }
         }
@@ -976,9 +1011,4 @@ public static unsafe partial class CompositorWorker
 
     private const uint Synchronize = 0x00100000;
 
-    [LibraryImport("kernel32.dll", SetLastError = true)]
-    private static partial SafeWaitHandle OpenProcess(uint access, [MarshalAs(UnmanagedType.Bool)] bool inherit, int processId);
-
-    [LibraryImport("kernel32.dll")]
-    internal static partial uint SetErrorMode(uint mode);
 }

@@ -1,0 +1,3 @@
+# A server that does not answer in time fails the request (HttpRequestException), never reads as the user cancelling.
+ok: no answer within the limit: an HttpRequestException (an install failure), not a cancellation (HttpRequestException)
+ok: the caller's own cancel stays a cancellation (TaskCanceledException)

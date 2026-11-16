@@ -7,6 +7,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using HandPegApp;
+using HandPegApp.Shell;
 using HandPegApp.Models;
 using HandPegApp.Models.Timeline;
 using HandPegApp.Services;
@@ -20,8 +21,6 @@ public static class NleFixesTests
 {
     private const int W = 1920, H = 1080;
     private const string A = "D:/media/obs-a.mkv", B = "D:/media/obs-b.mp4", Second = "D:/media/second.mkv", Other = "D:/media/other.mkv";
-    private const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
-
     public static IEnumerable<GraphResult> All()
     {
         yield return Case("clip-to-new-track", "# A clip onto a new track above or below (5.4A): past its track's Cutout lanes, its stream sounds and Cutouts on lanes under the new track, one step of Undo.", ClipToNewTrack);
@@ -38,29 +37,6 @@ public static class NleFixesTests
         yield return Case("video-duration-rounding", "# A video stream's probed length, rounded a hair short of its last frame, still reaches that frame.", VideoDurationRounding);
         yield return Case("alt-arrow-focus", "# Alt+Up / Alt+Down are left to the focused control only for a combo box and the three buttons that open a flyout on Alt+Down.", AltArrowFocus);
         yield return Case("chapters-output-end", "# Chapters end with the export (its last picture), not with an audio tail past it.", ChaptersOutputEnd);
-    }
-
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
     }
 
     // A video clip of a file on a track, with its sound on it (its first stream), 10 s of file.
@@ -353,17 +329,17 @@ public static class NleFixesTests
         var settings = AppSettings.Current;
         (settings.AutoUpdateDependencies, settings.SendCrashReports, settings.EnableExtraAnimations, settings.DroppedClipsJoinTrack) = (false, false, false, false);
         var vm = new MainViewModel { SourceWidth = W, SourceHeight = H };
-        typeof(MainViewModel).GetMethod("InstallDocument", Hidden)!.Invoke(vm, [new TimelineDocument { Width = W, Height = H, NaturalWidth = W, NaturalHeight = H, FrameRate = FrameRate.Fps30 }]);
+        vm.InstallDocument(new TimelineDocument { Width = W, Height = H, NaturalWidth = W, NaturalHeight = H, FrameRate = FrameRate.Fps30 });
         return vm;
     }
 
     // A file opened as the view model opens one once probed (PlaceOpenedFile), over nothing: its clip, or null.
     private static TimelineClip? OpenFile(MainViewModel vm, string path, MediaInfo info)
     {
-        typeof(MainViewModel).GetField("_mediaInfo", Hidden)!.SetValue(vm, info);
+        vm.SetMediaInfoForTests(info);
         (vm.SourceWidth, vm.SourceHeight) = (info.Video?.Width ?? 0, info.Video?.Height ?? 0);
         vm.LocalMediaPath = path;
-        typeof(MainViewModel).GetMethod("PlaceOpenedFile", Hidden)!.Invoke(vm, [""]);
+        vm.PlaceOpenedFile("");
         return vm.Document.Tracks.SelectMany(t => t.Clips).LastOrDefault(c => c.ParentClipId is null && c.SourcePath == path);
     }
 
@@ -407,48 +383,48 @@ public static class NleFixesTests
 
     private static void DropRouting(Action<bool, string> expect)
     {
-        static MainWindow.DropRoute Route(bool hasClips, bool hasSource, string[] files, bool busy = false, bool onTimeline = false, bool onAudioTab = false, bool fromBrowser = false, bool isLink = false,
+        static DropRoute Route(bool hasClips, bool hasSource, string[] files, bool busy = false, bool onTimeline = false, bool onAudioTab = false, bool fromBrowser = false, bool isLink = false,
             bool onMediaBin = false) =>
-            MainWindow.RouteOf(hasClips, hasSource, busy, onTimeline, onAudioTab, fromBrowser, isLink, files, onMediaBin);
+            DropRouter.RouteOf(hasClips, hasSource, busy, onTimeline, onAudioTab, fromBrowser, isLink, files, onMediaBin);
 
         string[] mp4 = ["C:/clips/a.mp4"], png = ["C:/clips/logo.png"], wav = ["C:/clips/voice.wav"], project = ["C:/clips/edit.hproj"], bundle = ["C:/clips/edit.hpb"];
-        expect(Route(true, true, mp4) == MainWindow.DropRoute.AddAtPlayhead, "clips on the Sequence, an mp4 from Explorer on the Player: added at the playhead");
-        expect(Route(true, true, png) == MainWindow.DropRoute.AddAtPlayhead && Route(true, true, wav) == MainWindow.DropRoute.AddAtPlayhead, "a picture or a sound the same");
-        expect(Route(true, true, ["C:/clips/a.mp4", "C:/clips/edit.hproj"]) == MainWindow.DropRoute.AddAtPlayhead
-            && MainWindow.PlayheadFiles(["C:/clips/a.mp4", "C:/clips/edit.hproj"], fromBrowser: false) is ["C:/clips/a.mp4"], "a video with a project: the video added, the project left out");
-        expect(Route(true, true, project) == MainWindow.DropRoute.OpenProject && Route(true, true, bundle) == MainWindow.DropRoute.OpenProject,
+        expect(Route(true, true, mp4) == DropRoute.AddAtPlayhead, "clips on the Sequence, an mp4 from Explorer on the Player: added at the playhead");
+        expect(Route(true, true, png) == DropRoute.AddAtPlayhead && Route(true, true, wav) == DropRoute.AddAtPlayhead, "a picture or a sound the same");
+        expect(Route(true, true, ["C:/clips/a.mp4", "C:/clips/edit.hproj"]) == DropRoute.AddAtPlayhead
+            && DropRouter.PlayheadFiles(["C:/clips/a.mp4", "C:/clips/edit.hproj"], fromBrowser: false) is ["C:/clips/a.mp4"], "a video with a project: the video added, the project left out");
+        expect(Route(true, true, project) == DropRoute.OpenProject && Route(true, true, bundle) == DropRoute.OpenProject,
             "a project or a bundle with one open: opened in a Project Tab, never over it");
-        expect(Route(true, true, project, busy: true) == MainWindow.DropRoute.OpenOrReplace, "while busy: the open path, which says to wait");
-        expect(Route(true, true, ["C:/clips/notes.txt"]) == MainWindow.DropRoute.OpenOrReplace, "a file that is neither media nor a project keeps today's path");
-        expect(Route(false, false, mp4) == MainWindow.DropRoute.OpenOrReplace, "nothing open, one mp4: opened");
-        expect(Route(false, false, ["C:/clips/a.mp4", "C:/clips/b.mp4", "C:/clips/c.mp4"]) == MainWindow.DropRoute.OpenThenFollow
-            && MainWindow.InLineAfter(["C:/clips/a.mp4", "C:/clips/b.mp4", "C:/clips/c.mp4"]).Length == 2, "nothing open, three: the first opened, the others following it");
-        expect(Route(false, false, ["C:/clips/a.mp4", "C:/clips/voice.wav"]) == MainWindow.DropRoute.OpenOrReplace, "a sound never follows in line");
-        expect(Route(true, true, mp4, onTimeline: true) == MainWindow.DropRoute.TimelinePlace && Route(true, true, mp4, onAudioTab: true) == MainWindow.DropRoute.AudioTab,
+        expect(Route(true, true, project, busy: true) == DropRoute.OpenOrReplace, "while busy: the open path, which says to wait");
+        expect(Route(true, true, ["C:/clips/notes.txt"]) == DropRoute.OpenOrReplace, "a file that is neither media nor a project keeps today's path");
+        expect(Route(false, false, mp4) == DropRoute.OpenOrReplace, "nothing open, one mp4: opened");
+        expect(Route(false, false, ["C:/clips/a.mp4", "C:/clips/b.mp4", "C:/clips/c.mp4"]) == DropRoute.OpenThenFollow
+            && DropRouter.InLineAfter(["C:/clips/a.mp4", "C:/clips/b.mp4", "C:/clips/c.mp4"]).Length == 2, "nothing open, three: the first opened, the others following it");
+        expect(Route(false, false, ["C:/clips/a.mp4", "C:/clips/voice.wav"]) == DropRoute.OpenOrReplace, "a sound never follows in line");
+        expect(Route(true, true, mp4, onTimeline: true) == DropRoute.TimelinePlace && Route(true, true, mp4, onAudioTab: true) == DropRoute.AudioTab,
             "on the timeline where it was let go; on the Audio tab as sound");
-        expect(Route(true, true, [], isLink: true) == MainWindow.DropRoute.AddAtPlayhead && Route(false, false, [], isLink: true) == MainWindow.DropRoute.OpenOrReplace
-            && Route(true, true, [], isLink: true, onTimeline: true) == MainWindow.DropRoute.TimelinePlace,
+        expect(Route(true, true, [], isLink: true) == DropRoute.AddAtPlayhead && Route(false, false, [], isLink: true) == DropRoute.OpenOrReplace
+            && Route(true, true, [], isLink: true, onTimeline: true) == DropRoute.TimelinePlace,
             "a link: downloaded and added with clips on the Sequence, opened with none, placed where let go on the timeline");
-        expect(Route(false, true, mp4, fromBrowser: true) == MainWindow.DropRoute.AddAtPlayhead && Route(false, true, mp4) == MainWindow.DropRoute.OpenOrReplace,
+        expect(Route(false, true, mp4, fromBrowser: true) == DropRoute.AddAtPlayhead && Route(false, true, mp4) == DropRoute.OpenOrReplace,
             "a project open with no clips: a tile from the media browser is added (4.1.1-B), a file from Explorer opened as before");
 
         // 5.4C: onto the Media Browser pane, with a project open, media goes into Project Media (the project's bin), nothing onto the timeline.
-        expect(Route(true, true, mp4, onMediaBin: true) == MainWindow.DropRoute.AddToProjectMedia && Route(true, true, png, onMediaBin: true) == MainWindow.DropRoute.AddToProjectMedia
-            && Route(true, true, wav, onMediaBin: true) == MainWindow.DropRoute.AddToProjectMedia,
+        expect(Route(true, true, mp4, onMediaBin: true) == DropRoute.AddToProjectMedia && Route(true, true, png, onMediaBin: true) == DropRoute.AddToProjectMedia
+            && Route(true, true, wav, onMediaBin: true) == DropRoute.AddToProjectMedia,
             "media from Explorer onto the Media Browser pane: into Project Media (a video, a picture, a sound)");
-        expect(Route(false, true, mp4, onMediaBin: true) == MainWindow.DropRoute.AddToProjectMedia, "a project open with no clips yet: into Project Media too");
-        expect(Route(true, true, mp4, fromBrowser: true, onMediaBin: true) == MainWindow.DropRoute.None, "a tile dragged from the browser and let go over it: no drop (5.4.4, the user's self-drop cancel)");
-        expect(Route(true, true, ["C:/clips/a.mp4", "C:/clips/edit.hproj"], onMediaBin: true) == MainWindow.DropRoute.AddToProjectMedia
-            && Route(true, true, project, onMediaBin: true) == MainWindow.DropRoute.OpenProject,
+        expect(Route(false, true, mp4, onMediaBin: true) == DropRoute.AddToProjectMedia, "a project open with no clips yet: into Project Media too");
+        expect(Route(true, true, mp4, fromBrowser: true, onMediaBin: true) == DropRoute.None, "a tile dragged from the browser and let go over it: no drop (5.4.4, the user's self-drop cancel)");
+        expect(Route(true, true, ["C:/clips/a.mp4", "C:/clips/edit.hproj"], onMediaBin: true) == DropRoute.AddToProjectMedia
+            && Route(true, true, project, onMediaBin: true) == DropRoute.OpenProject,
             "a video with a project over the bin: the video into Project Media; a project alone: opened in a Project Tab");
-        expect(Route(true, true, [], isLink: true, onMediaBin: true) == MainWindow.DropRoute.AddAtPlayhead && Route(true, true, ["C:/clips/notes.txt"], onMediaBin: true) == MainWindow.DropRoute.OpenOrReplace,
+        expect(Route(true, true, [], isLink: true, onMediaBin: true) == DropRoute.AddAtPlayhead && Route(true, true, ["C:/clips/notes.txt"], onMediaBin: true) == DropRoute.OpenOrReplace,
             "a link over the bin keeps today's path (downloaded, at the playhead); a file that is not media too");
         // 5.4D (Q4 b): with nothing open too; a project alone, a file that is not media and a tile from the browser go as before.
-        expect(Route(false, false, mp4, onMediaBin: true) == MainWindow.DropRoute.AddToProjectMedia
-               && Route(false, false, ["C:/clips/a.mp4", "C:/clips/b.mov"], onMediaBin: true) == MainWindow.DropRoute.AddToProjectMedia
-               && Route(false, false, project, onMediaBin: true) == MainWindow.DropRoute.OpenOrReplace
-               && Route(false, false, ["C:/clips/notes.txt"], onMediaBin: true) == MainWindow.DropRoute.OpenOrReplace
-               && Route(false, false, mp4, fromBrowser: true, onMediaBin: true) == MainWindow.DropRoute.None,
+        expect(Route(false, false, mp4, onMediaBin: true) == DropRoute.AddToProjectMedia
+               && Route(false, false, ["C:/clips/a.mp4", "C:/clips/b.mov"], onMediaBin: true) == DropRoute.AddToProjectMedia
+               && Route(false, false, project, onMediaBin: true) == DropRoute.OpenOrReplace
+               && Route(false, false, ["C:/clips/notes.txt"], onMediaBin: true) == DropRoute.OpenOrReplace
+               && Route(false, false, mp4, fromBrowser: true, onMediaBin: true) == DropRoute.None,
             "with nothing open (5.4D), media over the Media Browser goes into Project Media too (the blank window keeps it); a project alone and a file that is not media are opened as before; a tile from the browser let go over it is no drop (5.4.4)");
 
         var replaced = 0;
@@ -458,7 +434,7 @@ public static class NleFixesTests
                     foreach (var fromBrowser in new[] { false, true })
                         foreach (var onMediaBin in new[] { false, true })
                             foreach (var files in new[] { mp4, png, wav })
-                                replaced += Route(true, true, files, busy, onTimeline, onAudioTab, fromBrowser, onMediaBin: onMediaBin) is MainWindow.DropRoute.OpenOrReplace or MainWindow.DropRoute.OpenThenFollow ? 1 : 0;
+                                replaced += Route(true, true, files, busy, onTimeline, onAudioTab, fromBrowser, onMediaBin: onMediaBin) is DropRoute.OpenOrReplace or DropRoute.OpenThenFollow ? 1 : 0;
         expect(replaced == 0, "with clips on the Sequence no drop of media, anywhere, ever opens over the project");
     }
 

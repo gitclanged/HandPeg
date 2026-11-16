@@ -1,0 +1,4 @@
+# The Fullscreen Preview covers its whole monitor in physical pixels, and any other size proposed for it snaps back.
+ok: shown, it covers the whole monitor it was opened on
+ok: a smaller rectangle proposed for it snaps back to the whole monitor
+ok: a move within the monitor snaps back to its corner

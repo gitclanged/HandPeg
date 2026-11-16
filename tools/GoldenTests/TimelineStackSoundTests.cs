@@ -30,36 +30,12 @@ namespace HandPegGoldenTests;
 /// </summary>
 public static class TimelineStackSoundTests
 {
-    private const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
     private const BindingFlags Any = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
 
     public static IEnumerable<GraphResult> All()
     {
         yield return Case("timeline-stack-sound", "# A video clip with a sound stack shows its audible lanes' sound as one waveform, across its block, over its frames.", StackSound);
         yield return Case("live-preview-gone", "# The Live Preview switch is gone: the player always shows the preview; the refresh after every edit is renamed, not lost.", LivePreviewGone);
-    }
-
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>, StringBuilder> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "FAILED: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect, text);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
     }
 
     // ----- timeline-stack-sound -----
@@ -299,7 +275,7 @@ public static class TimelineStackSoundTests
         vm.PreviewStateInvalidated += () => raised++;
         var before = vm.LivePreviewState();
         var kept = vm.LivePreviewState();
-        model.GetMethod("InvalidatePreviewState", Hidden)!.Invoke(vm, null);
+        vm.InvalidatePreviewState();
         var after = vm.LivePreviewState();
         expect(ReferenceEquals(before.Timeline, kept.Timeline) && before.IsPreview, "the preview state is gathered once and kept until something changes");
         expect(raised == 1 && !ReferenceEquals(after.Timeline, before.Timeline), "InvalidatePreviewState raises PreviewStateInvalidated once and drops the state: the next is gathered afresh");

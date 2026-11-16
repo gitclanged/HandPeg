@@ -1,0 +1,23 @@
+# The player's overlay over the native video window at every UI scale, in physical pixels, clear of the rows round it.
+HandPeg's UI scale (each with the root DPI it gives), then a scale inside the window that no DPI shows:
+  UI scale 100 %
+ok: UI scale 100 %: the overlay is exactly the video window's rectangle
+ok: UI scale 100 %: the overlay overhangs neither the transport row below nor the pane beside it
+  UI scale 75 %
+ok: UI scale 75 %: the overlay is exactly the video window's rectangle
+ok: UI scale 75 %: the overlay overhangs neither the transport row below nor the pane beside it
+  UI scale 150 %
+ok: UI scale 150 %: the overlay is exactly the video window's rectangle
+ok: UI scale 150 %: the overlay overhangs neither the transport row below nor the pane beside it
+  UI scale 100 %, following Windows' scaling
+ok: UI scale 100 %, following Windows' scaling: the overlay is exactly the video window's rectangle
+ok: UI scale 100 %, following Windows' scaling: the overlay overhangs neither the transport row below nor the pane beside it
+  UI scale 125 %, following Windows' scaling
+ok: UI scale 125 %, following Windows' scaling: the overlay is exactly the video window's rectangle
+ok: UI scale 125 %, following Windows' scaling: the overlay overhangs neither the transport row below nor the pane beside it
+  an inner scale of 0.75 under the window's DPI
+ok: an inner scale of 0.75 under the window's DPI: the overlay is exactly the video window's rectangle
+ok: an inner scale of 0.75 under the window's DPI: the overlay overhangs neither the transport row below nor the pane beside it
+  an inner scale of 0.50 under the window's DPI
+ok: an inner scale of 0.50 under the window's DPI: the overlay is exactly the video window's rectangle
+ok: an inner scale of 0.50 under the window's DPI: the overlay overhangs neither the transport row below nor the pane beside it

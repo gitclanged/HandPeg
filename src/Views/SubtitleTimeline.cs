@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
 using HandPegApp.Models;
+using static HandPegApp.UiBrushes;
 
 namespace HandPegApp.Views;
 
@@ -690,13 +691,6 @@ public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
     }
 
     private void OnCoastFrame(object? sender, EventArgs e) => StepCoast(MomentumScroller.Now());
-
-    private static Brush Frozen(Color color)
-    {
-        var brush = new SolidColorBrush(color);
-        brush.Freeze();
-        return brush;
-    }
 
     private static Pen FrozenPen(Color color, double thickness)
     {

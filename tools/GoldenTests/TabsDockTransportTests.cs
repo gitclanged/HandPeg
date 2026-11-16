@@ -9,6 +9,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using System.Xml.Linq;
 using HandPegApp;
+using HandPegApp.Shell;
 using HandPegApp.Docking;
 using HandPegApp.Services;
 
@@ -47,73 +48,11 @@ public static class TabsDockTransportTests
         yield return Case("dock-rebind-fast-path", "# The dock taken up in place: nothing written when nothing differs, shares set in place when only they differ, a front tab shown only when it changes.", RebindFastPath);
     }
 
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
-    }
-
     private static string F(FormattableString text) => text.ToString(CultureInfo.InvariantCulture);
 
     private static bool Near(double a, double b, double within = 1e-9) => Math.Abs(a - b) <= within;
 
-    private static string RepositoryRoot()
-    {
-        for (var folder = new DirectoryInfo(AppContext.BaseDirectory); folder is not null; folder = folder.Parent)
-        {
-            if (File.Exists(Path.Combine(folder.FullName, "HandPegApp.csproj")))
-                return folder.FullName;
-        }
-
-        throw new DirectoryNotFoundException("HandPegApp.csproj was not found above the golden tests' program.");
-    }
-
-    /// <summary>A source file under src, its line endings made \n.</summary>
-    private static string Read(params string[] parts) => File.ReadAllText(Path.Combine([RepositoryRoot(), "src", .. parts])).ReplaceLineEndings("\n");
-
-    private static XDocument Xaml(params string[] parts) => XDocument.Load(Path.Combine([RepositoryRoot(), "src", .. parts]));
-
-    /// <summary>A member's text: from its signature to the end of its body (the next line that closes at its indent).</summary>
-    private static string Method(string source, string signature)
-    {
-        var start = source.IndexOf(signature, StringComparison.Ordinal);
-        if (start < 0)
-            return "";
-        var end = source.IndexOf("\n    }\n", start, StringComparison.Ordinal);
-        return end < 0 ? source[start..] : source[start..(end + 6)];
-    }
-
-    /// <summary>Whether every one of <paramref name="parts"/> is in <paramref name="text"/>, each after the one before.</summary>
-    private static bool InOrder(string text, params string[] parts)
-    {
-        var at = 0;
-        foreach (var part in parts)
-        {
-            var found = text.IndexOf(part, at, StringComparison.Ordinal);
-            if (found < 0)
-                return false;
-            at = found + part.Length;
-        }
-
-        return true;
-    }
+    private static XDocument Xaml(params string[] parts) => XDocument.Load(Path.Combine([SourceProbe.Root, "src", .. parts]));
 
     private static XElement? Named(XContainer xaml, string name) => xaml.Descendants().FirstOrDefault(e => Attr(e, X + "Name") == name);
 
@@ -201,32 +140,32 @@ public static class TabsDockTransportTests
         // The wiring.
         var handler = typeof(ProjectTabStrip).GetEvent("HoverScrubbed")?.EventHandlerType;
         expect(handler == typeof(Action<ProjectTabItem, double, bool>), "ProjectTabStrip.HoverScrubbed tells the tab, the value and whether it is about the tab's playhead");
-        var code = Read("Controls", "ProjectTabStrip.xaml.cs");
-        expect(Method(code, "private void HoverCard_MouseMove(").Contains("CardScrub(e.GetPosition(HoverBody).X, HoverBody.ActualWidth)", StringComparison.Ordinal)
-               && Method(code, "private void Tab_MouseMove(").Contains("TabScrub(e.GetPosition(tab).X, tab.ActualWidth, Compact, item.CardWidth)", StringComparison.Ordinal),
+        var code = SourceProbe.Src("Controls", "ProjectTabStrip.xaml.cs");
+        expect(SourceProbe.Member(code, "private void HoverCard_MouseMove(").Contains("CardScrub(e.GetPosition(HoverBody).X, HoverBody.ActualWidth)", StringComparison.Ordinal)
+               && SourceProbe.Member(code, "private void Tab_MouseMove(").Contains("TabScrub(e.GetPosition(tab).X, tab.ActualWidth, Compact, item.CardWidth)", StringComparison.Ordinal),
             "the card's move scrubs across the card as it is drawn now; a tab's move through TabScrub (narrowed: about its playhead, the card's width as its span)");
-        expect(InOrder(Method(code, "private void HoverCard_MouseLeftButtonUp("), "e.Handled = true;", "_cardPressed", "CloseHoverCard();", "TabChosen?.Invoke(item);")
-               && Method(code, "private void HoverCard_MouseLeftButtonDown(").Contains("e.Handled = true;", StringComparison.Ordinal),
+        expect(SourceProbe.InOrder(SourceProbe.Member(code, "private void HoverCard_MouseLeftButtonUp("), "e.Handled = true;", "_cardPressed", "CloseHoverCard();", "TabChosen?.Invoke(item);")
+               && SourceProbe.Member(code, "private void HoverCard_MouseLeftButtonDown(").Contains("e.Handled = true;", StringComparison.Ordinal),
             "a click on the card (pressed and let go on it) closes it and chooses its tab, as a click on the tab does: no seek; the press and release are the card's own (Handled)");
-        expect(InOrder(Method(code, "public void CloseHoverCard()"), "HoverItem = null;", "_hoverHold.Reset();", "_hoverClose?.Stop();", "HoverCard.IsOpen = false;")
-               && Method(code, "private void Tab_PreviewMouseLeftButtonDown(").Contains("CloseHoverCard();", StringComparison.Ordinal)
-               && Method(code, "private void Tab_MouseUp(").Contains("CloseHoverCard();", StringComparison.Ordinal)
-               && Method(code, "internal bool BeginReorder(").Contains("CloseFlyouts();", StringComparison.Ordinal)
-               && Method(code, "private void Tab_MouseRightButtonUp(").Contains("CloseFlyouts();", StringComparison.Ordinal)
+        expect(SourceProbe.InOrder(SourceProbe.Member(code, "public void CloseHoverCard()"), "HoverItem = null;", "_hoverHold.Reset();", "_hoverClose?.Stop();", "HoverCard.IsOpen = false;")
+               && SourceProbe.Member(code, "private void Tab_PreviewMouseLeftButtonDown(").Contains("CloseHoverCard();", StringComparison.Ordinal)
+               && SourceProbe.Member(code, "private void Tab_MouseUp(").Contains("CloseHoverCard();", StringComparison.Ordinal)
+               && SourceProbe.Member(code, "internal bool BeginReorder(").Contains("CloseFlyouts();", StringComparison.Ordinal)
+               && SourceProbe.Member(code, "private void Tab_MouseRightButtonUp(").Contains("CloseFlyouts();", StringComparison.Ordinal)
                && code.Contains("owner.Deactivated += (_, _) => CloseFlyouts();", StringComparison.Ordinal)
-               && InOrder(Method(code, "private void Tab_MouseEnter("), "{ IsActive: false }", "CloseHoverCard();", "_hoverHold.EnterTab();", "OpenHoverCard(item, tab);"),
+               && SourceProbe.InOrder(SourceProbe.Member(code, "private void Tab_MouseEnter("), "{ IsActive: false }", "CloseHoverCard();", "_hoverHold.EnterTab();", "OpenHoverCard(item, tab);"),
             "every close that was at once still is (a press or a middle click on a tab, a drag, the right-click menu, the window let go, the tab in front entered), and stops the grace's timer");
-        expect(InOrder(Method(code, "private void HoverCloseTick()"), "_hoverTab?.IsMouseOver == true || HoverSurface.IsMouseOver", "_hoverHold.Due(now)", "CloseHoverCard();")
-               && Method(code, "private void HoldOff(").Contains("_hoverClose = new DispatcherTimer(", StringComparison.Ordinal)
-               && !Method(code, "public ProjectTabStrip()").Contains("DispatcherTimer", StringComparison.Ordinal),
+        expect(SourceProbe.InOrder(SourceProbe.Member(code, "private void HoverCloseTick()"), "_hoverTab?.IsMouseOver == true || HoverSurface.IsMouseOver", "_hoverHold.Due(now)", "CloseHoverCard();")
+               && SourceProbe.Member(code, "private void HoldOff(").Contains("_hoverClose = new DispatcherTimer(", StringComparison.Ordinal)
+               && !SourceProbe.Member(code, "public ProjectTabStrip()").Contains("DispatcherTimer", StringComparison.Ordinal),
             "the grace's timer closes the card only when the pointer is on neither the tab nor the card; it is made the first time a card is left (nothing new before the first frame)");
-        var scrub = Method(Read("MainWindow.TabCard.cs"), "private void ScrubTabCard(ProjectTabItem item, double value, bool aboutPlayhead)");
+        var scrub = SourceProbe.Member(SourceProbe.Src("MainWindow.TabCard.cs"), "private void ScrubTabCard(ProjectTabItem item, double value, bool aboutPlayhead)");
         expect(scrub.Length > 0 && scrub.Contains("sheet.Cell(index)", StringComparison.Ordinal)
                && new[] { "_gpu", "Engine", "Prewarm", "Decode", "Seek" }.All(w => !scrub.Contains(w, StringComparison.Ordinal)),
             "scrubbing shows a cell of the overview sheet already held, and asks nothing of the engine (no decode, no seek, no pre-warm: zero VRAM)");
-        expect(Read("MainWindow.TabMenu.cs").Contains("if (ReferenceEquals(ProjectTabStrip.HoverItem, item) && !item.IsScrubbing)", StringComparison.Ordinal),
+        expect(SourceProbe.Src("MainWindow.TabMenu.cs").Contains("if (ReferenceEquals(ProjectTabStrip.HoverItem, item) && !item.IsScrubbing)", StringComparison.Ordinal),
             "a thumbnail decoded late is given to the card only while it is not being scrubbed (never over a scrubbed picture)");
-        expect(Read("MainWindow.ProjectTabs.cs").Contains("ProjectTabStrip.HoverScrubbed += ScrubTabCard;", StringComparison.Ordinal),
+        expect(SourceProbe.Src("MainWindow.ProjectTabs.cs").Contains("ProjectTabStrip.HoverScrubbed += ScrubTabCard;", StringComparison.Ordinal),
             "the window still takes the strip's scrub with ScrubTabCard");
     }
 
@@ -444,16 +383,16 @@ public static class TabsDockTransportTests
             "an arrangement of another shape (the media, effects and keyframes in one group) is laid out again, as before");
 
         // The source: Load, Apply and Reset all choose through RebindOrRebuild; Rebind and its rules are in their own file.
-        var manager = Read("Docking", "DockManager.cs");
-        var rebind = Read("Docking", "DockManager.Rebind.cs");
-        var sides = Read("Docking", "DockManager.DragAndSides.cs");
-        expect(Method(manager, "public void Load(").Contains("RebindOrRebuild();", StringComparison.Ordinal) && Method(manager, "public void Reset(").Contains("RebindOrRebuild();", StringComparison.Ordinal)
-               && Method(sides, "public void Apply(").Contains("RebindOrRebuild();", StringComparison.Ordinal) && !manager.Contains("private void Rebind()", StringComparison.Ordinal)
+        var manager = SourceProbe.Src("Docking", "DockManager.cs");
+        var rebind = SourceProbe.Src("Docking", "DockManager.Rebind.cs");
+        var sides = SourceProbe.Src("Docking", "DockManager.DragAndSides.cs");
+        expect(SourceProbe.Member(manager, "public void Load(").Contains("RebindOrRebuild();", StringComparison.Ordinal) && SourceProbe.Member(manager, "public void Reset(").Contains("RebindOrRebuild();", StringComparison.Ordinal)
+               && SourceProbe.Member(sides, "public void Apply(").Contains("RebindOrRebuild();", StringComparison.Ordinal) && !manager.Contains("private void Rebind()", StringComparison.Ordinal)
                && rebind.Contains("private void Rebind()", StringComparison.Ordinal) && rebind.Contains("private static void ShowShares(", StringComparison.Ordinal)
                && manager.Split('\n').Length < 1792,
             "Load, Apply and Reset all take an arrangement up through RebindOrRebuild; Rebind and ShowShares live in DockManager.Rebind.cs (DockManager.cs only shrinks)");
-        expect(InOrder(Method(rebind, "private void RebindOrRebuild()"), "if (signature == _builtSignature)", "Rebind();", "!_dragging && _builtSignature is { } built && SameButShares(built, signature)", "Rebind();", "MarkAllBuilt();", "Rebuild();")
-               && Method(manager, "private static void SetDips(").Contains("Math.Max(size, 1)", StringComparison.Ordinal),
+        expect(SourceProbe.InOrder(SourceProbe.Member(rebind, "private void RebindOrRebuild()"), "if (signature == _builtSignature)", "Rebind();", "!_dragging && _builtSignature is { } built && SameButShares(built, signature)", "Rebind();", "MarkAllBuilt();", "Rebuild();")
+               && SourceProbe.Member(manager, "private static void SetDips(").Contains("Math.Max(size, 1)", StringComparison.Ordinal),
             "a shares-only difference is taken up in place (never while a pane is dragged) and counted as built; a drag's own sizes still keep each share at least 1");
     }
 
@@ -508,7 +447,7 @@ public static class TabsDockTransportTests
 
         // The settings button and its popup retired; their list in the Views menu.
         expect(Named(main, "PlaybackSettingsButton") is null && !main.Descendants().Any(e => Attr(e, "AutomationProperties.Name") == "Playback Controls Settings")
-               && Directory.EnumerateFiles(Path.Combine(RepositoryRoot(), "src"), "*.*", SearchOption.AllDirectories)
+               && Directory.EnumerateFiles(Path.Combine(SourceProbe.Root, "src"), "*.*", SearchOption.AllDirectories)
                    .Where(f => f.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".xaml", StringComparison.OrdinalIgnoreCase))
                    .All(f => !File.ReadAllText(f).Contains("PlaybackSettingsButton", StringComparison.Ordinal)),
             "the playback bar's settings button (PlaybackSettingsButton, \"Playback Controls Settings\") is gone, from the XAML and from the code");
@@ -537,21 +476,21 @@ public static class TabsDockTransportTests
                && paneList is { Name.LocalName: "UniformGrid" } && Attr(paneList, "Columns") == "2" && Named(main, "ViewsTabList") is null
                && !popup!.Descendants().Any(e => Attr(e, "Text") is "Arrange" or "Tabs and Panes" or "Tabs"),
             "the Views menu: Playback Bar (left) and Timeline (right) side by side, then one flat two-column list of tabs and panes (ViewsTabList gone) and Reset Panes Layout, no Arrange text");
-        expect(Method(Read("MainWindow.Export.cs"), "private void FillViewsLists()").Contains("Fill(TabToggles(), tabs: true);", StringComparison.Ordinal),
+        expect(SourceProbe.Member(SourceProbe.Src("MainWindow.Export.cs"), "private void FillViewsLists()").Contains("Fill(TabToggles(), tabs: true);", StringComparison.Ordinal),
             "FillViewsLists puts the tabs, then the panes, in the one list (each still named \"... Tab\" / \"... Pane\" for UI Automation)");
         expect(popup is not null && new[] { "Placement", "PlacementTarget", "HorizontalOffset", "VerticalOffset", "PlacementRectangle" }.All(a => popup.Attribute(a) is null),
             "ViewsPopup has no placement of its own (UiScale.PlaceAgainst places it over its button)");
 
         // The code.
-        var menu = Read("MainWindow.ViewsMenu.cs");
-        expect(Method(menu, "private void ViewsPopup_Opened(").Contains("ViewsPreviewScalingBox.IsChecked = AppSettings.Current.DynamicPreviewScaling;", StringComparison.Ordinal)
-               && Method(menu, "private void ViewsPreviewScalingBox_Click(").Contains("_viewModel.SavePaneLayout(s => s.DynamicPreviewScaling = on);", StringComparison.Ordinal),
+        var menu = SourceProbe.Src("MainWindow.ViewsMenu.cs");
+        expect(SourceProbe.Member(menu, "private void ViewsPopup_Opened(").Contains("ViewsPreviewScalingBox.IsChecked = AppSettings.Current.DynamicPreviewScaling;", StringComparison.Ordinal)
+               && SourceProbe.Member(menu, "private void ViewsPreviewScalingBox_Click(").Contains("_viewModel.SavePaneLayout(s => s.DynamicPreviewScaling = on);", StringComparison.Ordinal),
             "the box shows the setting as the menu opens and saves it at once when clicked (the Settings window's setting: the player reads it as it draws)");
         expect(menu.Contains("? Math.Ceiling((ViewsButton.ActualWidth > 0 ? ViewsButton.ActualWidth : 34) + 22)", StringComparison.Ordinal)
                && menu.Contains("UiScale.PlaceAgainst(ViewsPopup, ViewsButton, UiScale.FlyoutSide.AboveStart, 4)", StringComparison.Ordinal),
             "the row keeps room for the icon-only button (34 DIPs until it is laid out); the menu is placed over it");
-        var build = Method(Read("MainWindow.LoopbackPreview.cs"), "private void BuildLoopbackToggle()");
-        expect(build.Contains("(Style)TransportRow.Resources[\"BarToggle\"]", StringComparison.Ordinal) && build.Split("Style = barToggle,").Length == 3
+        var build = SourceProbe.Member(SourceProbe.Src("Shell", "LoopbackPreviewController.cs"), "private void BuildLoopbackToggle()");
+        expect(build.Contains("(Style)_transportRow.Resources[\"BarToggle\"]", StringComparison.Ordinal) && build.Split("Style = barToggle,").Length == 3
                && !build.Contains("FontSize = 14", StringComparison.Ordinal) && !build.Contains("Padding = new Thickness(12, 7, 8, 7)", StringComparison.Ordinal),
             "the Live Encoded Preview toggle and its arrow, made in code, take the row's BarToggle (13, as tall as the other toggles)");
     }

@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Media;
 using HandPegApp.Docking;
 using HandPegApp.Services;
+using static HandPegApp.UiBrushes;
 
 namespace HandPegApp;
 

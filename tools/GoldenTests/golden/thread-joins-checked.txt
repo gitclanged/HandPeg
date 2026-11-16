@@ -1,0 +1,5 @@
+# Every timed join goes through ThreadStop; an owner whose thread did not stop keeps what that thread uses.
+ok: no timed Thread.Join outside ThreadStop (whose result decides what may be freed)
+ok: the compositor client keeps its events and control plane when its supervisor did not stop
+ok: the supervisor's catch touches nothing of a closed client
+ok: the sound engine closes its wake event only after its mixer stopped, and unregisters the device watch before the slow teardown

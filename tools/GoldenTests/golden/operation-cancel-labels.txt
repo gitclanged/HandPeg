@@ -1,0 +1,3 @@
+# RunOperationAsync: the user's cancel says Cancelled; an internal timeout says timed out and is logged with its stack.
+ok: the user's cancel (the Cancel command or the work flyout's) says Cancelled; any other cancellation is a fault, logged, and says timed out when it was a timeout
+ok: background work that fails is logged once per kind of failure

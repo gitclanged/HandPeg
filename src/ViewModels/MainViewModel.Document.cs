@@ -60,9 +60,6 @@ public partial class MainViewModel
     /// <summary>When the last undo step was taken by hand (Checkpoint), so a box's change right after it makes no second one.</summary>
     private long _checkpointedAt;
 
-    /// <summary>The last of a clip's values set on its view (which view, which value, when): a box dragged makes one undo step.</summary>
-    private (Layer View, string Name, long At)? _lastFieldEdit;
-
     /// <summary>A timeline with nothing on it, of the frame and rate the settings give now.</summary>
     private TimelineDocument NewDocument() => new()
     {
@@ -76,13 +73,13 @@ public partial class MainViewModel
     /// <summary>
     /// Makes a document the timeline (a new project, an undo step, a project opened): its views are made afresh (the
     /// selection following its clip into its new view), its markers and the Sequence Output's effects are taken into the
-    /// panes that edit them. No undo step of its own. A restore (4.4-BugHunt): nothing it sets going takes a step or makes an
+    /// panes that edit them. No undo step of its own. A restore (4.4.0): nothing it sets going takes a step or makes an
     /// edit, and the captions are projected once, as the outermost restore ends (<see cref="EndRestore"/>).
     /// </summary>
-    private void InstallDocument(TimelineDocument document) => PutDocumentInPlace(document, kept: null);
+    internal void InstallDocument(TimelineDocument document) => PutDocumentInPlace(document, kept: null);
 
     /// <summary>
-    /// <see cref="InstallDocument"/>, with the views a project tab kept as it went behind (Pass 5.4D-TabPerf, <see cref="KeptViews"/>):
+    /// <see cref="InstallDocument"/>, with the views a project tab kept as it went behind (5.4.0, <see cref="KeptViews"/>):
     /// taken up again for its own Sequence, and brought into line with it (only what changed is written into them), instead of every view
     /// made anew. Null, or views kept for another Sequence, makes them anew as any document put in place.
     /// </summary>
@@ -94,6 +91,7 @@ public partial class MainViewModel
 
         // Project Media takes in the file of every clip placed on the timeline (5.4C), whichever document it is.
         document.PoolsPlacedFiles = true;
+        document.FoldTrackLooks();
         Document = document;
         Document.Committed += OnDocumentCommitted;
 
@@ -102,7 +100,7 @@ public partial class MainViewModel
             if (kept is not null && ReferenceEquals(kept.Document, document))
             {
                 TakeUpViews(kept);
-                SyncViews(wholeList: true);
+                SyncViews();
             }
             else
             {
@@ -116,7 +114,7 @@ public partial class MainViewModel
             NoteDocumentShape();
             _previewState = null;
             RefreshLayerRows();
-            TimelineChanged?.Invoke();
+            RaiseTimelineChanged();
             GenerateCommand();
         }
 
@@ -189,13 +187,13 @@ public partial class MainViewModel
     /// transaction, a track it leaves with no clips goes (a row lasts as long as it has clips, as in 4.2.0; an empty track
     /// made as one stays), and on commit Undo keeps a step of it (named <paramref name="label"/>) and the rows follow
     /// (<see cref="OnDocumentCommitted"/>). A change the timeline refuses (<see cref="TimelineEditException"/>) changes
-    /// nothing and says why in the status bar; returns false then. One made inside another folds into it. Since 4.4-BugHunt
+    /// nothing and says why in the status bar; returns false then. One made inside another folds into it. Since 4.4.0
     /// no exception escapes it: a fault in the change (never the user's doing) is rolled back with it, written down and said,
     /// and returns false; and none is made while a document is being put in place (an undo step, a project opened).
     /// </summary>
     /// <param name="undoable">False for what is not the user's doing (a file's length learned after it was dropped): no undo step.</param>
     /// <param name="removeEmptied">False to keep a track the change leaves with no clips (an empty track given back).</param>
-    private bool Edit(string label, Action<ITimelineTransaction> change, bool undoable = true, bool removeEmptied = true)
+    internal bool Edit(string label, Action<ITimelineTransaction> change, bool undoable = true, bool removeEmptied = true)
     {
         if (_openEdit is { } open)
         {
@@ -214,8 +212,10 @@ public partial class MainViewModel
         _editCommitted = false;
         try
         {
-            FlushLooks();
+            // CaptureSnapshot flushes the looks itself: only an edit that keeps no step flushes them here.
             var before = undoable && !_isBackgroundWorker ? CaptureSnapshot() : null;
+            if (before is null)
+                FlushLooks();
             var filled = removeEmptied ? Document.Tracks.Where(t => t.Clips.Count > 0).ToList() : [];
             using var edit = Document.BeginTransaction(label);
             (_openEdit, _beforeEdit) = (edit, before);
@@ -278,7 +278,7 @@ public partial class MainViewModel
                     AudioLinked = AllAudioLinked();
                     NoteDocumentShape();
                     RefreshLayerRows();
-                    TimelineChanged?.Invoke();
+                    RaiseTimelineChanged();
                     GenerateCommand();
                 }
             }
@@ -335,7 +335,7 @@ public partial class MainViewModel
                 AudioLinked = AllAudioLinked();
                 NoteDocumentShape();
                 RefreshLayerRows();
-                TimelineChanged?.Invoke();
+                RaiseTimelineChanged();
                 GenerateCommand();
             }
         }
@@ -350,13 +350,14 @@ public partial class MainViewModel
     /// <summary>
     /// Brings <see cref="Layers"/> into line with the document: a view for each clip, in stacking order (the pictures
     /// track by track from the bottom, then the sounds), each track's clips in time, a stand-in for a track with no clips;
-    /// views of clips that are gone let go of. A view keeps being the same object for as long as its clip is there, so what
+    /// views of clips that are gone release. A view keeps being the same object for as long as its clip is there, so what
     /// holds it (a selection, a pane) keeps it; <paramref name="afresh"/> makes every view anew (a document put in place).
-    /// Pass 5.4D-TabPerf: with every view new to the list (<paramref name="afresh"/>, or <paramref name="wholeList"/>: a tab's kept views
-    /// taken up again), the list is filled anew in one change (<see cref="ViewList.ReplaceAll"/>), not one insert and one removal for each
-    /// view: everything that follows the list (the rows, the Canvas, the player's boxes) is told once.
+    /// <para>The list is replaced in one change (<see cref="ViewList.ReplaceAll"/>: one Reset, nothing when the order is unchanged), never one
+    /// insert or move per view: an edit that adds hundreds of clips (Remove Dead Air) or deletes an early one (every later view moving up)
+    /// tells the seven listeners (rows, Canvas, player boxes, Effects pane, command, media browser) once. Every caller refreshes the rows
+    /// itself afterwards, so the rows' own listener skips the Reset (<see cref="ViewList.Syncing"/>).</para>
     /// </summary>
-    private void SyncViews(bool afresh = false, bool wholeList = false)
+    private void SyncViews(bool afresh = false)
     {
         if (afresh)
         {
@@ -416,23 +417,7 @@ public partial class MainViewModel
             _emptyTrackViews.Remove(id);
         }
 
-        // Into the list in that order, moving as little as can be (each move is a redraw of the rows); all of it at once when every view
-        // is new to it (Pass 5.4D-TabPerf).
-        if (afresh || wholeList)
-            Layers.ReplaceAll(wanted);
-        for (var i = 0; i < wanted.Count; i++)
-        {
-            var at = i < Layers.Count && ReferenceEquals(Layers[i], wanted[i]) ? i : Layers.IndexOf(wanted[i]);
-            if (at == i)
-                continue;
-            if (at < 0)
-                Layers.Insert(i, wanted[i]);
-            else
-                Layers.Move(at, i);
-        }
-
-        while (Layers.Count > wanted.Count)
-            Layers.RemoveAt(Layers.Count - 1);
+        Layers.ReplaceAll(wanted, syncing: true);
 
         if (DrawTargetLayer is { } target && !Layers.Contains(target))
             DrawTargetLayer = null;
@@ -647,8 +632,11 @@ public partial class MainViewModel
     /// </summary>
     public sealed class ViewList : System.Collections.ObjectModel.ObservableCollection<Layer>
     {
+        /// <summary>True while a view sync raises its Reset: the sync's caller refreshes the rows itself right after it.</summary>
+        internal bool Syncing { get; private set; }
+
         /// <summary>The list made <paramref name="views"/>, in that order, told as one Reset (nothing told when it is that already).</summary>
-        internal void ReplaceAll(IReadOnlyList<Layer> views)
+        internal void ReplaceAll(IReadOnlyList<Layer> views, bool syncing = false)
         {
             if (Items.Count == views.Count && Items.SequenceEqual(views, ReferenceEqualityComparer.Instance))
                 return;
@@ -657,9 +645,17 @@ public partial class MainViewModel
             Items.Clear();
             foreach (var view in views)
                 Items.Add(view);
-            OnPropertyChanged(new System.ComponentModel.PropertyChangedEventArgs(nameof(Count)));
-            OnPropertyChanged(new System.ComponentModel.PropertyChangedEventArgs("Item[]"));
-            OnCollectionChanged(new System.Collections.Specialized.NotifyCollectionChangedEventArgs(System.Collections.Specialized.NotifyCollectionChangedAction.Reset));
+            Syncing = syncing;
+            try
+            {
+                OnPropertyChanged(new System.ComponentModel.PropertyChangedEventArgs(nameof(Count)));
+                OnPropertyChanged(new System.ComponentModel.PropertyChangedEventArgs("Item[]"));
+                OnCollectionChanged(new System.Collections.Specialized.NotifyCollectionChangedEventArgs(System.Collections.Specialized.NotifyCollectionChangedAction.Reset));
+            }
+            finally
+            {
+                Syncing = false;
+            }
         }
     }
 
@@ -777,31 +773,20 @@ public partial class MainViewModel
         (Document.Width, Document.Height, Document.UseVerticalResolution) = (Math.Max(FrameWidth, 2), Math.Max(FrameHeight, 2), UseVerticalResolution);
     }
 
-    // The values of a view that are its clip's own, and what each is called on the view.
-    private static readonly HashSet<string> ClipFields =
-    [
-        nameof(Layer.StartTime), nameof(Layer.Duration), nameof(Layer.MediaOffset), nameof(Layer.Speed), nameof(Layer.FadeInSeconds),
-        nameof(Layer.FadeOutSeconds), nameof(Layer.FadeInStyle), nameof(Layer.FadeOutStyle), nameof(Layer.TransitionIn), nameof(Layer.IsHidden),
-        nameof(Layer.IsSoundMuted), nameof(Layer.AudioGainDb), nameof(Layer.AudioOffset), nameof(Layer.ProxyChoice),
-    ];
-
-    // Values of a view that are its own and not its clip's look: what it shows, what is being done with it.
-    private static readonly HashSet<string> ViewOnly =
-    [
-        nameof(Layer.Waveform), nameof(Layer.Filmstrip), nameof(Layer.IsLoading), nameof(Layer.TrackId), nameof(Layer.IsDeleted),
-        nameof(Layer.MediaDuration), nameof(Layer.IsEmptyTrack),
-    ];
-
     /// <summary>
-    /// A view was changed. Its clip's own values come from the document, so a change to one of them made outside
-    /// <see cref="SyncViews"/> (a box bound to the view) is a request, made an edit of the clip; anything else is its look,
-    /// newer now than its clip's. Returns whether it was one of the clip's own values.
+    /// A view was changed. Its clip's own values (<see cref="LayerFields.Clip"/>) come from the document, so a change to one of them made
+    /// outside <see cref="SyncViews"/> (a box bound to the view) is a request, made an edit of the clip; the view's own values
+    /// (<see cref="LayerFields.View"/>) are nobody else's, and an alias's change is counted as the change of the value it sets; anything
+    /// else is its look, newer now than its clip's. Returns whether it was one of the clip's own values.
     /// </summary>
     private bool NoteViewChange(Layer view, string? name)
     {
-        if (_syncingViews || _applyingKeys || name is null || ViewOnly.Contains(name))
+        if (_syncingViews || _applyingKeys || name is null)
             return false;
-        if (!ClipFields.Contains(name))
+        var owner = LayerFields.Owner(name);
+        if (owner is FieldOwner.View or FieldOwner.Alias)
+            return false;
+        if (owner != FieldOwner.Clip)
         {
             if (view.ClipId != Guid.Empty)
                 _staleLooks.Add(view);
@@ -819,6 +804,13 @@ public partial class MainViewModel
         }
 
         return true;
+    }
+
+    /// <summary>The Sequence's markers cleared through the document's transaction (no undo step); nothing done when it has none.</summary>
+    private void ClearDocumentMarkers()
+    {
+        if (Document.Markers.Count > 0)
+            Edit("clear the markers", edit => edit.SetMarkers([]), undoable: false);
     }
 
     /// <summary>A view shows its clip's own values again, as the document has them: nothing is edited.</summary>
@@ -846,9 +838,8 @@ public partial class MainViewModel
     private bool TakesUndoStep(Layer view, string name)
     {
         var now = Environment.TickCount64;
-        var again = _lastFieldEdit is (var lastView, var lastName, var at) && ReferenceEquals(lastView, view) && lastName == name && now - at < 1500;
-        _lastFieldEdit = (view, name, now);
-        return now - _checkpointedAt > 500 && !again;
+        var again = _gesture.Fields.Continues(view, name, now, MergeWindow, newest: null);
+        return now - _checkpointedAt > HandStepGrace && !again;
     }
 
     /// <summary>One of a clip's own values set on its view: the clip is edited to it (within what the timeline allows), and the view shows what came of it.</summary>
@@ -971,18 +962,18 @@ public partial class MainViewModel
     private Guid? _openedClip;
 
     /// <summary>
-    /// Puts a clip of the file just opened on the timeline, made as a dropped file is (5.2-AuditB: no clip is privileged):
+    /// Puts a clip of the file just opened on the timeline, made as a dropped file is (5.2.0: no clip is privileged):
     /// a video-file clip of the whole file (a sound clip for a file with no picture), fitted to the frame as Settings say, its
     /// blur fill on unless the Blur Fill row's switch is off, its audio streams on Sub-Lanes of their own (UnpackStreams). On an
     /// empty Sequence it goes on Track 1 at 0. Another file opened over clips of the one opened before takes their place: they
     /// go, it lies at the start of the first one's track with its look, place and crop (fitted to the frame when that leaves it
     /// taller than the frame), and what hung from them hangs from it (a Cutout cut from their picture cut from its picture, on
     /// its clock; their own streams' sound goes with them). On a Sequence holding nothing else it gives the Sequence its rate
-    /// and natural size. What ran to the end of the timeline (a picture, words, an adjustment) runs to its end (4.3D). A Game
+    /// and natural size. What ran to the end of the timeline (a picture, words, an adjustment) runs to its end (4.3.0). A Game
     /// Preset chosen before any clip (<see cref="_templateToCome"/>) goes on it. No undo step: opening a file is not an edit.
     /// </summary>
     /// <param name="previous">The file opened before this one ("" for none): its clips are the ones replaced.</param>
-    private void PlaceOpenedFile(string previous)
+    internal void PlaceOpenedFile(string previous)
     {
         var path = OpenedFile;
         var length = MainMediaSeconds;
@@ -1008,10 +999,13 @@ public partial class MainViewModel
         // 5.4A: what the New Project studio chose on purpose (ExplicitFrame, ExplicitFrameRate) stays; the colour space follows.
         if (empty)
         {
-            if (!Document.ExplicitFrameRate)
-                Document.FrameRate = Models.Timeline.FrameRate.OfSource(SourceFrameRate);
-            if (picture && !Document.ExplicitFrame)
-                (Document.NaturalWidth, Document.NaturalHeight) = CroppedSize(BoxCrop(), SourceWidth, SourceHeight);
+            var rate = Document.ExplicitFrameRate ? Document.FrameRate : Models.Timeline.FrameRate.OfSource(SourceFrameRate);
+            var (width, height) = picture && !Document.ExplicitFrame ? CroppedSize(BoxCrop(), SourceWidth, SourceHeight) : (Document.NaturalWidth, Document.NaturalHeight);
+            Edit("take the first file's frame", edit =>
+            {
+                edit.SetFrameRate(rate, Document.ExplicitFrameRate);
+                edit.SetFrame(width, height, Document.ExplicitFrame);
+            }, undoable: false);
             TakeProjectSettingsFrom(info);
             NoteDocumentShape();
         }
@@ -1249,8 +1243,10 @@ public partial class MainViewModel
         try
         {
             var crop = (view.CropLeft, view.CropTop, view.CropRight, view.CropBottom);
+            var speedOptions = (view.SmoothSlowMo, view.KeepPitch, view.SpectralAudio);
             view.ApplyLook(look);
             (view.CropLeft, view.CropTop, view.CropRight, view.CropBottom) = crop;
+            (view.SmoothSlowMo, view.KeepPitch, view.SpectralAudio) = speedOptions;
             TakeClip(view, clip, track);
         }
         finally
@@ -1274,6 +1270,7 @@ public partial class MainViewModel
     {
         // The master fader follows the Sequence's gain (5.2B): an edit, an undo, a project opened.
         NoteMasterGain();
+        ApplySequenceRate();
 
         var now = (Document.NaturalWidth, Document.NaturalHeight, Document.Tracks.Any(t => t.Clips.Count > 0));
         if (now == _documentShown)

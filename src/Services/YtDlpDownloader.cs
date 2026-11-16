@@ -101,6 +101,7 @@ public static partial class YtDlpDownloader
                     .Add("--ffmpeg-location").Add(DependencyUpdater.FfmpegPath)
                     .Add("-P").Add(work)
                     .Add("-o").Add("%(title).80B [%(id)s].%(ext)s")
+                    .Add("--")
                     .Add(url))
                 .WithValidation(CommandResultValidation.None)
                 .WithStandardOutputPipe(ProcessPipes.Lines(progress.Report))

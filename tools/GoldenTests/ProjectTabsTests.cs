@@ -10,6 +10,7 @@ using System.Windows.Shell;
 using System.Windows.Threading;
 using System.Xml.Linq;
 using HandPegApp;
+using HandPegApp.Shell;
 using HandPegApp.Models;
 using HandPegApp.Models.Timeline;
 using HandPegApp.Services;
@@ -37,7 +38,6 @@ namespace HandPegGoldenTests;
 /// </summary>
 public static class ProjectTabsTests
 {
-    private const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
     private static readonly XNamespace X = "http://schemas.microsoft.com/winfx/2006/xaml";
     private const string First = "D:/media/first.mkv", Second = "D:/media/second.mkv";
 
@@ -53,29 +53,6 @@ public static class ProjectTabsTests
         yield return Case("titlebar-tab-overflow", "# The strip shares its room, narrows its tabs to their initials, then shows a run round the one in front and a count of the rest: never wider than its room.", Overflow);
         yield return Case("project-tabs-save-path", "# Where a tab behind the one in front is saved: its own file, a portable folder, the studio's folder, the Projects folder (as the view model's save).", SavePath);
         yield return Case("project-tabs-never-lost", "# A project file left without a header is taken in under a made-up one, one that cannot come across is kept, and a clean close never deletes a tab it does not know.", NeverLost);
-    }
-
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
     }
 
     private static string Fresh(string name)
@@ -100,7 +77,7 @@ public static class ProjectTabsTests
         var two = new TimelineTrackModel { Kind = TimelineTrackKind.Video, TrackNumber = 2 };
         two.Clips.Add(DogfoodTests.FileClip(Second, 0, 6));
         document.Tracks.AddRange([one, two]);
-        typeof(MainViewModel).GetMethod("InstallDocument", Hidden)!.Invoke(vm, [document]);
+        vm.InstallDocument(document);
         return vm;
     }
 
@@ -163,7 +140,7 @@ public static class ProjectTabsTests
         var file = tabs.StateFile(one.Id);
         expect(file.StartsWith(Path.Combine(AppPaths.Temp, "project-tabs-resume"), StringComparison.OrdinalIgnoreCase) && file.EndsWith(".hptab", StringComparison.Ordinal),
             "written to <folder>\\<session>\\<id>.hptab (the window's is %Cache%\\project-tabs\\<session>)");
-        expect(File.Exists(file) && ProjectStore.PeekHeader(file) is { Version: ProjectFile.CurrentVersion }, "the .hptab is a project file of this version's format (6)");
+        expect(File.Exists(file) && ProjectStore.PeekHeader(file) is { Version: ProjectFile.BaseVersion }, "the .hptab is a project file of this version's format (6)");
         expect(File.ReadAllText(file).Contains("\"undoHistory\"", StringComparison.Ordinal) && tabs.ReadState(one.Id).UndoHistory?.Count == 2,
             "with its undo history (two Brotli-packed steps), read back as an open reads it");
         expect(File.Exists(tabs.SavedFile(one.Id)) && File.Exists(tabs.HeaderFile(one.Id)), "and its saved state's fingerprint (it has unsaved changes) and its header beside it");
@@ -331,7 +308,7 @@ public static class ProjectTabsTests
         }
 
         // The XAML: the strip in the main window's title bar, right after its name; its tabs and + take their clicks; nothing taller than the bar.
-        var src = Path.Combine(RepositoryRoot(), "src");
+        var src = Path.Combine(SourceProbe.Root, "src");
         var main = XDocument.Load(Path.Combine(src, "MainWindow.xaml"));
         var strip = XDocument.Load(Path.Combine(src, "Controls", "ProjectTabStrip.xaml"));
         var bar = Named(main, "TitleBar");
@@ -402,7 +379,7 @@ public static class ProjectTabsTests
             {
                 var screen = element.PointToScreen(at);
                 var handled = false;
-                var answer = MainWindow.FrameHook(hwnd, WmNcHitTest, IntPtr.Zero, (IntPtr)(((int)Math.Floor(screen.Y) << 16) | ((int)Math.Floor(screen.X) & 0xFFFF)), ref handled);
+                var answer = WindowFrame.FrameHook(hwnd, WmNcHitTest, IntPtr.Zero, (IntPtr)(((int)Math.Floor(screen.Y) << 16) | ((int)Math.Floor(screen.X) & 0xFFFF)), ref handled);
                 return handled ? (int)answer : -1;
             }
 
@@ -447,17 +424,6 @@ public static class ProjectTabsTests
             foreach (var deeper in Descendants<T>(child))
                 yield return deeper;
         }
-    }
-
-    private static string RepositoryRoot()
-    {
-        for (var folder = new DirectoryInfo(AppContext.BaseDirectory); folder is not null; folder = folder.Parent)
-        {
-            if (File.Exists(Path.Combine(folder.FullName, "HandPegApp.csproj")))
-                return folder.FullName;
-        }
-
-        throw new DirectoryNotFoundException("HandPegApp.csproj was not found above the golden tests' program.");
     }
 
     private static XElement? Named(XContainer xaml, string name) => xaml.Descendants().FirstOrDefault(e => Attr(e, X + "Name") == name);
@@ -670,7 +636,7 @@ public static class ProjectTabsTests
         expect(wrong.Count == 0, $"from 60 to 1500 DIPs and 1 to 40 tabs: never wider than the room, the tab in front always shown, compact exactly below 72{(wrong.Count > 0 ? ": " + string.Join(", ", wrong.Take(8)) : "")}");
 
         // The numbers are the XAML's: + is 24 wide, the count 28, each tab's gap 2.
-        var strip = XDocument.Load(Path.Combine(RepositoryRoot(), "src", "Controls", "ProjectTabStrip.xaml"));
+        var strip = XDocument.Load(Path.Combine(SourceProbe.Root, "src", "Controls", "ProjectTabStrip.xaml"));
         var tabStyle = strip.Descendants().First(e => e.Name.LocalName == "Style" && Attr(e, X + "Key") == "TabButton");
         var margin = tabStyle.Elements().FirstOrDefault(e => Attr(e, "Property") == "Margin");
         expect(Attr(Named(strip, "NewTabButton"), "Width") == "24" && Attr(Named(strip, "OverflowButton"), "Width") == "28" && Attr(margin, "Value") == "0,0,2,0"

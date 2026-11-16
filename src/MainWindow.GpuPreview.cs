@@ -55,6 +55,10 @@ public partial class MainWindow
         _ = StartGpuAsync(surface);
     }
 
+    /// <summary>The window's inputs to the player engine now (<see cref="Services.PlayerInputs"/>).</summary>
+    private PlayerInputs PlayerInputs() =>
+        new((float)(_viewModel.Volume / 100.0), _viewModel.IsPlayerMuted, _viewModel.PlaybackRate, _playerZoom, _playerPanX, _playerPanY, GradeCompareNow, _gradeWipe);
+
     private async Task StartGpuAsync(IntPtr surface)
     {
         GpuPreviewEngine? engine = null;
@@ -81,10 +85,11 @@ public partial class MainWindow
             return;
         }
 
-        // Reload Player asked for the graphics card while this start was on the processor (WARP): the card's start follows.
+        // Reload Player asked for the graphics card while this start was on the processor (WARP): the card's start follows (once this
+        // engine is gone: the teardown is on the pool, and the next start waits for it).
         if (warp is not null && !_gpuOnWarp)
         {
-            engine.Dispose();
+            _ = engine.DisposeInBackground();
             EnsureGpuEngine();
             return;
         }
@@ -100,8 +105,9 @@ public partial class MainWindow
             _viewModel.StatusText = "The GPU preview draws on the processor (WARP), slowly. Reload Player tries the graphics card again.";
         engine.Ended += () => Dispatcher.BeginInvoke(() =>
         {
-            // The end of an emptied engine's plan (the project closed while playing, UnloadGpu): nothing to loop.
-            if (!ReferenceEquals(_gpu, engine) || !_viewModel.HasSource)
+            // The end of an emptied engine's plan (the project closed while playing, UnloadGpu): nothing to loop. Play pressed again
+            // before this queued handler ran: the user's Play wins (no stale IsPlaying = false, no Loop restart).
+            if (!ReferenceEquals(_gpu, engine) || !_viewModel.HasSource || engine.IsPlaying)
                 return;
             _viewModel.IsPlaying = false;
             FollowPlayerByFrame(false);
@@ -120,17 +126,15 @@ public partial class MainWindow
             OnPlaybackEnded();
         });
         engine.Faulted += reason => Dispatcher.BeginInvoke(() => OnGpuFaulted(engine, reason));
-        engine.Volume = (float)(_viewModel.Volume / 100.0);
-        engine.Muted = _viewModel.IsPlayerMuted;
-        engine.Rate = _viewModel.PlaybackRate;
 
-        // A started-again engine draws the player's zoom and pan the overlays are laid with.
-        engine.SetView(_playerZoom, _playerPanX, _playerPanY);
+        // A started-again engine takes every input at once: the sound's volume, mute and rate, the player's zoom and pan the overlays are
+        // laid with, and the grade's Before/After (Reload Player, a restart after a fault, a compare set before any engine existed).
+        engine.Apply(PlayerInputs());
         if (!_gpuPointerHooked)
         {
             // The player resized (5.4.1A): woken when the native window really has its new size (SizeChanged comes before the host moves
             // it, so the size read then can be the old one), and on SizeChanged as well; the frame on screen meanwhile is centred, never
-            // stretched (GpuViewportControl).
+            // stretched (GpuViewport).
             VideoView.SizeChanged += (_, _) => _gpu?.InvalidateView();
             VideoView.SurfaceResized += () => _gpu?.InvalidateView();
 
@@ -141,7 +145,7 @@ public partial class MainWindow
             TimelineSlider.MouseLeave += OverviewPointerLeft;
 
             // A video likely to be dropped (its Media tile rested on, a drag of it begun): made ready ahead (MainWindow.Drops).
-            MediaBrowser.PrewarmRequested += PrewarmDrop;
+            MediaBrowser.PrewarmRequested += _drops.PrewarmDrop;
 
             // The captions made again, or the subtitle track's pictures read or retimed: the engine takes them with the sequence.
             _viewModel.CaptionsChanged += ScheduleGpuState;
@@ -170,7 +174,7 @@ public partial class MainWindow
         AppLog.Write($"GPU engine: stopped ({reason}).");
         CrashReporter.Note("player", "the GPU preview stopped (its worker failed too often)");
         _gpu = null;
-        engine.Dispose();
+        _ = engine.DisposeInBackground();
         ForgetMirrors();
         _viewModel.IsPlaying = false;
         FollowPlayerByFrame(false);
@@ -459,7 +463,9 @@ public partial class MainWindow
     /// Saves the frame at the playhead as a PNG (Export Frame with the GPU engine): drawn once as the export makes it (the
     /// canvas's size, no bars, no zoom, no 3D view) and read back.
     /// </summary>
-    private async void GpuSaveFrame(GpuPreviewEngine engine, string path)
+    private void GpuSaveFrame(GpuPreviewEngine engine, string path) => Faults.Forget(GpuSaveFrameAsync(engine, path), nameof(GpuSaveFrame));
+
+    private async Task GpuSaveFrameAsync(GpuPreviewEngine engine, string path)
     {
         if (await engine.CaptureFrameAsync() is not { } frame || frame.Width <= 0 || frame.Height <= 0)
         {
@@ -513,11 +519,21 @@ public partial class MainWindow
         return await Task.Run(() => ProjectThumbnail.EncodeJpeg(frame.Bgra, frame.Width, frame.Height)).ConfigureAwait(false);
     }
 
+    /// <summary>The engine closed with the window: at once, on the window's thread (the process is ending).</summary>
     private void CloseGpuEngine()
     {
         var engine = _gpu;
         _gpu = null;
         engine?.Dispose();
+        ForgetMirrors();
+    }
+
+    /// <summary>The engine let go of for a new one (Reload Player): its teardown on the pool, which the next start waits for.</summary>
+    private void ReleaseGpuEngine()
+    {
+        var engine = _gpu;
+        _gpu = null;
+        _ = engine?.DisposeInBackground();
         ForgetMirrors();
     }
 

@@ -176,7 +176,7 @@ internal static class AudioProgramBuilder
                         Label = System.IO.Path.GetFileName(sound.Path),
                         Bus = buses[pair],
                     });
-                    voices.Add(VoiceOf(state, sound, chain, buses.Length > 1 ? pair : -1, 1f, strip));
+                    voices.Add(VoiceOf(state, sound, chain, null, buses.Length > 1 ? pair : -1, 1f, strip));
                 }
 
                 continue;
@@ -187,6 +187,10 @@ internal static class AudioProgramBuilder
                 trackChains[track.Id] = trackChain = AudioChainBuilder.From(track.AudioFilters, Math.Clamp(track.GainDb, -40, 24));
             var gain = Math.Abs(clip.GainDb) >= 0.05 ? (float)Math.Pow(10, Math.Clamp(clip.GainDb, -40, 24) / 20) : 1f;
             var role = sound.IsVoice ? ":voice" : sound.Ducked ? ":ducked" : "";
+
+            // The clip's own Pitch and Tempo (its Pitch Shift) are heard on its track's strip too (5.6.0: until now only a clip strip,
+            // on a track with no filters of its own, heard them): the lowered layer carries the track's filters, the clip's are its State's.
+            var mine = clip.State.AudioFilters is { PitchTempo: true } clipFilters ? AudioChainBuilder.From(clipFilters, 0) : null;
             for (var pair = 0; pair < buses.Length; pair++)
             {
                 var key = string.Create(CultureInfo.InvariantCulture, $"track:{track.Id:N}{PairKey(pair, buses.Length)}{role}");
@@ -205,7 +209,7 @@ internal static class AudioProgramBuilder
                     });
                 }
 
-                voices.Add(VoiceOf(state, sound, trackChain, buses.Length > 1 ? pair : -1, gain, strip));
+                voices.Add(VoiceOf(state, sound, trackChain, mine, buses.Length > 1 ? pair : -1, gain, strip));
             }
         }
     }
@@ -219,12 +223,21 @@ internal static class AudioProgramBuilder
          layer.StartTime + (layer.IsAudio ? 0 : layer.AudioOffset));
 
     // A clip's sound as a voice of a strip: its file and stream (a surround stream's pair of channels, or -1 for the whole), at its
-    // speed and its strip's tempo and pitch, with its fades; its own gain (a track strip's voice: its clip's, else 1).
-    private static AudioVoice VoiceOf(SequenceExportState state, HeardSound sound, AudioChain chain, int pair, float gain, int strip)
+    // speed and its strip's tempo and pitch (times the clip's own, <paramref name="own"/>, on a track's strip), with its fades; its own
+    // gain (a track strip's voice: its clip's, else 1). 5.6.0: the clip's Keep Pitch off plays it as tape (its pitch moves with its
+    // speed), and its Spectral Audio stretches it with the phase vocoder; both are the layer's, whatever strip it is on.
+    private static AudioVoice VoiceOf(SequenceExportState state, HeardSound sound, AudioChain chain, AudioChain? own, int pair, float gain, int strip)
     {
         var (layer, path) = (sound.Layer, sound.Path);
         var (speed, startsAt) = Placed(layer);
         var timed = layer.Duration > 0.001;
+        var (pitch, tempo) = (chain.Pitch * (own?.Pitch ?? 1), chain.Tempo * (own?.Tempo ?? 1));
+
+        // The rate is the speed times what the Pitch and Tempo filter nets: FFmpeg's asetrate (pitch and tempo up by the pitch) then
+        // atempo (the chain's Tempo, the tempo over the pitch) net its Tempo alone. The engine takes the pitch back out of the rate
+        // itself (VoiceProducer: its stretch is the rate over the pitch), so the rate carries the pitch's share too (5.6.0, golden
+        // audio-engine-pitch-timing: until then +12 semitones played at half speed and -12 at double).
+        var net = Math.Clamp(tempo * pitch, 0.25, 4);
 
         // A sound clip's file is read on its own clock from 0, as the graph read it (a sound clip is not in MediaStarts); a video's
         // from its first frame (MediaStarts, else what the decoder finds), as its picture is. A stream unpacked from a video is on
@@ -244,8 +257,9 @@ internal static class AudioProgramBuilder
             SequenceEnd = timed ? startsAt + layer.Duration : double.PositiveInfinity,
             MediaStart = layer.MediaOffset,
             MediaEnd = timed ? layer.MediaOffset + layer.Duration * speed : double.PositiveInfinity,
-            Rate = speed * Math.Clamp(chain.Tempo, 0.25, 4),
-            Pitch = chain.Pitch,
+            Rate = speed * net,
+            Pitch = layer.KeepPitch ? pitch : pitch * speed,
+            Spectral = layer.SpectralAudio,
             Gain = gain,
             FadeIn = new AudioFade(fadeIn > 0.01 ? fadeIn : 0),
             FadeOut = new AudioFade(fadeOut > 0.01 && timed ? Math.Min(fadeOut, layer.Duration) : 0),

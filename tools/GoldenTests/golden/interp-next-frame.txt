@@ -1,0 +1,7 @@
+# Smooth Slow-Mo's next frame (5.6A review): a companion of the layer's frame, with no layer of its own in the decoders.
+ok: the file is registered
+ok: both decoded: the layer's frame and the next one are found as Resolve finds them, the picture exact
+ok: the layer keeps its memory; the next frame's salted key none (no second play rate, PlayAhead or pre-roll stretch, no second decoder for the file)
+ok: a next frame not decoded yet: the picture is not exact (an export waits for it), and still no memory of its own
+ok: Interpolate asks for the next frame through ResolveNext
+ok: ResolveNext asks only for the frame itself (Visible), never a PlayAhead, keeps no layer and pins what it gives until EndFrame

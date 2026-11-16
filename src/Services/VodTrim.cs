@@ -321,6 +321,7 @@ public static class VodTrim
             using var process = Process.Start(start);
             if (process is null)
                 return null;
+            using var adopted = ProcessPipes.Adopt(process.Id);
             var output = process.StandardOutput.ReadToEndAsync(cancel);
             var errors = process.StandardError.ReadToEndAsync(cancel);
             using (cancel.Register(() =>
@@ -340,11 +341,12 @@ public static class VodTrim
             cancel.ThrowIfCancellationRequested();
             if (process.ExitCode != 0)
             {
-                AppLog.Write($"Project bundle: {Path.GetFileName(tool)} failed ({process.ExitCode}): {errors.Result.Trim()}");
+                // GetResult, not Result: a failed read surfaces as itself (an IOException the filter below takes), not wrapped.
+                AppLog.Write($"Project bundle: {Path.GetFileName(tool)} failed ({process.ExitCode}): {errors.GetAwaiter().GetResult().Trim()}");
                 return null;
             }
 
-            return output.Result;
+            return output.GetAwaiter().GetResult();
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or InvalidOperationException)
         {

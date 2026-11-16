@@ -1,0 +1,4 @@
+# Win32 timers and events come from src/Native's Kernel32; Media Foundation's vtable slots are named (ComSlots), never bare numbers.
+ok: the compositor borrows nothing from the sound engine's interop (its timers and events are Kernel32's)
+ok: Media Foundation calls name their vtable slots (IMFSampleSlot.AddBuffer, not [42]); bare slot numbers left: 0
+ok: the derived slots are the SDK's (IMFSample::AddBuffer 42 after IMFAttributes' 33, IMFTransform::ProcessOutput 25)

@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Input;
 using System.Windows.Threading;
+using HandPegApp.Controls;
 using HandPegApp.Models;
 using HandPegApp.Services;
 
@@ -13,7 +14,7 @@ namespace HandPegApp;
 // The handlers are always there and do nothing while the recorder is off (it is decided after the first frame).
 public partial class MainWindow
 {
-    private DispatcherOperation? _flightSnapshot;
+    private Debounce? _flightSnapshot;
 
     private void InitializeDevFlight()
     {
@@ -59,23 +60,24 @@ public partial class MainWindow
         var other => other.GetType().Name,
     };
 
-    // After an edit, an undo step or a load: one snapshot once the window is idle, however many came at once.
+    // After an edit, an undo step or a load: one snapshot 1.5 s after the last of a burst (a 30 Hz effect drag is one snapshot, at its end),
+    // at ContextIdle. The timeline is serialized on this thread from the live document: a copy would cost as much as the serialization.
     private void SnapshotForFlight()
     {
-        if (!DevFlightRecorder.IsEnabled || _flightSnapshot is { Status: DispatcherOperationStatus.Pending })
-            return;
+        if (DevFlightRecorder.IsEnabled)
+            (_flightSnapshot ??= new Debounce(TimeSpan.FromMilliseconds(1500), TakeFlightSnapshot, DispatcherPriority.ContextIdle)).Poke();
+    }
 
-        _flightSnapshot = Dispatcher.BeginInvoke(() =>
+    private void TakeFlightSnapshot()
+    {
+        try
         {
-            try
-            {
-                var timeline = ProjectStore.TimelineNode(_viewModel.Document)?.ToJsonString();
-                DevFlightRecorder.TakeSnapshot(_viewModel.CurrentProjectPath, [_viewModel.LocalMediaPath, .. _viewModel.MediaFilesInUse()], timeline);
-            }
-            catch (Exception ex) when (ex is not OutOfMemoryException)
-            {
-                DevFlightRecorder.Record("dev", "snapshot failed: " + ex);
-            }
-        }, DispatcherPriority.ContextIdle);
+            var timeline = ProjectStore.TimelineNode(_viewModel.Document)?.ToJsonString();
+            DevFlightRecorder.TakeSnapshot(_viewModel.CurrentProjectPath, [_viewModel.LocalMediaPath, .. _viewModel.MediaFilesInUse()], timeline);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            DevFlightRecorder.Record("dev", "snapshot failed: " + ex);
+        }
     }
 }

@@ -1,5 +1,4 @@
 using CommunityToolkit.Mvvm.ComponentModel;
-using HandPegApp.Services;
 
 namespace HandPegApp.Models;
 
@@ -119,20 +118,12 @@ public sealed partial class AudioTrack : ObservableObject
     [NotifyPropertyChangedFor(nameof(FiltersCountText))]
     private TrackAudioFilters _filters = new();
 
-    /// <summary>A picture of the whole track's sound, drawn in the background after a load.</summary>
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(TrackWaveform))]
-    private System.Windows.Media.ImageSource? _waveform;
-
     // ----- As a row of the Audio tab -----
     // The rows there are made from one template, for these tracks and for the sounds added from files alike
     // (see Layer). These say what a track is where the two differ, under names both have.
 
     /// <summary>One of the video's own audio streams, with a codec, filters and a solo button of its own.</summary>
     public bool IsStream => true;
-
-    /// <summary>The picture behind the whole row: the track's waveform.</summary>
-    public System.Windows.Media.ImageSource? TrackWaveform => Waveform;
 
     /// <summary>A track runs with the video, at the video's speed, and cannot be taken off the timeline.</summary>
     public bool HasSpeed => false;

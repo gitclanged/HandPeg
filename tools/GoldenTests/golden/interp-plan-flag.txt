@@ -1,0 +1,5 @@
+# Smooth Slow-Mo (5.6A): the plan asks for in-betweens only for a clip slower than 1x that has it on.
+ok: the flag is bit 512 of the layer's
+ok: Smooth Slow-Mo at 0.5x (and 0.1x): the layer asks for in-betweens
+ok: at 1x or faster it does not, even with it on
+ok: nor slower than 1x with it off: the frame is held, as before

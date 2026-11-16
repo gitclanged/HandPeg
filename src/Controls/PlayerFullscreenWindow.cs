@@ -12,6 +12,9 @@ using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Shapes;
 using HandPegApp.Services;
+using static HandPegApp.UiBrushes;
+using HandPegApp.Native;
+using static HandPegApp.Native.User32;
 
 namespace HandPegApp;
 
@@ -26,8 +29,8 @@ namespace HandPegApp;
 /// </summary>
 public sealed partial class PlayerFullscreenWindow : Window
 {
-    private const int WmDisplayChange = 0x007E;
-    private const uint SwpNoZOrder = 0x0004, SwpNoActivate = 0x0010, SwpNoOwnerZOrder = 0x0200, MonitorDefaultToNearest = 2;
+    private const int WmDisplayChange = 0x007E, WmWindowPosChanging = 0x0046;
+    private const uint SwpNoSize = 0x0001, SwpNoMove = 0x0002, SwpNoZOrder = 0x0004, SwpNoActivate = 0x0010, SwpNoOwnerZOrder = 0x0200, MonitorDefaultToNearest = 2;
 
     // The monitor it covers (the screen's own pixels); whether it has been put there yet (until then a move of Windows' own, as its handle
     // is made, is not followed); whether its owner has let it close.
@@ -93,7 +96,33 @@ public sealed partial class PlayerFullscreenWindow : Window
     {
         if (msg == WmDisplayChange)
             Dispatcher.BeginInvoke(() => DisplayChanged?.Invoke());
+        else if (msg == WmWindowPosChanging && _placed && lParam != 0)
+            SnapToMonitor(lParam);
         return 0;
+    }
+
+    /// <summary>
+    /// Every move or resize proposed for the window (WPF's own sizing as it is shown, the rectangle Windows suggests on a DPI change,
+    /// a move to another monitor) is turned into the whole of the monitor the proposed rectangle lands on, in physical pixels, before
+    /// it happens: the window never shows at a scaled-up or default size, whatever the monitor's scale or HandPeg's UI scale.
+    /// </summary>
+    private void SnapToMonitor(nint lParam)
+    {
+        var position = Marshal.PtrToStructure<WindowPos>(lParam);
+        if ((position.Flags & (SwpNoMove | SwpNoSize)) == (SwpNoMove | SwpNoSize))
+            return;
+
+        // A move alone keeps the monitor's size; a resize alone keeps the current corner.
+        var (x, y) = (position.Flags & SwpNoMove) != 0 ? (_monitor.X, _monitor.Y) : (position.X, position.Y);
+        var (width, height) = (position.Flags & SwpNoSize) != 0 ? (_monitor.Width, _monitor.Height) : (position.Width, position.Height);
+        var proposed = new NativeRect { Left = x, Top = y, Right = x + Math.Max(1, width), Bottom = y + Math.Max(1, height) };
+        if (MonitorArea(MonitorFromRect(in proposed, MonitorDefaultToNearest)) is not { } area || area.Width <= 0 || area.Height <= 0)
+            return;
+
+        _monitor = area;
+        (position.X, position.Y, position.Width, position.Height) = (area.X, area.Y, area.Width, area.Height);
+        position.Flags &= ~(SwpNoMove | SwpNoSize);
+        Marshal.StructureToPtr(position, lParam, false);
     }
 
     // The monitor it is on now (Windows moved it: another monitor, a scale changed), covered whole.
@@ -124,7 +153,7 @@ public sealed partial class PlayerFullscreenWindow : Window
             Left = (int)Math.Floor(pixels.Left), Top = (int)Math.Floor(pixels.Top),
             Right = (int)Math.Ceiling(pixels.Right), Bottom = (int)Math.Ceiling(pixels.Bottom),
         };
-        return MonitorArea(MonitorFromRect(ref rect, MonitorDefaultToNearest))
+        return MonitorArea(MonitorFromRect(in rect, MonitorDefaultToNearest))
             ?? new Int32Rect(rect.Left, rect.Top, Math.Max(1, rect.Right - rect.Left), Math.Max(1, rect.Bottom - rect.Top));
     }
 
@@ -144,37 +173,6 @@ public sealed partial class PlayerFullscreenWindow : Window
         return new Int32Rect(whole.Left, whole.Top, whole.Right - whole.Left, whole.Bottom - whole.Top);
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct NativeRect
-    {
-        public int Left, Top, Right, Bottom;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MonitorInfo
-    {
-        public int Size;
-        public NativeRect Monitor, Work;
-        public uint Flags;
-    }
-
-    [LibraryImport("user32.dll")]
-    private static partial nint MonitorFromRect(ref NativeRect rect, uint flags);
-
-    [LibraryImport("user32.dll")]
-    private static partial nint MonitorFromWindow(nint window, uint flags);
-
-    [LibraryImport("user32.dll", EntryPoint = "GetMonitorInfoW")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GetMonitorInfo(nint monitor, ref MonitorInfo info);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GetWindowRect(nint window, out NativeRect rect);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool SetWindowPos(nint window, nint after, int x, int y, int width, int height, uint flags);
 }
 
 /// <summary>
@@ -197,7 +195,6 @@ internal static class HudChrome
         Text = Frozen(0xFF, 0xF2, 0xF2, 0xF2), Muted = Frozen(0xFF, 0x9A, 0x9A, 0xA4), Lit = Frozen(0xE6, 0x2C, 0x2C, 0x36),
         Pressed = Frozen(0xF0, 0x3A, 0x3A, 0x46), Chosen = Frozen(0xCC, 0x00, 0x78, 0xD7);
 
-    private static readonly FontFamily Glyphs = new("Segoe MDL2 Assets");
     private static DoubleAnimation? _fadeIn, _fadeOut;
     private static Style? _button, _toggle;
 
@@ -233,7 +230,7 @@ internal static class HudChrome
         };
         AutomationProperties.SetName(button, "Fullscreen Preview");
         KeyTip.SetAction(button, "view.fullscreen");
-        KeyTip.SetText(button, "Fullscreen Preview{keys}: the player over its whole monitor, with a transport bar that hides itself. Esc comes back.");
+        KeyTip.SetText(button, "Fullscreen Preview{keys}: the player across its monitor; Esc comes back.");
         return button;
     }
 
@@ -255,7 +252,7 @@ internal static class HudChrome
         style.Setters.Add(new Setter(Control.BorderBrushProperty, Brushes.Transparent));
         style.Setters.Add(new Setter(Control.BorderThicknessProperty, new Thickness(0)));
         style.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(9, 5, 9, 5)));
-        style.Setters.Add(new Setter(Control.FontFamilyProperty, Glyphs));
+        style.Setters.Add(new Setter(Control.FontFamilyProperty, Glyphs.Font));
         style.Setters.Add(new Setter(Control.FontSizeProperty, 14.0));
         style.Setters.Add(new Setter(UIElement.FocusableProperty, false));
         style.Setters.Add(new Setter(FrameworkElement.FocusVisualStyleProperty, null));
@@ -342,12 +339,6 @@ internal static class HudChrome
         return animation;
     }
 
-    private static SolidColorBrush Frozen(byte a, byte r, byte g, byte b)
-    {
-        var brush = new SolidColorBrush(Color.FromArgb(a, r, g, b));
-        brush.Freeze();
-        return brush;
-    }
 }
 
 /// <summary>
@@ -427,11 +418,11 @@ public sealed class FullscreenTransportBar : Border
         Exploded = new ToggleButton { Style = HudChrome.ButtonStyle(typeof(ToggleButton), null), Content = planes, Padding = new Thickness(8, 4, 8, 4) };
         AutomationProperties.SetName(Exploded, "3D Exploded View");
         KeyTip.SetAction(Exploded, "view.exploded3d");
-        KeyTip.SetText(Exploded, "3D Exploded View{keys}: the layer stack in 3D, each layer a plane in compositing order. Esc or this button goes back.");
+        KeyTip.SetText(Exploded, "3D Exploded View{keys}: the layer stack in 3D; Esc or this button goes back.");
 
-        EncodedPreview = new ToggleButton { Style = HudChrome.ButtonStyle(typeof(ToggleButton), null), Content = MainWindow.LoopbackGlyph, Margin = new Thickness(2, 0, 0, 0) };
-        AutomationProperties.SetName(EncodedPreview, MainWindow.LoopbackName);
-        EncodedPreview.ToolTip = MainWindow.LoopbackName + ": the picture as the export's encoder would leave it, live.";
+        EncodedPreview = new ToggleButton { Style = HudChrome.ButtonStyle(typeof(ToggleButton), null), Content = Shell.LoopbackPreviewController.LoopbackGlyph, Margin = new Thickness(2, 0, 0, 0) };
+        AutomationProperties.SetName(EncodedPreview, Shell.LoopbackPreviewController.LoopbackName);
+        EncodedPreview.ToolTip = Shell.LoopbackPreviewController.LoopbackName + ": the picture as the export's encoder would leave it, live.";
         EncodedPreview.SetBinding(ToggleButton.IsCheckedProperty, new Binding("IsExportQualityPreview") { Mode = BindingMode.TwoWay });
         EncodedPreview.SetBinding(IsEnabledProperty, new Binding("IsVideoExport"));
         ToolTipService.SetShowOnDisabled(EncodedPreview, true);

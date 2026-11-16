@@ -14,13 +14,13 @@ ok: two slow frames in a window of 30 do not; the window of 30 then starts again
 ok: within half a second of the last step no slow frames step it: the window runs out and starts again
 ok: a window is 30 frames, 3 slow ones step, slow is over 12 ms, and a scrub's picture is whole again 80 ms after its last move
 ok: SceneRenderer.DrawScale: a flat letterboxed frame at its scale (never under 0.25); whole for no scale (every other client), the 3D view, the loupe, raw, a readback, exact frames and an unletterboxed frame (the Live Encoded Preview)
-ok: ControlBlock.UnifiedMemory is at 3212 (the worker's answer; the editor never loads DXCore), the protocol still version 8
+ok: ControlBlock.UnifiedMemory is at 3212 (the worker's answer; the editor never loads DXCore), the protocol version 9
 ok: ProjectTabs.OpenCount follows the strip: 1 at start, 2 and 3 as tabs are added and inserted, 2 after a close, 3 after a tab left behind is taken in
 ok: the pump asks the monitor's scale, the shared-memory answer and the tab count every frame; a run never sits above its start step (a second tab or the charger pulled mid-run); the 5.4.3 'Sequence's pixels' step is gone
 ok: a late frame is counted as it is late and not again as it arrives; a step down goes through NextStep (a step that changes nothing passed over)
 ok: one log line as a run that played ends (its frames, slow ones, start and deepest step); the stale comment on Play is gone
 ok: the frame pump still asks PreviewScaleFor for every scene it writes, and counts a frame as late when it misses its refresh
-ok: GpuViewportControl.MonitorScale is Windows' scale of the monitor its window is on, asked at each call, 1 when the window is gone
+ok: GpuViewport.MonitorScale is Windows' scale of the monitor its window is on, asked at each call, 1 when the window is gone
 ok: the worker keeps a canvas for frames drawn smaller beside the whole one (let go by the idle trim, counted for the goldens), and takes the stretched picture's far edges half a texel in
 ok: Settings has one Dynamic Preview Scaling checkbox, its words saying when it scales
 ok: MonitorScale of no window is 1 (whole)

@@ -1,0 +1,10 @@
+# Per-frame breadcrumbs (EnterHot): no disk write on the calling thread; the flusher puts the last ENTER line on disk within one period.
+ok: the breadcrumb file opens (write-through, unbuffered, overlapped)
+ok: 10,000 hot ENTER/LEAVE pairs: 0 disk writes on the calling thread (made 0)
+ok: and no allocations on the calling thread (0 bytes for 20,000 lines)
+ok: a set-up call (ResizeBuffers) still writes its ENTER and LEAVE through at once (made 2)
+ok: the flusher wrote the thread's last hot ENTER line to disk within its period (no LEAVE: the call it names is in flight)
+ok: the slot's header names the call in flight
+ok: LEAVE lines carry the duration and the HRESULT as 8 hex digits (hr=0x887A0005)
+ok: the header counts every line of the thread: warm-up 2 + 20,000 hot + 2 written through + 1 in flight
+ok: fixed 4 KB slots of 128-byte lines (127 characters and a line break)

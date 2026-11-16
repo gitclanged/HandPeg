@@ -10,11 +10,16 @@ using Microsoft.Win32;
 namespace HandPegApp;
 
 /// <summary>
-/// Edits a copy of the application settings; nothing changes unless the user saves.
+/// Edits a copy of the application settings; nothing changes unless the user saves. Save writes back only the properties
+/// this window changed (<see cref="AppSettings.CopyEdited"/>), so changes made to the settings in effect while the window was
+/// open (a caption run marking a GPU as failed, the Automation tab, a hardware test) are kept.
 /// </summary>
 public partial class SettingsWindow : Window
 {
     private readonly AppSettings _settings = AppSettings.Current.Clone();
+
+    // The settings as the window opened, unedited: what Save compares the edited copy against.
+    private readonly AppSettings _opened = AppSettings.Current.Clone();
     private readonly System.Collections.ObjectModel.ObservableCollection<SquishPreset> _squishPresets;
 
     private void AddSquishPreset_Click(object sender, RoutedEventArgs e)
@@ -124,9 +129,6 @@ public partial class SettingsWindow : Window
         OverlayStyleAddBox.SelectedItem = left.FirstOrDefault();
     }
 
-    // A box for a whole number takes digits and nothing else.
-    private void DigitsOnly_PreviewTextInput(object sender, System.Windows.Input.TextCompositionEventArgs e) => e.Handled = !e.Text.All(char.IsDigit);
-
     private void RestoreSquishPresets_Click(object sender, RoutedEventArgs e)
     {
         _settings.SquisherPresets = SquishPreset.Defaults();
@@ -157,18 +159,20 @@ public partial class SettingsWindow : Window
     {
         try
         {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true });
+            ShellOpen.Open(e.Uri.AbsoluteUri);
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
         {
-            ErrorText.Text = $"The page could not be opened: {ex.Message}";
+            Controls.UiFault.Show(ErrorText, $"The page could not be opened: {ex.Message}", "Settings: open a web page", ex);
         }
 
         e.Handled = true;
     }
 
     /// <summary>Check for Updates: asks now, and says here what came of it. The main window offers the restart once this window is closed.</summary>
-    private async void CheckForUpdates_Click(object sender, RoutedEventArgs e)
+    private void CheckForUpdates_Click(object sender, RoutedEventArgs e) => Faults.Forget(CheckForUpdates_ClickAsync(sender, e), nameof(CheckForUpdates_Click));
+
+    private async Task CheckForUpdates_ClickAsync(object sender, RoutedEventArgs e)
     {
         CheckUpdateButton.IsEnabled = false;
         UpdateStatusText.Text = "Checking...";
@@ -187,7 +191,9 @@ public partial class SettingsWindow : Window
     // ----- Dependencies, from the General tab -----
 
     /// <summary>Update Dependencies: the dependency panel's Install / Update All, run from here, its progress shown under the button.</summary>
-    private async void UpdateDependencies_Click(object sender, RoutedEventArgs e)
+    private void UpdateDependencies_Click(object sender, RoutedEventArgs e) => Faults.Forget(UpdateDependencies_ClickAsync(sender, e), nameof(UpdateDependencies_Click));
+
+    private async Task UpdateDependencies_ClickAsync(object sender, RoutedEventArgs e)
     {
         if (Dependencies.IsRunning)
             return;
@@ -545,7 +551,9 @@ public partial class SettingsWindow : Window
         RefreshStageSoon();
     }
 
-    private async void ClearCache_Click(object sender, RoutedEventArgs e)
+    private void ClearCache_Click(object sender, RoutedEventArgs e) => Faults.Forget(ClearCache_ClickAsync(sender, e), nameof(ClearCache_Click));
+
+    private async Task ClearCache_ClickAsync(object sender, RoutedEventArgs e)
     {
         var cache = sender switch
         {
@@ -981,7 +989,7 @@ public partial class SettingsWindow : Window
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
         {
-            ExportStatusText.Text = $"Export failed: {ex.Message}";
+            Controls.UiFault.Show(ExportStatusText, $"Export failed: {ex.Message}", "Settings: export settings and presets", ex);
         }
     }
 
@@ -1000,11 +1008,13 @@ public partial class SettingsWindow : Window
         int presets;
         try
         {
+            // A debounced settings save still waiting would otherwise write the old settings over the imported file.
+            AppSettings.FlushPendingSave();
             presets = BackupImporter.ImportSettingsAndPresets(dialog.FileName);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException or InvalidDataException)
         {
-            ExportStatusText.Text = $"Import failed, nothing was changed: {ex.Message}";
+            Controls.UiFault.Show(ExportStatusText, $"Import failed, nothing was changed: {ex.Message}", "Settings: import settings and presets", ex);
             return;
         }
 
@@ -1016,8 +1026,8 @@ public partial class SettingsWindow : Window
         _viewModel.StatusText = $"Imported the settings and {presets} preset{(presets == 1 ? "" : "s")}.";
 
         MessageBox.Show(this,
-            $"The settings and {presets} preset{(presets == 1 ? "" : "s")} were imported. The files they replaced are kept as "
-            + "appsettings.json.bak and presets.json.bak.\n\nRestart HandPeg to apply all the changes. This window will now close.",
+            $"The settings and {presets} preset{(presets == 1 ? "" : "s")} were imported; tool paths, download sources, folders and devices were kept from this PC. "
+            + "The files they replaced are kept as appsettings.json.bak and presets.json.bak.\n\nRestart HandPeg to apply all the changes. This window will now close.",
             "HandPeg", MessageBoxButton.OK, MessageBoxImage.Information);
 
         // Closed without its Save: this window still holds the settings from before the import.
@@ -1091,27 +1101,25 @@ public partial class SettingsWindow : Window
         _settings.SplashStylePresets = _overlayStyles.Select(name => name + StyleFile.Extension).ToList();
 
 
-        // The smart rules and the default preset are edited on the Automation tab, which saves them as they
-        // change. This copy was made when the window opened; take theirs as they are now.
-        _settings.SmartRules = AppSettings.Current.SmartRules;
-        _settings.DefaultPreset = AppSettings.Current.DefaultPreset;
-
         // The keys and the Lightning Dial, as the Keybinds page has them (SettingsWindow.Keybinds.cs).
         SaveKeybinds();
+        _settings.TidyForSave();
 
+        // Only what this window changed is written into the settings in effect. The Smart Rules and the default preset are edited
+        // on the Automation tab, which saves them as they change, so they no longer need copying back by hand.
         try
         {
-            _settings.SaveAsCurrent();
+            AppSettings.Update(current => AppSettings.CopyEdited(_opened, _settings, current), saveNow: true);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            ErrorText.Text = $"Could not write {AppSettings.FilePath}: {ex.Message}";
+            Controls.UiFault.Show(ErrorText, $"Could not write {AppSettings.FilePath}: {ex.Message}", "Settings: save", ex);
             return;
         }
 
         // The keys and the dial go into effect once they are saved (a failed save, then Cancel, keeps the old ones), and so
         // does the GPU frame cache's budget (SettingsWindow.GpuEngine.cs).
-        KeybindManager.Reload(_settings);
+        KeybindManager.Reload(AppSettings.Current);
         ApplyGpuEngine();
 
         // The verbose flight recorder follows its box at once (5.2.0's re-cut), off this thread: it reads the disk.

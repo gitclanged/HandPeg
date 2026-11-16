@@ -7,6 +7,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using HandPegApp.Services;
+using static HandPegApp.UiBrushes;
 
 namespace HandPegApp;
 
@@ -254,14 +255,13 @@ public sealed class KeybindMapControl : FrameworkElement
 
     private static readonly Typeface Face = new("Segoe UI");
 
-    private Brush Themed(string key, Color fallback) => TryFindResource(key) as Brush ?? Frozen(fallback);
+    // Text over an accent fill: white on a dark accent, near-black on a light one, whatever the theme (WCAG relative luminance).
+    private static readonly SolidColorBrush OnLightAccent = Frozen(Color.FromRgb(0x1A, 0x1A, 0x1A));
 
-    private static SolidColorBrush Frozen(Color color)
-    {
-        var brush = new SolidColorBrush(color);
-        brush.Freeze();
-        return brush;
-    }
+    internal static Brush OnAccent(Brush accent) =>
+        accent is SolidColorBrush { Color: var c } && 0.2126 * c.R + 0.7152 * c.G + 0.0722 * c.B > 150 ? OnLightAccent : Brushes.White;
+
+    private Brush Themed(string key, Color fallback) => TryFindResource(key) as Brush ?? Frozen(fallback);
 
     private static readonly SolidColorBrush ConflictFill = Frozen(Color.FromArgb(0x70, 0xD0, 0x40, 0x40));
     private Brush? _boundFill, _accentSource;
@@ -315,6 +315,7 @@ public sealed class KeybindMapControl : FrameworkElement
         var muted = Themed("MutedTextBrush", Color.FromRgb(0xA0, 0xA0, 0xA0));
         var edge = EdgePen(Themed("ControlBorderBrush", Color.FromRgb(0x3F, 0x3F, 0x3F)));
         var bound = BoundFill(accent);
+        var onAccent = OnAccent(accent);
 
         // The whole map takes the pointer (between the keys too), so its tooltip and hover follow it smoothly.
         drawing.DrawRectangle(Brushes.Transparent, null, new Rect(RenderSize));
@@ -325,7 +326,7 @@ public sealed class KeybindMapControl : FrameworkElement
             drawing.DrawRoundedRectangle(Themed("PanelBrush", Color.FromRgb(0x20, 0x20, 0x20)), edge, new Rect(RenderSize), 8, 8);
             var pill = EditPillRect(dpi);
             drawing.DrawRoundedRectangle(_hoverEdit ? accent : bound, _hoverEdit ? _hoverPen : edge, pill, pill.Height / 2, pill.Height / 2);
-            var label = Text(EditPillText, 11.5, text, dpi);
+            var label = Text(EditPillText, 11.5, _hoverEdit ? onAccent : text, dpi);
             drawing.DrawText(label, new Point(pill.X + (pill.Width - label.Width) / 2, pill.Y + (pill.Height - label.Height) / 2));
         }
 
@@ -334,7 +335,7 @@ public sealed class KeybindMapControl : FrameworkElement
         {
             var rect = LayerRect(i, dpi);
             drawing.DrawRoundedRectangle(i == _layer ? accent : i == _hoverLayer ? bound : face, edge, rect, rect.Height / 2, rect.Height / 2);
-            var label = Text(Layers[i].Name, 11.5, text, dpi);
+            var label = Text(Layers[i].Name, 11.5, i == _layer ? onAccent : text, dpi);
             drawing.DrawText(label, new Point(rect.X + (rect.Width - label.Width) / 2, rect.Y + (rect.Height - label.Height) / 2));
         }
 
@@ -351,6 +352,7 @@ public sealed class KeybindMapControl : FrameworkElement
             drawing.PushClip(_clips[i]);
             if (_names[i] is { } name)
             {
+                name.SetForegroundBrush(held ? onAccent : muted);
                 drawing.DrawText(name, _compact
                     ? new Point(rect.X + (rect.Width - name.Width) / 2, rect.Y + (rect.Height - name.Height) / 2)
                     : new Point(rect.X + 4, rect.Y + 2));
@@ -708,14 +710,12 @@ public sealed class KeybindListControl : StackPanel
     private readonly Dictionary<string, WrapPanel> _rows = [];
     private (string Id, InputChord? Replacing, Button Button)? _listening;
 
-    private static readonly Brush ConflictText = MakeConflictText();
+    // A conflicting key's text: light red on a dark theme, deep red on a light one (each over 4.5:1 on its panels).
+    private static readonly Brush ConflictTextOnDark = Frozen(Color.FromRgb(0xFF, 0x7A, 0x7A)), ConflictTextOnLight = Frozen(Color.FromRgb(0xB4, 0x23, 0x18));
 
-    private static Brush MakeConflictText()
-    {
-        var brush = new SolidColorBrush(Color.FromRgb(0xFF, 0x7A, 0x7A));
-        brush.Freeze();
-        return brush;
-    }
+    /// <summary>The conflict text for the theme now (the theme's text colour dark means a light theme).</summary>
+    internal Brush ConflictText =>
+        TryFindResource("TextBrush") is SolidColorBrush { Color: var c } && 0.2126 * c.R + 0.7152 * c.G + 0.0722 * c.B < 128 ? ConflictTextOnLight : ConflictTextOnDark;
 
     public KeybindListControl(KeybindDraft draft)
     {

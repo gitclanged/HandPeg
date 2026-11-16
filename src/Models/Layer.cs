@@ -121,7 +121,6 @@ public sealed partial class Layer : ObservableObject
 {
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(Title))]
-    [NotifyPropertyChangedFor(nameof(Description))]
     private string _name = "Layer";
 
     public LayerKind Kind { get; init; }
@@ -154,10 +153,10 @@ public sealed partial class Layer : ObservableObject
     [ObservableProperty] private string _textContent = "";
 
     /// <summary>The font, by the name Windows lists it under.</summary>
-    [ObservableProperty] private string _fontFamily = HandPegApp.Services.TextLayout.DefaultFont;
+    [ObservableProperty] private string _fontFamily = TextDefaults.Font;
 
     /// <summary>The font's size in pixels of the output frame, before the layer is scaled.</summary>
-    [ObservableProperty] private double _fontSize = HandPegApp.Services.TextLayout.DefaultSize;
+    [ObservableProperty] private double _fontSize = TextDefaults.Size;
 
     /// <summary>The colour of the letters, as #RRGGBB.</summary>
     [ObservableProperty] private string _fontColor = "#FFFFFF";
@@ -252,7 +251,8 @@ public sealed partial class Layer : ObservableObject
     // Speed: how fast the clip's own video or sound runs. Its length on the timeline is the length of what
     // it plays divided by its speed, so a clip that is slowed down is longer and one that is sped up shorter.
 
-    public const double SlowestSpeed = 0.1, FastestSpeed = 10;
+    // 5.6.0: up to 16x (the Speed & Time card's top end).
+    public const double SlowestSpeed = 0.1, FastestSpeed = 16;
 
     /// <summary>How many times as fast as recorded the clip runs: 1 as it is, 0.5 at half speed, 2 at double.</summary>
     [ObservableProperty]
@@ -332,12 +332,6 @@ public sealed partial class Layer : ObservableObject
     /// <summary>How far that sound has been slipped against the layer's picture, in seconds. Only while audio and video are unlinked.</summary>
     [ObservableProperty] private double _audioOffset;
 
-    /// <summary>A picture of the layer's sound, drawn behind its block on the Layers tab. Not saved: it is made again from the file.</summary>
-    [ObservableProperty] private System.Windows.Media.ImageSource? _waveform;
-
-    /// <summary>A strip of frames from a video layer's file, side by side, drawn in its block. Not saved.</summary>
-    [ObservableProperty] private System.Windows.Media.ImageSource? _filmstrip;
-
     /// <summary>How long the layer's own video or sound is, in seconds; 0 when not known.</summary>
     [ObservableProperty] private double _mediaDuration;
 
@@ -399,35 +393,13 @@ public sealed partial class Layer : ObservableObject
     /// <summary>The file the sound comes from, as its row is headed.</summary>
     public string SourceFileName => ImagePath.Length > 0 ? System.IO.Path.GetFileName(ImagePath) : Name;
 
-    /// <summary>A voiceover recorded in HandPeg: its file is in the Voiceovers folder.</summary>
-    public bool IsVoiceoverRecording =>
-        IsAudio && ImagePath.StartsWith(HandPegApp.Services.AppPaths.Voiceovers + System.IO.Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
-
     /// <summary>What the sound's stream is encoded as in its file (aac, pcm_s16le...), when that is known.</summary>
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(Description))]
     private string _audioCodec = "";
 
     /// <summary>Its channels as FFmpeg names them (stereo, mono, 5.1...), when known.</summary>
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(Description))]
     private string _audioChannels = "";
-
-    /// <summary>
-    /// The second line of its row: what it is (a recorded voiceover, the sound of a video clip, the first
-    /// stream of a file), what the clip was named when that is not its file's name, and its format.
-    /// </summary>
-    public string Description
-    {
-        get
-        {
-            var origin = IsVoiceoverRecording ? "Voiceover Recording" : IsVideoFile ? "Stream #1 (video clip)" : "Stream #1";
-            if (!IsVideoFile && Name != SourceFileName && !string.IsNullOrWhiteSpace(Name))
-                origin += $" ({Name})";
-            var format = AudioCodec.Length > 0 ? (AudioChannels.Length > 0 ? $"{AudioCodec}, {AudioChannels}" : AudioCodec) : "mixed into the first track";
-            return $"{origin}  \u00B7  {format}";
-        }
-    }
 
     public IReadOnlyList<string> Actions => ClipActions;
 
@@ -488,9 +460,6 @@ public sealed partial class Layer : ObservableObject
     public bool IsStream => false;
 
     public string FiltersCountText => AudioFilters.ActiveCount > 0 ? AudioFilters.ActiveCount.ToString(System.Globalization.CultureInfo.InvariantCulture) : "";
-
-    /// <summary>The picture behind a track's whole row. A clip's waveform is drawn on its block instead.</summary>
-    public System.Windows.Media.ImageSource? TrackWaveform => null;
 
     // Turning and mirroring.
 
@@ -719,9 +688,6 @@ public sealed partial class Layer : ObservableObject
     public double Evaluate(KeyProperty property, double time) =>
         _keys[(int)property] is { Count: > 0 } keys ? EasingCurves.ValueAt(keys, time) : GetValue(property);
 
-    /// <summary>The easing of the keyframe at a moment, or null when the clip has no keyframe there.</summary>
-    public EasingType? GetEasingAt(double time) => GetKeyAt(time)?.Easing;
-
     /// <summary>The keyframe at a moment: of one property, or (null) the first of any; null when there is none there.</summary>
     public Keyframe? GetKeyAt(double time, KeyProperty? only = null)
     {
@@ -848,7 +814,7 @@ public sealed partial class Layer : ObservableObject
                 list.Add(size with { Value = place + anchor * (SizeWidth - size.Value) * across });
         }
 
-        var at = list.FindIndex(k => Math.Abs(k.Time - time) <= KeyTolerance);
+        var at = KeyEdit.IndexAt(list, time);
         if (at >= 0)
         {
             list[at] = list[at] with { Value = value };
@@ -939,10 +905,6 @@ public sealed partial class Layer : ObservableObject
         OnPropertyChanged(nameof(IsAnimated));
         OnPropertyChanged(KeysChanged);
     }
-
-    /// <summary>The keyframe nearest a moment, or null when the property has none.</summary>
-    public Keyframe? GetNearestKey(KeyProperty property, double time) =>
-        _keys[(int)property].Count == 0 ? null : _keys[(int)property].MinBy(k => Math.Abs(k.Time - time));
 
     /// <summary>Moves a whole motion: every keyframe of the property by the same amount.</summary>
     public void OffsetKeys(KeyProperty property, double by)
@@ -1199,12 +1161,6 @@ public sealed partial class Layer : ObservableObject
     /// <summary>The mask is taken from the frame: a piece cut from the video, with a mask of the whole frame.</summary>
     public bool UsesFrameMask => MaskFrame && IsVideo;
 
-    /// <summary>
-    /// What the mask is, for whatever draws it: a drawn mask's key when the layer has outlines and no picture of its own (filled
-    /// in memory, no file: 5.1-Release), else its picture file; "" for none. See <c>MaskStore.SourceOf</c>.
-    /// </summary>
-    public string MaskSource => Services.MaskStore.SourceOf(MaskPath, MaskShapes);
-
     /// <summary>Takes the mask off and puts back every mask setting as a new layer has it.</summary>
     public void ResetMask() =>
         (CustomMask, MaskPath, MaskFrame, MaskGrow, MaskInvert, MaskShapes, MaskOffsetX, MaskOffsetY, CropLeft, CropRight, CropTop, CropBottom, CornerRadius, Feather, FeatherRadius) =
@@ -1336,14 +1292,24 @@ public sealed partial class Layer : ObservableObject
     /// </summary>
     public (int X, int Y, int Width, int Height) GetOutputRect(int frameWidth, int frameHeight, int sourceWidth, int sourceHeight)
     {
+        var rect = ComputeOutputRect(frameWidth, frameHeight, sourceWidth, sourceHeight);
+        if (frameWidth > 0 && frameHeight > 0)
+            _heightPerWidth = ((double)rect.Height / frameHeight) / ((double)rect.Width / frameWidth);
+        return rect;
+    }
+
+    /// <summary>
+    /// Where and how large the layer is on an output frame of the given size, in pixels, changing nothing (safe on a lowered layer that
+    /// the preview, the program strip and an export read at once). The source size is needed for the shape of a locked layer; when it is
+    /// unknown, 16:9 is assumed.
+    /// </summary>
+    public (int X, int Y, int Width, int Height) ComputeOutputRect(int frameWidth, int frameHeight, int sourceWidth, int sourceHeight)
+    {
         var width = Math.Max(Even(SizeWidth * frameWidth), 2);
 
         var height = LockAspectRatio || SizeHeight <= 0
             ? GetProportionalHeight(width, sourceWidth, sourceHeight)
             : Math.Max(Even(SizeHeight * frameHeight), 2);
-        if (frameWidth > 0 && frameHeight > 0)
-            _heightPerWidth = ((double)height / frameHeight) / ((double)width / frameWidth);
-
         return ((int)Math.Round(PositionX * frameWidth), (int)Math.Round(PositionY * frameHeight), width, height);
     }
 

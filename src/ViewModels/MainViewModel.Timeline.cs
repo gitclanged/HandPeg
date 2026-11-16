@@ -145,17 +145,7 @@ public partial class MainViewModel
     /// <summary>Whether a dragged or dropped clip's edges catch on the other clips' edges, the end of the sequence and the playhead. Remembered.</summary>
     [ObservableProperty] private bool _snapClips = AppSettings.Current.SnapClips;
 
-    partial void OnSnapClipsChanged(bool value)
-    {
-        AppSettings.Current.SnapClips = value;
-        try
-        {
-            AppSettings.Current.SaveAsCurrent();
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-        }
-    }
+    partial void OnSnapClipsChanged(bool value) => AppSettings.Set(s => s.SnapClips, (s, v) => s.SnapClips = v, value);
 
     /// <summary>Whether the layers' controls are shown beside their time bars; folded away, every row's time bar is wider, all alike.</summary>
     [ObservableProperty] private bool _layerControlsShown = true;
@@ -220,7 +210,7 @@ public partial class MainViewModel
         }
         catch (Exception ex)
         {
-            AppLog.Write($"The undo step \"{what}\" could not be read: {ex.GetType().Name}: {ex.Message}");
+            AppLog.Write($"The undo step \"{what}\" could not be read", ex);
 
             // A damaged step can stretch the room far past any timeline's: it is not kept that size.
             if (_stateText.Capacity > 16 * 1024 * 1024)
@@ -274,6 +264,7 @@ public partial class MainViewModel
     {
         _savedDepth = Math.Min(_savedDepth, _undo.Count);
         _undo.Add((what, state));
+        _gesture.Steps++;
         if (_undo.Count > UndoDepth)
         {
             _undo.RemoveAt(0);
@@ -301,7 +292,7 @@ public partial class MainViewModel
 
         PushStep(what, Pack(CaptureSnapshot()));
         _checkpointedAt = Environment.TickCount64;
-        _stepGesture = _inputGesture;
+        _gesture.StepPress = _inputGesture;
         _touchedSinceSaved = true;
     }
 
@@ -422,6 +413,9 @@ public partial class MainViewModel
         // they were kept on, and its boxes set again once the document's natural size is back (MainViewModel.ProjectSettings.cs).
         if (snapshot.Frame is { } frame)
             RestoreProjectFrame(frame);
+
+        // An undo step is the same project: the unknown project fields it was opened with stay with it (not part of the step's JSON).
+        snapshot.Document.CarriedProjectFields = Document.CarriedProjectFields;
         InstallDocument(snapshot.Document);
         if (snapshot.Frame is { } boxes)
             RestoreProjectFrame(boxes);
@@ -444,13 +438,13 @@ public partial class MainViewModel
         if (snapshot.Look is { } look && !SameJson(look, CaptureLook()))
             ApplyLook(look);
 
-        // A change made right after this is a step of its own, never the end of a burst from before it.
-        _lastLookEdit = null;
-        _lastFieldEdit = null;
+        // A change made right after this is a step of its own, never the end of a run from before it.
+        _gesture.Looks.Reset();
+        _gesture.Fields.Reset();
 
         // The subtitles, the caption box and its style, each only where it differs: a step that did not touch
         // them leaves the caption preview as it is. (What anchored captions show is not the subtitles' own: it is made
-        // again from their anchors through the timeline put back, once, as the restore ends. 4.4-BugHunt.)
+        // again from their anchors through the timeline put back, once, as the restore ends. 4.4.0.)
         if (!SameJson(Unprojected(snapshot.Subtitles), Unprojected(CaptureSubtitles())))
         {
             ApplySubtitles(snapshot.Subtitles);
@@ -491,7 +485,9 @@ public partial class MainViewModel
         _undo.Clear();
         _redo.Clear();
         _savedDepth = 0;
-        (_lastLookEdit, _lastFieldEdit, _visitStep) = (null, null, null);
+        _gesture.Looks.Reset();
+        _gesture.Fields.Reset();
+        _visitStep = null;
     }
 
     /// <summary>
@@ -538,17 +534,22 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The project as a save writes it: <see cref="CaptureState"/>, with the undo and redo history (4.4-BugHunt). With
+    /// The project as a save writes it: <see cref="CaptureState"/>, with the undo and redo history (4.4.0). With
     /// <paramref name="moved"/> (downloads kept in a folder of the user's), the steps are written with their files moved as
     /// the timeline's are, while the history this session goes on with is left as it is. With its thumbnail (Pass
-    /// 5.2D): the Sequence at the playhead as the GPU engine draws it, or the last one taken
+    /// 5.2.0): the Sequence at the playhead as the GPU engine draws it, or the last one taken
     /// (<see cref="ThumbnailForSave"/>).
     /// </summary>
-    public ProjectState CaptureStateForSave(string name = "", Func<string, string>? moved = null)
+    public ProjectState CaptureStateForSave(string name = "", Func<string, string>? moved = null) => CaptureStateForSave(name, moved, waitForThumbnail: true);
+
+    /// <summary><see cref="CaptureStateForSave(string, Func{string, string}?)"/>; without <paramref name="waitForThumbnail"/> (autosave) it
+    /// carries the last thumbnail taken, and the caller finishes a fresh one off the window's thread.</summary>
+    private ProjectState CaptureStateForSave(string name, Func<string, string>? moved, bool waitForThumbnail)
     {
+        TrustOwnCommandOnSave();
         var state = CaptureState(name);
         (state.UndoHistory, state.RedoHistory) = (HistoryOf(_undo, moved), HistoryOf(_redo, moved));
-        state.ThumbnailJpeg = ThumbnailForSave();
+        state.ThumbnailJpeg = waitForThumbnail ? ThumbnailForSave() : Volatile.Read(ref _thumbnail);
         state.Workspace = _isBackgroundWorker ? null : WorkspaceForSave?.Invoke();
         return state;
     }
@@ -636,9 +637,18 @@ public partial class MainViewModel
 
     /// <summary>
     /// Sets how fast a clip runs. The clip plays the same stretch of its file as before, so its block on the
-    /// timeline is as much shorter or longer as it is faster or slower (what it grows into on its track moves on).
+    /// timeline is as much shorter or longer as it is faster or slower; what follows it ripples by as much as the
+    /// Ripple Timeline setting says (5.6.0: AppSettings.SpeedRipplesTimeline, every speed's way in: the Speed &amp; Time
+    /// card, the Inspector's box, the clip menu).
     /// </summary>
-    public void SetClipSpeed(Layer clip, double speed)
+    public void SetClipSpeed(Layer clip, double speed) => SetClipSpeed(clip, speed, AppSettings.Current.SpeedRipplesTimeline);
+
+    /// <summary>
+    /// Sets how fast a clip runs, with its family (its streams' lanes, its Cutouts); with <paramref name="ripple"/>, what follows it on
+    /// the timeline (every track, or its own, as Ripple All Tracks says) moves by as much as it grew or shrank, in the same step
+    /// (5.6.0). Without, what it grows into on its track moves on and a gap is left where it shrinks, as before.
+    /// </summary>
+    public void SetClipSpeed(Layer clip, double speed, bool ripple)
     {
         speed = Math.Round(Math.Clamp(speed, Layer.SlowestSpeed, Layer.FastestSpeed), 3);
 
@@ -652,11 +662,25 @@ public partial class MainViewModel
 
         // Its streams' lanes and the Cutouts cut from it are its own file at the same moment: they run at its speed, or they drift off it.
         var family = Document.Tracks.SelectMany(t => t.Clips).Where(c => c.ParentClipId == model.Id && c.PlaysFile && string.Equals(c.SourcePath, model.SourcePath, StringComparison.OrdinalIgnoreCase)).ToList();
+
+        // Rippled (5.6.0), the clip ripples once for its family: a clip that grows moves what follows before its family grows into the
+        // room; one that shrinks has its family shrink first, so none of them holds back what moves up after it.
+        var all = AppSettings.Current.RippleAllTracks;
+        var grows = speed < model.Speed;
         if (Edit($"change the speed of {clip.Name}", edit =>
             {
-                edit.SetClipSpeed(model, speed);
-                foreach (var child in family)
-                    edit.SetClipSpeed(child, speed);
+                if (ripple && !grows)
+                {
+                    foreach (var child in family)
+                        edit.SetClipSpeed(child, speed);
+                }
+
+                edit.SetClipSpeed(model, speed, ripple: ripple, rippleAll: all);
+                if (!ripple || grows)
+                {
+                    foreach (var child in family)
+                        edit.SetClipSpeed(child, speed);
+                }
             }, undoable: TakesUndoStep(clip, nameof(Layer.Speed))))
             Log(string.Create(System.Globalization.CultureInfo.InvariantCulture, $"Set speed of {clip.Name} to {model.Speed:0.##}x: it now runs {TimeDisplay.Format(model.Start)} to {TimeDisplay.Format(model.End)}"));
         else
@@ -899,7 +923,7 @@ public partial class MainViewModel
     /// <summary>Draws the waveform of a video clip's sound, for its block on the timeline. In the background; the clip works without it.</summary>
     private async Task LoadLayerWaveformAsync(Layer layer)
     {
-        if (_isBackgroundWorker || !layer.CarriesSound || layer.Waveform is not null || !(ShowWaveforms || layer.IsAudio))
+        if (_isBackgroundWorker || !layer.CarriesSound || !(ShowWaveforms || layer.IsAudio))
             return;
 
         // The picture of a file is made once in a session, however often its clips are split, undone and
@@ -907,7 +931,9 @@ public partial class MainViewModel
         // (A stream's lane shows that stream of its file.)
         var path = layer.ImagePath;
         var stream = Math.Max(ClipOf(layer)?.AudioStreamIndex ?? 0, 0);
-        var key = stream == 0 ? path : $"{path}|a{stream}";
+        var key = ClipPictures.SoundKey(path, stream);
+        if (ClipPictures.Sound(key) is not null)
+            return;
         if (!_layerWaveforms.TryGetValue(key, out var drawing))
         {
             _layerWaveforms[key] = drawing = Waveforms.RenderAsync(
@@ -916,7 +942,8 @@ public partial class MainViewModel
 
         try
         {
-            layer.Waveform = await drawing;
+            if (await drawing is { } picture)
+                ClipPictures.PutSound(path, stream, picture);
         }
         catch (Exception ex) when (ex is OperationCanceledException or IOException or UnauthorizedAccessException or InvalidOperationException)
         {
@@ -937,18 +964,6 @@ public partial class MainViewModel
         return work.Token;
     }
 
-    /// <summary>Stops what is still being drawn of a file that no clip uses any more.</summary>
-    private void CancelStalePictureWork(string path)
-    {
-        if (path.Length == 0 || !_pictureWork.TryGetValue(path, out var work) || Layers.Any(l => string.Equals(l.ImagePath, path, StringComparison.OrdinalIgnoreCase)))
-            return;
-
-        _pictureWork.Remove(path);
-        if (_layerWaveforms.TryGetValue(path, out var drawing) && !drawing.IsCompleted)
-            _layerWaveforms.Remove(path);
-        work.Cancel();
-    }
-
     // The pictures made of layers' files this session, by file: waveforms, and strips of frames. No more
     // than this many of each are kept: the file used longest ago gives way to a new one. A clip that is on
     // the timeline holds its own pictures whatever happens here, so nothing that is showing goes blank; what
@@ -956,11 +971,23 @@ public partial class MainViewModel
     // 54 pixels high (about half a megabyte), a waveform 1200 by 60.
     private const int PicturesKept = 24;
 
+    /// <summary>The Timeline blocks' strips of frames and waveforms, by file (shared by every clip of a file, in every tab).</summary>
+    public ClipPictures ClipPictures { get; }
+
+    /// <summary>The strip of frames a video clip's block shows; null while none is made.</summary>
+    public System.Windows.Media.ImageSource? FilmstripOf(Layer layer) => layer.IsVideoFile ? ClipPictures.Film(layer.ImagePath) : null;
+
+    /// <summary>The waveform a clip's block shows: of its file's audio stream (a stream's lane shows that stream); null while none is made.</summary>
+    public System.Windows.Media.ImageSource? WaveformOf(Layer layer) =>
+        layer.ImagePath.Length == 0 ? null : ClipPictures.Sound(ClipPictures.SoundKey(layer.ImagePath, Math.Max(ClipOf(layer)?.AudioStreamIndex ?? 0, 0)));
+
+    // The files the window's Sequence uses (the picture store keeps their pictures).
+    private IEnumerable<string> FilesInUse() => Layers.Select(l => l.ImagePath).Append(LocalMediaPath).Where(f => f.Length > 0);
+
     // How tall a block's strip is made (FfmpegRunner.GenerateFilmstripAsync's height): the Media Browser's strip is decoded at it.
     private const int LayerStripHeight = 54;
 
     private readonly LruCache<string, Task<System.Windows.Media.ImageSource?>> _layerWaveforms = new(PicturesKept, StringComparer.OrdinalIgnoreCase);
-    private readonly LruCache<string, System.Windows.Media.ImageSource> _layerFilmstrips = new(PicturesKept, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>The pictures a layer's block is drawn with: the waveform of its sound, and for a video a strip of its frames.</summary>
     private async Task LoadLayerPicturesAsync(Layer layer)
@@ -975,7 +1002,7 @@ public partial class MainViewModel
     /// </summary>
     private async Task LoadLayerFilmstripAsync(Layer layer)
     {
-        if (_isBackgroundWorker || !layer.IsVideoFile || layer.Filmstrip is not null || !File.Exists(layer.ImagePath))
+        if (_isBackgroundWorker || !layer.IsVideoFile || ClipPictures.Film(layer.ImagePath) is not null || !File.Exists(layer.ImagePath))
             return;
 
         try
@@ -988,16 +1015,8 @@ public partial class MainViewModel
             // Its length stays unknown: one frame is taken, from its start.
         }
 
-        var file = layer.ImagePath;
-        if (await GetFilmstripAsync(file, Math.Clamp(AppSettings.Current.LayerThumbnailCount, 1, 25), layer.MediaDuration) is not { } picture)
-            return;
-
-        // Every clip of the file, whichever of them asked: a clip that was split while the strip was being
-        // made is two clips by now.
-        foreach (var clip in Layers.Where(l => l.IsVideoFile && l.Filmstrip is null && string.Equals(l.ImagePath, file, StringComparison.OrdinalIgnoreCase)).ToList())
-            clip.Filmstrip = picture;
-        if (layer.Filmstrip is null)
-            layer.Filmstrip = picture;
+        // Stored by file (MakeFilmstripAsync): every clip of the file shows it, a clip split while it was being made included.
+        await GetFilmstripAsync(layer.ImagePath, Math.Clamp(AppSettings.Current.LayerThumbnailCount, 1, 25), layer.MediaDuration);
     }
 
 
@@ -1007,7 +1026,7 @@ public partial class MainViewModel
     /// <summary>The strip of frames of a file: the one made earlier this session, the one being made, or a new one.</summary>
     private Task<System.Windows.Media.ImageSource?> GetFilmstripAsync(string file, int count, double seconds)
     {
-        if (_layerFilmstrips.TryGetValue(file, out var made))
+        if (ClipPictures.Film(file) is { } made)
             return Task.FromResult<System.Windows.Media.ImageSource?>(made);
         if (!_filmstripsBeingMade.TryGetValue(file, out var making))
             _filmstripsBeingMade[file] = making = MakeFilmstripAsync(file, count, seconds);
@@ -1052,13 +1071,13 @@ public partial class MainViewModel
             }, token);
 
             if (picture is not null)
-                _layerFilmstrips[file] = picture;
+                ClipPictures.PutFilm(file, picture);
             return picture;
         }
         catch (Exception ex) when (ex is OperationCanceledException or IOException or UnauthorizedAccessException or InvalidOperationException or NotSupportedException or UriFormatException or System.ComponentModel.Win32Exception)
         {
             if (ex is not OperationCanceledException)
-                AppLog.Write($"Thumbnails of {Path.GetFileName(file)} could not be read: {ex.Message}");
+                AppLog.Write($"Thumbnails of {Path.GetFileName(file)} could not be read", ex);
             return null;
         }
         finally
@@ -1160,23 +1179,16 @@ public partial class MainViewModel
                     continue;
                 }
 
-                var silent = clip;
+                // Both cuts and the lift in one step: too near another cut or an edge to be a clip of its own, the stretch is left
+                // exactly as it is (never one cut made and the other refused).
                 try
                 {
-                    if (to < silent.End - TimelineDocument.MinimumClipSeconds)
-                        edit.SplitClipAt(silent, to);
-                    if (from > silent.Start + TimelineDocument.MinimumClipSeconds)
-                        silent = edit.SplitClipAt(silent, from);
+                    removed += edit.DeleteStretchOf(clip, from, to);
+                    marked++;
                 }
                 catch (TimelineEditException)
                 {
-                    // Too near another cut or an edge to be a clip of its own: left as it is.
-                    continue;
                 }
-
-                marked++;
-                removed += silent.Duration;
-                edit.DeleteClip(silent);
             }
         });
 
@@ -1227,7 +1239,15 @@ public partial class MainViewModel
     // must never ask to be saved).
     private bool _touchedSinceSaved;
 
-    private string Fingerprint()
+    /// <summary>
+    /// The project as JSON for dirty tracking: the live state serialized as it is (no deep copy: serializing only reads), with no name and
+    /// no time saved (<see cref="FingerprintOptions"/>, the options <see cref="FrozenStateDiffers"/> uses, so a tab put behind compares
+    /// byte for byte). The same text as the deep copy's (the golden fingerprint-live-equals-copy).
+    /// </summary>
+    internal string Fingerprint() => JsonSerializer.Serialize(CaptureState("", liveTimeline: true, copyBin: false), FingerprintOptions);
+
+    /// <summary>The fingerprint as it was made before it serialized the live state (a deep copy, the default options): for the golden.</summary>
+    internal string FingerprintOfCopy()
     {
         var state = CaptureState();
         state.SavedAt = default;
@@ -1237,7 +1257,7 @@ public partial class MainViewModel
     /// <summary>Takes the project as it is now as the saved one: called after a load and after a save.</summary>
     public void MarkSaved()
     {
-        _savedFingerprint = HasSource ? Fingerprint() : "";
+        _savedFingerprint = Fingerprint();
         _touchedSinceSaved = false;
 
         // Pass 5.5A: every step there is now predates the save (or open): the recovery copy lags only through the steps that follow.
@@ -1263,15 +1283,18 @@ public partial class MainViewModel
             return;
 
         _touchedSinceSaved = true;
-        if (!HasSource || _savedFingerprint.Length == 0 || Fingerprint() is not { } now || now == _savedFingerprint)
+        if (_savedFingerprint.Length == 0 || Fingerprint() is not { } now || now == _savedFingerprint)
             return;
 
         AppLog.Write($"Changed by itself since the project was opened or saved (not counted as an edit): {ChangedParts(_savedFingerprint, now)}");
         _savedFingerprint = now;
     }
 
-    /// <summary>Whether there is a video open whose cuts or settings the user has changed since it was loaded or last saved as a project.</summary>
-    public bool HasUnsavedChanges => HasSource && _touchedSinceSaved && _savedFingerprint.Length > 0 && Fingerprint() != _savedFingerprint;
+    /// <summary>
+    /// Whether the project (with media or without: clips, text, an emptied timeline) has changed since it was loaded, last saved or
+    /// set up new, by the user's hand.
+    /// </summary>
+    public bool HasUnsavedChanges => _touchedSinceSaved && _savedFingerprint.Length > 0 && Fingerprint() != _savedFingerprint;
 
     /// <summary>For the log, as HandPeg closes with unsaved changes: which parts of the project they are in.</summary>
     public string DescribeUnsavedChanges() => ChangedParts(_savedFingerprint, Fingerprint());

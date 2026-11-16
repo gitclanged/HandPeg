@@ -34,6 +34,8 @@ public static class AudioEngineTests
             yield return Case("audio-engine-slip", "# An unlinked video clip's slip moves its sound; a sound clip's is ignored (the lowering's rule).", (t, p) => Slip(files, t, p));
             yield return Case("audio-engine-resampler", "# The polyphase resampler: a 1 kHz sine from 44.1 and 96 kHz to 48 kHz, THD+N.", (t, p) => Resampler(files, t, p));
             yield return Case("audio-engine-wsola", "# WSOLA: clips at 2x and 0.5x keep their timing (bursts where the speed puts them) and their pitch.", (t, p) => Wsola(files, t, p));
+            yield return Case("audio-engine-spectral", "# Spectral Audio (5.6A): the phase vocoder at 0.25x and 0.5x keeps the timing and the pitch, and plays each burst once.", (t, p) => Spectral(files, t, p));
+            yield return Case("audio-engine-pitch-timing", "# Pitch Shift keeps the timing (FFmpeg's asetrate and atempo net the tempo alone), on any strip; Keep Pitch off plays as tape (5.6A).", (t, p) => PitchTiming(files, t, p));
             yield return Case("audio-engine-seek", "# Seeks are exact to the sample (no resampling at the file's own rate), and silent before a clip.", (t, p) => Seek(files, t, p));
             yield return Case("audio-engine-ducking", "# A track ducked under a voice: the dip is the amount asked for (-15 dB), and it comes back after the release.", (t, p) => Ducking(files, t, p));
             yield return Case("audio-engine-ffmpeg-parity", "# Against HandPeg's FFmpeg (when installed): each processing filter, and an AAC file's start (its priming dropped where FFmpeg drops it).", (t, p) => FfmpegParity(files, t, p));
@@ -52,22 +54,6 @@ public static class AudioEngineTests
             {
             }
         }
-    }
-
-    private static GraphResult Case(string golden, string header, Action<StringBuilder, List<string>> body)
-    {
-        var text = new StringBuilder(header).Append('\n');
-        var problems = new List<string>();
-        try
-        {
-            body(text, problems);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(golden, text.ToString(), problems, 0);
     }
 
     private static void Line(StringBuilder text, FormattableString line) => text.Append(line.ToString(CultureInfo.InvariantCulture)).Append('\n');
@@ -294,6 +280,88 @@ public static class AudioEngineTests
                 if (Math.Abs(length - 0.05 / speed) > 0.02)
                     problems.Add(string.Create(CultureInfo.InvariantCulture, $"{speed}x: a burst {length * 1000:0} ms long, not {0.05 / speed * 1000:0} ms"));
             }
+        }
+    }
+
+    private static void Spectral(Files files, StringBuilder text, List<string> problems)
+    {
+        // Bursts at 1, 3, 5, 7 and 9 s of the file. At 0.5x from 1.5 s: 3 and 7 s; at 0.25x from 0.5 s: 2 and 10 s.
+        foreach (var (speed, end, offset, expected) in new[] { (0.5, 7.5, 1.5, new[] { 3.0, 7.0 }), (0.25, 10.5, 0.5, new[] { 2.0, 10.0 }) })
+        {
+            var document = Document();
+            var clip = SoundClip(files.Bursts, 0, end, offset);
+            clip.Speed = speed;
+            clip.State.SpectralAudio = true;
+            Track(document, TimelineTrackKind.Audio).Clips.Add(clip);
+            var program = AudioProgram.Build(State(document));
+            if (program.Voices.Count != 1 || !program.Voices[0].Spectral)
+                problems.Add($"{speed}x: the voice is not Spectral");
+            HeardBursts(text, problems, $"{speed:0.##}x spectral", Render(State(document), 0, end + 0.2), expected, 1000, 0.05 / speed, 0.02, 0.03, 0.25);
+        }
+    }
+
+    private static void PitchTiming(Files files, StringBuilder text, List<string> problems)
+    {
+        // A sound clip's own Pitch Shift (its Audio Filters, Tempo 1): the bursts at 1 and 3 s stay at 1 and 3 s, an octave up or down. (Within 20 ms and
+        // 5 %: WSOLA's frames, at twice or half the speed under the resampler's octave, soften an onset by a window and move the zero crossings a little.)
+        foreach (var semitones in new[] { 12.0, -12.0 })
+        {
+            var document = Document();
+            var clip = SoundClip(files.Bursts, 0, 4, 0);
+            clip.State.AudioFilters = new TrackAudioFilters { PitchTempo = true, PitchSemitones = semitones };
+            Track(document, TimelineTrackKind.Audio).Clips.Add(clip);
+            HeardBursts(text, problems, $"{semitones:+0;-0} semitones", Render(State(document), 0, 4.2), [1.0, 3.0], 1000 * Math.Pow(2, semitones / 12), 0.05, 0.02, 0.05, 0.02);
+        }
+
+        // The same clip on a track with filters of its own (a high-pass): the clip's Pitch Shift is heard all the same (5.6A).
+        {
+            var document = Document();
+            var clip = SoundClip(files.Bursts, 0, 4, 0);
+            clip.State.AudioFilters = new TrackAudioFilters { PitchTempo = true, PitchSemitones = 12 };
+            var track = Track(document, TimelineTrackKind.Audio);
+            track.AudioFilters = new TrackAudioFilters { HighPass = true, HighPassHz = 40 };
+            track.Clips.Add(clip);
+            HeardBursts(text, problems, "+12 semitones on a track with filters", Render(State(document), 0, 4.2), [1.0, 3.0], 2000, 0.05, 0.02, 0.05, 0.02);
+        }
+
+        // Keep Pitch off: at 2x the bursts come twice as soon, an octave up; at 0.5x twice as late, an octave down.
+        foreach (var (speed, end, expected) in new[] { (2.0, 2.0, new[] { 0.5, 1.5 }), (0.5, 8.0, new[] { 2.0, 6.0 }) })
+        {
+            var document = Document();
+            var clip = SoundClip(files.Bursts, 0, end, 0);
+            clip.Speed = speed;
+            clip.State.KeepPitch = false;
+            Track(document, TimelineTrackKind.Audio).Clips.Add(clip);
+            HeardBursts(text, problems, $"{speed:0.#}x with Keep Pitch off", Render(State(document), 0, end + 0.2), expected, 1000 * speed, 0.05 / speed, 0.02, 0.05, 0.02);
+        }
+    }
+
+    /// <summary>
+    /// The bursts heard against those expected: each where it should be (within <paramref name="within"/> s), at its frequency (within
+    /// <paramref name="pitch"/> of it), as long as it should be (within <paramref name="lengthShare"/> of it, or 20 ms), and no more of them.
+    /// </summary>
+    private static void HeardBursts(StringBuilder text, List<string> problems, string label, float[] output, double[] expected, double frequency, double length,
+        double within, double pitch, double lengthShare)
+    {
+        var onsets = Onsets(output);
+        var lengthWithin = Math.Max(0.02, length * lengthShare);
+        Line(text, $"{label}: bursts at {string.Join(", ", expected.Select(e => e.ToString("0.0", CultureInfo.InvariantCulture)))} s, each within {within * 1000:0} ms, {frequency:0} Hz within {pitch * 100:0} %, {length * 1000:0} ms long within {lengthWithin * 1000:0} ms, heard once");
+        Note($"{label}: {string.Join("; ", onsets.Select(o => string.Create(CultureInfo.InvariantCulture, $"{o.Start:0.0000} s {o.Length * 1000:0} ms {o.Frequency:0} Hz")))}");
+        if (onsets.Count != expected.Length)
+        {
+            problems.Add($"{label}: {onsets.Count} bursts heard, not {expected.Length}");
+            return;
+        }
+
+        for (var i = 0; i < expected.Length; i++)
+        {
+            var (at, heard, hz) = onsets[i];
+            if (Math.Abs(at - expected[i]) > within)
+                problems.Add(string.Create(CultureInfo.InvariantCulture, $"{label}: a burst at {at:0.0000} s, not {expected[i]:0.000} s"));
+            if (Math.Abs(hz - frequency) > frequency * pitch)
+                problems.Add(string.Create(CultureInfo.InvariantCulture, $"{label}: a burst at {hz:0} Hz, not {frequency:0} Hz"));
+            if (Math.Abs(heard - length) > lengthWithin)
+                problems.Add(string.Create(CultureInfo.InvariantCulture, $"{label}: a burst {heard * 1000:0} ms long, not {length * 1000:0} ms"));
         }
     }
 

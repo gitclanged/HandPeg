@@ -101,7 +101,6 @@ public sealed partial class MaskDrawWindow : Window
     // A right press in the view, until it is a click (the button up where it went down) or a pan (5.3.1).
     private (Point From, double PanX, double PanY)? _rightPress;
 
-    private static readonly FontFamily Glyphs = new("Segoe MDL2 Assets");
 
     // Segoe MDL2 Assets: Undo (E7A7), Redo (E7A6), Delete (E74D).
     private static readonly string UndoGlyph = char.ConvertFromUtf32(0xE7A7), RedoGlyph = char.ConvertFromUtf32(0xE7A6), DeleteGlyph = char.ConvertFromUtf32(0xE74D);
@@ -533,7 +532,7 @@ public sealed partial class MaskDrawWindow : Window
         var count = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0), MinWidth = 46, FontSize = 11 };
         count.SetResourceReference(TextBlock.ForegroundProperty, "MutedTextBrush");
         DockPanel.SetDock(count, Dock.Right);
-        var remove = new Button { Content = DeleteGlyph, FontFamily = Glyphs, FontSize = 11, Padding = new Thickness(5, 2, 5, 2), Margin = new Thickness(4, 0, 0, 0), ToolTip = "Remove this Cutout and its shapes. Ctrl+Z brings the shapes back." };
+        var remove = new Button { Content = DeleteGlyph, FontFamily = Glyphs.Font, FontSize = 11, Padding = new Thickness(5, 2, 5, 2), Margin = new Thickness(4, 0, 0, 0), ToolTip = "Remove this Cutout and its shapes. Ctrl+Z brings the shapes back." };
         remove.Click += (_, _) =>
         {
             _surface.RemovePiece(id);
@@ -956,7 +955,7 @@ public sealed partial class MaskDrawWindow : Window
 
     private static Button GlyphButton(string glyph, string tip, string name)
     {
-        var button = new Button { Content = glyph, FontFamily = Glyphs, FontSize = 13, Padding = new Thickness(10, 4, 10, 4), ToolTip = tip, IsEnabled = false };
+        var button = new Button { Content = glyph, FontFamily = Glyphs.Font, FontSize = 13, Padding = new Thickness(10, 4, 10, 4), ToolTip = tip, IsEnabled = false };
         ToolTipService.SetShowOnDisabled(button, true);
         System.Windows.Automation.AutomationProperties.SetName(button, name);
         return button;

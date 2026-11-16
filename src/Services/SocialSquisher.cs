@@ -204,7 +204,7 @@ public static class SocialSquisher
             catch (InvalidOperationException ex) when (encoders.Count > 1)
             {
                 // This encoder would not do it (a card that does not take these options, a driver too old): the next one down is tried.
-                AppLog.Write($"Squisher: {encoder} failed and the next encoder is tried: {ex.Message}");
+                AppLog.Write($"Squisher: {encoder} failed and the next encoder is tried", ex);
                 encoders.RemoveAt(0);
                 attempt--;
                 continue;

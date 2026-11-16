@@ -22,8 +22,6 @@ namespace HandPegGoldenTests;
 public static class TimelineParentingTests
 {
     private const string Second = "D:/media/second.mkv", Other = "D:/media/other.mkv";
-    private const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
-
     /// <summary>The cases that need no WPF Application (run before UiScaleTests makes one).</summary>
     public static IEnumerable<GraphResult> All()
     {
@@ -44,29 +42,6 @@ public static class TimelineParentingTests
     public static IEnumerable<GraphResult> Live()
     {
         yield break;
-    }
-
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>, StringBuilder> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect, text);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
     }
 
     private static string F(FormattableString text) => text.ToString(CultureInfo.InvariantCulture);
@@ -991,58 +966,20 @@ public static class TimelineParentingTests
     {
         // No key can be pressed without a window, so the source says it: a drag placed again while the view moves under a still pointer takes
         // Keyboard.Modifiers right before it is placed (Shift pressed or let go mid-scroll, a group's move too), and the seams given keys keep them.
-        var hover = Read("Controls", "UnifiedTimelineControl.HoverAndWheel.cs");
-        var (tick, held) = (Method(hover, "private void AutoScroll_Tick("), Method(hover, "private void FollowHeldDrag()"));
-        expect(tick.Length > 0 && InOrder(tick, "PanRequested?.Invoke(pixels);", "drag.Keys = Keyboard.Modifiers;\n        Follow(drag, _lastPointer, pointerMoved: false, Now());"),
+        var hover = SourceProbe.Src("Controls", "UnifiedTimelineControl.HoverAndWheel.cs");
+        var (tick, held) = (SourceProbe.Member(hover, "private void AutoScroll_Tick("), SourceProbe.Member(hover, "private void FollowHeldDrag()"));
+        expect(tick.Length > 0 && SourceProbe.InOrder(tick, "PanRequested?.Invoke(pixels);", "drag.Keys = Keyboard.Modifiers;\n        Follow(drag, _lastPointer, pointerMoved: false, Now());"),
             "the auto-scroll's tick: the view moved, then the keys as they are now, then the drag placed again");
-        expect(held.Length > 0 && InOrder(held, "_lastPointer = laid;", "drag.Keys = Keyboard.Modifiers;\n            Follow(drag, laid, pointerMoved: false, Now());"),
+        expect(held.Length > 0 && SourceProbe.InOrder(held, "_lastPointer = laid;", "drag.Keys = Keyboard.Modifiers;\n            Follow(drag, laid, pointerMoved: false, Now());"),
             "a wheel scroll or zoom under a still drag (FollowHeldDrag): the keys as they are now, then the drag placed again");
-        var move = Method(hover, "protected override void OnMouseMove(");
-        expect(InOrder(move, "drag.Keys = Keyboard.Modifiers;", "FollowPointer(drag, point, laid, Now())"), "a move of the pointer: the keys as they are now, as before");
-        var rest = Method(Read("Controls", "UnifiedTimelineControl.Parenting.cs"), "internal double? RestTick(");
+        var move = SourceProbe.Member(hover, "protected override void OnMouseMove(");
+        expect(SourceProbe.InOrder(move, "drag.Keys = Keyboard.Modifiers;", "FollowPointer(drag, point, laid, Now())"), "a move of the pointer: the keys as they are now, as before");
+        var rest = SourceProbe.Member(SourceProbe.Src("Controls", "UnifiedTimelineControl.Parenting.cs"), "internal double? RestTick(");
         expect(rest.Contains("drag.Keys = keys;", StringComparison.Ordinal) && !rest.Contains("Keyboard.Modifiers", StringComparison.Ordinal),
             "the rest tick (a test seam given its keys) keeps the keys it is given");
     }
 
     // ----- Source text -----
-
-    private static string Read(params string[] parts) => System.IO.File.ReadAllText(System.IO.Path.Combine([RepositoryRoot(), "src", .. parts])).ReplaceLineEndings("\n");
-
-    private static string RepositoryRoot()
-    {
-        for (var dir = new System.IO.DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-        {
-            if (System.IO.File.Exists(System.IO.Path.Combine(dir.FullName, "HandPegApp.csproj")))
-                return dir.FullName;
-        }
-
-        throw new System.IO.DirectoryNotFoundException("the repository (HandPegApp.csproj) above " + AppContext.BaseDirectory);
-    }
-
-    /// <summary>A member's text: from its signature to the end of its body (the next line that closes at its indent).</summary>
-    private static string Method(string source, string signature)
-    {
-        var start = source.IndexOf(signature, StringComparison.Ordinal);
-        if (start < 0)
-            return "";
-        var end = source.IndexOf("\n    }\n", start, StringComparison.Ordinal);
-        return end < 0 ? source[start..] : source[start..(end + 6)];
-    }
-
-    /// <summary>Whether every one of <paramref name="parts"/> is in <paramref name="text"/>, each after the one before.</summary>
-    private static bool InOrder(string text, params string[] parts)
-    {
-        var at = 0;
-        foreach (var part in parts)
-        {
-            var found = text.IndexOf(part, at, StringComparison.Ordinal);
-            if (found < 0)
-                return false;
-            at = found + part.Length;
-        }
-
-        return true;
-    }
 
     private static string Preset(MainViewModel vm)
     {

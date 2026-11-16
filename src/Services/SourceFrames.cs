@@ -70,6 +70,7 @@ public sealed class SourceFrames
         while (true)
         {
             Request? next;
+            bool held;
             lock (_gate)
             {
                 if (_waiting is null)
@@ -78,13 +79,16 @@ public sealed class SourceFrames
                     return;
                 }
 
+                // The hold is read once per decision: the request is either left waiting for a held turn or taken out to be served,
+                // never taken out and then skipped (which would leave its caller waiting for good).
+                held = WorkScheduler.IsHeld;
                 next = _waiting;
-                if (!WorkScheduler.IsHeld)
+                if (!held)
                     _waiting = null;
             }
 
             // A drag and drop holds background work: the request waits (a newer one may take its place meanwhile).
-            if (WorkScheduler.IsHeld)
+            if (held)
             {
                 await Task.Delay(HeldPollMs).ConfigureAwait(false);
                 continue;
@@ -106,7 +110,7 @@ public sealed class SourceFrames
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or NotSupportedException or ArgumentException)
             {
-                AppLog.Write($"Media browser: a still of {Path.GetFileName(next.Path)} could not be made: {ex.Message}");
+                AppLog.Write($"Media browser: a still of {Path.GetFileName(next.Path)} could not be made", ex);
                 next.Done.TrySetResult(null);
             }
         }

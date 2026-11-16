@@ -316,6 +316,26 @@ public static partial class DependencyUpdater
     /// </summary>
     public const string VadModel = "ggml-silero-v5.1.2.bin";
 
+    /// <summary>
+    /// The SHA-256 of every model HandPeg offers, pinned in the program (the files' LFS digests as Hugging Face published them,
+    /// 2026-11-15): a download is checked against these, not against what the download's own server says. A model missing here falls
+    /// back to the server's linked hash, and to nothing installed when there is none (the <c>model-checksums-pinned</c> golden).
+    /// </summary>
+    internal static IReadOnlyDictionary<string, string> ModelSha256 { get; } = new Dictionary<string, string>(StringComparer.Ordinal)
+    {
+        ["ggml-tiny.en.bin"] = "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f",
+        ["ggml-base.en.bin"] = "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002",
+        ["ggml-small.en.bin"] = "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d",
+        ["ggml-medium.en.bin"] = "cc37e93478338ec7700281a7ac30a10128929eb8f427dda2e865faa8f6da4356",
+        ["ggml-tiny.bin"] = "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+        ["ggml-base.bin"] = "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+        ["ggml-small.bin"] = "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+        ["ggml-medium.bin"] = "6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208",
+        ["ggml-large-v3.bin"] = "64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2",
+        ["ggml-large-v3-turbo.bin"] = "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
+        [VadModel] = "29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf",
+    };
+
     private const string VadModelUrl = "https://huggingface.co/ggml-org/whisper-vad/resolve/main/" + VadModel;
 
     // Made when first used, not with the class (which the window's view model touches before the first frame): making
@@ -703,10 +723,17 @@ public static partial class DependencyUpdater
 
     private static string ReleaseUrl(string tool) => tool switch
     {
-        Ffmpeg => OrDefault(AppSettings.Current.FfmpegReleaseUrl, AppSettings.DefaultFfmpegReleaseUrl),
-        YtDlp => OrDefault(AppSettings.Current.YtDlpReleaseUrl, AppSettings.DefaultYtDlpReleaseUrl),
-        _ => OrDefault(AppSettings.Current.WhisperReleaseUrl, AppSettings.DefaultWhisperReleaseUrl),
+        Ffmpeg => HttpsOrDefault(AppSettings.Current.FfmpegReleaseUrl, AppSettings.DefaultFfmpegReleaseUrl),
+        YtDlp => HttpsOrDefault(AppSettings.Current.YtDlpReleaseUrl, AppSettings.DefaultYtDlpReleaseUrl),
+        _ => HttpsOrDefault(AppSettings.Current.WhisperReleaseUrl, AppSettings.DefaultWhisperReleaseUrl),
     };
+
+    /// <summary>
+    /// A release address of the user's own when it is an absolute https address, else the default. Settings refuses anything else; this
+    /// covers a hand-edited or imported appsettings.json (not a security boundary: whoever writes that file can set the tool paths).
+    /// </summary>
+    internal static string HttpsOrDefault(string? value, string fallback) =>
+        Uri.TryCreate(value?.Trim(), UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps ? uri.OriginalString : fallback;
 
     /// <summary>Whether a file attached to a release is the one this tool is installed from.</summary>
     private static bool IsAssetFor(string tool, string? name) => name is not null && tool switch
@@ -972,7 +999,7 @@ public static partial class DependencyUpdater
             var digest = asset.TryGetProperty("digest", out var digestValue) && digestValue.ValueKind == JsonValueKind.String
                 ? digestValue.GetString()
                 : null;
-            var sha256 = digest is not null && digest.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase) ? digest[7..] : null;
+            var sha256 = digest is not null && digest.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase) && IsSha256(digest[7..]) ? digest[7..] : null;
 
             var sums = assets.FirstOrDefault(a => SumsAssetNames.Contains(a.GetProperty("name").GetString()));
             var sumsUrl = sums.ValueKind == JsonValueKind.Object ? sums.GetProperty("browser_download_url").GetString() : null;
@@ -1050,7 +1077,7 @@ public static partial class DependencyUpdater
                 {
                     lock (WontStartHere)
                         WontStartHere.Add(asset.Name);
-                    AppLog.Write($"{DisplayName(tool)} {asset.Label} ({asset.Name}) will not start on this computer: {ex.Message} Looking for another build.");
+                    AppLog.Write($"{DisplayName(tool)} {asset.Label} ({asset.Name}) will not start on this computer; looking for another build", ex);
                     progress.Report(new InstallProgress(-1, $"{asset.Label} does not start on this computer; looking for another build..."));
                     ForgetAnswers();
                     asset = await GetPinnedAsync(tool, cancellationToken);
@@ -1079,9 +1106,12 @@ public static partial class DependencyUpdater
             Directory.CreateDirectory(fresh);
 
             var hash = await DownloadAsync(asset.DownloadUrl, download, name, progress, cancellationToken);
-            var expected = asset.Sha256 ?? await FindInSumsAsync(asset, cancellationToken);
-            if (expected is null && asset.Pin == PinState.StandIn)
-                throw new InvalidDataException($"No checksum is published for {asset.Name}, so it cannot stand in for the tested {name}.");
+            // Fail closed: a download whose release publishes no SHA-256 (no GitHub digest, no checksum file) is not installed, whatever
+            // its source (a custom release address, an unpinned build, a stand-in), because HandPeg runs what it installs.
+            var expected = asset.Sha256 ?? await FindInSumsAsync(asset, cancellationToken)
+                           ?? throw new InvalidDataException(asset.Pin == PinState.StandIn
+                               ? $"No checksum is published for {asset.Name}, so it cannot stand in for the tested {name}."
+                               : $"No checksum is published for {asset.Name}, so {name} was not installed from it.");
             Verify(name, hash, expected);
 
             progress.Report(new InstallProgress(1, $"Unpacking {name}..."));
@@ -1101,7 +1131,7 @@ public static partial class DependencyUpdater
                 PinState.StandIn => $"a stand-in: {asset.Note}",
                 _ => "the newest release",
             };
-            AppLog.Write($"Installed {name} {asset.Label} {asset.Name}, {kind} ({(expected is null ? "no checksum published" : "SHA-256 verified")}).");
+            AppLog.Write($"Installed {name} {asset.Label} {asset.Name}, {kind} (SHA-256 verified).");
             RaiseInstalled(tool);
         }
         finally
@@ -1295,13 +1325,17 @@ public static partial class DependencyUpdater
         try
         {
             Directory.CreateDirectory(staging);
-            var expected = await FindLinkedHashAsync(url, cancellationToken);
+
+            // The SHA-256 HandPeg knows for the model (pinned: not from the server it downloads from), else the one Hugging Face links;
+            // none at all and nothing is installed.
+            var expected = (ModelSha256.TryGetValue(model, out var pinned) ? pinned : await FindLinkedHashAsync(url, cancellationToken))
+                           ?? throw new InvalidDataException($"No checksum is known for the model {model}, so it was not installed.");
             var hash = await DownloadAsync(url, download, model, progress, cancellationToken);
             Verify(model, hash, expected);
 
             Directory.CreateDirectory(ModelsFolder);
             File.Move(download, GetWhisperModelPath(model), overwrite: true);
-            AppLog.Write($"Installed the model {model} ({(expected is null ? "no checksum published" : "SHA-256 verified")}).");
+            AppLog.Write($"Installed the model {model} (SHA-256 verified).");
         }
         finally
         {
@@ -1321,6 +1355,7 @@ public static partial class DependencyUpdater
         }
         catch (Exception ex) when (IsInstallFailure(ex))
         {
+            AppLog.Write($"Speech model {model}: the download failed", ex);
             return $"The model {model} could not be downloaded: {ex.Message}";
         }
 
@@ -1379,9 +1414,12 @@ public static partial class DependencyUpdater
         return Convert.ToHexString(sha.GetHashAndReset());
     }
 
-    private static void Verify(string label, string actual, string? expected)
+    /// <summary>Throws unless <paramref name="actual"/> is the expected SHA-256: a missing checksum fails too (installs fail closed).</summary>
+    internal static void Verify(string label, string actual, string? expected)
     {
-        if (expected is not null && !actual.Equals(expected, StringComparison.OrdinalIgnoreCase))
+        if (expected is null)
+            throw new InvalidDataException($"No checksum is known for {label}, so it was not installed.");
+        if (!actual.Equals(expected, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException($"The download of {label} does not match its checksum, and was thrown away.");
     }
 
@@ -1462,13 +1500,43 @@ public static partial class DependencyUpdater
         }
     }
 
+    // How long a server may take to answer a request (its headers) before the request fails; a download's body then streams for as
+    // long as it takes. The client's own timeout is only a backstop for a body that stalls in a buffered request.
+    private static readonly TimeSpan AnswerWithin = TimeSpan.FromSeconds(60);
+
     private static HttpClient CreateClient(bool followRedirects)
     {
-        var client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = followRedirects });
+        var client = new HttpClient(new AnswerDeadline(AnswerWithin) { InnerHandler = new HttpClientHandler { AllowAutoRedirect = followRedirects } })
+        {
+            Timeout = TimeSpan.FromMinutes(5),
+        };
+
         // GitHub's API rejects requests without a User-Agent with 403.
         client.DefaultRequestHeaders.UserAgent.ParseAdd("HandPeg/1.0");
         if (followRedirects)
             client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
         return client;
+    }
+
+    /// <summary>
+    /// Fails a request whose server does not answer within the limit with <see cref="HttpRequestException"/> (inner
+    /// <see cref="TimeoutException"/>), which every caller treats as an install failure (<see cref="IsInstallFailure"/>).
+    /// HttpClient's own timeout throws <see cref="TaskCanceledException"/>, which callers read as the user cancelling.
+    /// </summary>
+    internal sealed class AnswerDeadline(TimeSpan limit) : DelegatingHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            deadline.CancelAfter(limit);
+            try
+            {
+                return await base.SendAsync(request, deadline.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new HttpRequestException($"{request.RequestUri?.Host} did not answer within {limit.TotalSeconds:0} s.", new TimeoutException(ex.Message, ex));
+            }
+        }
     }
 }

@@ -34,15 +34,8 @@ public sealed record EncoderOption(string Name, string DisplayName, EncoderFamil
         new("dnxhd", "Avid DNxHR (dnxhd)", EncoderFamily.Intermediate),
     ];
 
-    /// <summary>
-    /// Describes an FFmpeg hardware encoder by its codec, then the hardware behind it (5.2-Audit, the user's directive):
-    /// "hevc_qsv" as "HEVC (Intel QuickSync)", and a Media Foundation one by the chip it reaches where that is a Qualcomm
-    /// Adreno (<see cref="Services.GpuAdapters.HasQualcommAdreno"/>: "h264_mf" as "H.264 (Qualcomm Adreno)"), else as
-    /// "H.264 (Media Foundation)".
-    /// </summary>
-    public static EncoderOption FromHardwareName(string name) => FromHardwareName(name, Services.GpuAdapters.HasQualcommAdreno);
 
-    /// <summary><see cref="FromHardwareName(string)"/> on a machine with, or without, a Qualcomm Adreno GPU.</summary>
+    /// <summary>The encoder a hardware name stands for, on a machine with, or without, a Qualcomm Adreno GPU (the caller asks GpuAdapters).</summary>
     public static EncoderOption FromHardwareName(string name, bool qualcommAdreno)
     {
         var parts = name.Split('_');

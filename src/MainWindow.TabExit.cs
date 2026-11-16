@@ -200,8 +200,8 @@ public partial class MainWindow
             var saved = !inFront ? SaveTabInPlace(tab, name)
                 : _viewModel.CurrentProjectPath.Length > 0 ? _viewModel.SaveProjectTo(_viewModel.CurrentProjectPath)
                 : _viewModel.SaveProject(name);
-            if (!saved.StartsWith("Project saved", StringComparison.Ordinal))
-                failed.Add($"\"{tab.Title}\": {saved}");
+            if (!saved.IsSaved)
+                failed.Add($"\"{tab.Title}\": {saved.Line}");
             else if (inFront)
                 tab.Dirty = false;
         }

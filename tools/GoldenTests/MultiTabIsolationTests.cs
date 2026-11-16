@@ -48,29 +48,6 @@ public static class MultiTabIsolationTests
         yield break;
     }
 
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>, StringBuilder> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect, text);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
-    }
-
     private static string F(FormattableString text) => text.ToString(CultureInfo.InvariantCulture);
 
     // ----- multi-tab-unified-memory-isolation -----
@@ -79,10 +56,10 @@ public static class MultiTabIsolationTests
     {
         // The protocol's fields for it (the room 3212..3479 that was free), the hint kind, and the client's word.
         expect(Marshal.OffsetOf<ControlBlock>(nameof(ControlBlock.UnifiedMemory)) == 3212 && Marshal.OffsetOf<ControlBlock>(nameof(ControlBlock.TabParkingRequest)) == 3216
-               && Marshal.SizeOf<ControlBlock>() == CompositorProtocol.ControlBytes && CompositorProtocol.Version == 8,
+               && Marshal.SizeOf<ControlBlock>() == CompositorProtocol.ControlBytes && CompositorProtocol.Version == 9,
             "ControlBlock.UnifiedMemory at 3212 and TabParkingRequest at 3216, the block's size and the protocol's version as they were");
         expect((int)GpuSeekHintKind.TabRoll == 6, "a tab's pre-roll and a drop's file are their own hint kind (TabRoll, 6)");
-        var engine = Read("Services", "GpuPreviewEngine.cs");
+        var engine = SourceProbe.Src("Services", "GpuPreviewEngine.cs");
         expect(engine.Contains("client.TabParking = 1;", StringComparison.Ordinal), "the player's engine asks its worker (and the standby, which shares the block) to park lean where it should");
 
         var folder = Path.Combine(Path.GetTempPath(), "HandPeg.GoldenTests.MultiTab");
@@ -239,15 +216,15 @@ public static class MultiTabIsolationTests
         expect(MainWindow.TabHoverRestMs == 200 && MainWindow.LeanPrewarmDue(true, false, false, false) && !MainWindow.LeanPrewarmDue(false, false, false, false)
                && !MainWindow.LeanPrewarmDue(true, true, false, false) && !MainWindow.LeanPrewarmDue(true, false, true, false) && !MainWindow.LeanPrewarmDue(true, false, false, true),
             "a lean machine decodes a hovered tab ahead after 200 ms of rest, only while still hovered, paused, not scrubbing and not switching");
-        var warm = Read("MainWindow.TabWarm.cs");
-        expect(InOrder(Method(warm, "private void PrewarmLikelyTabs("), "if (engine.LeanTabs)", "if (hovered is null || ReferenceEquals(hovered, front))", "engine.PrewarmTabs([]);", "_tabRestWarm.Start();"),
+        var warm = SourceProbe.Src("MainWindow.TabWarm.cs");
+        expect(SourceProbe.InOrder(SourceProbe.Member(warm, "private void PrewarmLikelyTabs("), "if (engine.LeanTabs)", "if (hovered is null || ReferenceEquals(hovered, front))", "engine.PrewarmTabs([]);", "_tabRestWarm.Start();"),
             "a lean machine pre-rolls nothing on a switch (the list emptied), and a hovered tab only from its rest timer");
 
         // The decoders of a source retired under a lane are disposed by that lane at once, outside the lock; none under it.
-        var lanes = Read("Compositor", "DecoderPool.Lanes.cs");
-        expect(InOrder(Method(lanes, "private void RunLane("), "BuryIdle(demand.Source);", "if (demand.Source.Retired)", "DisposeBuried();")
-               && InOrder(Method(lanes, "private MfVideoDecoder? OpenFor("), "_graveyard.Add(decoder);", "DisposeBuried();")
-               && !Method(lanes, "private MfVideoDecoder? OpenFor(").Contains("decoder.Dispose();", StringComparison.Ordinal),
+        var lanes = SourceProbe.Src("Compositor", "DecoderPool.Lanes.cs");
+        expect(SourceProbe.InOrder(SourceProbe.Member(lanes, "private void RunLane("), "BuryIdle(demand.Source);", "if (demand.Source.Retired)", "DisposeBuried();")
+               && SourceProbe.InOrder(SourceProbe.Member(lanes, "private MfVideoDecoder? OpenFor("), "_graveyard.Add(decoder);", "DisposeBuried();")
+               && !SourceProbe.Member(lanes, "private MfVideoDecoder? OpenFor(").Contains("decoder.Dispose();", StringComparison.Ordinal),
             "a decoder whose source retired is disposed at once by its lane, never under the pool's lock");
 
         foreach (var file in files)
@@ -286,12 +263,12 @@ public static class MultiTabIsolationTests
         broker.ReleaseAll();
         expect(broker.PathHashOf(next) == 0, "ReleaseAll still lets go of everything");
 
-        var engine = Read("Services", "GpuPreviewEngine.cs");
-        expect(InOrder(Method(engine, "public void Suspend()"), "Volatile.Read(ref _tabPrewarm)", "Empty();", "ReleaseSourcesForSwitch(prewarmed);", "_client.TrimWorker();")
-               && InOrder(Method(engine, "public void SetState("), "GpuScenePlan.Create(state, _broker);", "ReleaseUnusedKeptSources();"),
+        var engine = SourceProbe.Src("Services", "GpuPreviewEngine.cs");
+        expect(SourceProbe.InOrder(SourceProbe.Member(engine, "public void Suspend()"), "Volatile.Read(ref _tabPrewarm)", "Empty();", "ReleaseSourcesForSwitch(prewarmed);", "_client.TrimWorker();")
+               && SourceProbe.InOrder(SourceProbe.Member(engine, "public void SetState("), "GpuScenePlan.Create(state, _broker);", "ReleaseUnusedKeptSources();"),
             "Suspend keeps the pre-roll's sources (read before Empty lets go of it); the first SetState after lets go of those its plan does not use");
-        expect(InOrder(Method(engine, "public void PrewarmTabs("), "Kind = (int)GpuSeekHintKind.TabRoll") && Method(engine, "private void LeaveHints(").Contains("Kind = (int)GpuSeekHintKind.TabRoll", StringComparison.Ordinal)
-               && !Method(engine, "private void LeaveHints(").Contains("GpuSeekHintKind.HoverRoll", StringComparison.Ordinal),
+        expect(SourceProbe.InOrder(SourceProbe.Member(engine, "public void PrewarmTabs("), "Kind = (int)GpuSeekHintKind.TabRoll") && SourceProbe.Member(engine, "private void LeaveHints(").Contains("Kind = (int)GpuSeekHintKind.TabRoll", StringComparison.Ordinal)
+               && !SourceProbe.Member(engine, "private void LeaveHints(").Contains("GpuSeekHintKind.HoverRoll", StringComparison.Ordinal),
             "the tabs' pre-roll and a drop's file are TabRoll hints");
     }
 
@@ -354,18 +331,18 @@ public static class MultiTabIsolationTests
         }
 
         // The strip workers ask between pictures, after their cancellation check; a still never asks. The engine's Seek holds the work back.
-        var film = Read("Services", "GpuFilmstrips.cs");
-        expect(InOrder(Method(film, "private static Result Draw("), "if (!MayGoOn(sheet))", "client ??= Start();", "sheet.Token.IsCancellationRequested || sheet.Done.Task.IsCompleted", "if (!MayGoOn(sheet))", "WriteScene(")
+        var film = SourceProbe.Src("Services", "GpuFilmstrips.cs");
+        expect(SourceProbe.InOrder(SourceProbe.Member(film, "private static Result Draw("), "if (!MayGoOn(sheet))", "client ??= Start();", "sheet.Token.IsCancellationRequested || sheet.Done.Task.IsCompleted", "if (!MayGoOn(sheet))", "WriteScene(")
                && film.Contains("sheet = new Sheet(videoPath, imagePath, layout, targets, complete, token) { Pause = WorkScheduler.PausePoint() };", StringComparison.Ordinal)
-               && InOrder(Method(film, "private static async Task<bool> RunAsync("), "WorkScheduler.GpuDecodeGate.Release();", "if (result.Outcome != Outcome.Paused)", "await WorkScheduler.WhenBackgroundMayRunAsync(token);"),
+               && SourceProbe.InOrder(SourceProbe.Member(film, "private static async Task<bool> RunAsync("), "WorkScheduler.GpuDecodeGate.Release();", "if (result.Outcome != Outcome.Paused)", "await WorkScheduler.WhenBackgroundMayRunAsync(token);"),
             "a filmstrip stops before it starts and between pictures, after its cancellation check; stopped, it gives its permit back and waits");
-        var program = Read("Services", "GpuProgramStrip.cs");
-        expect(InOrder(Method(program, "private ThumbnailSheet? DrawSheet("), "job.Token.IsCancellationRequested || job.Asked != Volatile.Read(ref _asked)", "if (!_pictures.TryGetValue(key, out var picture))", "if (!MayGoOn(job))", "client.Publish();")
-               && InOrder(Method(program, "private async void Draw("), "var pause = WorkScheduler.PausePoint();", "WorkScheduler.GpuDecodeGate.Release();", "await WorkScheduler.WhenBackgroundMayRunAsync(work.Token);", "SheetMark = mark;", "SheetReady?.Invoke(sheet);")
-               && !Method(program, "public async Task<ThumbnailSheet?> DrawNowAsync(").Contains("Pause", StringComparison.Ordinal),
+        var program = SourceProbe.Src("Services", "GpuProgramStrip.cs");
+        expect(SourceProbe.InOrder(SourceProbe.Member(program, "private ThumbnailSheet? DrawSheet("), "job.Token.IsCancellationRequested || job.Asked != Volatile.Read(ref _asked)", "if (!_pictures.TryGetValue(key, out var picture))", "if (!MayGoOn(job))", "client.Publish();")
+               && SourceProbe.InOrder(SourceProbe.Member(program, "private async Task DrawAsync("), "var pause = WorkScheduler.PausePoint();", "WorkScheduler.GpuDecodeGate.Release();", "await WorkScheduler.WhenBackgroundMayRunAsync(work.Token);", "SheetMark = mark;", "SheetReady?.Invoke(sheet);")
+               && !SourceProbe.Member(program, "public async Task<ThumbnailSheet?> DrawNowAsync(").Contains("Pause", StringComparison.Ordinal),
             "the overview sheet stops before a picture it has to draw (drawn ones are reused); stopped, it leaves its lane and permit; DrawNowAsync never stops");
-        var engine = Read("Services", "GpuPreviewEngine.cs");
-        expect(InOrder(Method(engine, "public void Seek("), "if (elapsed < ScrubbingFor)", "WorkScheduler.HoldBackground(ScrubHold);"), "each move of a scrub holds background work back");
+        var engine = SourceProbe.Src("Services", "GpuPreviewEngine.cs");
+        expect(SourceProbe.InOrder(SourceProbe.Member(engine, "public void Seek("), "if (elapsed < ScrubbingFor)", "WorkScheduler.HoldBackground(ScrubHold);"), "each move of a scrub holds background work back");
     }
 
     // ----- multi-tab-resume-working-set -----
@@ -419,8 +396,8 @@ public static class MultiTabIsolationTests
         Console.WriteLine(F($"        textures made: {kept} across a trim followed by a scene, {remade} after a trim alone"));
         expect(drawn && next && served && again && kept == 0, "a trim followed by a scene (a tab switch): the next frames draw with the working set kept, no texture made");
         expect(alone && redrawn && remade > 0, "a trim with nothing after it: the working set handed back, the next frame makes its textures again");
-        var worker = Read("Compositor", "CompositorWorker.cs");
-        expect(InOrder(worker, "sceneAfterTrim |= giveBackWaiting && isNew;", "if (giveBackWaiting && GiveBackDue(now, askedLast, decoders.Playing))", "if (!sceneAfterTrim)", "ReleaseWorkingSet(gpu, decoders, renderer, asked: true);", "GiveBack(ref control, gpu, decoders.Cache);"),
+        var worker = SourceProbe.Src("Compositor", "CompositorWorker.cs");
+        expect(SourceProbe.InOrder(worker, "sceneAfterTrim |= giveBackWaiting && isNew;", "if (giveBackWaiting && GiveBackDue(now, askedLast, decoders.Playing))", "if (!sceneAfterTrim)", "ReleaseWorkingSet(gpu, decoders, renderer, asked: true);", "GiveBack(ref control, gpu, decoders.Cache);"),
             "the driver's allocations and the heap are handed back after an asked-for trim only when no scene followed it (the idle trim does it later)");
     }
 
@@ -567,8 +544,8 @@ public static class MultiTabIsolationTests
         expect(broker.PathHashOf(preroll) != 0 && broker.PathHashOf(dropped) != 0 && broker.PathHashOf(next) != 0, "only the first plan after a switch lets go of kept sources");
         broker.ReleaseAll();
         expect(new[] { next, preroll, again, dropped }.All(id => broker.PathHashOf(id) == 0), "ReleaseAll still lets go of everything");
-        var engine = Read("Services", "GpuPreviewEngine.Tabs.cs");
-        expect(Method(engine, "private void ReleaseUnusedKeptSources()").Contains("_broker.ReleaseKeptUnasked();", StringComparison.Ordinal),
+        var engine = SourceProbe.Src("Services", "GpuPreviewEngine.Tabs.cs");
+        expect(SourceProbe.Member(engine, "private void ReleaseUnusedKeptSources()").Contains("_broker.ReleaseKeptUnasked();", StringComparison.Ordinal),
             "the engine's first SetState after a Suspend asks the broker for exactly that");
     }
 
@@ -700,11 +677,11 @@ public static class MultiTabIsolationTests
             (settings.BackgroundJobs, settings.PauseBackgroundWhilePlaying) = (jobs, pauses);
         }
 
-        var scheduler = Read("Services", "WorkScheduler.cs");
-        expect(InOrder(Method(scheduler, "private static void Pump()"), "GoOnLocked(resumed, counted: true);", "var kept = Running[index] + Stopped[index] >= LaneLimit(lane);", "StartLocked(next);"),
+        var scheduler = SourceProbe.Src("Services", "WorkScheduler.cs");
+        expect(SourceProbe.InOrder(SourceProbe.Member(scheduler, "private static void Pump()"), "GoOnLocked(resumed, counted: true);", "var kept = Running[index] + Stopped[index] >= LaneLimit(lane);", "StartLocked(next);"),
             "the scheduler serves stopped work going on before work not started yet, and keeps its room meanwhile");
-        expect(InOrder(Method(scheduler, "public static void ApplySettings()"), "JobObjects.Configure(", "TakeSettings();")
-               && InOrder(Method(scheduler, "internal static void TakeSettings()"), "Pump();", "RaisePauseChanged();"),
+        expect(SourceProbe.InOrder(SourceProbe.Member(scheduler, "public static void ApplySettings()"), "JobObjects.Configure(", "TakeSettings();")
+               && SourceProbe.InOrder(SourceProbe.Member(scheduler, "internal static void TakeSettings()"), "Pump();", "RaisePauseChanged();"),
             "saved Settings reach work stopped between its pieces (ApplySettings: Pump, then PauseChanged)");
     }
 
@@ -805,53 +782,16 @@ public static class MultiTabIsolationTests
         }
 
         // The player's viewport: its playing waits go through the turns, and every frame its present queued (S_OK) takes one.
-        var viewport = Read("Controls", "GpuViewportControl.cs");
+        var viewport = SourceProbe.Src("Services", "GpuViewport.cs");
         expect(viewport.Contains("_ = _turns.Wait(_takeTurn, milliseconds);", StringComparison.Ordinal)
-               && InOrder(viewport, "var hr = Dxgi.Present(_swapChain, vsync ? 1u : 0u, 0);", "if (hr == 0)", "_turns.Queued(_takeTurn);")
-               && InOrder(viewport, "_waitable = Dxgi.FrameLatencyWaitable(_swapChain);", "_turns.Reset();"),
-            "GpuViewportControl: WaitForTurn waits through FrameLatencyTurns, PresentNewest's queued frames take their turn, a new swap chain resets them");
-        expect(InOrder(viewport, "if (_waitable == 0 || _nothingQueued)", "Thread.Sleep(Math.Min(milliseconds, 16));", "_ = _turns.Wait(_takeTurn, milliseconds);")
-               && InOrder(viewport, "_turns.Queued(_takeTurn);", "_nothingQueued = hr > 0;"),
+               && SourceProbe.InOrder(viewport, "var hr = Dxgi.Present(_swapChain, vsync ? 1u : 0u, 0);", "if (hr == 0)", "_turns.Queued(_takeTurn);")
+               && SourceProbe.InOrder(viewport, "_waitable = Dxgi.FrameLatencyWaitable(_swapChain);", "_turns.Reset();"),
+            "GpuViewport: WaitForTurn waits through FrameLatencyTurns, PresentNewest's queued frames take their turn, a new swap chain resets them");
+        expect(SourceProbe.InOrder(viewport, "if (_waitable == 0 || _nothingQueued)", "Thread.Sleep(Math.Min(milliseconds, 16));", "_ = _turns.Wait(_takeTurn, milliseconds);")
+               && SourceProbe.InOrder(viewport, "_turns.Queued(_takeTurn);", "_nothingQueued = hr > 0;"),
             "a present that queued nothing (an occluded window) keeps its turn, so the playing pump's next wait is paced by the clock, never spinning");
     }
 
     // ----- Source text -----
 
-    private static string Read(params string[] parts) => File.ReadAllText(Path.Combine([RepositoryRoot(), "src", .. parts])).ReplaceLineEndings("\n");
-
-    private static string RepositoryRoot()
-    {
-        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-        {
-            if (File.Exists(Path.Combine(dir.FullName, "HandPegApp.csproj")))
-                return dir.FullName;
-        }
-
-        throw new DirectoryNotFoundException("the repository (HandPegApp.csproj) above " + AppContext.BaseDirectory);
-    }
-
-    /// <summary>A member's text: from its signature to the end of its body (the next line that closes at its indent).</summary>
-    private static string Method(string source, string signature)
-    {
-        var start = source.IndexOf(signature, StringComparison.Ordinal);
-        if (start < 0)
-            return "";
-        var end = source.IndexOf("\n    }\n", start, StringComparison.Ordinal);
-        return end < 0 ? source[start..] : source[start..(end + 6)];
-    }
-
-    /// <summary>Whether every one of <paramref name="parts"/> is in <paramref name="text"/>, each after the one before.</summary>
-    private static bool InOrder(string text, params string[] parts)
-    {
-        var at = 0;
-        foreach (var part in parts)
-        {
-            var found = text.IndexOf(part, at, StringComparison.Ordinal);
-            if (found < 0)
-                return false;
-            at = found + part.Length;
-        }
-
-        return true;
-    }
 }

@@ -1,0 +1,29 @@
+# The S-F tiers (5.6A): the calibration machines in their grades, the ladders' anchors, the thresholds, the per-role pills, the NPU's none.
+ok: XPS 13 (Adreno X1-85), 623 fps (measured: full test 623 fps, CPU 782, compositor 5.088 ms): System B (43), without the processor's decode B (41); must be B
+ok: XPS 13 (Adreno X1-85), 687 fps (measured: quick check 687.5 fps (2026-11-13)): System B (45), without the processor's decode B (43); must be B
+ok: Plex Server (GTX 1070, Ryzen 5 2600), 608 fps (measured: LTSC, no Media Foundation HEVC): System C (30), without the processor's decode C (30); must be C
+ok: Plex Server (GTX 1070, Ryzen 5 2600), 734 fps (measured: the top of its range): System C (32), without the processor's decode C (32); must be C
+ok: Desktop (RX 7900 XTX, 7950X3D) (measured 2026-11-14: decode 1,161-1,188 fps, CPU 657-710, compositor 0.551 ms): System S (78), without the processor's decode S (86); must be S
+ok: RTX 5090 (estimate): System S (100), without the processor's decode S (100); must be S
+ok: Intel N100, 120 fps (estimate): System D (14), without the processor's decode D (14); must be D
+ok: Intel N100, 250 fps (estimate): System D (18), without the processor's decode D (18); must be D
+ok: Atom (estimate): System F (3), without the processor's decode F (2); must be F
+ok: WARP (no hardware decode) (estimate): System F (1), without the processor's decode F (0); must be F
+ok: the Desktop near 78 (S (78)), the RTX 5090 at 100 (S (100))
+ok: the System tooltip: "System B (43): 623 fps GPU, 782 fps CPU, 5.09 ms"
+ok: the hardware decode ladder (30:0 120:10 250:21 450:40 800:66 1100:78 1400:84 3200:100): anchors exact, the log middle halfway, held beyond its ends, nothing for 0
+ok: the processor decode ladder (30:0 120:10 250:21 450:32 800:52 1400:85 2400:100): anchors exact, the log middle halfway, held beyond its ends, nothing for 0
+ok: the compositor ladder (0.2:100 0.7:90 1.5:50 2.8:37 5:31 10:19 40:0): anchors exact, the log middle halfway, held beyond its ends, nothing for 0
+ok: the weights: hardware decode 0.35 (kept 0.4 of it for H.264 alone, HEVC and AV1 half the breadth each), processor decode 0.20, compositor 0.45; the Export caps AV1 100, HEVC 74, H.264 54
+ok: the grades: 0 F, 9 F, 10 D, 21 D, 22 C, 37 C, 38 B, 54 B, 55 A, 74 A, 75 S, 100 S; 74.5 rounds to 75 (S), scores kept within 0..100
+ok: breadth: the Plex Server's HEVC is not counted (LTSC has no Media Foundation HEVC decoder: the processor decodes it), the XPS 13's HEVC and AV1 are
+ok: Compositor on Auto: "Compositor 0.55 ms a frame · S (92)"
+ok: Compositor on card 1: "" (no pill)
+ok: Decode on Auto: "Decode 1,170 fps · S (80)"
+ok: Decode on card 1: "Decode 1,067 fps · S (77)"
+ok: Background on Processor Only: "Processor 680 fps · B (46)"
+ok: Export on card 0: "Export AV1 in hardware, 1,170 fps · S (80)"
+ok: Export on card 1: "Export H.264 in hardware, 1,067 fps · B (54)"
+ok: NPU on Auto: "" (no pill)
+ok: the real Desktop's A310 (AV1, uncapped) on Export: "Export AV1 in hardware, 1,067 fps · S (77)"
+ok: a card with no hardware encoder: Export from the processor ("Export in software · C (32)"); an estimate measures nothing: no System tier, no pills

@@ -1,0 +1,9 @@
+# Hold \ for the Before/After, Fit Timeline on Shift+\, no preset with a chord twice.
+ok: view.compareGrade: Before/After (Hold), a Hold action on \
+ok: view.fit (Fit Timeline) on Shift+\, a legal chord for it
+ok: a Hold action takes \ alone, never with a modifier
+ok: KeybindManager.CheckPresets(): no preset gives a chord to two actions
+ok: every preset: \ the Before/After, Shift+\ Fit Timeline
+ok: the dial and the hotbar run it as an on and off switch (MakeKeyActions)
+ok: held: on at once as the key goes down (no 250 ms wait), off as it comes up; X-Ray keeps its tap or hold
+ok: the window losing the keyboard ends a held Before/After (DropTransientInput)

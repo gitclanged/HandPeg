@@ -19,7 +19,7 @@ ok: its tooltip is 12 words at most ("Keyboard and mouse shortcuts")
 ok: the card has 8 rows (8 at most), each named in 4 words at most, with its keys
 ok: the card is closed as the window opens
 ok: a click opens it, placed by UiScale.PlaceAgainst (a custom placement from the window's content, never Relative or Bottom)
-ok: on the inspector card's surface (#1E1E22) with its 1 px border (#2A2A30), both brushes frozen
+ok: on the theme's inspector card (#1E1E22 edged #2A2A30 on a dark theme) with its 1 px border, both brushes frozen
 ok: a name and its keys a row (16 words in all)
 ok: a press elsewhere in the window closes it
 ok: the pointer on the '?' opens it, not pinned (it closes as the pointer leaves)

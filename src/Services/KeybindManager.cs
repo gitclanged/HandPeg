@@ -142,7 +142,10 @@ public static class KeybindManager
 
         new("view.zoomIn", "Zoom Timeline In", View, "\uE8A3", ["="], KeyActionFlags.Repeat),
         new("view.zoomOut", "Zoom Timeline Out", View, "\uE71F", ["-"], KeyActionFlags.Repeat),
-        new("view.fit", "Fit Timeline", View, "\uE9A6", ["\\"]),
+        // 5.6.0: Shift+\ (\ alone is the grade's Before/After, held).
+        new("view.fit", "Fit Timeline", View, "\uE9A6", ["Shift+\\"]),
+        // The grade's Before/After (5.6.0, the Color Studio): the picture without its grade while \ is held.
+        new("view.compareGrade", "Before/After (Hold)", View, "\uE7B3", ["\\"], KeyActionFlags.Hold),
         new("view.toggleSnap", "Toggle Snap", View, "\uE80A", ["Caps"]),
         // The player as the GPU engine's 3D exploded layer stack, and back (5.0D). Unbound: the left hand's keys are all taken.
         new("view.exploded3d", "3D Exploded View", View, "\uE81E", []),

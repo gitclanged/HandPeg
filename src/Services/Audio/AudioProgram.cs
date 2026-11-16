@@ -64,6 +64,9 @@ public sealed class AudioVoice
     /// <summary>Its pitch as a factor (a track's Pitch filter: 2^(semitones/12)); the timing stays.</summary>
     public double Pitch { get; init; } = 1;
 
+    /// <summary>Stretched (a tempo other than its pitch's), it goes through the phase vocoder instead of WSOLA (the clip's Spectral Audio, 5.6.0).</summary>
+    public bool Spectral { get; init; }
+
     /// <summary>
     /// Its own gain as a factor: on a <see cref="AudioStripKind.Track"/> strip its clip's gain (the track's is in the strip's
     /// effects); 1 on a <see cref="AudioStripKind.Clip"/> strip, whose effects carry the clip's gain with its track's.

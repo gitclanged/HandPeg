@@ -63,4 +63,11 @@ public sealed partial class AppSettings
     /// whole; frames that come late step it down from there (GpuPreviewEngine.Scaling.cs). Paused, always whole. Read on every frame.
     /// </summary>
     public bool DynamicPreviewScaling { get; set; } = true;
+
+    /// <summary>
+    /// Smooth Slow-Mo's Frame Interpolation engine (5.6.0, the Speed &amp; Time card): "auto" (vendor optical-flow hardware where HandPeg can
+    /// use it, else HandPeg's own shader), "shader" (HandPeg's GPU optical flow, HLSL) or "vendor" (the card maker's optical-flow hardware). A
+    /// property of this PC, not of a clip.
+    /// </summary>
+    public string FrameInterpolationEngine { get; set; } = "auto";
 }

@@ -1,0 +1,4 @@
+# Audio filters switched off keep their settings through a save, an undo step and a cold tab.
+ok: a compressor switched off keeps its -43 dB threshold in the saved state
+ok: and has it again when the state is read back
+ok: filters all at their defaults are left out of the state

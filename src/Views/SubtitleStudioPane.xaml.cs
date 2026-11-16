@@ -239,7 +239,7 @@ public partial class SubtitleStudioPane : UserControl, IOwnsKeys
         Seek(Timeline.PositionSeconds);
     }
 
-    private void UpdatePlayButton() => PlayButton.Content = _viewModel.IsPlaying ? "" : "";
+    private void UpdatePlayButton() => PlayButton.Content = _viewModel.IsPlaying ? Glyphs.Pause : Glyphs.Play;
 
     // ----- Committing: each gesture one step of the main history -----
 

@@ -1,6 +1,6 @@
-# The frame's messages (5.3): what the hook of a window that draws its own frame (MainWindow.FrameHook: the main window's,
+# The frame's messages (5.3): what the hook of a window that draws its own frame (WindowFrame.FrameHook: the main window's,
 # through TitleBarHook, and the Settings screen's) does with each, and what of them goes on to Windows.
-## What the hook decides (MainWindow.FrameDecision), by the window's state
+## What the hook decides (WindowFrame.FrameDecision), by the window's state
 message                   restored              maximized             maximized, strip      minimized
 WM_NCACTIVATE, wParam 0   ActivateNoPaint       ActivateNoPaint       ActivateNoPaint       ActivateNoPaint
 WM_NCACTIVATE, wParam 1   ActivateNoPaint       ActivateNoPaint       ActivateNoPaint       ActivateNoPaint
@@ -22,7 +22,7 @@ ok: WM_NCCALCSIZE is never answered nor changed by HandPeg's hook, in any state 
 ok: WM_WINDOWPOSCHANGING: the maximized place is kept short of a taskbar that hides itself, then passed on; WM_GETMINMAXINFO is Windows' own (it reads those numbers for whichever monitor the window maximizes on)
 ok: WM_NCPAINT is answered only maximized with frame outside the client area (painted first); otherwise it goes on to Windows, minimized too (answered there, the desktop stops drawing the frame for good)
 ok: WM_NCUAHDRAWCAPTION and WM_NCUAHDRAWFRAME (the classic caption's and frame's own) are swallowed in every state
-## The maximized place beside a taskbar that hides itself (MainWindow.MaximizedPlaceOf), made-up monitors
+## The maximized place beside a taskbar that hides itself (WindowFrame.MaximizedPlaceOf), made-up monitors
   2880 x 1800 main monitor, hidden taskbar at the bottom: placed 0,0 - 2880,1798
 ok: 2880 x 1800 main monitor, hidden taskbar at the bottom: the working area with each hidden taskbar's edge two pixels in
   3840 x 2160 monitor right of the main one, hidden taskbar on the left: placed 2882,0 - 6720,2160

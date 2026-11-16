@@ -530,9 +530,9 @@ public sealed class ProjectTabs
         // header, which the next start takes in under a made-up one (LeftBehind: "Recovered Project", with unsaved changes), never
         // deletes. The other way round a header would name a project file not there yet, and the work would be in neither.
         ClaimSession();
-        ProjectStore.SaveTo(state, StateFile(id));
+        ProjectStore.SaveTo(state, StateFile(id), durable: false);
 
-        // The session let go while it was being written (a write that outlived the close's wait): taken out again, never offered back.
+        // The session released while it was being written (a write that outlived the close's wait): taken out again, never offered back.
         if (IsForgotten)
         {
             TryDelete(StateFile(id));

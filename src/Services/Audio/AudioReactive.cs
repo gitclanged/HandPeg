@@ -249,8 +249,6 @@ public static class AudioReactive
     {
         foreach (var track in state.Timeline.Tracks)
         {
-            if (Pulses(track.TrackLook?.Effects))
-                return true;
             foreach (var clip in track.Clips)
             {
                 if (Pulses(clip.State.Effects))
@@ -312,6 +310,7 @@ public static class AudioReactive
             hash.Add(voice.MediaEnd);
             hash.Add(voice.Rate);
             hash.Add(voice.Pitch);
+            hash.Add(voice.Spectral);
             hash.Add(voice.Gain);
             hash.Add(voice.FadeIn);
             hash.Add(voice.FadeOut);

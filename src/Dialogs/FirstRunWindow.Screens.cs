@@ -11,6 +11,8 @@ using System.Windows.Shapes;
 using System.Windows.Threading;
 using HandPegApp.Docking;
 using HandPegApp.Services;
+using HandPegApp.Native;
+using static HandPegApp.Native.User32;
 
 namespace HandPegApp;
 
@@ -34,7 +36,7 @@ public partial class FirstRunWindow
     private IReadOnlyDictionary<string, DockNode>? _layouts;
 
     // The settings tabs' pane ids, as the main window registers them (the goldens' list): the layouts are made for them.
-    private static readonly IReadOnlyList<string> PreviewTabIds = ["Tab:Filters", "Tab:Audio", "Tab:Export", "Tab:Command Preview"];
+    private static readonly IReadOnlyList<string> PreviewTabIds = ["Tab:Color", "Tab:Audio", "Tab:Export", "Tab:Command Preview"];
 
     private const string ScreenOneTitle = "Workspace, Theme & Core Engines", ScreenTwoTitle = "Hardware Auto-Tune & Default Export";
 
@@ -257,7 +259,9 @@ public partial class FirstRunWindow
     // ----- The core engines: a package at one click -----
 
     /// <summary>A package's Download: the package chosen, and its download started (the panel's progress shown in the footer too).</summary>
-    private async void TierDownload_Click(object sender, RoutedEventArgs e)
+    private void TierDownload_Click(object sender, RoutedEventArgs e) => Faults.Forget(TierDownload_ClickAsync(sender, e), nameof(TierDownload_Click));
+
+    private async Task TierDownload_ClickAsync(object sender, RoutedEventArgs e)
     {
         (ReferenceEquals(sender, FullDownloadButton) ? EditorTier : MinimalTier).IsChecked = true;
         ApplyTier();
@@ -368,24 +372,4 @@ public partial class FirstRunWindow
 
     private const uint MonitorDefaultToNearest = 2;
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MonitorRect
-    {
-        public int Left, Top, Right, Bottom;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MonitorInfo
-    {
-        public int Size;
-        public MonitorRect Monitor, Work;
-        public uint Flags;
-    }
-
-    [LibraryImport("user32.dll")]
-    private static partial nint MonitorFromWindow(nint window, uint flags);
-
-    [LibraryImport("user32.dll", EntryPoint = "GetMonitorInfoW")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GetMonitorInfo(nint monitor, ref MonitorInfo info);
 }

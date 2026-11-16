@@ -33,34 +33,38 @@ public static class PresetStore
     /// </summary>
     public static List<EncodingPreset> Load()
     {
-        var presets = new List<EncodingPreset>();
-        if (File.Exists(FilePath))
+        ReadFailed = false;
+        List<EncodingPreset> presets;
+        switch (TryRead(FilePath, out var read, out var error))
         {
-            try
-            {
-                presets = JsonSerializer.Deserialize(File.ReadAllText(FilePath), AppSettingsJsonContext.Default.ListEncodingPreset) ?? [];
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
-            {
-                // Leave a damaged file alone for the user to repair; run with the built-in presets meanwhile.
+            case ReadOutcome.Read:
+                presets = read!;
+                break;
+
+            case ReadOutcome.Unreadable:
+                // The file is there but cannot be opened: run with the built-ins and never write over it this session (Save refuses).
+                AppLog.Write($"Presets: {FilePath} could not be read; this session uses the built-in presets and does not write the file", error!);
+                ReadFailed = true;
                 return [];
-            }
+
+            case ReadOutcome.Damaged:
+                var aside = AtomicFile.SetAside(FilePath);
+                AppLog.Write($"Presets: {FilePath} is damaged and was set aside as {Path.GetFileName(aside) ?? "(could not be moved)"}", error!);
+                presets = Previous();
+                break;
+
+            default:
+                presets = File.Exists(FilePath + AtomicFile.PreviousSuffix) ? Previous() : [];
+                break;
         }
 
         var renamed = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var changed = Migrate(presets, renamed);
-        if (AppSettings.Current.RenamePresetReferences(ReferenceRenames(renamed), name => presets.Any(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase))))
-        {
-            // The file of presets is written back below, so the old name is not there to follow next time: the settings keep it now.
-            try
-            {
-                AppSettings.Current.SaveAsCurrent();
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                // The settings folder cannot be written to: the references are right for this session.
-            }
-        }
+
+        // The presets file is written back below, so the old name is not there to follow next time: the settings keep the new one.
+        // Update is safe off the window's thread (one lock) and saves on a background write, so nothing here writes on the UI thread.
+        var references = ReferenceRenames(renamed);
+        AppSettings.UpdateIf(settings => settings.RenamePresetReferences(references, name => presets.Any(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase))));
 
         if (changed)
         {
@@ -174,8 +178,68 @@ public static class PresetStore
     /// <summary>Writes the user's own presets (a built-in one is left out: it is HandPeg's, in code).</summary>
     public static void Save(IEnumerable<EncodingPreset> presets)
     {
-        Directory.CreateDirectory(AppPaths.Settings);
-        File.WriteAllText(FilePath, JsonSerializer.Serialize(presets.Where(p => !p.IsBuiltIn), JsonOptions));
+        if (ReadFailed)
+            throw new IOException("presets.json could not be read when HandPeg started, so it is not written over.");
+        AtomicFile.WriteAllText(FilePath, JsonSerializer.Serialize(presets.Where(p => !p.IsBuiltIn), JsonOptions), durable: true, keepPrevious: true);
+    }
+
+    /// <summary>True when presets.json existed at start but could not be opened: <see cref="Save"/> refuses to write over it this session.</summary>
+    internal static bool ReadFailed { get; private set; }
+
+    private enum ReadOutcome { Read, Missing, Unreadable, Damaged }
+
+    /// <summary>Reads one presets file; open failures are retried briefly, anything wrong with the content is Damaged.</summary>
+    private static ReadOutcome TryRead(string path, out List<EncodingPreset>? presets, out Exception? error)
+    {
+        (presets, error) = (null, null);
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                string text;
+                using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                using (var reader = new StreamReader(stream))
+                    text = reader.ReadToEnd();
+
+                var list = JsonSerializer.Deserialize(text, AppSettingsJsonContext.Default.ListEncodingPreset)
+                           ?? throw new JsonException("The presets file holds null.");
+                presets = [.. list.Where(p => p is not null)];
+                return ReadOutcome.Read;
+            }
+            catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+            {
+                return ReadOutcome.Missing;
+            }
+            catch (IOException) when (attempt < 4)
+            {
+                Thread.Sleep(50);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                error = ex;
+                return ReadOutcome.Unreadable;
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                error = ex;
+                return ReadOutcome.Damaged;
+            }
+        }
+    }
+
+    /// <summary>The copy the last save left beside the file (presets.json.prev), or none.</summary>
+    private static List<EncodingPreset> Previous()
+    {
+        var previous = FilePath + AtomicFile.PreviousSuffix;
+        if (TryRead(previous, out var presets, out var error) == ReadOutcome.Read)
+        {
+            AppLog.Write($"Presets: restored from {Path.GetFileName(previous)}");
+            return presets!;
+        }
+
+        if (error is not null)
+            AppLog.Write($"Presets: {Path.GetFileName(previous)} could not be used either", error);
+        return [];
     }
 
     /// <summary>

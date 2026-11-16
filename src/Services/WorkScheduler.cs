@@ -168,9 +168,13 @@ public sealed partial class WorkItem : ObservableObject
         Elapsed = State == WorkState.Queued ? "waiting" : seconds < 60 ? $"{seconds} s" : $"{seconds / 60}:{seconds % 60:00}";
     }
 
-    public void Cancel()
+    /// <summary>The flyout's Cancel (only for cancellable work).</summary>
+    public void Cancel() => Cancel(evenIfNotCancellable: false);
+
+    /// <summary>Cancels the work; <paramref name="evenIfNotCancellable"/> when no caller is waiting for it any more.</summary>
+    internal void Cancel(bool evenIfNotCancellable)
     {
-        if (!Cancellable)
+        if (!Cancellable && !evenIfNotCancellable)
             return;
 
         try
@@ -181,6 +185,9 @@ public sealed partial class WorkItem : ObservableObject
         {
         }
     }
+
+    // How many callers wait on this keyed work (WorkScheduler.Join): when the last one that can cancel has, the work is cancelled.
+    internal int Waiters;
 }
 
 /// <summary>What the progress chip at the bottom left shows: the lead piece of work, and how many more there are.</summary>
@@ -553,9 +560,6 @@ public static class WorkScheduler
     /// <summary>Whether the code running now is background or idle work (whose tools are given fewer threads and the background card).</summary>
     public static bool InBackground => CurrentProcessClass == ProcessClass.Background;
 
-    /// <summary>Whether work in a lane waits to start: paused by the user, or by a rule (playing, exporting).</summary>
-    public static bool IsPaused(WorkLane lane) => UserPaused[(int)lane] || PausedByRule(lane);
-
     public static bool IsPausedByUser(WorkLane lane) => UserPaused[(int)lane];
 
     private static bool PausedByRule(WorkLane lane)
@@ -725,7 +729,7 @@ public static class WorkScheduler
         TaskCompletionSource<T> done;
         lock (Gate)
         {
-            if (spec.Key is { } key && Live.FirstOrDefault(i => i.Key == key && i.Task is Task<T>) is { Task: Task<T> same } twin)
+            if (spec.Key is { } key && Live.FirstOrDefault(i => i.Key == key && i.Task is Task<T> && !i.Cancellation.IsCancellationRequested) is { Task: Task<T> same } twin)
             {
                 // Asked for again by what a user's action waits on: the one asked for first is urgent from now on (it
                 // starts at once, and its tools are let go on). The gate is taken again inside, by this same thread.
@@ -736,10 +740,13 @@ public static class WorkScheduler
                     Pump();
                 }
 
-                return same;
+                return Join(twin, same, token);
             }
 
-            var cancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
+            // Keyed work is shared by everyone who asks for it under its key, so it has a cancellation of its own: each caller's token
+            // ends only that caller's wait (Join), and the work is cancelled once every caller that can cancel has (or from the
+            // flyout). Unkeyed work belongs to its one caller and is cancelled with it.
+            var cancellation = spec.Key is null ? CancellationTokenSource.CreateLinkedTokenSource(token) : new CancellationTokenSource();
             item = new WorkItem(spec, cancellation)
             {
                 BypassPause = spec.Urgent || Current.Value is { Lane: WorkLane.Foreground or WorkLane.Interactive },
@@ -764,6 +771,8 @@ public static class WorkScheduler
                 }
                 catch (Exception ex)
                 {
+                    // Logged once per kind of failure (its type and stack), so a folder of broken files cannot fill the log.
+                    AppLog.WriteOnce($"work|{ex.GetType().FullName}|{ex.StackTrace}", $"Work \"{item.Title}\" failed", ex);
                     item.SetPhase(WorkState.Failed);
                     item.SetDetail(ex.Message);
                     done.TrySetException(ex);
@@ -794,7 +803,28 @@ public static class WorkScheduler
 
         Show(item);
         Pump();
-        return done.Task;
+        return spec.Key is null ? done.Task : Join(item, done.Task, token);
+    }
+
+    /// <summary>
+    /// One caller's wait on shared (keyed) work: <paramref name="token"/> cancels this wait only. The work itself is cancelled when the
+    /// last caller able to cancel has cancelled; a caller whose token can never be cancelled keeps it running to the end.
+    /// </summary>
+    private static Task<T> Join<T>(WorkItem item, Task<T> work, CancellationToken token)
+    {
+        Interlocked.Increment(ref item.Waiters);
+        if (!token.CanBeCanceled)
+            return work;
+
+        var registration = token.Register(static state =>
+        {
+            var shared = (WorkItem)state!;
+            if (Interlocked.Decrement(ref shared.Waiters) == 0)
+                shared.Cancel(evenIfNotCancellable: true);
+        }, item);
+        _ = work.ContinueWith(static (_, state) => ((CancellationTokenRegistration)state!).Dispose(), registration,
+                              CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        return work.WaitAsync(token);
     }
 
     /// <summary>Cancels the work asked for under a key (the thumbnails of a file that is no longer loaded, say).</summary>

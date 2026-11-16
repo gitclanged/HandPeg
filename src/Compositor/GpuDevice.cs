@@ -154,7 +154,7 @@ internal sealed unsafe class GpuDevice : IDisposable
             var multithread = Com.Query(_device, Iid.D3D11Multithread);
             if (multithread != 0)
             {
-                ((delegate* unmanaged<nint, int, int>)Com.Table(multithread)[5])(multithread, 1);
+                ((delegate* unmanaged<nint, int, int>)Com.Table(multithread)[ID3D11MultithreadSlot.SetMultithreadProtected])(multithread, 1);
                 Com.Release(ref multithread);
             }
         }
@@ -292,19 +292,30 @@ internal sealed unsafe class GpuDevice : IDisposable
             MiscFlags = miscFlags,
         };
         var texture = Device.CreateTexture2D(desc, initial);
-        var srv = format is DxgiFormat.Nv12 or DxgiFormat.P010 ? 0 : Device.CreateShaderResourceView(texture);
-        var rtv = renderTarget ? Device.CreateRenderTargetView(texture) : 0;
+        nint srv = 0, rtv = 0;
+        try
+        {
+            srv = format is DxgiFormat.Nv12 or DxgiFormat.P010 ? 0 : Device.CreateShaderResourceView(texture);
+            rtv = renderTarget ? Device.CreateRenderTargetView(texture) : 0;
+        }
+        catch
+        {
+            // The views failed (memory pressure, an unsupported format): what was made is released before the error goes on.
+            Com.Release(ref srv);
+            Com.Release(ref texture);
+            throw;
+        }
+
         return new GpuTexture(texture, srv, rtv, width, height, format);
     }
 
     // IDXGIDevice3 (dxgi1_3.h): Trim is its first method of its own, after IUnknown's 3, IDXGIObject's 4, IDXGIDevice's 5,
     // IDXGIDevice1's 2 and IDXGIDevice2's 3.
     private static readonly Guid DxgiDevice3 = new("6007896c-3244-4afd-bf18-a6d3beda5023");
-    private const int TrimSlot = 17;
 
     /// <summary>
-    /// Gives the driver's own memory back (5.4D-TabPerf, the worker's trim): the context's state cleared (every render binds its own
-    /// again, BindCommon and each pass), the queued work flushed, and IDXGIDevice3::Trim, which lets go of the allocations the driver kept
+    /// Gives the driver's own memory back (the worker's trim): the context's state cleared (every render binds its own
+    /// again, BindCommon and each pass), the queued work flushed, and IDXGIDevice3::Trim, which releases the allocations the driver kept
     /// for reuse after textures were released. Call between frames, on the thread that draws. False where Windows has no Trim (it then
     /// only clears and flushes).
     /// </summary>
@@ -318,7 +329,7 @@ internal sealed unsafe class GpuDevice : IDisposable
             return false;
         try
         {
-            ((delegate* unmanaged<nint, void>)Com.Table(device3)[TrimSlot])(device3);
+            ((delegate* unmanaged<nint, void>)Com.Table(device3)[IDXGIDevice3Slot.Trim])(device3);
             return true;
         }
         finally

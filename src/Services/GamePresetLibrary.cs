@@ -258,16 +258,22 @@ public static class GamePresetLibrary
     /// </summary>
     public static void Seeded()
     {
-        var settings = AppSettings.Current;
-        if (settings.BuiltInGamePresetsVersion >= Version)
+        if (AppSettings.Current.BuiltInGamePresetsVersion >= Version)
             return;
 
-        if (settings.SplashStylePresets.Count == 0)
-            settings.SplashPresetCount = Math.Max(settings.SplashPresetCount, 1);
-        settings.SplashStylePresets = SeededList(settings.SplashStylePresets, f => File.Exists(Path.Combine(AppPaths.Styles, f)));
-
-        settings.BuiltInGamePresetsVersion = Version;
-        settings.SaveAsCurrent();
+        var present = Directory.Exists(AppPaths.Styles)
+            ? Directory.EnumerateFiles(AppPaths.Styles).Select(Path.GetFileName).OfType<string>().ToHashSet(StringComparer.OrdinalIgnoreCase)
+            : [];
+        AppSettings.UpdateIf(settings =>
+        {
+            if (settings.BuiltInGamePresetsVersion >= Version)
+                return false;
+            if (settings.SplashStylePresets.Count == 0)
+                settings.SplashPresetCount = Math.Max(settings.SplashPresetCount, 1);
+            settings.SplashStylePresets = SeededList(settings.SplashStylePresets, present.Contains);
+            settings.BuiltInGamePresetsVersion = Version;
+            return true;
+        });
     }
 
     /// <summary>

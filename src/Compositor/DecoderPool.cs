@@ -413,6 +413,57 @@ internal sealed partial class DecoderPool : IDisposable
     }
 
     /// <summary>
+    /// A companion frame of a layer resolved this frame (Smooth Slow-Mo's next frame, SceneRenderer.Interpolate): as
+    /// <see cref="Resolve"/> finds it, pinned until <see cref="EndFrame"/>, but no layer of its own. No LayerMemory is kept for
+    /// <paramref name="clipKey"/> (a salted key), so no play rate is measured on it, no PlayAhead is asked and no pre-roll stretch is
+    /// read round it beside the layer's own: a miss asks once for the frame itself (Visible, under the salted key, so the layer's
+    /// own demand stays where it is) and is not exact, so an export waits for it.
+    /// </summary>
+    public CachedFrame? ResolveNext(int id, double seconds, long pathHash, long clipKey)
+    {
+        if (id is < 0 or >= CompositorProtocol.MaxSources)
+            return null;
+        SourceState? source;
+        lock (_gate)
+        {
+            if (!_sources.TryGetValue(id, out source) || source.Failed)
+                return null;
+        }
+
+        if (pathHash != 0 && pathHash != source.PathHash)
+            return null;
+        seconds = Math.Max(seconds, 0);
+        if (source.Duration > 0)
+            seconds = Math.Min(seconds, source.Duration);
+        source.LastWanted = Stopwatch.GetTimestamp();
+
+        // A layer of the picture shown at this moment already asked for it (another clip of the file): nothing more is asked.
+        var repeat = false;
+        foreach (var (serial, at) in _resolvedNow)
+            repeat |= serial == source.Serial && Math.Abs(at - seconds) <= 1e-6;
+
+        var exact = _cache.Exact(source.Serial, seconds, strictly: _exactOnly);
+        if (exact is not null)
+        {
+            CacheHits++;
+            if (!repeat)
+                Satisfied(source, seconds);
+        }
+        else
+        {
+            CacheMisses++;
+            LastFrameExact = false;
+            if (!repeat)
+                Ask(source, seconds, DemandKind.Visible, clipKey, keepFrom: seconds - Fit(source, KeepBehind, BehindShare));
+            exact = _cache.Nearest(source.Serial, seconds, null);
+        }
+
+        if (exact is not null)
+            _pinned.Add(exact);
+        return exact;
+    }
+
+    /// <summary>
     /// The frame before <paramref name="frame"/> when the cache holds it (a shutter's measure of motion, 5.1-GpuFx), pinned until <see cref="EndFrame"/>. No demand
     /// is made, so nothing waits for it; an export keeps that much behind it (<see cref="ExactKeepBehind"/>), so it finds it on all but a clip's first frame.
     /// </summary>
@@ -1174,9 +1225,7 @@ internal sealed partial class DecoderPool : IDisposable
     {
         _stopping.Set();
         _work.Set();
-        var joined = true;
-        foreach (var thread in _lanes)
-            joined &= thread.Join(3000);
+        var joined = ThreadStop.JoinAll(_lanes, 3000, "Decode lanes");
         DisposeBuried();
         lock (_gate)
         {
@@ -1198,6 +1247,7 @@ internal sealed partial class DecoderPool : IDisposable
 
         if (!joined)
             return;
+        ClosePaceTimers();
         _cache.Dispose();
         _work.Dispose();
         _arrived.Dispose();

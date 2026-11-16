@@ -59,6 +59,9 @@ public partial class App : Application
         Services.CrashReporter.Note("app", "exit");
         Services.Notifier.Dispose();
 
+        // A settings change still inside its debounce is written before the process ends.
+        Services.AppSettings.FlushPendingSave();
+
         // An update that was downloaded but not restarted into goes in once this process has gone.
         Services.AppUpdater.ApplyOnExit();
         base.OnExit(e);

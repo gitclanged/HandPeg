@@ -131,7 +131,7 @@ public partial class MainViewModel
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            StatusText = $"Could not add to the queue: {ex.Message}";
+            Fail($"Could not add to the queue: {ex.Message}", "Add to the queue", ex);
             return null;
         }
 
@@ -184,8 +184,16 @@ public partial class MainViewModel
     [RelayCommand]
     private async Task AddToQueueAsync()
     {
-        // What the job will need when it runs is asked for now, while somebody is there to say yes.
-        if (!await RequireForCommandAsync("Add to Queue") || CreateQueueJob() is not { } job)
+        // What the job will need when it runs is asked for now, while somebody is there to say yes; so is a command the project file brought.
+        if (!await RequireForCommandAsync("Add to Queue"))
+            return;
+        if (!ConfirmFileCommand(CommandPreview))
+        {
+            StatusText = "Not queued: the project's own command was not confirmed.";
+            return;
+        }
+
+        if (CreateQueueJob() is not { } job)
             return;
 
         Queue.Add(Follow(job));
@@ -204,13 +212,18 @@ public partial class MainViewModel
         try
         {
             await worker.RestoreStateAsync(state, "");
+
+            // No one can confirm a command the file carries here: it is left out, and the job runs the command made from the project.
+            var dropped = worker.DropFileCommand();
             if (worker.CreateQueueJob() is { } job)
             {
                 Queue.Add(Follow(job));
 
                 // The running operation owns the status bar; this only shows when nothing else is writing to it.
                 if (!IsBusy)
-                    StatusText = $"Project \"{projectName}\" was added to the queue.";
+                    StatusText = dropped
+                        ? $"Project \"{projectName}\" was added to the queue without its own FFmpeg command (open it to review that command)."
+                        : $"Project \"{projectName}\" was added to the queue.";
             }
             else if (!IsBusy)
             {
@@ -232,7 +245,7 @@ public partial class MainViewModel
         if (job is null)
             return;
 
-        await RestoreStateAsync(job.State, $"Editing queued job: {Path.GetFileName(job.Target)}. Update Queued Job saves the changes.");
+        await RestoreStateAsync(job.State, $"Editing queued job: {Path.GetFileName(job.Target)}. Update Queued Job saves the changes.", fromFile: false);
 
         // Only once the job's source really is the one on screen.
         if (Queue.Contains(job) && job.Status == QueueJob.Pending
@@ -392,7 +405,7 @@ public partial class MainViewModel
                 // The hardware encoder failed: put the job back in line with the software encoder for the same codec.
                 // The note on the job stops it from being rewritten a second time.
                 HardwareFallback.TryRewrite(job.Command, out var rewritten, out var hardware, out var software);
-                AppLog.Write($"{hardware} failed for {name} and {software} is tried instead: {ex.Message}");
+                AppLog.Write($"{hardware} failed for {name} and {software} is tried instead", ex);
                 job.Command = rewritten;
                 job.Detail = $"{FallbackNote} {hardware} failed, retried with {software}.";
                 job.Status = QueueJob.Pending;
@@ -401,6 +414,7 @@ public partial class MainViewModel
             }
             catch (Exception ex)
             {
+                AppLog.Write($"Queue: {name} failed", ex);
                 job.Status = QueueJob.Failed;
                 job.Detail = ex.Message;
                 failed++;

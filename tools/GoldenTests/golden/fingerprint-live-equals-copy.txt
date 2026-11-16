@@ -1,0 +1,6 @@
+# Dirty tracking serializes the live project (no deep copy): byte for byte the deep copy's text, and a tab put behind compares equal.
+ok: a clip deleted into the Recycle Bin
+ok: the live fingerprint is the deep copy's text, byte for byte
+ok: a tab put behind (its frozen copy) compares equal to the live fingerprint: no false dirty dot
+ok: marked saved: no unsaved changes
+ok: Fingerprint serializes the live state with the frozen-state options (no Document.Clone(deep: true))

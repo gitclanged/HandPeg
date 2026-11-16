@@ -1,0 +1,8 @@
+# Up to 16x (5.6A): the Layer's ceiling, the document's check, the edit's clamp, the Inspector's boxes and the clip menu.
+ok: a clip runs from 0.1x to 16x
+ok: 16x: 56 s of the file in 3.5 s, the document holds together
+ok: asked for 40x, the edit holds it to 16x
+ok: the document's check names a speed past 16x
+ok: a saved 20x reads as 16x
+ok: the Inspector's two Speed boxes go to 16 and say so
+ok: the clip menu's Clip Speed offers 16x

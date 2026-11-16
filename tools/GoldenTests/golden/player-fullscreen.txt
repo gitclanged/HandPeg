@@ -29,7 +29,7 @@ ok: the Fullscreen button: top right, 10 in, the Full Screen glyph, F11 in its t
 ok: the window: borderless, not resizable, opaque black, out of the taskbar, no WindowChrome; its content scaled, its size the monitor's
 ok: closed by anything but its owner (Alt+F4) it stays and asks to be left; let close, it closes
 ok: MainWindow.xaml: the player's surface holds PlayerHud, which holds only PlayerOverlay (zoomed with the picture, hidden in 3D); the HUD itself is made in code
-ok: MainWindow.Fullscreen.cs never touches the dock, and puts the surface straight back into its pane (VideoBorder.Child = VideoView)
+ok: FullscreenController.cs never touches the dock, and puts the surface straight back into its pane (VideoBorder.Child = VideoView)
 ok: PlayerFullscreenWindow.cs: no WindowChrome, FrameHook or WM_NCCALCSIZE
 ok: Law 1: before the first frame only a ContentRendered hook; the HUD's own hooks at the first idle moment after it, the rest at first use
 ok: MainWindow.Keybinds.cs: F11 goes in (with a picture) and out; Esc asks EscapeTakerFor

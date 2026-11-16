@@ -292,7 +292,7 @@ public partial class MediaBrowserPane
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
-            AppLog.Write($"Media browser: the preview of {item.Name}: {ex.Message}");
+            AppLog.Write($"Media browser: the preview of {item.Name}", ex);
         }
     }
 
@@ -346,7 +346,9 @@ public partial class MediaBrowserPane
     /// Asks for the shown file's frame at a moment. It is shown when it comes unless a later one was shown first (SourceFrames makes one
     /// at a time and lets the waiting ones be replaced, so while the strip is dragged each still that comes is the newest there is).
     /// </summary>
-    private async void AskFrame(double seconds, bool fast)
+    private void AskFrame(double seconds, bool fast) => Faults.Forget(AskFrameAsync(seconds, fast), nameof(AskFrame));
+
+    private async Task AskFrameAsync(double seconds, bool fast)
     {
         if (_shown is not { IsVideo: true } item || _showing is not { } showing)
             return;

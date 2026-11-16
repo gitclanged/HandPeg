@@ -1,6 +1,4 @@
 using System.ComponentModel;
-using System.Windows.Controls.Primitives;
-using System.Windows.Input;
 using System.Windows.Interop;
 using HandPegApp.Models;
 using HandPegApp.Services;
@@ -14,12 +12,12 @@ namespace HandPegApp.ViewModels;
 public sealed record SequenceLook(
     double Contrast, double Brightness, double Saturation, double Gamma, double Hue, double Red, double Green, double Blue,
     double Sharpen, double BlurRadius, int BlurPasses, double BackgroundDim, double BackgroundZoom = 1,
-    List<Models.Effects.EffectState>? BackgroundEffects = null, bool BackgroundEffectsBypassed = false);
+    List<Models.Effects.EffectState>? BackgroundEffects = null, bool BackgroundEffectsBypassed = false, string? LutPath = null);
 
 // ----- Universal undo (4.4) -----
 // An edit of the document takes its own step (OnDocumentCommitted), and so does whatever takes one by hand (Checkpoint):
 // a gizmo dragged, a dialog's visit, a keyframe moved. Everything else the user changes is a look: of a clip's view (its
-// place, size, text, filters), of the caption box, of one of the output audio tracks (5.2-AuditB: what is made of it, its title),
+// place, size, text, filters), of the caption box, of one of the output audio tracks (5.2.0: what is made of it, its title),
 // or of the sequence (its colour, its blur fill's look). Each of those takes a step just before it changes (PropertyChanging, or
 // the toolkit's OnXChanging), so the step holds the look as it was; but only when it is the user changing it, and once for
 // a burst of changes: a slider dragged, a box typed into, a name typed letter by letter.
@@ -28,22 +26,9 @@ public partial class MainViewModel
     // How recent a key, click or turn of the wheel must be for a change to be the user's (NoteUserInput).
     private const long UserActionWindow = 300;
 
-    // A change of the same value of the same thing within this long of the last one, with no other step taken between, is
-    // part of the same step: a slider dragged, the arrow keys held on a box, the wheel turned.
-    private const long LookBurst = 1500;
-
-    // The same for a name or words typed letter by letter: one step for the whole of it, as a marker's rename has.
-    private const long TypingBurst = 30_000;
-
     // When the user last pressed a key, a button or turned the wheel, and how many times they have (each one a gesture).
     private long _userInputAt;
     private int _inputGesture;
-
-    // The gesture during which the last step was taken by hand: one press of the button held down is one step at most.
-    private int _stepGesture = -1;
-
-    // The last look the user changed: what, which value, when, and the newest step at that moment.
-    private (object Target, string Name, long At, byte[]? Newest)? _lastLookEdit;
 
     // While set, no look takes a step of its own: a style is being applied, which took one for all it does.
     private int _lookStepsHeld;
@@ -71,7 +56,7 @@ public partial class MainViewModel
     /// <summary>The sequence's look as it is now, for an undo step.</summary>
     private SequenceLook CaptureLook() => new(
         ColorContrast, ColorBrightness, ColorSaturation, ColorGamma, ColorHue, ColorRed, ColorGreen, ColorBlue,
-        SharpenStrength, BlurRadius, BlurPasses, BackgroundDim, BackgroundZoom, CaptureBackgroundEffects(), _backgroundRow.EffectsBypassed);
+        SharpenStrength, BlurRadius, BlurPasses, BackgroundDim, BackgroundZoom, CaptureBackgroundEffects(), _backgroundRow.EffectsBypassed, LutPath);
 
     /// <summary>Puts the sequence's look back as an undo step had it.</summary>
     private void ApplyLook(SequenceLook look)
@@ -80,6 +65,11 @@ public partial class MainViewModel
         (ColorHue, ColorRed, ColorGreen, ColorBlue, SharpenStrength) = (look.Hue, look.Red, look.Green, look.Blue, look.Sharpen);
         (BlurRadius, BlurPasses, BackgroundDim, BackgroundZoom) = (look.BlurRadius, look.BlurPasses, look.BackgroundDim, look.BackgroundZoom);
         SetBackgroundEffects(look.BackgroundEffects, look.BackgroundEffectsBypassed);
+
+        // The legacy LUT (5.6.0): Undo and Redo of a Convert move it with the cards, whether or not the Color tab is up; a step of one
+        // project never reaches another (each tab keeps its own history). An older step's null leaves it as it is.
+        if (look.LutPath is { } lut)
+            LutPath = lut;
     }
 
     /// <summary>
@@ -92,7 +82,7 @@ public partial class MainViewModel
     /// </summary>
     private bool LookStepsShut =>
         _inputGesture == 0 || _isBackgroundWorker || _syncingViews || _applyingKeys || _recordingKey || _settingQuietly || _placingViews
-        || _showingTarget || _takingCrop || _commandDeferrals > 0 || _lookStepsHeld > 0 || _openEdit is not null || Layer.IsEchoing
+        || _showingTarget || _takingCrop || _commandDeferrals > 0 || _lookStepsHeld > 0 || _openEdit is not null || _gesture.OwnedLooks > 0
         || IsRestoringTimeline;
 
     /// <summary>A name or words: typed letter by letter, each letter a change.</summary>
@@ -112,27 +102,24 @@ public partial class MainViewModel
 
         var now = Environment.TickCount64;
         var typed = IsTyped(name);
-        var onInterfaceThread = System.Windows.Application.Current?.Dispatcher.CheckAccess() == true;
-        var held = onInterfaceThread && Mouse.LeftButton == MouseButtonState.Pressed;
-        if (now - _userInputAt > UserActionWindow && !held && !(typed && onInterfaceThread && Keyboard.FocusedElement is TextBoxBase))
+        var held = IsPointerHeld();
+        if (now - _userInputAt > UserActionWindow && !held && !(typed && IsTypingInTextBox()))
             return false;
 
-        var newest = _undo.Count > 0 ? _undo[^1].State : null;
-        var again = _lastLookEdit is (var lastTarget, var lastName, var at, var then) && ReferenceEquals(lastTarget, target)
-            && lastName == name && ReferenceEquals(then, newest) && now - at < (typed ? TypingBurst : LookBurst);
-        _lastLookEdit = (target, name, now, newest);
-        if (again || now - _checkpointedAt <= 500 || (_visitStep is { } visit && ReferenceEquals(newest, visit)))
+        var newest = NewestStep;
+        var again = _gesture.Looks.Continues(target, name, now, typed ? TypingWindow : MergeWindow, newest);
+        if (again || now - _checkpointedAt <= HandStepGrace || (_visitStep is { } visit && ReferenceEquals(newest, visit)))
             return false;
 
         // One press of the button held down (a slider or a box dragged) is one step, however long it is held.
-        return !held || _stepGesture != _inputGesture;
+        return !held || _gesture.StepPress != _inputGesture;
     }
 
-    /// <summary>Takes the step for a look about to change, and remembers it as the newest, so the rest of its burst joins it.</summary>
-    private void TakeLookStep(object target, string name, string what)
+    /// <summary>Takes the step for a look about to change, and remembers it as the newest, so the rest of its run joins it.</summary>
+    private void TakeLookStep(string what)
     {
         Checkpoint(what);
-        _lastLookEdit = (target, name, Environment.TickCount64, _undo.Count > 0 ? _undo[^1].State : null);
+        _gesture.Looks.Restamp(NewestStep);
     }
 
     // ----- Views, the caption box -----
@@ -140,11 +127,12 @@ public partial class MainViewModel
     /// <summary>A view's (or the caption box's) value is about to change: a step first, when it is part of its look and the user's change.</summary>
     private void OnViewChanging(object? sender, PropertyChangingEventArgs e)
     {
-        if (LookStepsShut || sender is not Layer { IsEmptyTrack: false } view || e.PropertyName is not { } name || !UndoLooks.Names.Contains(name)
-            || !TakesLookStep(view, name))
+        // A layer announcing its own effect change (not a view property writing its card) is no change of the user's either.
+        if (LookStepsShut || sender is not Layer { IsEmptyTrack: false, RaisingEffectChange: false } view || e.PropertyName is not { } name
+            || !LayerFields.UndoableLooks.Contains(name) || !TakesLookStep(view, name))
             return;
 
-        TakeLookStep(view, name, LookStepLabel(view, name));
+        TakeLookStep(LookStepLabel(view, name));
     }
 
     /// <summary>What a look's step is called in the status bar ("Undid: move Logo").</summary>
@@ -162,27 +150,6 @@ public partial class MainViewModel
             or nameof(Layer.OutlineThickness) => $"change the lettering of {view.Name}",
         _ => $"change the look of {view.Name}",
     };
-
-    /// <summary>
-    /// The values of a view that are its look: what a LayerState holds, less a clip's own values (their changes are edits of
-    /// the document, with steps of their own) and what is only the view's. Made at the first change the user makes, not before.
-    /// </summary>
-    private static class UndoLooks
-    {
-        public static readonly HashSet<string> Names = Make();
-
-        private static HashSet<string> Make()
-        {
-            var names = typeof(LayerState).GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
-                .Where(p => p.CanWrite).Select(p => p.Name).ToHashSet(StringComparer.Ordinal);
-            names.ExceptWith(ClipFields);
-            names.ExceptWith(ViewOnly);
-            // What a file is (found by probing it, never set by hand).
-            names.ExceptWith([nameof(LayerState.Kind), nameof(LayerState.ImagePath), nameof(LayerState.ImageWidth), nameof(LayerState.ImageHeight),
-                nameof(LayerState.HasAudio), nameof(LayerState.AudioCodec), nameof(LayerState.AudioChannels)]);
-            return names;
-        }
-    }
 
     // ----- The output audio tracks -----
 
@@ -205,7 +172,7 @@ public partial class MainViewModel
             _ => null,
         };
         if (what is not null && TakesLookStep(track, name))
-            TakeLookStep(track, name, what);
+            TakeLookStep(what);
     }
 
     // ----- The sequence's look -----
@@ -229,7 +196,7 @@ public partial class MainViewModel
     private void SequenceLookChanging(string name, string what)
     {
         if (!LookStepsShut && TakesLookStep(this, name))
-            TakeLookStep(this, name, what);
+            TakeLookStep(what);
     }
 
     // ----- What is listened to, from the user's first touch -----
@@ -255,7 +222,7 @@ public partial class MainViewModel
         // changed in it is that step's, however long it stays open. One opened without one (the frame preview's colour
         // controls) takes steps as the main window does.
         ComponentDispatcher.EnterThreadModal += (_, _) =>
-            _visitStep = Environment.TickCount64 - _checkpointedAt < LookBurst && _undo.Count > 0 ? _undo[^1].State : null;
+            _visitStep = Environment.TickCount64 - _checkpointedAt < MergeWindow ? NewestStep : null;
         ComponentDispatcher.LeaveThreadModal += (_, _) => _visitStep = null;
     }
 
@@ -322,8 +289,9 @@ public partial class MainViewModel
     /// </summary>
     private void EndRestore()
     {
-        // A change made right after this is a step of its own, never the end of a burst from before it.
-        (_lastLookEdit, _lastFieldEdit) = (null, null);
+        // A change made right after this is a step of its own, never the end of a run from before it.
+        _gesture.Looks.Reset();
+        _gesture.Fields.Reset();
 
         // First: what the window does on what follows (the captions told, its rows rebuilt) is not the user's change either. A
         // view model without a dispatcher (a background worker, a headless harness) has no bindings to settle.

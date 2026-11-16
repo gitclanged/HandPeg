@@ -6,6 +6,7 @@ using System.Text;
 using System.Windows;
 using System.Windows.Threading;
 using HandPegApp;
+using HandPegApp.Shell;
 using HandPegApp.Models;
 using HandPegApp.Models.Timeline;
 using HandPegApp.Services;
@@ -53,7 +54,6 @@ namespace HandPegGoldenTests;
 /// </summary>
 public static class TabPerfTests
 {
-    private const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
     private const string First = "D:/media/first.mkv", Second = "D:/media/second.mkv";
 
     /// <summary>The window-free cases (and those on a window of their own), before the UI-scale tests.</summary>
@@ -77,29 +77,6 @@ public static class TabPerfTests
     public static IEnumerable<GraphResult> Live()
     {
         yield break;
-    }
-
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
     }
 
     private static string Fresh(string name)
@@ -141,7 +118,7 @@ public static class TabPerfTests
         return vm;
     }
 
-    private static void Install(MainViewModel vm, TimelineDocument document) => typeof(MainViewModel).GetMethod("InstallDocument", Hidden)!.Invoke(vm, [document]);
+    private static void Install(MainViewModel vm, TimelineDocument document) => vm.InstallDocument(document);
 
     private static string Fingerprint(MainViewModel vm) => (string)typeof(MainViewModel).GetMethod("Fingerprint", Hidden)!.Invoke(vm, null)!;
 
@@ -413,97 +390,58 @@ public static class TabPerfTests
 
     // ----- tab-perf-switch-wiring -----
 
-    private static string RepositoryRoot()
-    {
-        for (var folder = new DirectoryInfo(AppContext.BaseDirectory); folder is not null; folder = folder.Parent)
-        {
-            if (File.Exists(Path.Combine(folder.FullName, "HandPegApp.csproj")))
-                return folder.FullName;
-        }
-
-        throw new DirectoryNotFoundException("HandPegApp.csproj was not found above " + AppContext.BaseDirectory);
-    }
-
-    /// <summary>A source file under src, its line endings made \n.</summary>
-    private static string Read(params string[] parts) => File.ReadAllText(Path.Combine([RepositoryRoot(), "src", .. parts])).ReplaceLineEndings("\n");
-
-    /// <summary>A member's text: from its signature to the end of its body (the next line that closes at its indent).</summary>
-    private static string Method(string source, string signature)
-    {
-        var start = source.IndexOf(signature, StringComparison.Ordinal);
-        if (start < 0)
-            return "";
-        var end = source.IndexOf("\n    }\n", start, StringComparison.Ordinal);
-        return end < 0 ? source[start..] : source[start..(end + 6)];
-    }
-
-    /// <summary>Whether every one of <paramref name="parts"/> is in <paramref name="text"/>, each after the one before.</summary>
-    private static bool InOrder(string text, params string[] parts)
-    {
-        var at = 0;
-        foreach (var part in parts)
-        {
-            var found = text.IndexOf(part, at, StringComparison.Ordinal);
-            if (found < 0)
-                return false;
-            at = found + part.Length;
-        }
-
-        return true;
-    }
-
     private static bool HasAny(string text, params string[] parts) => parts.Any(p => text.Contains(p, StringComparison.Ordinal));
 
     private static void SwitchWiring(Action<bool, string> expect)
     {
-        var tabs = (Read("MainWindow.ProjectTabs.cs") + Read("MainWindow.TabCache.cs") + Read("MainWindow.TabMenu.cs"));
-        var switching = Method(tabs, "private async Task SwitchToTabAsync(");
+        var tabs = (SourceProbe.Src("MainWindow.ProjectTabs.cs") + SourceProbe.Src("MainWindow.TabCache.cs") + SourceProbe.Src("MainWindow.TabMenu.cs"));
+        var switching = SourceProbe.Member(tabs, "private async Task SwitchToTabAsync(");
         var put = switching.IndexOf("var behind = PutActiveBehind(out write);", StringComparison.Ordinal);
         var attach = switching.IndexOf("AttachHydrated(tab, live!)", StringComparison.Ordinal);
         expect(put > 0 && attach > put && !switching[put..attach].Contains("await ", StringComparison.Ordinal)
-               && InOrder(switching, "var behind = PutActiveBehind(out write);", "_tabs.Activate(tab);", "ShowTabs();", "ApplyTabLayout(tab);", "_hydrated.TryGetValue(tab.Id, out var live)", "AttachHydrated(tab, live!)", "else", "await ResumeTabAsync(tab, behind);"),
+               && SourceProbe.InOrder(switching, "var behind = PutActiveBehind(out write);", "_tabs.Activate(tab);", "ShowTabs();", "ApplyTabLayout(tab);", "_hydrated.TryGetValue(tab.Id, out var live)", "AttachHydrated(tab, live!)", "else", "await ResumeTabAsync(tab, behind);"),
             "SwitchToTabAsync: the tab in front put behind, the next in front, its layout, then a live tab attached at once: no await between putting one behind and bringing the other back");
-        expect(InOrder(switching, "AttachHydrated(tab, live!)", "RefreshActiveTab(fingerprint: !hot);", "finally", "_switchingTab = false;", "QueueTabWrite(write);"),
+        expect(SourceProbe.InOrder(switching, "AttachHydrated(tab, live!)", "RefreshActiveTab(fingerprint: !hot);", "finally", "_switchingTab = false;", "QueueTabWrite(write);"),
             "the tab put behind's cache file is queued after the switch (in its finally, once the next tab is in front), and a live switch makes no fingerprint");
 
-        var behind = Method(tabs, "private ProjectTabHeader PutActiveBehind(") + Method(tabs, "private TabViewContext DetachActive(") + Method(tabs, "private void TakeHeaderForTab(");
-        var front = Method(tabs, "private bool AttachHydrated(");
+        var behind = SourceProbe.Member(tabs, "private ProjectTabHeader PutActiveBehind(") + SourceProbe.Member(tabs, "private TabViewContext DetachActive(") + SourceProbe.Member(tabs, "private void TakeHeaderForTab(");
+        var front = SourceProbe.Member(tabs, "private bool AttachHydrated(");
         string[] cold = ["ReadState(", "ReadSaved(", "ResumeTabAsync(", "RestoreStateAsync(", "MarkSaved(", "HasUnsavedChanges", "CaptureThumbnailAsync(", "await ", "Task.Run(", ".Wait("];
         expect(behind.Length > 0 && front.Length > 0 && !HasAny(behind, cold) && !HasAny(front, cold),
             "putting a tab behind and bringing a live one back read no cache file, open nothing, make no fingerprint, capture no still and wait for nothing");
-        expect(InOrder(Method(tabs, "private ProjectTabHeader PutActiveBehind("), "var live = DetachActive(tab, out write);", "_hydrated[tab.Id] = live;", "LeaveExplodedAtOnce();", "_gpu?.Suspend();", "ClearProgramStrip();"),
+        expect(SourceProbe.InOrder(SourceProbe.Member(tabs, "private ProjectTabHeader PutActiveBehind("), "var live = DetachActive(tab, out write);", "_hydrated[tab.Id] = live;", "LeaveExplodedAtOnce();", "_gpu?.Suspend();", "ClearProgramStrip();"),
             "the tab put behind is kept live, its 3D view left, and the engine lets go of it (GpuPreviewEngine.Suspend, as before)");
-        expect(InOrder(front, "ShowTabStill(live.Still);", "_viewModel.AttachTab(project)", "_hydrated.Remove(tab.Id);", "live.Write?.Cancel();", "DeleteTabFiles(tab.Id);", "AdoptProgramSheet(sheet, live.ProgramSheetMark);",
+        expect(SourceProbe.InOrder(front, "ShowTabStill(live.Still);", "_viewModel.AttachTab(project)", "_hydrated.Remove(tab.Id);", "live.Write?.Cancel();", "DeleteTabFiles(tab.Id);", "AdoptProgramSheet(sheet, live.ProgramSheetMark);",
                    "RestoreExpansion(live.Expansion);", "RestorePlayerView(live.PlayerView);", "RestoreTabView(tab);"),
             "AttachHydrated: its still shown first, its project swapped in, its cache file let go after any write, its sheet, open stacks and player view back, its view restored inline (no Background wait)");
-        expect(InOrder(Method(tabs, "private void QueueTabWrite("), "_unwritten.Add(write);", "_tabs.Enqueue(write.Id, () => WriteTabNow(write));")
-               && InOrder(Method(tabs, "private void WriteTabNow("), "MainViewModel.FrozenStateDiffers(frozen, project.SavedFingerprint)", "_tabs.WriteTab(write.Id, frozen,", "Dispatcher.BeginInvoke(() => TabWritten(write)"),
+        expect(SourceProbe.InOrder(SourceProbe.Member(tabs, "private void QueueTabWrite("), "_unwritten.Add(write);", "_tabs.Enqueue(write.Id, () => WriteTabNow(write));")
+               && SourceProbe.InOrder(SourceProbe.Member(tabs, "private void WriteTabNow("), "MainViewModel.FrozenStateDiffers(frozen, project.SavedFingerprint)", "_tabs.WriteTab(write.Id, frozen,", "Dispatcher.BeginInvoke(() => TabWritten(write)"),
             "the write runs on the tab's own chain on the thread pool, from its frozen copy, the exact dot worked out there and told back after");
-        expect(InOrder(Method(tabs, "private async Task<bool> ResumeTabAsync("), "await _tabs.Enqueue(id, () => (_tabs.ReadState(id), _tabs.ReadSaved(id)));", "DeleteTabFiles(id);"),
+        expect(SourceProbe.InOrder(SourceProbe.Member(tabs, "private async Task<bool> ResumeTabAsync("), "await _tabs.Enqueue(id, () => (_tabs.ReadState(id), _tabs.ReadSaved(id)));", "DeleteTabFiles(id);"),
             "a tab only in its file is read after any of its writes still under way, and its files deleted on the same chain");
-        expect(InOrder(Method(tabs, "private bool MayCloseProjectTabs("), "FinishTabWrites();", "PromptToSaveOnExit") && InOrder(Method(tabs, "private void ForgetProjectTabs("), "FinishTabWrites();", "_tabs.ForgetSession();"),
+        expect(SourceProbe.InOrder(SourceProbe.Member(tabs, "private bool MayCloseProjectTabs("), "FinishTabWrites();", "PromptToSaveOnExit") && SourceProbe.InOrder(SourceProbe.Member(tabs, "private void ForgetProjectTabs("), "FinishTabWrites();", "_tabs.ForgetSession();"),
             "closing HandPeg waits for every tab's disk work (5 s at most) before asking about or deleting any tab's files");
-        expect(InOrder(Method(tabs, "private void HookTabCrashWrites("), "AppDomain.CurrentDomain.UnhandledException +=", "if (e.IsTerminating)", "WriteUnwrittenTabs();")
-               && InOrder(Method(tabs, "private void WriteUnwrittenTabs("), "if (!write.IsWanted)", "_tabs.WriteTab(write.Id, project.Frozen,"),
+        expect(SourceProbe.InOrder(SourceProbe.Member(tabs, "private void HookTabCrashWrites("), "AppDomain.CurrentDomain.UnhandledException +=", "if (e.IsTerminating)", "WriteUnwrittenTabs();")
+               && SourceProbe.InOrder(SourceProbe.Member(tabs, "private void WriteUnwrittenTabs("), "if (!write.IsWanted)", "_tabs.WriteTab(write.Id, project.Frozen,"),
             "falling over, the cache files still to be written are written from their frozen copies (a closed tab's never)");
 
-        var still = Read("MainWindow.TabStill.cs");
-        expect(InOrder(Method(still, "private async Task TakeLiveStillAsync("), "if (_viewModel.IsPlaying || _switchingTab || TimelineDragHeld", "IsThumbnailWaiting: false",
+        var still = SourceProbe.Src("MainWindow.TabStill.cs");
+        expect(SourceProbe.InOrder(SourceProbe.Member(still, "private async Task TakeLiveStillAsync("), "if (_viewModel.IsPlaying || _switchingTab || TimelineDragHeld", "IsThumbnailWaiting: false",
                    "if (_liveStill is not null && _liveStillMark == mark)", "await engine.CaptureThumbnailAsync(", "if (asked != _stillAsked || _switchingTab || !ReferenceEquals(front, _tabs.Active)")
-               && InOrder(Method(still, "private void NoteStillStale()"), "if (_stillSettle is null || _viewModel.IsPlaying)", "_stillSettle.Start();")
+               && SourceProbe.InOrder(SourceProbe.Member(still, "private void NoteStillStale()"), "if (_stillSettle is null || _viewModel.IsPlaying)", "_stillSettle.Start();")
                && still.Contains("private const int StillSettleMs = 350;", StringComparison.Ordinal),
             "the still is kept fresh 350 ms after the picture last changed, only while paused, not dragging and not switching, never in place of a save's thumbnail, never re-armed while playing");
-        expect(InOrder(Method(tabs, "private void ShowTabs("), "ProjectTabStrip.Visibility = Visibility.Visible;", "KeepTabStillFresh();")
-               && !Method(tabs, "private void InitializeProjectTabs(").Contains("KeepTabStillFresh", StringComparison.Ordinal),
+        expect(SourceProbe.InOrder(SourceProbe.Member(tabs, "private void ShowTabs("), "ProjectTabStrip.Visibility = Visibility.Visible;", "KeepTabStillFresh();")
+               && !SourceProbe.MemberOfType("MainWindow", "private void InitializeProjectTabs(").Contains("KeepTabStillFresh", StringComparison.Ordinal),
             "it is hooked as the strip is first shown, never before the first frame (Law 1)");
 
-        var vm = Read("ViewModels", "MainViewModel.Tabs.cs");
-        var attachTab = Method(vm, "public bool AttachTab(");
+        var vm = SourceProbe.Src("ViewModels", "MainViewModel.Tabs.cs");
+        var attachTab = SourceProbe.Member(vm, "public bool AttachTab(");
         expect(attachTab.Length > 0 && !HasAny(attachTab, "LoadMediaAsync(", "RestoreStateAsync(", "TimelineToOpen(", "TakeUpHistory(", "MediaLoaded", "RunOperationAsync(", "ConvertLegacy(", "Fingerprint()", "await ")
-               && InOrder(attachTab, "ApplyProjectSettings(state, legacyMixing: false);", "InstallProjectTimeline(state, tab.Document, tab.Views);", "if (tab.MarkSavedOnAttach)", "MarkSaved();"),
+               && SourceProbe.InOrder(attachTab, "ApplyProjectSettings(state, legacyMixing: false);", "InstallProjectTimeline(state, tab.Document, tab.Views);", "if (tab.MarkSavedOnAttach)", "MarkSaved();"),
             "MainViewModel.AttachTab: no probe, open, deep clone, history read or MediaLoaded; the same steps an open takes on the tab's own Sequence; a fingerprint only for a tab saved while behind");
-        var restore = Method(Read("ViewModels", "MainViewModel.Project.cs"), "public Task RestoreStateAsync(");
-        expect(InOrder(restore, "ApplyProjectSettings(state, legacyMixing: oldShape is not null);", "TimelineToOpen(state);", "InstallProjectTimeline(state, timeline);", "TakeUpHistory(state, converted);", "MarkSaved();"),
+        var restore = SourceProbe.Member(SourceProbe.Src("ViewModels", "MainViewModel.Project.cs"), "public Task RestoreStateAsync(");
+        expect(SourceProbe.InOrder(restore, "ApplyProjectSettings(state, legacyMixing: oldShape is not null);", "TimelineToOpen(state);", "InstallProjectTimeline(state, timeline);", "TakeUpHistory(state, converted);", "MarkSaved();"),
             "the cold path takes the very same steps (ApplyProjectSettings, InstallProjectTimeline) around its file's own");
     }
 
@@ -587,7 +525,7 @@ public static class TabPerfTests
     private static void InstantName(Action<bool, string> expect)
     {
         const string Clip = "D:/media/My Clip.mkv";
-        expect(MainWindow.RouteOf(false, false, false, false, false, false, false, [Clip]) == MainWindow.DropRoute.OpenOrReplace,
+        expect(DropRouter.RouteOf(false, false, false, false, false, false, false, [Clip]) == DropRoute.OpenOrReplace,
             "a video dropped on a blank + tab is opened into it (RouteOf: OpenOrReplace, LoadDroppedFile)");
         var opening = MainWindow.OpeningTabName(Clip, hasSource: false, projectPath: "", unresumed: false);
         static string? NoFile() => null;
@@ -616,24 +554,24 @@ public static class TabPerfTests
         _ = vm.RenameProjectFile("D:/projects/Renamed.hproj");
         expect(!told.Contains(nameof(MainViewModel.CurrentProjectPath)), "and not when they are set to what they are");
 
-        var tabs = (Read("MainWindow.ProjectTabs.cs") + Read("MainWindow.TabCache.cs") + Read("MainWindow.TabMenu.cs"));
-        var handler = Method(tabs, "private void InitializeProjectTabs(");
-        expect(InOrder(handler, "nameof(MainViewModel.HasSource) or nameof(MainViewModel.LocalMediaPath) or nameof(MainViewModel.CurrentProjectPath)",
+        var tabs = (SourceProbe.Src("MainWindow.ProjectTabs.cs") + SourceProbe.Src("MainWindow.TabCache.cs") + SourceProbe.Src("MainWindow.TabMenu.cs"));
+        var handler = SourceProbe.MemberOfType("MainWindow", "private void InitializeProjectTabs(");
+        expect(SourceProbe.InOrder(handler, "nameof(MainViewModel.HasSource) or nameof(MainViewModel.LocalMediaPath) or nameof(MainViewModel.CurrentProjectPath)",
                    "or nameof(MainViewModel.NewProjectName))", "RefreshTabTitle();"),
             "the window refreshes the tab's name at once on a change of any of the four");
-        var refresh = Method(tabs, "private void RefreshTabTitle(");
+        var refresh = SourceProbe.Member(tabs, "private void RefreshTabTitle(");
         expect(refresh.Length > 0 && !HasAny(refresh, "HasUnsavedChanges", "Fingerprint", "IsPlaying", "_tabDirty")
-               && InOrder(refresh, "if (_switchingTab || _unresumed.Contains(tab.Id))", "tab.Title = title;", "ShowTabs();"),
+               && SourceProbe.InOrder(refresh, "if (_switchingTab || _unresumed.Contains(tab.Id))", "tab.Title = title;", "ShowTabs();"),
             "the name only: no fingerprint or dot, playing or not, never mid-switch or for a tab not brought back");
-        expect(InOrder(Method(tabs, "private bool NameTabForOpen("), "OpeningTabName(file, _viewModel.HasSource, _viewModel.CurrentProjectPath,", "_openingName = (_tabs.Active.Id, name);", "RefreshTabTitle();")
-               && InOrder(Method(tabs, "private void EndTabOpening("), "_openingName = null;", "RefreshTabTitle();")
-               && InOrder(Method(tabs, "private ProjectTabHeader PutActiveBehind("), "_openingName = null;", "tab.Title = ActiveTabTitle();", "var live = DetachActive(tab, out write);"),
+        expect(SourceProbe.InOrder(SourceProbe.Member(tabs, "private bool NameTabForOpen("), "OpeningTabName(file, _viewModel.HasSource, _viewModel.CurrentProjectPath,", "_openingName = (_tabs.Active.Id, name);", "RefreshTabTitle();")
+               && SourceProbe.InOrder(SourceProbe.Member(tabs, "private void EndTabOpening("), "_openingName = null;", "RefreshTabTitle();")
+               && SourceProbe.InOrder(SourceProbe.Member(tabs, "private ProjectTabHeader PutActiveBehind("), "_openingName = null;", "tab.Title = ActiveTabTitle();", "var live = DetachActive(tab, out write);"),
             "the name is taken as the open begins and let go as it ends (the view model's name then); a tab put behind meanwhile keeps no name of an open not made in it");
 
-        var drops = Read("MainWindow.Drops.cs");
-        expect(InOrder(Method(drops, "private async Task OpenNamingTabAsync("), "var named = NameTabForOpen(file);", "await open();", "finally", "if (named)", "EndTabOpening();"),
+        var drops = SourceProbe.Src("MainWindow.Drops.cs");
+        expect(SourceProbe.InOrder(SourceProbe.Member(drops, "private async Task OpenNamingTabAsync("), "var named = NameTabForOpen(file);", "await open();", "finally", "if (named)", "EndTabOpening();"),
             "OpenNamingTabAsync: named before the open, the name put right in its finally (a failed or faulted open too)");
-        expect(InOrder(Method(drops, "private void LoadDroppedFile("), "if (_viewModel.HasSource)", "_viewModel.LoadFile(file);", "return;", "OpenNamingTabAsync(file, () => _viewModel.LoadFileAsync(file))")
+        expect(SourceProbe.InOrder(SourceProbe.Member(drops, "private void LoadDroppedFile("), "if (_viewModel.HasSource)", "_viewModel.LoadFile(file);", "return;", "OpenNamingTabAsync(file, () => _viewModel.LoadFileAsync(file))")
                && drops.Contains("await OpenNamingTabAsync(file, () => _viewModel.LoadFileAsync(file));", StringComparison.Ordinal)
                && drops.Contains("await OpenNamingTabAsync(first, () => _viewModel.LoadFileWithStyleAsync(first, style));", StringComparison.Ordinal),
             "every open into a tab with nothing open goes through it: a drop (OpenOrReplace, several files), the Media pane and File > Open (LoadDroppedFile), a drop on a Game Preset");
@@ -643,28 +581,39 @@ public static class TabPerfTests
 
     private static void MemoryWiring(Action<bool, string> expect)
     {
-        var sources = Directory.GetFiles(Path.Combine(RepositoryRoot(), "src"), "*.cs", SearchOption.AllDirectories)
+        var sources = Directory.GetFiles(Path.Combine(SourceProbe.Root, "src"), "*.cs", SearchOption.AllDirectories)
             .Select(f => (Name: Path.GetFileName(f), Text: File.ReadAllText(f).ReplaceLineEndings("\n"))).ToList();
         static int Count(string text, string part) => (text.Length - text.Replace(part, "", StringComparison.Ordinal).Length) / part.Length;
         var tabs = string.Concat(sources.Where(s => s.Name is "MainWindow.ProjectTabs.cs" or "MainWindow.TabCache.cs" or "MainWindow.TabMenu.cs").Select(s => s.Text));
 
-        expect(sources.Sum(s => Count(s.Text, "MemoryHygiene.IsQuiet =")) == 1 && Count(Method(tabs, "private void HookTabMemory("), "MemoryHygiene.IsQuiet =") == 1,
+        expect(sources.Sum(s => Count(s.Text, "MemoryHygiene.IsQuiet =")) == 1 && Count(SourceProbe.Member(tabs, "private void HookTabMemory("), "MemoryHygiene.IsQuiet =") == 1,
             "MemoryHygiene.IsQuiet is set in one place only (HookTabMemory), once (_memoryHooked)");
         expect(sources.Where(s => s.Name is not ("MainWindow.ProjectTabs.cs" or "MainWindow.TabCache.cs" or "MainWindow.TabMenu.cs")).All(s => !HasAny(s.Text, "HookTabMemory(", "KeptTabsChanged(", "CompactWhenQuiet("))
-               && Count(tabs, "HookTabMemory();") == 2 && InOrder(Method(tabs, "private void KeptTabsChanged("), "HookTabMemory();")
-               && InOrder(Method(tabs, "private void CompactWhenQuiet("), "HookTabMemory();", "MemoryHygiene.RequestCompactOnce(reason);"),
+               && Count(tabs, "HookTabMemory();") == 2 && SourceProbe.InOrder(SourceProbe.Member(tabs, "private void KeptTabsChanged("), "HookTabMemory();")
+               && SourceProbe.InOrder(SourceProbe.Member(tabs, "private void CompactWhenQuiet("), "HookTabMemory();", "MemoryHygiene.RequestCompactOnce(reason, compactProcessHeap);"),
             "it is hooked only as tabs kept live change or a compaction is asked for, never from the window's start (Law 1: after the first frame)");
-        expect(!HasAny(Method(tabs, "private void InitializeProjectTabs("), "HookTabMemory", "KeptTabsChanged", "CompactWhenQuiet", "MemoryHygiene"),
+        expect(SourceProbe.Member(tabs, "private void HookMediaMemory(").Contains("MediaBrowser.AskCompact = reason => CompactWhenQuiet(reason, compactProcessHeap: true);", StringComparison.Ordinal)
+               && SourceProbe.Member(tabs, "private void GiveBackStartupMemory(").Contains("CompactWhenQuiet(\"start-up warm-up done\", compactProcessHeap: true);", StringComparison.Ordinal),
+            "the media browser at rest and the start-up warm-up ask through the same quiet gate (CompactWhenQuiet), with the process heap");
+        var rendered = SourceProbe.Src("MainWindow.xaml.cs");
+        var renderedAt = rendered.IndexOf("ContentRendered += (_, _) =>", StringComparison.Ordinal);
+        expect(renderedAt > 0 && rendered.IndexOf("HookMediaMemory();", StringComparison.Ordinal) > renderedAt && Count(rendered, "HookMediaMemory();") == 1
+               && sources.Sum(s => Count(s.Text, "HookMediaMemory();")) == 1,
+            "the media browser's ask is routed once, from ContentRendered (after the first frame)");
+        var browser = SourceProbe.MemberOfType("MediaBrowserPane", "private void GiveBackMemory(");
+        expect(!HasAny(browser, "GC.Collect", "Task.Run", "HeapCompact") && browser.Contains("MemoryHygiene.RequestCompactOnce(Reason, compactProcessHeap: true);", StringComparison.Ordinal),
+            "the media browser collects nothing itself: no GC.Collect, no pool task, no HeapCompact (the picker's instance asks MemoryHygiene directly)");
+        expect(!HasAny(SourceProbe.MemberOfType("MainWindow", "private void InitializeProjectTabs("), "HookTabMemory", "KeptTabsChanged", "CompactWhenQuiet", "MemoryHygiene"),
             "nothing of it in InitializeProjectTabs (before the first frame)");
-        expect(InOrder(Method(tabs, "private bool QuietForMemory("), "!_viewModel.IsPlaying", "!_switchingTab", "!TimelineDragHeld", "!_viewModel.IsRecording"),
+        expect(SourceProbe.InOrder(SourceProbe.Member(tabs, "private bool QuietForMemory("), "!_viewModel.IsPlaying", "!_switchingTab", "!TimelineDragHeld", "!_viewModel.IsRecording"),
             "quiet: nothing playing, switching, dragged on the Timeline or recording");
 
-        var close = Method(tabs, "private async Task CloseProjectTabAsync(");
+        var close = SourceProbe.Member(tabs, "private async Task CloseProjectTabAsync(");
         const string Closed = "CompactWhenQuiet(\"a project tab closed\");";
         expect(Count(close, Closed) == 3
-               && InOrder(close, "_tabs.Close(tab);", Closed, "ForgetKeptTab(tab.Id);", "DeleteTabFiles(tab.Id);", Closed, "_tabs.Close(tab);", "finally", "_switchingTab = false;", Closed),
+               && SourceProbe.InOrder(close, "_tabs.Close(tab);", Closed, "ForgetKeptTab(tab.Id);", "DeleteTabFiles(tab.Id);", Closed, "_tabs.Close(tab);", "finally", "_switchingTab = false;", Closed),
             "a compaction is asked for after each way a tab is closed (behind, the last one emptied, the one in front), once it is let go and the switch is over");
-        expect(InOrder(Method(tabs, "private async void LetGoForMemory("), "_hydrated.Remove(id);", "KeptTabsChanged();", "CompactWhenQuiet(\"a project tab let go to its cache file\");"),
+        expect(SourceProbe.InOrder(SourceProbe.Member(tabs, "private async Task LetGoForMemoryAsync("), "_hydrated.Remove(id);", "KeptTabsChanged();", "CompactWhenQuiet(\"a project tab let go to its cache file\");"),
             "and after a tab kept live is let go to its cache file (the valve)");
     }
 
@@ -769,24 +718,24 @@ public static class TabPerfTests
         }
 
         // ----- The window's adds and the view model's other awaits take the same guard -----
-        var drops = Read("MainWindow.Drops.cs");
-        expect(InOrder(Method(drops, "private async Task AddDroppedAudioAsync("), "using var adding = _viewModel.BeginAdd();", "var generation = _viewModel.ProjectGeneration;",
+        var drops = SourceProbe.Src("MainWindow.Drops.cs");
+        expect(SourceProbe.InOrder(SourceProbe.Member(drops, "private async Task AddDroppedAudioAsync("), "using var adding = _viewModel.BeginAdd();", "var generation = _viewModel.ProjectGeneration;",
                    "if (generation != _viewModel.ProjectGeneration)", "await _viewModel.AddAudioLayerAsync(")
-               && InOrder(Method(drops, "private async Task AddDroppedLayersAsync("), "using var adding = _viewModel.BeginAdd();", "var generation = _viewModel.ProjectGeneration;",
+               && SourceProbe.InOrder(SourceProbe.Member(drops, "private async Task AddDroppedLayersAsync("), "using var adding = _viewModel.BeginAdd();", "var generation = _viewModel.ProjectGeneration;",
                    "if (generation != _viewModel.ProjectGeneration)", "await _viewModel.AddVideoClipAsync(", "if (generation != _viewModel.ProjectGeneration)", "if (added > 1)"),
             "a drop's files: an add under way from the start, the loop stopped once the tab it was dropped on has gone behind");
-        var audio = Read("ViewModels", "MainViewModel.Audio.cs");
-        expect(InOrder(Method(audio, "private async Task StopVoiceoverAsync("), "using var placing = BeginAdd();", "(IsRecording, IsRecordingPaused) = (false, false);", "await PlaceRecordingAsync();")
-               && InOrder(Method(audio, "private async Task PlaceRecordingAsync("), "var generation = _projectGeneration;", "await AddAudioLayerAsync(", "generation != _projectGeneration")
-               && InOrder(Method(audio, "private async Task LoadVoiceoverAsync("), "using var adding = BeginAdd();", "await MediaProbe.ProbeAsync(", "if (generation != _projectGeneration)",
+        var audio = SourceProbe.Src("ViewModels", "MainViewModel.Audio.cs");
+        expect(SourceProbe.InOrder(SourceProbe.Member(audio, "private async Task StopVoiceoverAsync("), "using var placing = BeginAdd();", "(IsRecording, IsRecordingPaused) = (false, false);", "await PlaceRecordingAsync();")
+               && SourceProbe.InOrder(SourceProbe.Member(audio, "private async Task PlaceRecordingAsync("), "var generation = _projectGeneration;", "await AddAudioLayerAsync(", "generation != _projectGeneration")
+               && SourceProbe.InOrder(SourceProbe.Member(audio, "private async Task LoadVoiceoverAsync("), "using var adding = BeginAdd();", "await MediaProbe.ProbeAsync(", "if (generation != _projectGeneration)",
                    "await Waveforms.RenderAsync(", "if (generation != _projectGeneration)", "VoiceoverWaveform = waveform;"),
             "a voiceover take: an add under way from the moment its recording ends (IsRecording false) until it is placed, and placed in no other tab");
-        expect(InOrder(Method(Read("ViewModels", "MainViewModel.AudioSuite.cs"), "public async Task<bool> DetectClipBeatsAsync("), "_projectGeneration);", "using var adding = BeginAdd();",
+        expect(SourceProbe.InOrder(SourceProbe.Member(SourceProbe.Src("ViewModels", "MainViewModel.AudioSuite.cs"), "public async Task<bool> DetectClipBeatsAsync("), "_projectGeneration);", "using var adding = BeginAdd();",
                    "await Task.Run(", "if (generation != _projectGeneration)", "Edit($\"detect the beats of {name}\""),
             "the beats of a clip: an add under way while they are found, and kept on no clip of another tab");
-        var creator = Read("ViewModels", "MainViewModel.Creator.cs");
-        expect(InOrder(Method(creator, "private async Task<bool> CompleteVideoLayerAsync("), "_projectGeneration);", "await Task.Run(", "if (generation != _projectGeneration)", "Document.FindClip(clipId)")
-               && InOrder(Method(creator, "public async Task<bool> AddAudioLayerAsync("), "var generation = _projectGeneration;", "using (BeginAdd())", "await MediaProbe.ProbeAsync(", "if (generation != _projectGeneration)", "PlaceLayer("),
+        var creator = SourceProbe.Src("ViewModels", "MainViewModel.Creator.cs");
+        expect(SourceProbe.InOrder(SourceProbe.Member(creator, "private async Task<bool> CompleteVideoLayerAsync("), "_projectGeneration);", "await Task.Run(", "if (generation != _projectGeneration)", "Document.FindClip(clipId)")
+               && SourceProbe.InOrder(SourceProbe.Member(creator, "public async Task<bool> AddAudioLayerAsync("), "var generation = _projectGeneration;", "using (BeginAdd())", "await MediaProbe.ProbeAsync(", "if (generation != _projectGeneration)", "PlaceLayer("),
             "a video filled in and a sound placed only in the project they were added to");
     }
 
@@ -822,7 +771,7 @@ public static class TabPerfTests
 
         expect(working.Result && seen == 0 && name == "Tab One" && undo is { Count: 1 },
             "FrozenStateDiffers on the thread pool (200 times): unsaved, and a reader on this thread never saw the frozen copy's name, Settings name, time or history blanked");
-        var tabs = Read("ViewModels", "MainViewModel.Tabs.cs");
+        var tabs = SourceProbe.Src("ViewModels", "MainViewModel.Tabs.cs");
         expect(!HasAny(tabs, "frozen.Name =", "(frozen.Name, frozen.Settings.Name", "frozen.UndoHistory =", "frozen.ThumbnailJpeg ="),
             "and it writes to no field of it (MainViewModel.Tabs.cs)");
         var clean = Holding(Sequence(First, Second));
@@ -848,10 +797,10 @@ public static class TabPerfTests
         expect(b.AttachTab(dropped) && b.LocalMediaPath.Length == 0 && b.HasSource, "B (dropped files, no file open) comes back after A (a file open)");
         expect(told.Count == 1 && told[0], "HasSource told once, as B's Sequence is in place, and true (told: " + string.Join(", ", told) + ")");
 
-        var window = Read("MainWindow.xaml.cs");
+        var window = SourceProbe.Src("MainWindow.xaml.cs");
         expect(window.Contains("if (e.PropertyName == nameof(MainViewModel.HasSource) && !_viewModel.HasSource && !_switchingTab)", StringComparison.Ordinal),
             "and the window never lets go of the engine (UnloadGpu, which clears every live tab's frames) on a HasSource false mid-switch");
-        expect(InOrder(Method(tabs, "public bool AttachTab("), "_holdingSource = true;", "LocalMediaPath = tab.LocalMediaPath;", "ApplyProjectSettings(state, legacyMixing: false);",
+        expect(SourceProbe.InOrder(SourceProbe.Member(tabs, "public bool AttachTab("), "_holdingSource = true;", "LocalMediaPath = tab.LocalMediaPath;", "ApplyProjectSettings(state, legacyMixing: false);",
                    "InstallProjectTimeline(state, tab.Document, tab.Views);", "finally", "ReleaseSourceNote();"),
             "AttachTab holds HasSource from its file set until its Sequence is in place");
     }
@@ -874,13 +823,13 @@ public static class TabPerfTests
     // (ApplyProjectSettings, InstallProjectTimeline, SetMediaInfo, ResetForNewSource), or set again by the window (the playhead).
     private static readonly HashSet<string> ProjectFields = new(StringComparer.Ordinal)
     {
-        "<AudioClipRows>k__BackingField", "<AudioRows>k__BackingField", "<AudioTracks>k__BackingField", "<CaptionLayer>k__BackingField",
+        "_commandTrust", "<AudioClipRows>k__BackingField", "<AudioRows>k__BackingField", "<AudioTracks>k__BackingField", "<CaptionLayer>k__BackingField",
         "<CaptionStyle>k__BackingField", "<ConvertedFrom>k__BackingField", "<CurrentProjectPath>k__BackingField", "<Document>k__BackingField",
         "<EdgeTuning>k__BackingField", "<EdgeTuningLayer>k__BackingField", "<IFrameMarks>k__BackingField", "<IFrames>k__BackingField",
         "<LastAudioOnlyContainer>k__BackingField", "<LayerRows>k__BackingField", "<Layers>k__BackingField", "<Markers>k__BackingField",
         "<NewProjectFolder>k__BackingField", "<NewProjectName>k__BackingField", "<OutputInfoRows>k__BackingField", "<RecycleBin>k__BackingField",
         "<SelectedLaneKeys>k__BackingField", "<SourceInfoRows>k__BackingField", "<SpriteIntervalSeconds>k__BackingField",
-        "<SubtitleCues>k__BackingField", "<SubtitleTracks>k__BackingField", "_amfUsage", "_audioBitrate", "_audioChannels", "_audioEncoder",
+        "<SourceWaveforms>k__BackingField", "<SubtitleCues>k__BackingField", "<SubtitleTracks>k__BackingField", "_amfUsage", "_audioBitrate", "_audioChannels", "_audioEncoder",
         "_audioEncoderBeforeAudioOnly", "_audioLinked", "_audioSampleRate", "_audioTracksHint", "_autoCaptions", "_autosavedFingerprint",
         "_backgroundDim", "_backgroundRow", "_backgroundSelected", "_backgroundZoom", "_blurPasses", "_blurRadius", "_captionAnchorSource",
         "_captionAnchors", "_captionAudioPath", "_captionSourceChoice", "_captionUseExternalAudio", "_captionUseVoiceover", "_captionWords",
@@ -890,7 +839,7 @@ public static class TabPerfTests
         "_documentShown", "_downloadResolution", "_downloadSubtitles", "_drawTargetLayer", "_duckAmountDb", "_duckAudio", "_durationMs",
         "_editingJob", "_emptyTrackViews", "_loadingAdds", "_addsToResume", "_encoderPreset", "_extraVideoArguments", "_fadeIn", "_fadeOut", "_filledEmptyTracks", "_framerate",
         "_generatedCaptions", "_iFrameLayout", "_iFrameScanCancellation", "_iFrameStatusText", "_isCommandManuallyEdited", "_isSourceHdr",
-        "_keepAspectRatio", "_keyLayer", "_lastFieldEdit", "_lastLookEdit", "_lastTrackNumber", "_layoutSourceAspect", "_level", "_localMediaPath",
+        "_keepAspectRatio", "_keyLayer", "_lastTrackNumber", "_layoutSourceAspect", "_level", "_localMediaPath",
         "_lookahead", "_loudnessTarget", "_lutPath", "_mediaInfo", "_mergeAudioTracks", "_mixVoiceover", "_noVideo", "_normalizeAudio",
         "_nvencMultipass", "_nvencSpatialAq", "_nvencTemporalAq", "_nvencTune", "_openedClip", "_openedOver", "_outputHeight", "_outputWidth",
         "_pixelAspectRatio", "_placedFor", "_playheadVideoShown", "_positionMs", "_presetName", "_previewState", "_previewSubtitles", "_profile",
@@ -910,39 +859,39 @@ public static class TabPerfTests
     // The application's: the same whichever tab is in front (settings of the editor, caches by file, the clipboard, services, commands).
     private static readonly HashSet<string> AppFields = new(StringComparer.Ordinal)
     {
-        "<AmfUsages>k__BackingField", "<AskOverwrite>k__BackingField", "<AudioEncoders>k__BackingField", "<CaptureThumbnail>k__BackingField",
+        "<AmfUsages>k__BackingField", "<AskOverwrite>k__BackingField", "<AudioEncoders>k__BackingField", "<CaptureThumbnail>k__BackingField", "<ClipPictures>k__BackingField",
         "<Choose>k__BackingField", "<Colorspaces>k__BackingField", "<Confirm>k__BackingField", "<ConfirmOrRemember>k__BackingField",
         "<ConfirmWarning>k__BackingField", "<Containers>k__BackingField", "<DefaultPresetChoices>k__BackingField",
         "<DependenciesNeeded>k__BackingField", "<DownloadResolutions>k__BackingField", "<EncoderPresets>k__BackingField",
-        "<Framerates>k__BackingField", "<IsListingProjects>k__BackingField", "<IsTimelineDragHeld>k__BackingField", "<Levels>k__BackingField",
+        "<Framerates>k__BackingField", "<IsListingProjects>k__BackingField", "<IsTimelineDragHeld>k__BackingField", "<IsPointerHeld>k__BackingField", "<IsTypingInTextBox>k__BackingField", "<IsAltHeld>k__BackingField", "<Levels>k__BackingField",
         "<LoudnessTargets>k__BackingField", "<Microphones>k__BackingField", "<NvencMultipasses>k__BackingField", "<NvencTunes>k__BackingField",
         "<PixelAspectRatios>k__BackingField", "<PlaybackControls>k__BackingField", "<PlaybackSpeeds>k__BackingField", "<PresetNames>k__BackingField",
         "<Presets>k__BackingField", "<Profiles>k__BackingField", "<Queue>k__BackingField", "<RateControlChoices>k__BackingField",
         "<RateControls>k__BackingField", "<RecentProjects>k__BackingField", "<ResolutionPresets>k__BackingField",
-        "<SavesConvertedProjects>k__BackingField", "<SmartRules>k__BackingField", "<StylePresets>k__BackingField",
+        "<SavesConvertedProjects>k__BackingField", "<SmartRules>k__BackingField", "<StylePresets>k__BackingField", "<TaskbarProgress>k__BackingField",
         "<TimelineSelection>k__BackingField", "<Tunes>k__BackingField", "<VideoEncoders>k__BackingField", "<WhisperModelChoices>k__BackingField", "<WorkspaceForSave>k__BackingField",
-        "ActionLogged", "CaptionsChanged", "ClipLibraryChanged", "ClipSelectionChanged", "EdgeTuningChanged", "LayerLoaded",
+        "ActionLogged", "CaptionsChanged", "ClipLibraryChanged", "EditTargetChanged", "_editTarget", "_gesture", "_lookWrites", "ClipSelectionChanged", "EdgeTuningChanged", "LayerLoaded",
         "LayerVisibilityChanged", "MarkersChanged", "MediaLoaded", "PreviewStateInvalidated", "ProjectSaved", "SaveRequested", "SessionCleared",
         "TimelineChanged", "TimelineRestored", "WorkspaceOpened", "_acceptProgressReports", "_activeStyle", "_anyKeys", "_applyingKeys", "_autosaving", "_baking",
         "_beforeEdit", "_checkpointedAt", "_commandDeferrals", "_commandPending", "_commandPreviewWatched", "_commandStale", "_commandTextQueued",
         "_committing", "_compactTrackControls", "_copied", "_copiedAttributes", "_cropDragStepTaken", "_cropDragging", "_cropForAll", "_cropHeld",
-        "_cropShown", "_cropTypedAt", "_deadAirMode", "_deadAirSource", "_deadAirTarget", "_defaultPresetChoice", "_dependencyStatusText",
+        "_cropShown", "_deadAirMode", "_deadAirSource", "_deadAirTarget", "_defaultPresetChoice", "_dependencyStatusText",
         "_editCommitted", "_exportLeftOut", "_exportQualityPreviewLoupe", "_exportQualityPreviewMode", "_exportQualityPreviewStatus",
         "_exportQualityPreviewWipe", "_filmstripsBeingMade", "_findingBeats", "_handlesWrittenAt", "_hardwareEncoderCount",
         "_hardwareEncoderStatusText", "_hardwareEncodersEarly", "_hardwareEncodersListed", "_hardwareProbeRun", "_hardwareProblems", "_hevcHinted",
         "_hideDroppedTracks", "_holdingSource", "_pendingAdds", "_sourceHeld", "_iFrameStatusVersion", "_inputGesture", "_isArrangeActive", "_isBackgroundWorker", "_isBusy",
         "_isDependencyUpdateAvailable", "_isExportQualityPreview", "_isInteractiveCropActive", "_isPlayerMuted", "_isPlaying",
         "_isProgressIndeterminate", "_isQueuePauseRequested", "_isRecording", "_isRecordingPaused", "_keyChangedOnly", "_keyframesEnabled",
-        "_keyframesSnap", "_keysAppliedAt", "_layerControlsShown", "_layerFilmstrips", "_layerWaveforms", "_learningStarts", "_listingStyles",
+        "_keyframesSnap", "_keysAppliedAt", "_layerControlsShown", "_layerWaveforms", "_learningStarts", "_listingStyles",
         "_liveCaptionsWait", "_loadingAutomation", "_lookStepsHeld", "_loopPlayback", "_masterGainGesture", "_masterGainShown", "_openEdit",
         "_operationCancellation", "_operationLoadsDocument", "_otherText", "_pendingDefaultEncoder", "_pendingPreferredCodec", "_pictureDecode", "_pictureSet", "_pictureSetOf",
         "_pictureTrack", "_pictureWork", "_placingStep", "_placingViews", "_playbackSpeed", "_presetsView", "_progressValue", "_proxies",
         "_proxiesInUse", "_proxyFailed", "_proxyQueue", "_recentActions", "_recorder", "_recordingKey", "_recordingStartSeconds",
         "_refillingRateControl", "_reprojectPending", "_resolvingEncoder", "_restoring", "_resyncingShowIFrames", "_savedFromBuiltIn",
         "_selectedMicrophone", "_selectedProject", "_selectedStylePreset", "_selectingAppliedPreset", "_sequenceEffectWatcher", "_settingQuietly",
-        "_settingsSave", "_settleEndsAt", "_settleNumber", "_showBeatGrid", "_showClipKeyframes", "_showEffectsPane", "_showIFrames",
+        "_settleEndsAt", "_settleNumber", "_showBeatGrid", "_showClipKeyframes", "_showEffectsPane", "_showIFrames",
         "_showKeyframeGraph", "_showKeyframesPane", "_showLinkedAudio", "_showMasterMeter", "_showMediaBrowser", "_showSafeMargins",
-        "_showingTarget", "_shutdown", "_snapClips", "_snapToBeats", "_sourceThumbnails", "_stateText", "_statusText", "_stepGesture", "_styleName",
+        "_showingTarget", "_shutdown", "_snapClips", "_snapToBeats", "_sourceThumbnails", "_stateText", "_statusText", "_styleName",
         "_subtitlesChangedPending", "_syncDepth", "_syncMasterTimeline", "_syncingDimensions", "_syncingResolutionPreset", "_syncingSizeAndBitrate",
         "_takingCrop", "_templateTargetOnly", "_toldPictures", "_undoSourcesHooked", "_userInputAt", "_volume", "_warmedFiles",
         "_watchingCropTarget", "_workFolder", "_writingGeneratedCommand", "addAdjustmentLayerCommand", "addEmptyTrackCommand", "addLayerCommand",

@@ -18,4 +18,4 @@ ok: saved only where QuickMayReplace allows
 ok: the worker's quick mode decodes on the cards named only (frames per second, no seeks or accuracy frames), with no processor decode and no two-card test
 ok: 5.5A review (B2): the quick check lists the NPUs before its first line (the window shows that line over the estimate's NPU), once
 ok: 5.5A review (B1): the roles listed before measuring, then QuickRoles over the cards that failed after each card measured, each failure and at the end: never Recommend over cards it did not measure
-ok: the window runs the quick check only on the first start (no owner), never opened from Settings
+ok: (5.6A) the window runs the full test on every open, the quick check nowhere in it

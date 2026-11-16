@@ -1,0 +1,4 @@
+# The flight recorder's and crash reporter's rings: full-fence writers, readers that check before and after with a barrier.
+ok: the flight recorder's reader checks the slot's sequence before and after the copy, with a barrier between
+ok: both ring writers open a slot with a full fence (ARM64 cannot make the data visible before it)
+ok: the Live Encoded Preview's software arguments: a barrier before the re-check

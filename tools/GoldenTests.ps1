@@ -3,9 +3,9 @@ param([switch]$Update, [string]$Filter, [switch]$NoBuild, [string]$Configuration
 # reading and writing, and how FfmpegRunner hands a command to FFmpeg, compared with the files in tools\GoldenTests\golden,
 # plus the checks made by code (the A/V invariant, the project round trip, the quoting round trip).
 #
-#   pwsh -NoProfile -File tools\GoldenTests.ps1            build once, then run every test
-#   pwsh -NoProfile -File tools\GoldenTests.ps1 -Update    write the golden files anew from what the code makes now
-#   pwsh -NoProfile -File tools\GoldenTests.ps1 -Filter live -NoBuild
+#   powershell -NoProfile -ExecutionPolicy Bypass -File tools\GoldenTests.ps1                 build once, then run every test
+#   powershell -NoProfile -ExecutionPolicy Bypass -File tools\GoldenTests.ps1 -Update         write the golden files anew (passing cases only)
+#   powershell -NoProfile -ExecutionPolicy Bypass -File tools\GoldenTests.ps1 -Filter "live|cutout" -NoBuild
 #
 # A golden file that differs is shown as a line diff (- golden, + now). After a change that is meant to change the graphs,
 # run with -Update and read the diff of the golden files in git before committing them: that diff is the review.
@@ -32,6 +32,6 @@ $arguments = @('--root', (Join-Path $PSScriptRoot 'GoldenTests'))
 if ($Update) { $arguments += '--update' }
 if ($Filter) { $arguments += @('--filter', $Filter) }
 
-# The program says how long the tests themselves took (the build is not counted).
+# The program says how long the tests themselves took (the build is not counted). Exit: 0 passed, 1 failed, 3 a filter term matched nothing.
 & $exe @arguments
 exit $LASTEXITCODE

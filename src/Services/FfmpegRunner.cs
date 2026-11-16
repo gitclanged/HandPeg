@@ -5,6 +5,8 @@ using System.Text;
 using System.Text.RegularExpressions;
 using CliWrap;
 using CliWrap.Buffered;
+using HandPegApp.Native;
+using static HandPegApp.Native.Kernel32;
 
 namespace HandPegApp.Services;
 
@@ -39,17 +41,27 @@ public static partial class FfmpegRunner
     public static async Task RunAsync(string commandLine, IProgress<FfmpegProgress> progress, CancellationToken cancellationToken)
     {
         var match = CommandLineRegex().Match(commandLine.ReplaceLineEndings(" ").Trim());
-        var executable = match.Groups[1].Value.Trim('"');
-        var isConfiguredFfmpeg = DependencyUpdater.IsFfmpegOverridden
-                                 && executable.Equals(DependencyUpdater.FfmpegPath, StringComparison.OrdinalIgnoreCase);
-        if (!isConfiguredFfmpeg && !Path.GetFileNameWithoutExtension(executable).Equals("ffmpeg", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("The command has to start with ffmpeg.");
-
-        var isBareName = Path.GetFileName(executable) == executable;
-        if (isBareName && File.Exists(DependencyUpdater.FfmpegPath))
-            executable = DependencyUpdater.FfmpegPath;
-
+        var executable = ResolveExecutable(match.Groups[1].Value);
         await RunArgumentsAsync(executable, match.Groups[2].Value, progress, cancellationToken);
+    }
+
+    /// <summary>
+    /// The program a command line may run as FFmpeg: a bare <c>ffmpeg</c> or <c>ffmpeg.exe</c> (the deps folder's copy when there is one,
+    /// else PATH), or exactly the FFmpeg HandPeg uses (<see cref="DependencyUpdater.FfmpegPath"/>: the one set in Settings, else the deps
+    /// copy, which generated commands name in full). Anything else is refused. A command can come from a project file (one edited by hand
+    /// and saved with it, or one in a shared bundle), so a path in it (a network share, a bundle's media folder, a batch file) must
+    /// never choose the program that runs.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The command names another program.</exception>
+    public static string ResolveExecutable(string token)
+    {
+        var executable = token.Trim().Trim('"');
+        var configured = DependencyUpdater.FfmpegPath;
+        if (configured.Length > 0 && executable.Equals(configured, StringComparison.OrdinalIgnoreCase))
+            return configured;
+        if (executable.Equals("ffmpeg", StringComparison.OrdinalIgnoreCase) || executable.Equals("ffmpeg.exe", StringComparison.OrdinalIgnoreCase))
+            return File.Exists(configured) ? configured : executable;
+        throw new InvalidOperationException("The command has to start with ffmpeg; another FFmpeg can be set in Settings.");
     }
 
     private static async Task RunArgumentsAsync(string executable, string argumentText, IProgress<FfmpegProgress> progress, CancellationToken cancellationToken)
@@ -124,9 +136,6 @@ public static partial class FfmpegRunner
 
     [LibraryImport("shell32.dll", EntryPoint = "CommandLineToArgvW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
     private static partial IntPtr CommandLineToArgv(string commandLine, out int count);
-
-    [LibraryImport("kernel32.dll")]
-    private static partial IntPtr LocalFree(IntPtr memory);
 
     /// <summary>
     /// The arguments a command line gives a program, split exactly as FFmpeg splits its own: its Windows build reads

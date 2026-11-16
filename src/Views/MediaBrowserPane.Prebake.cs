@@ -51,7 +51,7 @@ public partial class MediaBrowserPane
             // A video written to in the last minute is a recording still going on (the game being played): left alone.
             var settled = DateTime.UtcNow.AddMinutes(-1);
             var videos = await Task.Run(() => Directory.Exists(folder)
-                ? new DirectoryInfo(folder).EnumerateFiles().Where(f => MediaBrowserItem.KindOf(f.Name) == MediaBrowserKind.Video && f.LastWriteTimeUtc < settled)
+                ? new DirectoryInfo(folder).EnumerateFiles().Where(f => MediaFiles.KindOf(f.Name) == MediaBrowserKind.Video && f.LastWriteTimeUtc < settled)
                     .OrderByDescending(f => f.LastWriteTimeUtc).Take(Math.Max(settings.BrowserIndexMaxFiles, 0)).ToList()
                 : [], token);
             if (videos.Count == 0)
@@ -77,7 +77,7 @@ public partial class MediaBrowserPane
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
-            AppLog.Write($"Media browser: preparing the watched folder {folder}: {ex.Message}");
+            AppLog.Write($"Media browser: preparing the watched folder {folder}", ex);
         }
     }
 }

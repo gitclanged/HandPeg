@@ -1,0 +1,3 @@
+# No log line hand-formats an exception's message; no user-facing failure goes unlogged (the census, with its reviewed exceptions).
+ok: no AppLog.Write formats an exception's message by hand: the (what, ex) overload carries the stack
+ok: every catch block that shows or returns an exception's message logs it too (Fail, UiFault.Show, AppLog), or is a reviewed exception

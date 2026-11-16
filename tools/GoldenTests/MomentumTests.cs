@@ -42,29 +42,6 @@ public static class MomentumTests
         yield return Case("momentum-strip-wheel", "# Subtitle Studio and cutter: the wheel, Shift + wheel and the sideways swipe scroll in time with momentum; Ctrl + wheel / pinch zooms about the pointer.", StripWheel);
     }
 
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
-    }
-
     private static string F(FormattableString text) => text.ToString(CultureInfo.InvariantCulture);
 
     // A drag of `speed` DIP/s for `ms` milliseconds from `from` ms, sampled every 5 ms (a 200 Hz mouse), starting at position 0.
@@ -487,12 +464,12 @@ public static class MomentumTests
         expect(!ruler.IsCoasting, "and a press on the ruler stops it");
 
         // The sideways wheel's hook: its own, on the main window, never in the frame hooks (golden window-frame-messages).
-        var root = RepositoryRoot();
+        var root = SourceProbe.Root;
         var view = File.ReadAllText(Path.Combine(root, "src", "MainWindow.TimelineView.cs"));
-        var titleBar = File.ReadAllText(Path.Combine(root, "src", "MainWindow.TitleBar.cs"));
+        var titleBar = File.ReadAllText(Path.Combine(root, "src", "MainWindow.TitleBar.cs")) + File.ReadAllText(Path.Combine(root, "src", "Shell", "WindowFrame.cs"));
         expect(view.Contains("AddHook(TimelineSidewaysWheel)") && view.Contains("msg != WmMouseHWheel") && !titleBar.Contains("WmMouseHWheel") && !titleBar.Contains("TimelineSidewaysWheel"),
             "WM_MOUSEHWHEEL reaches the timeline through a hook of its own (MainWindow.TimelineView.cs), not TitleBarHook or FrameHook");
-        expect(view.Contains("StopTimelineMomentum();\r\n            _viewStart = at - span * 0.05;") || view.Contains("StopTimelineMomentum();\n            _viewStart = at - span * 0.05;"),
+        expect(view.ReplaceLineEndings("\n").Contains("StopTimelineMomentum();\n            _viewStart = at - span * 0.05;"),
             "the playhead turning the page (FollowPlayhead) stops a coast first");
     }
 
@@ -701,7 +678,7 @@ public static class MomentumTests
             F($"cutter: Ctrl + wheel up at x 450 stops the coast and zooms to {cutter.Zoom:0} DIPs a second about the pointer; the playhead's moment is told, settled"));
 
         // The window's sideways-wheel hook: the Timeline first, else the strip under the pointer; side windows share it.
-        var root = RepositoryRoot();
+        var root = SourceProbe.Root;
         var view = File.ReadAllText(Path.Combine(root, "src", "MainWindow.TimelineView.cs"));
         var docking = File.ReadAllText(Path.Combine(root, "src", "MainWindow.Docking.cs"));
         var hook = view[view.IndexOf("private IntPtr TimelineSidewaysWheel", StringComparison.Ordinal)..];
@@ -827,7 +804,7 @@ public static class MomentumTests
         var switchedOff = JsonSerializer.Deserialize("{\"EnableMomentumScrolling\":false}", AppSettingsJsonContext.Default.AppSettings)!;
         expect(older.EnableMomentumScrolling && !switchedOff.EnableMomentumScrolling, "a file from before it reads true; a file with it off reads false");
 
-        var root = RepositoryRoot();
+        var root = SourceProbe.Root;
         var settings = XDocument.Load(Path.Combine(root, "src", "Dialogs", "SettingsWindow.xaml"));
         var tab = settings.Descendants(Wpf + "TabItem").FirstOrDefault(t => (string?)t.Attribute("Header") == "Timeline & Player");
         var boxes = settings.Descendants(Wpf + "CheckBox").Where(c => (string?)c.Attribute("IsChecked") == "{Binding EnableMomentumScrolling}").ToList();
@@ -855,14 +832,4 @@ public static class MomentumTests
         return null;
     }
 
-    private static string RepositoryRoot()
-    {
-        for (var folder = new DirectoryInfo(AppContext.BaseDirectory); folder is not null; folder = folder.Parent)
-        {
-            if (File.Exists(Path.Combine(folder.FullName, "HandPegApp.csproj")))
-                return folder.FullName;
-        }
-
-        throw new DirectoryNotFoundException("HandPegApp.csproj was not found above the golden tests' program.");
-    }
 }

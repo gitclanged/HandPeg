@@ -294,13 +294,31 @@ public static partial class GpuExportTests
         }
     }
 
-    /// <summary>The export of a state as the view model makes it (GpuExport.RunAsync on this STA thread), into its OutputPath.</summary>
-    internal static void Export(SequenceExportState state) =>
-        OnThisThread(async () =>
+    /// <summary>
+    /// The export of a state as the view model makes it (GpuExport.RunAsync on this STA thread), into its OutputPath. The test's FFmpeg
+    /// (a full path) is set as the configured FFmpeg for the run, as Settings would: an export runs only a bare ffmpeg or the FFmpeg
+    /// HandPeg is configured with (FfmpegRunner.ResolveExecutable).
+    /// </summary>
+    internal static void Export(SequenceExportState state)
+    {
+        var settings = AppSettings.Current;
+        var configured = settings.FfmpegPath;
+        var executable = state.FfmpegExecutable.Trim().Trim('"');
+        if (Path.IsPathRooted(executable))
+            settings.FfmpegPath = executable;
+        try
         {
-            await GpuExport.RunAsync(state, null, new Progress<FfmpegProgress>(), CancellationToken.None);
-            return true;
-        });
+            OnThisThread(async () =>
+            {
+                await GpuExport.RunAsync(state, null, new Progress<FfmpegProgress>(), CancellationToken.None);
+                return true;
+            });
+        }
+        finally
+        {
+            settings.FfmpegPath = configured;
+        }
+    }
 
     private static void Describe(StringBuilder text, List<string> problems, string name, SequenceExportState state)
     {

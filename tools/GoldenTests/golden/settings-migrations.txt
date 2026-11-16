@@ -1,0 +1,14 @@
+# SettingsMigrations.Migrate in memory: every start version ends at Latest, a second run changes nothing, and each step.
+ok: the steps are numbered 1 to 13, in order, one each
+ok: from every start version (0 to 13) the settings end at version 13
+ok: and migrating them a second time changes nothing (the same JSON)
+ok: step 1: a file from before the panes gets the Keyframes pane off, clip keyframes on and the scrubber from the old height (4 x 3 - 3, then step 5's + 2)
+ok: step 2: the advanced filters tab is shown once
+ok: step 4: a Squisher list that is still the one untouched preset gets the full set; an edited list is kept
+ok: step 5: a saved scrubber height keeps its pixels (two steps up); 0 (from before the slider) stays 0
+ok: step 6: times in frames once for a file from before; a version-0 file's own choice is kept
+ok: step 11 (0x116 rule): a saved background or decode card goes back to Auto (-1); Processor Only (-2) is kept
+ok: step 13: a hidden Filters tab stays hidden as the Color tab
+ok: a first start's own choices (Keyframes pane on, cards picked for decode and background) survive its next start: no step runs on them
+ok: a newer version's file (version 99): no step runs, and its unknown key is kept and written back
+ok: null Smart Rules and layouts (a hand-edited file) are dropped, and a rule's null path reads as empty

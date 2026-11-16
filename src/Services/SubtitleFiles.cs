@@ -16,7 +16,6 @@ namespace HandPegApp.Services;
 /// </summary>
 public static partial class SubtitleFiles
 {
-    public static readonly string[] TextExtensions = [".srt", ".vtt"];
     public static readonly string[] ImageExtensions = [".sup", ".pgs", ".idx", ".sub", ".vobsub"];
 
     public const string ImportFilter =
@@ -33,8 +32,6 @@ public static partial class SubtitleFiles
     private static partial Regex IdxLineRegex();
 
     public static bool IsImageFile(string path) => ImageExtensions.Contains(Path.GetExtension(path).ToLowerInvariant());
-
-    public static bool IsTextFile(string path) => TextExtensions.Contains(Path.GetExtension(path).ToLowerInvariant());
 
     /// <summary>Reads a subtitle file of any kind HandPeg knows into cues. Throws InvalidDataException for one it cannot make sense of.</summary>
     public static List<SubtitleCue> Read(string path) =>
@@ -201,24 +198,6 @@ public static partial class SubtitleFiles
         for (var i = 0; i < ordered.Count; i++)
             ordered[i].Index = i + 1;
         return ordered;
-    }
-
-    /// <summary>The cues as SubRip text, each moved by an offset in seconds; cues moved to before the start are cut off there.</summary>
-    public static string ToSrt(IEnumerable<SubtitleCue> cues, double offsetSeconds = 0)
-    {
-        var srt = new StringBuilder();
-        var number = 0;
-        foreach (var cue in cues.OrderBy(c => c.Start))
-        {
-            var (start, end) = (Math.Max(cue.Start + offsetSeconds, 0), cue.End + offsetSeconds);
-            if (end - start < 0.01 || string.IsNullOrWhiteSpace(cue.Text))
-                continue;
-
-            srt.Append(++number).Append('\n').Append(SrtTime(start)).Append(" --> ").Append(SrtTime(end)).Append('\n')
-                .Append(cue.Text.ReplaceLineEndings("\n").Trim()).Append("\n\n");
-        }
-
-        return srt.ToString();
     }
 
     private static string SrtTime(double seconds)

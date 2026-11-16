@@ -1,0 +1,20 @@
+# The first run's full test (5.6A): every open, from a pool thread, again with FFmpeg, without a clip before it; the compositor stage; the de-clutter; picked roles.
+ok: the full test runs on every open: a first start (no owner) and opened from Settings alike
+ok: started from a pool thread (Task.Run) after the estimate, with the token Start Editing and closing cancel
+ok: while it measures the Playback & A/V Sync Test waits ("Waits for the hardware check"); never started while that test runs
+ok: Settings' own test holding the gate is a warning, never an error: "Warning: the hardware test is running in Settings; the roles shown are estimates."
+ok: its progress feeds the cards' figures and pills only: the roles stay the estimate's until its result
+ok: FFmpeg installed: the test runs once more when the last could not decode (or after the one running without FFmpeg)
+ok: gone: the status line, the paragraph under the cards, the software-fallback box (Start Editing no longer writes it) and the quick check
+ok: the role cards are RoleCardsPanel (still RoleCards), the System tier badge beside the GPU & NPU Roles title
+ok: Start Editing writes the recommended roles on a first start, then the roles picked by hand whatever the start
+ok: the full test's command line: no clip and no FFmpeg (a fresh install: the bus and the compositor); with both and the roles chosen in Settings
+ok: without FFmpeg (or a clip that could not be made) the test still runs, with no clip
+ok: the worker without a clip: no throw, no decoding, no two-card test; the compositor stage on the role cards
+ok: a full result with no clip says the decoding is measured once FFmpeg is here
+ok: the compositor stage times the role cards only: the Desktop's RX 7900 XTX (0); the A310 only when Settings gave it a role (0,1; a repeat never)
+ok: the compositor stage's scene is the Timing scene: 1920 x 1080, six test-pattern layers, every 5.5 slot, a LUT, a mask and a curve; 90 clock-up frames, the best of 4
+ok: compositorMs is appended to the result's JSON (a result from before reads 0); the progress stage is "compositor"
+ok: F19: a run without the test clip keeps a full result of these cards that measured decoding; it replaces none, another card's or driver's, a quick check, or one that decoded nothing
+ok: F19: the full test saves its result when it had the clip or may replace the kept one, and returns it to show either way
+ok: F16: Test & Auto-Tune Hardware's cleanup (stopped, failed or done) clears the partial figures, then redraws the stage's cards

@@ -1,0 +1,8 @@
+# FileState: a folder deleted, renamed away and recreated heals; a failed watcher is retired; pluggable drives get none.
+ok: the system drive is learnt as internal (a watcher may be kept on it)
+ok: a file there: seen
+ok: its folder deleted: seen as missing
+ok: the folder and file back: seen again, without a restart
+ok: the folder renamed away and a new one made with the file: the new one is seen (the watcher followed the old folder; the age check heals it)
+ok: a watcher that fails (not a buffer overflow) is removed and disposed, so the folder can be watched again
+ok: a drive that can be unplugged (USB, 1394, SD, external SSDs) gets no watcher, so it can always be ejected

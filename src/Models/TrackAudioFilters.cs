@@ -60,7 +60,19 @@ public sealed class TrackAudioFilters
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<Keyframe>? StudioVoiceMixKeys { get; set; }
 
-    // De-Esser (Pass 5.2B): a split-band compressor on 5.5 to 9 kHz, how hard it works in percent.
+    /// <summary>Two Studio Voice mix keys closer than this (seconds) are the same moment: a key there takes the new value.</summary>
+    public const double MixKeyTolerance = 0.001;
+
+    /// <summary>A Studio Voice mix key at <paramref name="at"/> with the mix as it is set now (replacing one at that moment), kept in time order.</summary>
+    public void PutMixKey(double at)
+    {
+        var keys = StudioVoiceMixKeys ??= [];
+        keys.RemoveAll(k => Math.Abs(k.Time - at) < MixKeyTolerance);
+        keys.Add(new Keyframe(at, Math.Clamp(StudioVoiceMix, 0, 100), EasingType.Linear));
+        keys.Sort((a, b) => a.Time.CompareTo(b.Time));
+    }
+
+    // De-Esser (5.2.0): a split-band compressor on 5.5 to 9 kHz, how hard it works in percent.
     public bool DeEsser { get; set; }
     public double DeEsserAmount { get; set; } = 50;
 
@@ -97,6 +109,15 @@ public sealed class TrackAudioFilters
     /// <summary>How many filters are switched on, for the button that opens the dialog to show.</summary>
     public int ActiveCount =>
         new[] { Compressor, NoiseGate, DeNoise, BassTreble, HighPass, Limiter, Equalizer, PitchTempo, StereoWidener, StudioVoice, DeEsser }.Count(on => on);
+
+    /// <summary>
+    /// Whether every setting is still the default one (switches and values alike). Saving, undo steps and a cold tab keep a filter
+    /// set that is not, even with every filter switched off: a compressor turned off to compare keeps its threshold. Not written to the file.
+    /// </summary>
+    [JsonIgnore]
+    public bool IsDefault => System.Text.Json.JsonSerializer.Serialize(this) == DefaultJson;
+
+    private static readonly string DefaultJson = System.Text.Json.JsonSerializer.Serialize(new TrackAudioFilters());
 
     public TrackAudioFilters Clone()
     {

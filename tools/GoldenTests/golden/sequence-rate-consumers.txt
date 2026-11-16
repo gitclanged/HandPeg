@@ -1,0 +1,5 @@
+# Frame stepping and the timecode count in the Sequence's rate, not the last file's.
+ok: an explicit 30p Sequence over a 60 fps file: the Sequence's rate is 30
+ok: a frame step moves 1/30 s (33.333 ms), the Sequence's frame
+ok: and lands on its frames (frame 3 after two more)
+ok: the timecode readouts count in 30 fps

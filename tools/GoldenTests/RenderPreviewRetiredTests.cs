@@ -23,7 +23,7 @@ public static class RenderPreviewRetiredTests
 
     public static IEnumerable<GraphResult> All()
     {
-        yield return Retired();
+        yield return Lazy("render-preview-retired", Retired);
     }
 
     private static GraphResult Retired()
@@ -58,9 +58,10 @@ public static class RenderPreviewRetiredTests
             Expect(typeof(SessionPaths).GetProperty("Previews", Every) is not null,
                 "SessionPaths.Previews stays: the session's scratch files (mask stills, export sound renders, GIF frames) use it");
 
-            // A settings file saved before 5.4.1A: its two values are skipped on load and gone from the next save.
+            // A settings file saved before 5.4.1A: its two values are dropped on load (SettingsMigrations.RetiredKeys, which every load runs:
+            // unknown keys of a newer version are kept, retired ones are not) and gone from the next save.
             const string old = "{\"PreviewResolutionPercent\":25,\"PreviewDurationSeconds\":8,\"FirstRunComplete\":true}";
-            var loaded = JsonSerializer.Deserialize(old, AppSettingsJsonContext.Default.AppSettings);
+            var loaded = JsonSerializer.Deserialize(old, AppSettingsJsonContext.Default.AppSettings) is { } read ? SettingsMigrations.Migrate(read) : null;
             var saved = loaded is null ? "" : JsonSerializer.Serialize(loaded, AppSettingsJsonContext.Default.AppSettings);
             Expect(loaded is { FirstRunComplete: true } && saved.Length > 0 && !saved.Contains("PreviewResolutionPercent", StringComparison.Ordinal)
                    && !saved.Contains("PreviewDurationSeconds", StringComparison.Ordinal),
@@ -77,23 +78,24 @@ public static class RenderPreviewRetiredTests
             Expect(!bar.Save().Contains("RenderPreview", StringComparison.Ordinal), "the bar's defaults do not name RenderPreview");
 
             // The XAML: no button, binding or Settings section of it.
-            var main = Read("MainWindow.xaml");
+            var main = SourceProbe.Src("MainWindow.xaml");
             Expect(!main.Contains("AutomationProperties.Name=\"Render Preview\"", StringComparison.Ordinal) && !main.Contains("RenderPreviewCommand", StringComparison.Ordinal)
                    && !main.Contains("PlaybackControls[RenderPreview]", StringComparison.Ordinal),
                 "MainWindow.xaml: neither playback bar has a Render Preview button, binding or visibility switch");
-            var settings = Read("Dialogs", "SettingsWindow.xaml");
+            var settings = SourceProbe.Src("Dialogs", "SettingsWindow.xaml");
             Expect(!settings.Contains("Render Preview", StringComparison.OrdinalIgnoreCase) && !settings.Contains("PreviewResolutionPercent", StringComparison.Ordinal)
                    && !settings.Contains("PreviewDurationSeconds", StringComparison.Ordinal),
                 "SettingsWindow.xaml: no Render Preview section, text or binding (Preview & Cache starts at Caches)");
-            Expect(!Read("Dialogs", "SettingsWindow.Stage.cs").Contains("Render Preview", StringComparison.Ordinal),
+            Expect(!SourceProbe.Src("Dialogs", "SettingsWindow.Stage.cs").Contains("Render Preview", StringComparison.Ordinal),
                 "SettingsWindow.Stage.cs: the Preview & Cache intro and the stage map name no Render Preview section");
 
-            // Nothing under src names a removed member.
+            // Nothing under src names a removed member (but the registry of retired settings keys, which names them to drop them).
             var removed = new Regex("RenderPreview|BuildPreview|RunPreviewAsync|PreviewRendered|PreviewResolutionPercent|PreviewDurationSeconds", RegexOptions.CultureInvariant);
-            var hits = Directory.EnumerateFiles(Path.Combine(Root(), "src"), "*", SearchOption.AllDirectories)
+            var hits = Directory.EnumerateFiles(Path.Combine(SourceProbe.Root, "src"), "*", SearchOption.AllDirectories)
                 .Where(f => f.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".xaml", StringComparison.OrdinalIgnoreCase))
+                .Where(f => !f.EndsWith("SettingsMigrations.cs", StringComparison.OrdinalIgnoreCase))
                 .Where(f => removed.IsMatch(File.ReadAllText(f)))
-                .Select(f => Path.GetRelativePath(Root(), f))
+                .Select(f => Path.GetRelativePath(SourceProbe.Root, f))
                 .ToList();
             Expect(hits.Count == 0, $"no .cs or .xaml file under src names RenderPreview, BuildPreview, RunPreviewAsync, PreviewRendered, PreviewResolutionPercent or PreviewDurationSeconds{(hits.Count == 0 ? "" : ": " + string.Join(", ", hits))}");
         }
@@ -105,16 +107,4 @@ public static class RenderPreviewRetiredTests
         return new GraphResult("render-preview-retired", text.ToString(), problems, 0);
     }
 
-    private static string Root()
-    {
-        for (var folder = new DirectoryInfo(AppContext.BaseDirectory); folder is not null; folder = folder.Parent)
-        {
-            if (File.Exists(Path.Combine(folder.FullName, "HandPegApp.csproj")))
-                return folder.FullName;
-        }
-
-        throw new DirectoryNotFoundException("HandPegApp.csproj was not found above the golden tests' program.");
-    }
-
-    private static string Read(params string[] parts) => File.ReadAllText(Path.Combine([Root(), "src", .. parts]));
 }

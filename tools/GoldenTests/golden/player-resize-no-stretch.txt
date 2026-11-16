@@ -17,7 +17,7 @@ ok: PresentNewest never refuses a frame for its size (it is centred), and a wind
 ok: the back buffer's view is let go before every ResizeBuffers and with the swap chain
 ok: a resize no longer plans the whole Sequence again (the mpv era's VideoView.SizeChanged => ScheduleGpuState is gone)
 ok: the engine is woken on the surface window's WM_SIZE, once its client rectangle has the new size (SizeChanged comes before the host moves it)
-ok: the compositor's protocol is version 8 (a ring can be larger than its frames)
+ok: the compositor's protocol is version 9 (a ring can be larger than its frames; a source entry is exactly its 1 KB stride)
 ok: each output slot's content size is at 3176..3199 of the control block, before the cache's counters (3480)
 ok: a slot's content size: what the worker wrote, never more than the ring, the whole ring where nothing was written (an older worker)
 ok: each slot's tag at 3200..3211: its ring's generation * 2, + 1 for a frame read back (a capture the player never shows)

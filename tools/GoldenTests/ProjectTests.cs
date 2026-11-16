@@ -35,12 +35,12 @@ public static class ProjectTests
 
     public static IEnumerable<GraphResult> All(string fixtures, string scratch)
     {
-        yield return Format6RoundTrip(fixtures);
-        yield return NewerFormat(fixtures, scratch);
-        yield return NotProjects(scratch);
-        yield return SeekIndexes(scratch);
-        yield return UndoHistory();
-        yield return Bundle(fixtures, scratch);
+        yield return Lazy("hproj-format6-round-trip", () => Format6RoundTrip(fixtures));
+        yield return Lazy("hproj-newer-format", () => NewerFormat(fixtures, scratch));
+        yield return Lazy("hproj-not-projects", () => NotProjects(scratch));
+        yield return Lazy("hproj-seek-indexes", () => SeekIndexes(scratch));
+        yield return Lazy("hproj-undo-history", UndoHistory);
+        yield return Lazy("hproj-bundle", () => Bundle(fixtures, scratch));
     }
 
     private static GraphResult Format6RoundTrip(string fixtures)
@@ -58,7 +58,7 @@ public static class ProjectTests
         Expect(problems, names is ["format", "version", "writtenBy", ..] && names[^1] == "timeline",
             $"what says which file it is comes first, and the timeline last ({string.Join(", ", names)})");
         Expect(problems, header["format"]?.GetValue<string>() == ProjectFile.FormatName, "the written file says it is a HandPeg project");
-        Expect(problems, header["version"]?.GetValue<int>() == 6 && header["version"]?.GetValue<int>() == ProjectFile.CurrentVersion,
+        Expect(problems, header["version"]?.GetValue<int>() == 6 && header["version"]?.GetValue<int>() == ProjectFile.BaseVersion,
             $"the written file is format 6 (it says {header["version"]})");
         Expect(problems, header["writtenBy"]?.GetValue<string>() == ProjectStore.WriterName, $"the written file names the HandPeg that wrote it ({header["writtenBy"]})");
 
@@ -128,8 +128,8 @@ public static class ProjectTests
         newer["version"] = newerVersion;
         newer["writtenBy"] = "HandPeg 9.9.9";
 
-        // What the next format might add, at the top, in the timeline and on a clip: passed over, the file read as far as this
-        // version knows it.
+        // What the next format might add, at the top, in the timeline and on a clip: kept (written back by a save), and the rest of
+        // the file read as far as this version knows it.
         newer["fromTheFuture"] = new JsonObject { ["something"] = "this version does not know" };
         newer["timeline"]!["fromTheFuture"] = new JsonArray(1, 2, 3);
         newer["timeline"]!["tracks"]![0]!["clips"]![0]!["fromTheFuture"] = "a clip's own new value";
@@ -148,7 +148,14 @@ public static class ProjectTests
         }
 
         var opened = ProjectStore.Deserialize(text, allowNewer: true);
-        problems.AddRange(Compare(ProjectStore.Deserialize(fixture), opened, "opened anyway"));
+        Expect(problems, opened.Timeline.CarriedProjectFields?.File?.ContainsKey("fromTheFuture") == true && opened.Timeline.Extra?.ContainsKey("fromTheFuture") == true
+                         && opened.Timeline.Tracks[0].Clips[0].Extra?.ContainsKey("fromTheFuture") == true,
+            "what the next format adds is kept, at the top, in the timeline and on a clip (a save writes it back)");
+        var known = ProjectStore.Deserialize(text, allowNewer: true);
+        (known.Timeline.CarriedProjectFields, known.Timeline.Extra) = (null, null);
+        foreach (var clip in known.Timeline.Tracks.SelectMany(t => t.Clips))
+            clip.Extra = null;
+        problems.AddRange(Compare(ProjectStore.Deserialize(fixture), known, "opened anyway"));
         Expect(problems, ProjectStore.IsProject(newer), "the backup importer takes a newer project as one (copied unchanged; it asks before it opens)");
 
         // What a file says it is decides before anything else of it is read: a newer file whose timeline this version could
@@ -188,7 +195,7 @@ public static class ProjectTests
         Expect(problems, File.ReadAllText(file) == text, "the newer file is left exactly as it was");
         var elsewhere = Path.Combine(scratch, "saved elsewhere.hproj");
         ProjectStore.SaveTo(opened, elsewhere);
-        Expect(problems, ProjectStore.PeekHeader(elsewhere)?.Version == ProjectFile.CurrentVersion, $"saved under another name, it is a format {ProjectFile.CurrentVersion} project");
+        Expect(problems, ProjectStore.PeekHeader(elsewhere)?.Version == ProjectFile.BaseVersion, $"saved under another name, it is a format {ProjectFile.BaseVersion} project");
 
         // A file of a format this version knows is saved over as it always was.
         ProjectStore.SaveTo(opened, elsewhere);
@@ -224,7 +231,7 @@ public static class ProjectTests
 
         // Formats 2 to 5 (HandPeg 2.0 to 4.4) are not converted: refused, the reason naming the format and the one opened.
         foreach (var version in new[] { 2, 3, 4, 5 })
-            Refused(Older(version), $"a format {version} project", $"format {version}", $"format {ProjectFile.CurrentVersion} projects only", "not converted");
+            Refused(Older(version), $"a format {version} project", $"format {version}", $"format {ProjectFile.OldestReadable} to {ProjectFile.CurrentVersion} projects only", "not converted");
 
         // What a file says it is is read before anything else of it: a format 4 file whose sequence this version could not read
         // at all is refused as format 4, not for what in it did not fit.
@@ -588,7 +595,7 @@ public static class ProjectTests
             var json = JsonNode.Parse(project)!.AsObject();
             Expect(problems, json["undoHistory"] is null && json["undoFormat"] is null, "the undo history is left out (its packed steps name this PC's files)");
             Expect(problems, json["output"]?["manualCommand"] is null, "a hand-edited command (naming this PC's files) is left out");
-            Expect(problems, json["version"]?.GetValue<int>() == ProjectFile.CurrentVersion, "the bundled project is format 6");
+            Expect(problems, json["version"]?.GetValue<int>() == ProjectFile.BaseVersion, "the bundled project is format 6");
             Expect(problems, archive.GetEntry("media/main_HandPeg.mp4") is null && json["output"]?["path"]?.GetValue<string>() == "main_HandPeg.mp4",
                 "the export did not go in, and its path is the file's name alone");
             var named = new SortedSet<string>(StringComparer.Ordinal);

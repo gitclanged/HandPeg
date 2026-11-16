@@ -269,7 +269,7 @@ public static partial class PortableProject
     {
         if (ProjectStore.PeekHeader(path) is { Format: ProjectFile.FormatName, Version: > ProjectFile.CurrentVersion })
             throw new IOException($"{Path.GetFileName(path)} was saved by a newer version of HandPeg, and saving over it would lose what that version put in it.");
-        ProjectStore.WriteWhole(path, text);
+        ProjectStore.WriteWhole(path, text, durable: true);
     }
 
     /// <summary>

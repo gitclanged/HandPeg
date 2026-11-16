@@ -97,7 +97,7 @@ public partial class MainViewModel
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
         {
-            StatusText = $"Could not save {name} to the Clip Library: {ex.Message}";
+            Fail($"Could not save {name} to the Clip Library: {ex.Message}", $"Save {name} to the Clip Library", ex);
             return null;
         }
 

@@ -1,0 +1,9 @@
+# One undo step per gesture; lone writes under one run rule; the view model reads no WPF input and keeps no thread-static echo.
+ok: a gesture of ten flushes: one undo step (1), its last value written
+ok: a second gesture at once: one more step
+ok: five lone writes of one field within the window: one step
+ok: another field (the grace over): its own step
+ok: a switch or a key (startRun): always its own step
+ok: the view model reads no mouse or keyboard state (the window injects IsPointerHeld and IsTypingInTextBox)
+ok: the model keeps no thread-static echo (the view model's OwnLookScope replaces Layer.Echo)
+ok: no pane keeps its own merge window, write rate or pointer-capture test (GestureWriter, CaptureThrottle, Pacing)

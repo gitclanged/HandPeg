@@ -141,13 +141,17 @@ public static class MaskStore
     private static bool HasTransparency(string path)
     {
         using var stream = File.OpenRead(path);
-        var frame = BitmapDecoder.Create(stream, BitmapCreateOptions.IgnoreColorProfile, BitmapCacheOption.OnLoad).Frames[0];
-        var format = frame.Format;
-        if (format != PixelFormats.Bgra32 && format != PixelFormats.Pbgra32 && format != PixelFormats.Rgba64 && format != PixelFormats.Prgba64
-            && format != PixelFormats.Rgba128Float && format != PixelFormats.Prgba128Float)
-        {
+
+        // The pixel format first, from the header without decoding: a picture with no alpha channel (JPEG, BMP, an RGB PNG) is never
+        // decoded at all.
+        var format = BitmapDecoder.Create(stream, BitmapCreateOptions.DelayCreation | BitmapCreateOptions.IgnoreColorProfile, BitmapCacheOption.None).Frames[0].Format;
+        if (!HasAlphaChannel(format))
             return false;
-        }
+
+        stream.Position = 0;
+        var frame = BitmapDecoder.Create(stream, BitmapCreateOptions.IgnoreColorProfile, BitmapCacheOption.OnLoad).Frames[0];
+        if (!HasAlphaChannel(frame.Format))
+            return false;
 
         var pixels = new FormatConvertedBitmap(frame, PixelFormats.Bgra32, null, 0);
         var stride = pixels.PixelWidth * 4;
@@ -164,6 +168,10 @@ public static class MaskStore
 
         return false;
     }
+
+    private static bool HasAlphaChannel(PixelFormat format) =>
+        format == PixelFormats.Bgra32 || format == PixelFormats.Pbgra32 || format == PixelFormats.Rgba64 || format == PixelFormats.Prgba64
+        || format == PixelFormats.Rgba128Float || format == PixelFormats.Prgba128Float;
 
     /// <summary>
     /// A mask picture as grey levels, white where it shows, read as <see cref="UsesAlpha"/> says, and made small
@@ -345,17 +353,7 @@ public static class MaskStore
         (state.MaskPath, state.MaskShapes) = ("", FormatShapes(moved));
     }
 
-    /// <summary>How large a drawn mask is made as a picture for a source of this size: at least 1920 wide and at most 3840, in the source's shape.</summary>
-    public static (int Width, int Height) SizeFor(int sourceWidth, int sourceHeight)
-    {
-        if (sourceWidth <= 0 || sourceHeight <= 0)
-            return (2560, 1440);
-
-        var width = Math.Clamp(sourceWidth, 1920, 3840);
-        return (width, Math.Max((int)Math.Round(width * (double)sourceHeight / sourceWidth), 2));
-    }
-
-    // ----- Drawn masks: outlines only, never a file (5.1-Release, the user's call) -----
+    // ----- Drawn masks: outlines only, never a file (5.1.0, a product decision) -----
 
     /// <summary>
     /// The start of a drawn mask's key: a mask that is its layer's outlines alone. It is no file: the GPU engine and the hit test
@@ -395,6 +393,9 @@ public static class MaskStore
         var file = (path ?? "").Trim().Trim('"');
         return (file.Length == 0 || IsGeneratedFile(file)) && DrawnKey(shapes) is { Length: > 0 } key ? key : file;
     }
+
+    /// <summary>A layer's mask source (<see cref="SourceOf(string?, string?)"/> of its mask file and outlines).</summary>
+    public static string SourceOf(Layer layer) => SourceOf(layer.MaskPath, layer.MaskShapes);
 
     /// <summary>Whether a mask source is there to be shown: a drawn key whose outlines are known, or a file that exists.</summary>
     public static bool Exists(string? source) =>

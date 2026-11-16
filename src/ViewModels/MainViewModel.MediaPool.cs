@@ -29,13 +29,13 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Puts files into Project Media: only media HandPeg reads (MediaBrowserItem.KindOf), each once. One step of Undo ("add 3 files to
+    /// Puts files into Project Media: only media HandPeg reads (MediaFiles.KindOf), each once. One step of Undo ("add 3 files to
     /// Project Media"); with <paramref name="undoable"/> false none (the New Project studio's picks, put in before the project's first
     /// file is opened, so a file that fails to open stays in the bin). How many went in.
     /// </summary>
     public int AddToProjectMedia(IEnumerable<string> files, bool undoable = true)
     {
-        var media = files.Select(TimelineDocument.PoolPath).Where(f => f.Length > 0 && MediaBrowserItem.KindOf(f) is not null && !Document.PoolHolds(f))
+        var media = files.Select(TimelineDocument.PoolPath).Where(f => f.Length > 0 && MediaFiles.KindOf(f) is not null && !Document.PoolHolds(f))
             .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         if (media.Count == 0)
             return 0;

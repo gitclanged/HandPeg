@@ -34,9 +34,9 @@ public partial class MainWindow
 
         // The first picture opens the project (a sound only when there is no picture); the other pictures follow it in line, and the
         // sounds go on audio tracks at the start.
-        var first = files.FirstOrDefault(f => MediaBrowserItem.KindOf(f) is MediaBrowserKind.Video or MediaBrowserKind.Image) ?? files[0];
-        var rest = files.Where(f => f != first && MediaBrowserItem.KindOf(f) != MediaBrowserKind.Audio).ToArray();
-        var sounds = files.Where(f => f != first && MediaBrowserItem.KindOf(f) == MediaBrowserKind.Audio).ToArray();
+        var first = files.FirstOrDefault(f => MediaFiles.KindOf(f) is MediaBrowserKind.Video or MediaBrowserKind.Image) ?? files[0];
+        var rest = files.Where(f => f != first && MediaFiles.KindOf(f) != MediaBrowserKind.Audio).ToArray();
+        var sounds = files.Where(f => f != first && MediaFiles.KindOf(f) == MediaBrowserKind.Audio).ToArray();
         try
         {
             if (request.StylePath is { Length: > 0 } style)

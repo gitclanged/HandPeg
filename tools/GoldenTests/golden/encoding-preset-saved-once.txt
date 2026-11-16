@@ -1,0 +1,4 @@
+# Every value of a project's settings is written to its file once: what the timeline or the background keeps is not written twice.
+ok: the settings' strings and numbers marked: more than 40
+ok: none is written twice (the background's blur in its own section only, the name in the file's header only)
+ok: and the export settings are in it (written once each)

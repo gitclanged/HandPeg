@@ -21,8 +21,6 @@ public static class DogfoodTests
 {
     private const int W = 1920, H = 1080;
     private const string Main = "D:/media/game.mkv", Second = "D:/media/second.mkv", Third = "D:/media/third.mkv", Short = "D:/media/short.mkv";
-    private const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
-
     // A piece wider than a crop can leave (the hero), one narrower than a crop's least remainder of 5 % (an icon).
     private const string HeroShape = "0.02,0.8 0.2,0.8 0.2,0.95 0.02,0.95", IconShape = "0.5,0.5 0.53,0.5 0.53,0.54 0.5,0.54";
     private static readonly List<CutoutPiece> Pieces =
@@ -40,29 +38,6 @@ public static class DogfoodTests
         yield return Case("frame-cache-commit", "# The frame cache leaves Windows' commit a margin: the crash of 2026-11-01, by its own numbers.", CommitRoom);
         yield return Case("encoder-best-steps", "# Hardware encoders start at their slowest, best step; a choice made stands.", EncoderSteps);
         yield return Case("auditb-review-fixes", "# Pass 5.2-AuditB's review: a Cutout's clip takes a preset, Cutouts are replaced on their own clips, a file opened over a longer one keeps its Cutouts, the source view follows the playhead, a Cutout's own mask moves onto the whole picture, one box rule for every clip.", ReviewFixes);
-    }
-
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>, StringBuilder> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect, text);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
     }
 
     private static void Pump()
@@ -92,7 +67,7 @@ public static class DogfoodTests
         (settings.AutoUpdateDependencies, settings.SendCrashReports, settings.EnableExtraAnimations, settings.DroppedClipsJoinTrack) = (false, false, false, false);
         var vm = new MainViewModel { SourceWidth = W, SourceHeight = H, LocalMediaPath = Main };
         var probed = new MediaInfo("matroska", 8, 0, new VideoStreamInfo(W, H, "h264", 60, "16:9", "1:1", "bt709", "bt709", 0), [], []);
-        typeof(MainViewModel).GetField("_mediaInfo", Hidden)!.SetValue(vm, probed);
+        vm.SetMediaInfoForTests(probed);
         var document = new TimelineDocument { Width = W, Height = H, NaturalWidth = W, NaturalHeight = H, FrameRate = FrameRate.Fps30 };
         var track = new TimelineTrackModel { Kind = TimelineTrackKind.Video, TrackNumber = 1 };
         var look = FileLook("Main", Main);
@@ -106,7 +81,7 @@ public static class DogfoodTests
             document.Tracks.Add(other);
         }
 
-        typeof(MainViewModel).GetMethod("InstallDocument", Hidden)!.Invoke(vm, [document]);
+        vm.InstallDocument(document);
         return vm;
     }
 
@@ -191,7 +166,7 @@ public static class DogfoodTests
         var heroBox = heroView.GetOutputRect(vm.FrameWidth, vm.FrameHeight, W, H);
         var wantedWidth = (int)Math.Round(0.5 * vm.FrameWidth / 2) * 2;
         expect(Math.Abs(heroBox.Width - wantedWidth) <= 2 && Math.Abs(heroBox.X - 0.05 * vm.FrameWidth) <= 1, "in the box the preset laid it out in");
-        expect(heroView is { CustomMask: true, UsesFrameMask: false } && MaskStore.Exists(heroView.MaskSource), "shaped by its mask, cut as its picture is");
+        expect(heroView is { CustomMask: true, UsesFrameMask: false } && MaskStore.Exists(MaskStore.SourceOf(heroView)), "shaped by its mask, cut as its picture is");
 
         // A piece narrower than a crop's least remainder: cut wider, its box as much larger, the same part of the picture in the same place.
         var icon = vm.ViewOf(pieces.First(p => p.State.Name == "Icon"))!;
@@ -385,7 +360,7 @@ public static class DogfoodTests
         {
             var option = vm.VideoEncoders.FirstOrDefault(e => e.Name == name);
             if (option is null)
-                vm.VideoEncoders.Add(option = EncoderOption.FromHardwareName(name));
+                vm.VideoEncoders.Add(option = EncoderOption.FromHardwareName(name, HandPegApp.Services.GpuAdapters.HasQualcommAdreno));
             vm.VideoEncoder = option;
         }
 
@@ -435,9 +410,9 @@ public static class DogfoodTests
         var alone = Open();
         expect(alone.ApplyGamePreset([alone.ViewOf(alone.Document.Tracks[0].Clips[0])!], Preset(alone)), "a preset on the file opened");
         var probe = new MediaInfo("matroska", 4, 0, new VideoStreamInfo(W, H, "h264", 60, "16:9", "1:1", "bt709", "bt709", 0), [], []);
-        typeof(MainViewModel).GetField("_mediaInfo", Hidden)!.SetValue(alone, probe);
+        alone.SetMediaInfoForTests(probe);
         alone.LocalMediaPath = Short;
-        typeof(MainViewModel).GetMethod("PlaceOpenedFile", Hidden)!.Invoke(alone, [Main]);
+        alone.PlaceOpenedFile(Main);
         var clips = alone.Document.Tracks.SelectMany(t => t.Clips).ToList();
         expect(!clips.Exists(c => c.SourcePath == Main), "nothing of the file opened before is left on the Sequence");
         var made = clips.Where(c => c is { ParentClipId: null, SourcePath: Short }).ToList();

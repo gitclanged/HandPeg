@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using HandPegApp;
+using HandPegApp.Shell;
 using HandPegApp.Compositor;
 using HandPegApp.Compositor.Native;
 using HandPegApp.Services;
@@ -12,7 +13,7 @@ namespace HandPegGoldenTests;
 
 /// <summary>
 /// Pass 5.4.1A (Subagent B). player-resize-no-stretch: the player resized never stretches a frame of the old size. The pure rules
-/// (GpuViewportControl.CenteredCopy, CompositorWorker.OutputCapacity), a real worker dragged through 40 sizes (a few output rings, not one
+/// (GpuViewport.CenteredCopy, CompositorWorker.OutputCapacity), a real worker dragged through 40 sizes (a few output rings, not one
 /// a size; every frame read back at exactly its size, letterboxed where SceneRenderer.Letterbox puts it), a frame read back staying in a
 /// ring of its size, the reader's centred copy into a target of another size (1:1, black round it, nothing scaled), the protocol's
 /// content sizes and the source of the swap chain, the viewport and the wake on WM_SIZE. live-encoded-preview-wipe: dragging the Live
@@ -24,6 +25,9 @@ public static class ViewportResizeTests
 {
     public static IEnumerable<GraphResult> All()
     {
+        if (!GoldenFilter.WantedAny("player-resize-no-stretch", "live-encoded-preview-wipe"))
+            yield break;
+
         var resize = Start("# The player resized with no stretch (5.4.1A): a frame of another size centred 1:1, a ring that is not made anew for every size.");
         var wipe = Start("# The Live Encoded Preview's split wipe without the encoder's wait (5.4.1A): nothing encoded again, the line where the handle is.");
         try
@@ -62,42 +66,18 @@ public static class ViewportResizeTests
 
     private static Case Start(string title) => new(new StringBuilder(title).Append('\n'), []);
 
-    // The repository's folder (where HandPegApp.csproj is), found upwards from the built program.
-    private static string Root()
-    {
-        for (var folder = new DirectoryInfo(AppContext.BaseDirectory); folder is not null; folder = folder.Parent)
-        {
-            if (File.Exists(Path.Combine(folder.FullName, "HandPegApp.csproj")))
-                return folder.FullName;
-        }
-
-        throw new DirectoryNotFoundException("HandPegApp.csproj was not found above the golden tests' program.");
-    }
-
-    private static string Read(params string[] parts) => File.ReadAllText(Path.Combine([Root(), "src", .. parts]));
-
-    /// <summary>A member's text in a source file: from its signature to the first line that closes it at its own indent.</summary>
-    private static string Method(string source, string signature)
-    {
-        var start = source.IndexOf(signature, StringComparison.Ordinal);
-        if (start < 0)
-            return "";
-        var end = source.IndexOf("\n    }", start, StringComparison.Ordinal);
-        return end < 0 ? source[start..] : source[start..end];
-    }
-
     // ----- player-resize-no-stretch: the pure rules -----
 
     private static void Pure(Action<bool, string> expect)
     {
-        expect(GpuViewportControl.CenteredCopy(800, 450, 1000, 450) == (0, 0, 800, 450, 100, 0),
+        expect(GpuViewport.CenteredCopy(800, 450, 1000, 450) == (0, 0, 800, 450, 100, 0),
             "CenteredCopy: an 800 x 450 frame in a 1000 x 450 window is all of it, 100 pixels in from the left (margins, never a stretch)");
-        expect(GpuViewportControl.CenteredCopy(1000, 600, 800, 600) == (100, 0, 900, 600, 0, 0),
+        expect(GpuViewport.CenteredCopy(1000, 600, 800, 600) == (100, 0, 900, 600, 0, 0),
             "a 1000 x 600 frame in an 800 x 600 window: its middle 800 columns (100..900) at the window's left edge (cropped, never squeezed)");
-        expect(GpuViewportControl.CenteredCopy(640, 360, 640, 360) == (0, 0, 640, 360, 0, 0), "a frame of the window's size: the whole frame at (0, 0)");
-        expect(GpuViewportControl.CenteredCopy(7, 3, 8, 4) == (0, 0, 7, 3, 0, 0) && GpuViewportControl.CenteredCopy(5, 9, 8, 4) == (0, 2, 5, 6, 1, 0),
+        expect(GpuViewport.CenteredCopy(640, 360, 640, 360) == (0, 0, 640, 360, 0, 0), "a frame of the window's size: the whole frame at (0, 0)");
+        expect(GpuViewport.CenteredCopy(7, 3, 8, 4) == (0, 0, 7, 3, 0, 0) && GpuViewport.CenteredCopy(5, 9, 8, 4) == (0, 2, 5, 6, 1, 0),
             "odd sizes in whole pixels: 7 x 3 in 8 x 4 at (0, 0); 5 x 9 in 8 x 4 its rows 2..6 at column 1");
-        expect(GpuViewportControl.CenteredCopy(0, 360, 640, 360) == default && GpuViewportControl.CenteredCopy(640, 360, 640, 0) == default,
+        expect(GpuViewport.CenteredCopy(0, 360, 640, 360) == default && GpuViewport.CenteredCopy(640, 360, 640, 0) == default,
             "a frame or a window of no size: nothing copied");
 
         expect(CompositorWorker.OutputCapacity(0, 0, 640, 360, exact: false) == (640, 360), "OutputCapacity: the first ring is the frame's size exactly");
@@ -116,37 +96,37 @@ public static class ViewportResizeTests
 
     private static void Sources(Action<bool, string> expect)
     {
-        var d3d = Read("Compositor", "Native", "D3D11.cs");
-        var viewport = Read("Controls", "GpuViewportControl.cs");
+        var d3d = SourceProbe.Src("Compositor", "Native", "D3D11.cs");
+        var viewport = SourceProbe.Src("Services", "GpuViewport.cs");
         expect(d3d.Contains("public static nint CreateSwapChain(nint device, nint window, int width, int height, uint scaling)", StringComparison.Ordinal)
                && d3d.Contains("Scaling = scaling,", StringComparison.Ordinal) && !d3d.Contains("Scaling = ScalingStretch", StringComparison.Ordinal),
             "Dxgi.CreateSwapChain takes the swap chain's scaling");
-        var player = Method(viewport, "public GpuViewportControl(CompositorClient client, nint window)");
-        var mirror = Method(viewport, "public GpuViewportControl(GpuViewportControl player, nint window)");
+        var player = SourceProbe.Member(viewport, "public GpuViewport(CompositorClient client, nint window)");
+        var mirror = SourceProbe.Member(viewport, "public GpuViewport(GpuViewport player, nint window)");
         expect(player.Contains("_scaling = Dxgi.ScalingNone;", StringComparison.Ordinal) && mirror.Contains("_scaling = Dxgi.ScalingStretch;", StringComparison.Ordinal)
                && viewport.Contains("Dxgi.CreateSwapChain(device.DevicePointer, _window, width, height, _scaling)", StringComparison.Ordinal),
             "the player's swap chain is made with DXGI_SCALING_NONE (the desktop never stretches its buffer across a resized window); a side window's mirror keeps the stretch");
-        var present = Method(viewport, "public bool PresentNewest(");
+        var present = SourceProbe.Member(viewport, "public bool PresentNewest(");
         expect(!present.Contains("(control.OutputWidth, control.OutputHeight) != _buffers", StringComparison.Ordinal)
                && present.Contains("_reader.CopyPresentedCentered(back, _backRtv, width, height, 8)", StringComparison.Ordinal)
                && present.Contains("(width, height) == _buffers", StringComparison.Ordinal)
-               && Method(viewport, "public bool HasNewFrame").Contains("(width, height) != _buffers", StringComparison.Ordinal),
+               && SourceProbe.Member(viewport, "public bool HasNewFrame").Contains("(width, height) != _buffers", StringComparison.Ordinal),
             "PresentNewest never refuses a frame for its size (it is centred), and a window of a new size presents again at once, paused too (HasNewFrame)");
-        expect(Method(viewport, "private void Resize(").IndexOf("Com.Release(ref _backRtv);", StringComparison.Ordinal) is var release and >= 0
-               && release < Method(viewport, "private void Resize(").IndexOf("Dxgi.ResizeBuffers", StringComparison.Ordinal)
-               && Method(viewport, "private void DropSwapChain()").Contains("Com.Release(ref _backRtv);", StringComparison.Ordinal),
+        expect(SourceProbe.Member(viewport, "private void Resize(").IndexOf("Com.Release(ref _backRtv);", StringComparison.Ordinal) is var release and >= 0
+               && release < SourceProbe.Member(viewport, "private void Resize(").IndexOf("Dxgi.ResizeBuffers", StringComparison.Ordinal)
+               && SourceProbe.Member(viewport, "private void DropSwapChain()").Contains("Com.Release(ref _backRtv);", StringComparison.Ordinal),
             "the back buffer's view is let go before every ResizeBuffers and with the swap chain");
-        var main = Read("MainWindow.xaml.cs") + Read("MainWindow.PresetsAndKeyframes.cs") + Read("MainWindow.ViewsMenu.cs");
+        var main = SourceProbe.Src("MainWindow.xaml.cs") + SourceProbe.Src("MainWindow.PresetsAndKeyframes.cs") + SourceProbe.Src("MainWindow.ViewsMenu.cs");
         expect(!main.Contains("VideoView.SizeChanged += (_, _) => ScheduleGpuState();", StringComparison.Ordinal),
             "a resize no longer plans the whole Sequence again (the mpv era's VideoView.SizeChanged => ScheduleGpuState is gone)");
-        var surface = Read("Controls", "VideoSurface.cs");
-        var gpuPreview = Read("MainWindow.GpuPreview.cs");
-        expect(Method(surface, "protected override IntPtr WndProc(").Contains("if (msg == WmSize && hwnd == SurfaceHandle)", StringComparison.Ordinal)
-               && Method(surface, "protected override IntPtr WndProc(").Contains("SurfaceResized?.Invoke();", StringComparison.Ordinal) && surface.Contains("WmSize = 0x0005", StringComparison.Ordinal)
+        var surface = SourceProbe.Src("Controls", "VideoSurface.cs");
+        var gpuPreview = SourceProbe.Src("MainWindow.GpuPreview.cs");
+        expect(SourceProbe.Member(surface, "protected override IntPtr WndProc(").Contains("if (msg == WmSize && hwnd == SurfaceHandle)", StringComparison.Ordinal)
+               && SourceProbe.Member(surface, "protected override IntPtr WndProc(").Contains("SurfaceResized?.Invoke();", StringComparison.Ordinal) && surface.Contains("WmSize = 0x0005", StringComparison.Ordinal)
                && gpuPreview.Contains("VideoView.SurfaceResized += () => _gpu?.InvalidateView();", StringComparison.Ordinal),
             "the engine is woken on the surface window's WM_SIZE, once its client rectangle has the new size (SizeChanged comes before the host moves it)");
 
-        expect(CompositorProtocol.Version == 8, "the compositor's protocol is version 8 (a ring can be larger than its frames)");
+        expect(CompositorProtocol.Version == 9, "the compositor's protocol is version 9 (a ring can be larger than its frames; a source entry is exactly its 1 KB stride)");
         var offsets = new[] { "OutputContentWidth0", "OutputContentHeight0", "OutputContentWidth1", "OutputContentHeight1", "OutputContentWidth2", "OutputContentHeight2" }
             .Select(name => (int)Marshal.OffsetOf<ControlBlock>(name)).ToArray();
         expect(offsets.SequenceEqual([3176, 3180, 3184, 3188, 3192, 3196]) && offsets[^1] + 4 <= (int)Marshal.OffsetOf<ControlBlock>(nameof(ControlBlock.CacheHits)),
@@ -160,10 +140,10 @@ public static class ViewportResizeTests
         var tags = new[] { "OutputContentTag0", "OutputContentTag1", "OutputContentTag2" }.Select(name => (int)Marshal.OffsetOf<ControlBlock>(name)).ToArray();
         expect(tags.SequenceEqual([3200, 3204, 3208]) && block.OutputContentTag(1) == 10 && block.OutputContentTag(2) == 13 && block.OutputContentTag(0) == 0,
             "each slot's tag at 3200..3211: its ring's generation * 2, + 1 for a frame read back (a capture the player never shows)");
-        var reader = File.ReadAllText(Path.Combine(Root(), "src", "Services", "CompositorFrameReader.cs"));
-        expect(Method(reader, "internal bool CopyPresentedCentered(").Contains("if (ReadbackIn(index))", StringComparison.Ordinal)
-               && Method(reader, "internal bool CopyPresentedRegionTo(").Contains("if (ReadbackIn(index))", StringComparison.Ordinal)
-               && Method(reader, "internal (int Width, int Height) ContentSize(").Contains("OutputContentTag(index) >> 1 != _generation", StringComparison.Ordinal)
+        var reader = File.ReadAllText(Path.Combine(SourceProbe.Root, "src", "Services", "CompositorFrameReader.cs"));
+        expect(SourceProbe.Member(reader, "internal bool CopyPresentedCentered(").Contains("if (ReadbackIn(index))", StringComparison.Ordinal)
+               && SourceProbe.Member(reader, "internal bool CopyPresentedRegionTo(").Contains("if (ReadbackIn(index))", StringComparison.Ordinal)
+               && SourceProbe.Member(reader, "internal (int Width, int Height) ContentSize(").Contains("OutputContentTag(index) >> 1 != _generation", StringComparison.Ordinal)
                && !reader.Contains("_ring = (control.OutputWidth, control.OutputHeight);", StringComparison.Ordinal),
             "the player and a mirror never show a capture's frame (read back), a slot drawn into another ring gives no size, and the ring's size comes from its textures");
     }
@@ -215,34 +195,34 @@ public static class ViewportResizeTests
 
     private static void WipeSources(Action<bool, string> expect)
     {
-        var loopback = Read("Compositor", "ExportLoopbackPreview.cs");
-        var collect = Method(loopback, "public void Collect(ref ControlBlock control)");
+        var loopback = SourceProbe.Src("Compositor", "ExportLoopbackPreview.cs");
+        var collect = SourceProbe.Member(loopback, "public void Collect(ref ControlBlock control)");
         expect(collect.Contains("var budget = _playing ? PlayingWaitMs : _submitted ? PausedWaitMs : 0;", StringComparison.Ordinal)
-               && Method(loopback, "public void Render(").Contains("_submitted = false;", StringComparison.Ordinal)
-               && Method(loopback, "public void Render(").Contains("(_drained, _submitted) = (false, true);", StringComparison.Ordinal),
+               && SourceProbe.Member(loopback, "public void Render(").Contains("_submitted = false;", StringComparison.Ordinal)
+               && SourceProbe.Member(loopback, "public void Render(").Contains("(_drained, _submitted) = (false, true);", StringComparison.Ordinal),
             "Collect waits for a paused frame only in the scene that handed it to the encoder; a wipe or loupe moved meanwhile takes what is back without waiting");
-        expect(Method(loopback, "public bool Poll()").Contains("TryTakeOutput()", StringComparison.Ordinal) && Method(loopback, "public bool Poll()").Contains("if (!_playing && !_drained", StringComparison.Ordinal)
-               && Method(loopback, "public void Render(").Contains("decoders.FramesDecoded != _decodedAtRender", StringComparison.Ordinal),
+        expect(SourceProbe.Member(loopback, "public bool Poll()").Contains("TryTakeOutput()", StringComparison.Ordinal) && SourceProbe.Member(loopback, "public bool Poll()").Contains("if (!_playing && !_drained", StringComparison.Ordinal)
+               && SourceProbe.Member(loopback, "public void Render(").Contains("decoders.FramesDecoded != _decodedAtRender", StringComparison.Ordinal),
             "Poll takes what the encoder gave out, never waiting (it drains a paused frame the submitting scene found not yet in the encoder); a picture that lacked a video frame is rendered again only once more frames were decoded");
-        var worker = Read("Compositor", "CompositorWorker.cs");
+        var worker = SourceProbe.Src("Compositor", "CompositorWorker.cs");
         var work = worker[worker.IndexOf("var pending = loopback?.Pending == true", StringComparison.Ordinal)..];
         work = work[..work.IndexOf("catch (GpuException ex) when (ex.IsDeviceLost)", StringComparison.Ordinal)];
         expect(work.Contains("if (pending && loopback!.Poll())", StringComparison.Ordinal) && !Regex.IsMatch(work, @"if \(pending\)\s*redraw = true;")
                && work.Contains("pending ? 2 :", StringComparison.Ordinal),
             "the worker still looks every 2 ms while a paused frame is in the encoder, but draws again only when Poll says the picture changed");
-        var window = Read("MainWindow.LoopbackPreview.cs");
-        var place = Method(window, "private void PlaceLoopbackWipe()");
-        var ensure = Method(window, "private void EnsureLoopbackWipe()");
+        var window = SourceProbe.Src("Shell", "LoopbackPreviewController.cs");
+        var place = SourceProbe.Member(window, "public void PlaceLoopbackWipe()");
+        var ensure = SourceProbe.Member(window, "private void EnsureLoopbackWipe()");
         expect(place.Contains("GpuPreviewEngine.WipeLineX(", StringComparison.Ordinal) && ensure.Contains("GpuPreviewEngine.WipeAt(", StringComparison.Ordinal)
-               && place.Contains("VisualTreeHelper.GetDpi(PlayerOverlay)", StringComparison.Ordinal) && place.Contains("* scale) / scale", StringComparison.Ordinal)
+               && place.Contains("VisualTreeHelper.GetDpi(_overlay)", StringComparison.Ordinal) && place.Contains("* scale) / scale", StringComparison.Ordinal)
                && place.Contains("LoopbackViewSize()", StringComparison.Ordinal) && ensure.Contains("LoopbackViewSize()", StringComparison.Ordinal)
-               && Method(window, "private void LoopbackPointerMoved(").Contains("LoopbackViewSize()", StringComparison.Ordinal),
+               && SourceProbe.Member(window, "private void LoopbackPointerMoved(").Contains("LoopbackViewSize()", StringComparison.Ordinal),
             "the handle is placed with WipeLineX and dragged with WipeAt, its edge rounded to a device pixel, and the wipe and the Magnifier measure the same element");
-        expect(window.Contains("RenderTransform = _loopbackWipeUnzoom", StringComparison.Ordinal) && Method(window, "private void PlaceLoopbackWipe()").Contains("_loopbackWipeUnzoom.Matrix = view;", StringComparison.Ordinal)
+        expect(window.Contains("RenderTransform = _loopbackWipeUnzoom", StringComparison.Ordinal) && SourceProbe.Member(window, "public void PlaceLoopbackWipe()").Contains("_loopbackWipeUnzoom.Matrix = view;", StringComparison.Ordinal)
                && window.Contains("GpuPreviewEngine.WipeAt(e.GetPosition(_loopbackWipeLayer).X, span)", StringComparison.Ordinal)
-               && Read("MainWindow.Keybinds.cs") is var keys && Method(keys, "private void ApplyPlayerView()").Contains("PlaceLoopbackWipe();", StringComparison.Ordinal),
+               && SourceProbe.Src("MainWindow.Keybinds.cs") is var keys && SourceProbe.Member(keys, "private void ApplyPlayerView()").Contains("PlaceLoopbackWipe();", StringComparison.Ordinal),
             "the wipe's layer undoes the player's zoom and pan (the overlay's view matrix, inverted), so a zoomed player moves the handle once and never scales it; the drag reads the pointer in that layer; a zoom re-places it at once");
-        expect(!window.Contains("GetDisplayedVideoArea", StringComparison.Ordinal) && Method(window, "private void PlaceLoopbackWipe()").Contains("PictureSpan(", StringComparison.Ordinal),
+        expect(!window.Contains("GetDisplayedVideoArea", StringComparison.Ordinal) && SourceProbe.Member(window, "public void PlaceLoopbackWipe()").Contains("PictureSpan(", StringComparison.Ordinal),
             "the wipe maps through the picture's rectangle (PictureSpan, the worker's letterbox), never the crop canvas's GetDisplayedVideoArea");
     }
 
@@ -400,7 +380,7 @@ public static class ViewportResizeTests
                     Com.Release(ref staging);
                 }
 
-                var (srcLeft, srcTop, srcRight, srcBottom, dstX, dstY) = GpuViewportControl.CenteredCopy(700, 400, targetWidth, targetHeight);
+                var (srcLeft, srcTop, srcRight, srcBottom, dstX, dstY) = GpuViewport.CenteredCopy(700, 400, targetWidth, targetHeight);
                 var wrong = 0;
                 for (var y = 0; y < targetHeight; y++)
                 {

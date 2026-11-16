@@ -36,9 +36,6 @@ public sealed partial class MaskDrawWindow
     // Segoe MDL2 Assets: Help (E897), a question mark.
     private static readonly string HelpGlyph = char.ConvertFromUtf32(0xE897);
 
-    // The inspector card's look (CLAUDE.md 10.3): its surface and its 1 px border.
-    private static readonly Brush CardSurface = FrozenBrush(Color.FromRgb(0x1E, 0x1E, 0x22)), CardBorder = FrozenBrush(Color.FromRgb(0x2A, 0x2A, 0x30));
-
     // How long the card stays after the pointer leaves the button and the card, opened by hovering: time to reach the card.
     private static readonly TimeSpan HoverGrace = TimeSpan.FromMilliseconds(300);
 
@@ -56,7 +53,7 @@ public sealed partial class MaskDrawWindow
     {
         var button = new ToggleButton
         {
-            Content = HelpGlyph, FontFamily = Glyphs, FontSize = 13, Padding = new Thickness(10, 4, 10, 4), Margin = new Thickness(4, 0, 0, 0),
+            Content = HelpGlyph, FontFamily = Glyphs.Font, FontSize = 13, Padding = new Thickness(10, 4, 10, 4), Margin = new Thickness(4, 0, 0, 0),
             ToolTip = ShortcutsTip, VerticalAlignment = VerticalAlignment.Center,
         };
         AutomationProperties.SetName(button, "Shortcuts");
@@ -155,11 +152,10 @@ public sealed partial class MaskDrawWindow
             grid.Children.Add(key);
         }
 
-        var card = new Border
-        {
-            Background = CardSurface, BorderBrush = CardBorder, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6),
-            Padding = new Thickness(12, 8, 12, 8), Child = grid,
-        };
+        // The theme's inspector card (#1E1E22 edged #2A2A30 on a dark theme, a light card on a light one), as its text is themed.
+        var card = new Border { BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Padding = new Thickness(12, 8, 12, 8), Child = grid };
+        card.SetResourceReference(Border.BackgroundProperty, "InspectorCardBrush");
+        card.SetResourceReference(Border.BorderBrushProperty, "InspectorCardBorderBrush");
         AutomationProperties.SetName(card, "Cutout Studio shortcuts");
         return card;
     }

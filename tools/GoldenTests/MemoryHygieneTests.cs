@@ -159,7 +159,7 @@ public static class MemoryHygieneTests
 
         // A file of a newer format is still refused before anything is written.
         var newer = Path.Combine(folder, "newer.hproj");
-        var newerText = asText.Replace($"\"version\":{ProjectFile.CurrentVersion},", $"\"version\":{ProjectFile.CurrentVersion + 1},", StringComparison.Ordinal);
+        var newerText = asText.Replace($"\"version\":{ProjectFile.BaseVersion},", $"\"version\":{ProjectFile.CurrentVersion + 1},", StringComparison.Ordinal);
         File.WriteAllText(newer, newerText);
         var refused = false;
         try
@@ -179,7 +179,7 @@ public static class MemoryHygieneTests
         Expect(ProjectStore.Deserialize(late).Timeline.Tracks is [{ Clips.Count: 600 }], "a text whose header comes after 9,000 characters (by hand) is read as before");
         var noWriter = asText.Replace($"\"writtenBy\":{JsonSerializer.Serialize(ProjectStore.WriterName)},", "", StringComparison.Ordinal);
         Expect(noWriter.Length < asText.Length && ProjectStore.Deserialize(noWriter).Timeline.Tracks is [{ Clips.Count: 600 }], "and one without its writer's name");
-        var oldFormat = noWriter.Replace($"\"version\":{ProjectFile.CurrentVersion},", "\"version\":5,", StringComparison.Ordinal);
+        var oldFormat = noWriter.Replace($"\"version\":{ProjectFile.BaseVersion},", "\"version\":5,", StringComparison.Ordinal);
         Expect(Throws<InvalidDataException>(() => ProjectStore.Deserialize(oldFormat), "format 5"), "a big text of format 5 is refused as format 5");
         Expect(Throws<InvalidDataException>(() => ProjectStore.Deserialize("{\"padding\":\"" + new string('x', 9000) + "\"}"), "not a HandPeg project"), "and one that is no project as none");
 
@@ -271,6 +271,7 @@ public static class MemoryHygieneTests
             // 1. Asks close together are one: five asks (two reasons twice), then the one collection after the last of them, not before.
             Volatile.Write(ref quiet, true);
             var count = MemoryHygiene.Compactions;
+            var heapBefore = MemoryHygiene.HeapCompactions;
             var clock = Stopwatch.StartNew();
             var gaps = new List<double>();
             var last = 0.0;
@@ -300,6 +301,14 @@ public static class MemoryHygieneTests
 
             Expect(collectedAt - lastAsk >= 290, "not before the wait after the last ask was over");
             Expect(MemoryHygiene.LastReason == "tab closed, tab let go", "its reasons, each once: tab closed, tab let go");
+            Expect(MemoryHygiene.HeapCompactions == heapBefore, "no ask wanted the process heap compacted: HeapCompact not called");
+
+            // 1b. One ask of a merged burst wants the process heap compacted (the media browser at rest): the one collection does it.
+            count = MemoryHygiene.Compactions;
+            MemoryHygiene.RequestCompactOnce("tab closed");
+            MemoryHygiene.RequestCompactOnce("media browser at rest", compactProcessHeap: true);
+            Expect(WaitFor(() => MemoryHygiene.Compactions > count, 10_000) && WaitFor(() => !MemoryHygiene.IsCollecting, 10_000), "a burst with a process-heap ask: a collection follows");
+            Expect(MemoryHygiene.Compactions == count + 1 && MemoryHygiene.HeapCompactions == heapBefore + 1, "one collection, and the process heap compacted once after its finalizers");
 
             // 2. Never while the editor is busy: asked every 200 ms meanwhile, collected at the first quiet moment.
             Volatile.Write(ref quiet, false);
@@ -462,19 +471,4 @@ public static class MemoryHygieneTests
         Directory.Delete(folder, recursive: true);
     }
 
-    private static GraphResult Case(string golden, string header, Action<StringBuilder, List<string>> body)
-    {
-        var text = new StringBuilder(header).Append('\n');
-        var problems = new List<string>();
-        try
-        {
-            body(text, problems);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(golden, text.ToString(), problems, 0);
-    }
 }

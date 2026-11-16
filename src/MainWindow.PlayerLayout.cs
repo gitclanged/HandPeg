@@ -80,13 +80,10 @@ public partial class MainWindow
         EventManager.RegisterClassHandler(typeof(Thumb), Thumb.DragStartedEvent, new DragStartedEventHandler((sender, _) => HoldForDrag(sender, true)), handledEventsToo: true);
         EventManager.RegisterClassHandler(typeof(Thumb), Thumb.DragCompletedEvent, new DragCompletedEventHandler((sender, _) => HoldForDrag(sender, false)), handledEventsToo: true);
 
-        // A slider or a number box bound straight to a value that shapes a clip's edge, in any window (Layer Properties, the
-        // mask tools): while the pointer holds it, the player magnifies that clip's edge (the loupe, 5.0-Verify, the user's
-        // bug 6). The Effects pane's cards say so themselves (their values are bound to the cards).
-        EventManager.RegisterClassHandler(typeof(Slider), PreviewMouseLeftButtonDownEvent, new MouseButtonEventHandler((sender, _) => HoldBoundEdge(sender, true)), handledEventsToo: true);
-        EventManager.RegisterClassHandler(typeof(Slider), PreviewMouseLeftButtonUpEvent, new MouseButtonEventHandler((sender, _) => HoldBoundEdge(sender, false)), handledEventsToo: true);
-        EventManager.RegisterClassHandler(typeof(Slider), Mouse.LostMouseCaptureEvent, new MouseEventHandler((sender, _) => HoldBoundEdge(sender, false)), handledEventsToo: true);
-        NumericInput.DragHeld += (box, held) => HoldBoundEdge(box, held);
+        // A slider or a number box that declares the clip edge it shapes (NumericInput.EdgeKind: Layer Properties, the mask tools), in
+        // any window: while the pointer holds it, the player magnifies that edge of the clip it is bound to (the loupe). The Effects
+        // pane's cards say so themselves (their values are bound to the cards).
+        NumericInput.EdgeHeld += HoldBoundEdge;
 
         // Ping-to-Mark (5.2C): Alt + a click on the picture (pressed and let go without a drag: Alt + a drag still moves a clip without
         // snapping) drops a highlight at the playhead, where on the picture it was clicked kept on it.
@@ -128,7 +125,7 @@ public partial class MainWindow
     // Whether the edge being tuned was begun by a bound slider or box (HoldBoundEdge): only its own letting go ends it.
     private bool _boundEdgeHeld;
 
-    private void HoldBoundEdge(object sender, bool held)
+    private void HoldBoundEdge(FrameworkElement control, EdgeTuningKind kind, bool held)
     {
         if (!held)
         {
@@ -141,18 +138,7 @@ public partial class MainWindow
             return;
         }
 
-        var bound = sender is Slider ? RangeBase.ValueProperty : TextBox.TextProperty;
-        if (sender is not FrameworkElement control || System.Windows.Data.BindingOperations.GetBindingExpression(control, bound) is not { ResolvedSource: Layer layer } binding)
-            return;
-
-        var kind = binding.ResolvedSourcePropertyName switch
-        {
-            nameof(Layer.FeatherRadius) or nameof(Layer.CornerRadius) => EdgeTuningKind.Feather,
-            nameof(Layer.MaskGrow) or nameof(Layer.MaskOffsetX) or nameof(Layer.MaskOffsetY) => EdgeTuningKind.Mask,
-            nameof(Layer.ChromaSimilarity) or nameof(Layer.ChromaBlend) => EdgeTuningKind.ChromaKey,
-            _ => EdgeTuningKind.None,
-        };
-        if (kind == EdgeTuningKind.None)
+        if (kind == EdgeTuningKind.None || control.DataContext is not Layer layer)
             return;
 
         _boundEdgeHeld = true;
@@ -164,7 +150,7 @@ public partial class MainWindow
 
     private void HoldForDrag(object sender, bool started)
     {
-        if (sender is not Thumb thumb || ReferenceEquals(thumb.TemplatedParent, TimelineSlider) || thumb.TemplatedParent is ScrollBar || started == _dragHeld)
+        if (sender is not Thumb thumb || DragHold.GetExempt(thumb) || started == _dragHeld)
             return;
 
         _dragHeld = started;

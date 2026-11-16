@@ -130,7 +130,7 @@ public static class ProxyCache
                 }
                 catch (InvalidOperationException ex) when (i + 1 < encoders.Count)
                 {
-                    AppLog.Write($"Proxy: {encoder} would not make the proxy of {Path.GetFileName(media)}, the next encoder is tried: {ex.Message}");
+                    AppLog.Write($"Proxy: {encoder} would not make the proxy of {Path.GetFileName(media)}; the next encoder is tried", ex);
                 }
             }
 

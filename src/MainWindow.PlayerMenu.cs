@@ -64,7 +64,7 @@ public partial class MainWindow
         Add(PlayerMenuItems[1]!, CopyFrameToClipboard, hasPicture);
         Add(PlayerMenuItems[2]!, () => _viewModel.PingToMark(focal!.Value.X, focal.Value.Y), hasPicture && focal is not null && !_explodedUi);
         menu.Items.Add(new Separator());
-        Add(PlayerMenuItems[4]!, ToggleFullscreen, _fullscreen is not null || VideoView.IsVisible, check: _fullscreen is not null, gesture: "F11");
+        Add(PlayerMenuItems[4]!, _fullscreen.Toggle, _fullscreen.IsOpen || VideoView.IsVisible, check: _fullscreen.IsOpen, gesture: "F11");
         Add(PlayerMenuItems[5]!, () => ExplodedToggle.IsChecked = ExplodedToggle.IsChecked != true, ExplodedToggle.IsEnabled && _gpu is not null, check: ExplodedToggle.IsChecked == true);
         Add(PlayerMenuItems[6]!, () => _viewModel.IsExportQualityPreview = !_viewModel.IsExportQualityPreview, _gpu is not null, check: _viewModel.IsExportQualityPreview);
         Add(PlayerMenuItems[7]!, () => _viewModel.ShowSafeMargins = !_viewModel.ShowSafeMargins, check: _viewModel.ShowSafeMargins);
@@ -79,12 +79,14 @@ public partial class MainWindow
         if (_playerView is { } player)
             player.Matrix = Matrix.Identity;
         _gpu?.SetView(0, 0, 0);
-        PlaceLoopbackWipe();
+        _loopback.PlaceLoopbackWipe();
         _viewModel.StatusText = "Player zoom and pan reset.";
     }
 
     /// <summary>The frame on screen, as Export Frame saves it, put on the clipboard as a picture.</summary>
-    private async void CopyFrameToClipboard()
+    private void CopyFrameToClipboard() => Faults.Forget(CopyFrameToClipboardAsync(), nameof(CopyFrameToClipboard));
+
+    private async Task CopyFrameToClipboardAsync()
     {
         if (_gpu is not { } engine)
             return;

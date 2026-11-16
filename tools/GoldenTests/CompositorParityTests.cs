@@ -26,32 +26,26 @@ public static partial class CompositorParityTests
 
     public static IEnumerable<GraphResult> All()
     {
-        var text = new StringBuilder("# The GPU compositor against its CPU reference (5.0-Core): every slot, composite stage, decode, recovery, timing.\n");
-        var problems = new List<string>();
-        try
-        {
-            using var client = new CompositorClient(adapter: -1, keepStandby: true);
-            using var reader = new CompositorFrameReader(client);
-            var harness = new Harness(client, reader, text, problems);
-            harness.Effects();
-            harness.Composite();
-            harness.GpuFx();
-            harness.Exploded();
-            harness.ExplodedDetail();
-            harness.DepthRails();
-            harness.Loupe();
-            harness.Nv12();
-            harness.Decode();
-            harness.Timing();
-            harness.TimingFx();
-            harness.Recovery();
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
+        yield return Case("compositor-parity", "# The GPU compositor against its CPU reference (5.0-Core): every slot, composite stage, decode, recovery, timing.", Parity);
+    }
 
-        yield return new GraphResult("compositor-parity", text.ToString(), problems, 0);
+    private static void Parity(StringBuilder text, List<string> problems)
+    {
+        using var client = new CompositorClient(adapter: -1, keepStandby: true);
+        using var reader = new CompositorFrameReader(client);
+        var harness = new Harness(client, reader, text, problems);
+        harness.Effects();
+        harness.Composite();
+        harness.GpuFx();
+        harness.Exploded();
+        harness.ExplodedDetail();
+        harness.DepthRails();
+        harness.Loupe();
+        harness.Nv12();
+        harness.Decode();
+        harness.Timing();
+        harness.TimingFx();
+        harness.Recovery();
     }
 
     private sealed partial class Harness(CompositorClient client, CompositorFrameReader reader, StringBuilder text, List<string> problems)
@@ -323,6 +317,68 @@ public static partial class CompositorParityTests
             client.SetResource(2, GpuResourceKind.Curve1D, 256, 1, 1, curveBytes);
             Case("tone curve (19)", 1, (ref GpuLayerDescriptor l) => { l.CurveResourceId = 2; Add(ref l, new(GpuShaderSlot.ToneCurve, 0, 0, 0, 0, 0, 0, 0, 0)); },
                 input => ToneCurve(input, [], new RefPass { Params = pass.Params, Aux = curve }));
+            ColorStudio(pass, lut, n, curve);
+        }
+
+        /// <summary>
+        /// Pass 5.6A: the Color Grade (slot 30, PSColorStudio, two packets): a neutral card is exactly the picture it was given (no pass), a full
+        /// grade, its curves (a table of GpuColorTables.ColorCurves), its LUT at 50 %, all of them at once, and a card whose tables are not its
+        /// own (another card holds the layer's LUT and curve: the last lane says so) drawn without them.
+        /// </summary>
+        private void ColorStudio(RefPass pass, float[] lut, int n, RefImage toneCurve)
+        {
+            var neutral = new float[] { 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1 };
+            Begin();
+            Layer(0, GpuSourceKind.TestPattern, 1);
+            var plain = Render("color studio, the picture alone");
+            Begin();
+            ref var bare = ref Layer(0, GpuSourceKind.TestPattern, 1);
+            AddStudio(ref bare, neutral, false, false);
+            var drawn = Render("color studio, neutral (30)");
+            if (plain is not null && drawn is not null)
+            {
+                Line($"  color studio, neutral (30): exactly the picture it was given");
+                if (plain.MaxDifference(drawn) != 0)
+                    problems.Add($"color studio, neutral (30): {plain.MaxDifference(drawn) * 255:0.#}/255 off the picture alone");
+            }
+
+            var grade = new float[] { 35, -20, 0.4f, 0.1f, -0.05f, 0.08f, 0.2f, 1.15f, -0.1f, 0.15f, -0.1f, 0.05f, 0.12f, 1.2f, 0.3f, 0.5f };
+            Case("color studio, full grade (30)", 1, (ref GpuLayerDescriptor l) => AddStudio(ref l, grade, false, false),
+                input => CompositorReference.ColorStudio(input, grade, new RefPass { Params = pass.Params }));
+
+            var table = HandPegApp.Services.Gpu.GpuColorTables.ColorCurves("0/0.05 0.5/0.6 1/0.95", "0/0 0.4/0.5 1/1", "", "0.2/0.1 1/1")!;
+            var curveFloats = new float[256 * 4];
+            Buffer.BlockCopy(table, 0, curveFloats, 0, table.Length);
+            var curves = new RefImage(256, 1, curveFloats);
+            client.SetResource(3, GpuResourceKind.Curve1D, 256, 1, 1, table);
+            Case("color studio, curves (30)", 2, (ref GpuLayerDescriptor l) => { l.CurveResourceId = 3; AddStudio(ref l, neutral, true, false); },
+                input => CompositorReference.ColorStudio(input, neutral, new RefPass { Params = pass.Params, Params2 = new Vector4(0, 1, 1, 0), Aux = curves }));
+
+            var half = (float[])neutral.Clone();
+            half[15] = 0.5f;
+            Case("color studio, LUT at 50 % (30)", 1, (ref GpuLayerDescriptor l) => { l.LutResourceId = 0; AddStudio(ref l, half, false, true); },
+                input => CompositorReference.ColorStudio(input, half, new RefPass { Params = pass.Params, Params2 = new Vector4(n, 0.5f, 0, 0), Lut = lut }));
+            Case("color studio, grade, curves and LUT (30)", 0, (ref GpuLayerDescriptor l) => { (l.LutResourceId, l.CurveResourceId) = (0, 3); AddStudio(ref l, grade, true, true); },
+                input => CompositorReference.ColorStudio(input, grade, new RefPass { Params = pass.Params, Params2 = new Vector4(n, 0.5f, 1, 0), Aux = curves, Lut = lut }));
+
+            // The layer's LUT and curve held by a LUT card and a Curves card before it: the grade draws without them.
+            Case("color studio, tables not its own (30)", 1, (ref GpuLayerDescriptor l) =>
+                {
+                    (l.LutResourceId, l.CurveResourceId) = (0, 2);
+                    Add(ref l, new(GpuShaderSlot.Lut3D, 0, 0, 0, 0, 0, 0, 0, 0));
+                    Add(ref l, new(GpuShaderSlot.ToneCurve, 0, 0, 0, 0, 0, 0, 0, 0));
+                    AddStudio(ref l, grade, false, false);
+                },
+                input => CompositorReference.ColorStudio(ToneCurve(Lut3D(input, [], new RefPass { Params = pass.Params, Params2 = new Vector4(n, 0, 0, 0), Lut = lut }).ToHalf(), [],
+                    new RefPass { Params = pass.Params, Aux = toneCurve }).ToHalf(), grade, new RefPass { Params = pass.Params }));
+        }
+
+        /// <summary>The Color Grade's two packets from its sixteen lanes, the last one carrying its mix and which tables are its own (GpuColorTables.StudioTablesLane).</summary>
+        private static void AddStudio(ref GpuLayerDescriptor layer, float[] lanes, bool curves, bool lut)
+        {
+            Add(ref layer, new(GpuShaderSlot.ColorStudio, lanes[0], lanes[1], lanes[2], lanes[3], lanes[4], lanes[5], lanes[6], lanes[7]));
+            Add(ref layer, new(GpuShaderSlot.ColorStudio, lanes[8], lanes[9], lanes[10], lanes[11], lanes[12], lanes[13], lanes[14],
+                HandPegApp.Services.Gpu.GpuColorTables.StudioTablesLane(lanes[15], curves, lut)));
         }
 
         private delegate void Setup(ref GpuLayerDescriptor layer);
@@ -1168,6 +1224,10 @@ public static partial class CompositorParityTests
                 var place = 2;
                 foreach (var cut in new[] { GpuShaderSlot.TransitionWhipPan, GpuShaderSlot.TransitionZoomWarp, GpuShaderSlot.TransitionRgbGlitch, GpuShaderSlot.TransitionSpin })
                     Add(ref Layer(place++, GpuSourceKind.TestPattern, 1, 200, 100, 800, 450), new(cut, 0.6f, 0, 0, 0.5f, 1, 0, 0, 0));
+                // The Color Grade (Pass 5.6A, slot 30) with its curves and its LUT: one pass, full frame.
+                ref var graded = ref Layer(place++, GpuSourceKind.TestPattern, 3, 0, 0, 1920, 1080);
+                (graded.LutResourceId, graded.CurveResourceId) = (0, 2);
+                AddStudio(ref graded, [35, -20, 0.4f, 0.1f, -0.05f, 0.08f, 0.2f, 1.15f, -0.1f, 0.15f, -0.1f, 0.05f, 0.12f, 1.2f, 0.3f, 0.5f], true, true);
                 var sequence = client.Publish();
                 if (!client.WaitForFrame(sequence, 10_000))
                 {

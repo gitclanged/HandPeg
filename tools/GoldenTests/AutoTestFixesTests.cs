@@ -7,6 +7,7 @@ using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using HandPegApp;
+using HandPegApp.Models;
 using HandPegApp.Models.Timeline;
 using HandPegApp.Services;
 
@@ -38,29 +39,6 @@ public static class AutoTestFixesTests
         yield break;
     }
 
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>, StringBuilder> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect, text);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
-    }
-
     private static string F(FormattableString text) => text.ToString(CultureInfo.InvariantCulture);
 
     // ----- legacy-preset-names -----
@@ -80,7 +58,7 @@ public static class AutoTestFixesTests
             "the table is three old names, each mapped to a built-in of 5.5.0");
 
         // A project's Track Preset Nodes, as the project file holds them.
-        var options = (JsonSerializerOptions)typeof(ProjectStore).GetField("JsonOptions", BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
+        var options = ProjectStore.JsonOptions;
         var document = new TimelineDocument();
         foreach (var (number, node) in new[] { (1, "Overwatch 2 Vertical HUD"), (2, "Fortnite draft"), (3, "Overwatch Vertical HUDv2"), (4, "My Own Preset"), (5, (string?)null) })
             document.Tracks.Add(new TimelineTrackModel { Kind = TimelineTrackKind.Video, TrackNumber = number, PresetNodeName = node });
@@ -113,10 +91,9 @@ public static class AutoTestFixesTests
                && settings.SmartRules.Select(r => r.Preset).SequenceEqual(["Overwatch 2 Vertical HUD", "Discord 10MB"]),
             "the default preset and Smart Rules (Export Presets) are never mapped");
         expect(!settings.MapLegacyPresetNames(), "mapped again, nothing changes");
-        var source = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Services", "AppSettings.cs"));
-        var load = source.IndexOf("private static AppSettings Load()", StringComparison.Ordinal);
-        var call = source.IndexOf("settings.MapLegacyPresetNames();", StringComparison.Ordinal);
-        expect(load > 0 && call > load, "the settings are mapped as they are read (AppSettings.Load calls MapLegacyPresetNames)");
+        var loaded = new AppSettings { ViewDefaultsVersion = SettingsMigrations.Latest, SplashStylePresets = ["Overwatch 2 Vertical HUD" + ext] };
+        SettingsMigrations.Migrate(loaded);
+        expect(loaded.SplashStylePresets.SequenceEqual(["Overwatch Vertical" + ext]), "the settings are mapped as they are read (SettingsMigrations.Migrate, which every load runs)");
     }
 
     // ----- playing-refresh-bound (Pass 5.5.2, the Desktop's avsync-session) -----
@@ -124,49 +101,38 @@ public static class AutoTestFixesTests
     private static void RefreshBound(Action<bool, string> expect, StringBuilder text)
     {
         const double Hz500 = 1 / 500.0, Hz60 = 1 / 60.0;
-        expect(GpuViewportControl.StartRefresh(Hz60, Hz500) == Hz500 && GpuViewportControl.StartRefresh(Hz500, Hz60) == Hz60,
+        expect(GpuViewport.StartRefresh(Hz60, Hz500) == Hz500 && GpuViewport.StartRefresh(Hz500, Hz60) == Hz60,
             "a play starts its estimate at the monitor's refresh when it is off by more than half (1/60 on a 500 Hz display, and back)");
-        expect(GpuViewportControl.StartRefresh(0.0021, Hz500) == 0.0021 && GpuViewportControl.StartRefresh(Hz60, double.NaN) == Hz60,
+        expect(GpuViewport.StartRefresh(0.0021, Hz500) == 0.0021 && GpuViewport.StartRefresh(Hz60, double.NaN) == Hz60,
             "an estimate near the monitor's, or a monitor that cannot be told, is kept");
 
         // A cold play's first half second on the 500 Hz Desktop: turns of 37-52 ms among 2 ms ones.
-        var refresh = GpuViewportControl.StartRefresh(Hz60, Hz500);
+        var refresh = GpuViewport.StartRefresh(Hz60, Hz500);
         var bounded = refresh;
         var unbounded = refresh;
         foreach (var interval in new[] { 0.037, 0.045, 0.052, 0.040, 0.047, 0.002, 0.039, 0.002, 0.051, 0.002, 0.002, 0.002 })
         {
-            bounded = GpuViewportControl.NextRefresh(bounded, interval, Hz500);
-            unbounded = GpuViewportControl.NextRefresh(unbounded, interval, double.NaN);
+            bounded = GpuViewport.NextRefresh(bounded, interval, Hz500);
+            unbounded = GpuViewport.NextRefresh(unbounded, interval, double.NaN);
         }
 
         text.Append(F($"after a cold play's stalls: {bounded * 1000:0.###} ms bounded, {unbounded * 1000:0.###} ms as before 5.5.2")).Append('\n');
         expect(Math.Abs(bounded - Hz500) < 1e-4, "turns over 1.5 refreshes are stalls and leave the 500 Hz estimate at 2 ms");
         expect(unbounded > 0.008, "unbounded (5.4.4-5.5.1, or a monitor not told) the same turns pull it past 8 ms: the frames drawn that far ahead");
-        expect(GpuViewportControl.NextRefresh(Hz60, 1 / 59.0, Hz60) is var near && near > Hz60 && near < 1 / 59.0,
+        expect(GpuViewport.NextRefresh(Hz60, 1 / 59.0, Hz60) is var near && near > Hz60 && near < 1 / 59.0,
             "a turn near the monitor's refresh still moves the estimate (the average as before)");
-        expect(GpuViewportControl.NextRefresh(Hz500, 0.001, Hz500) == Hz500 && GpuViewportControl.NextRefresh(Hz500, 0.06, Hz500) == Hz500,
+        expect(GpuViewport.NextRefresh(Hz500, 0.001, Hz500) == Hz500 && GpuViewport.NextRefresh(Hz500, 0.06, Hz500) == Hz500,
             "under 1.5 ms or over 50 ms counts for nothing (as before)");
 
-        var viewport = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Controls", "GpuViewportControl.cs"));
-        var pump = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Services", "GpuPreviewEngine.cs"));
+        var viewport = File.ReadAllText(Path.Combine(SourceProbe.Root, "src", "Services", "GpuViewport.cs"));
+        var pump = File.ReadAllText(Path.Combine(SourceProbe.Root, "src", "Services", "GpuPreviewEngine.cs"));
         var kept = pump.ReplaceLineEndings("\n").IndexOf("_viewport.FrameOrigin = 0;\n                        var kept = _viewport.PresentNewest(vsync: true, force: true);", StringComparison.Ordinal);
         expect(kept > 0, "a playing copy of the frame shown last is presented with no origin: it measures no display lead");
         expect(viewport.Contains("if (id != 0 && FrameOrigin != 0)", StringComparison.Ordinal) && viewport.Contains("_leadOrigins[i] == 0", StringComparison.Ordinal),
             "MeasureLead keeps only new frames' presents, and asks the swap chain after every present (copies included)");
-        expect(pump.Contains("GpuViewportControl.NextRefresh(_refresh, interval, monitorPeriod)", StringComparison.Ordinal)
-               && pump.Contains("GpuViewportControl.StartRefresh(_refresh, monitorPeriod)", StringComparison.Ordinal),
+        expect(pump.Contains("GpuViewport.NextRefresh(_refresh, interval, monitorPeriod)", StringComparison.Ordinal)
+               && pump.Contains("GpuViewport.StartRefresh(_refresh, monitorPeriod)", StringComparison.Ordinal),
             "the pump starts each play at the monitor's refresh and bounds every turn it measures");
-    }
-
-    private static string RepoRoot()
-    {
-        for (var folder = new DirectoryInfo(AppContext.BaseDirectory); folder is not null; folder = folder.Parent)
-        {
-            if (File.Exists(Path.Combine(folder.FullName, "HandPegApp.csproj")))
-                return folder.FullName;
-        }
-
-        throw new DirectoryNotFoundException("the repository (HandPegApp.csproj) above " + AppContext.BaseDirectory);
     }
 
     // ----- timeline-sound-stack-drag-wave -----

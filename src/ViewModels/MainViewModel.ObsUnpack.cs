@@ -48,7 +48,7 @@ public partial class MainViewModel
         // A Sequence shaped as the whole canvas (the first file opened gave it its shape) takes one half's: two 16:9 pictures, a 16:9 frame.
         if (GetRequestedSize() is null && ObsUnpacker.IsSideBySide(FrameWidth, FrameHeight) && Document.HasNaturalSize)
         {
-            (Document.NaturalWidth, Document.NaturalHeight) = (Even(view.ImageWidth / 2.0), Even(view.ImageHeight));
+            Edit(label, edit => edit.SetFrame(Even(view.ImageWidth / 2.0), Even(view.ImageHeight), Document.ExplicitFrame), undoable: false);
             NoteDocumentShape();
         }
 

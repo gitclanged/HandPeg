@@ -30,22 +30,6 @@ public static class ExplodedViewTests
 {
     private static void Line(StringBuilder text, FormattableString line) => text.Append(line.ToString(CultureInfo.InvariantCulture)).Append('\n');
 
-    private static GraphResult Case(string golden, string header, Action<StringBuilder, List<string>> body)
-    {
-        var text = new StringBuilder(header).Append('\n');
-        var problems = new List<string>();
-        try
-        {
-            body(text, problems);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(golden, text.ToString(), problems, 0);
-    }
-
     // ----- exploded-3d-transition-pacing -----
 
     public static GraphResult Pacing() => Case("exploded-3d-transition-pacing",
@@ -252,7 +236,7 @@ public static class ExplodedViewTests
             }
 
             // The hints the view shows say so.
-            var main = XDocument.Load(Path.Combine(RepositoryRoot(), "src", "MainWindow.xaml"));
+            var main = XDocument.Load(Path.Combine(SourceProbe.Root, "src", "MainWindow.xaml"));
             var hints = main.Descendants().FirstOrDefault(e => e.Name.LocalName == "TextBlock"
                 && e.Attributes().Any(a => a.Name.LocalName == "AutomationProperties.Name" && a.Value == "3D View Hints"));
             var said = string.Join(" / ", hints?.Elements().Where(e => e.Name.LocalName == "Run").Select(r => (string?)r.Attribute("Text")) ?? []);
@@ -264,14 +248,4 @@ public static class ExplodedViewTests
             }
         });
 
-    private static string RepositoryRoot()
-    {
-        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-        {
-            if (File.Exists(Path.Combine(dir.FullName, "HandPegApp.csproj")))
-                return dir.FullName;
-        }
-
-        throw new DirectoryNotFoundException("the repository (HandPegApp.csproj) above " + AppContext.BaseDirectory);
-    }
 }

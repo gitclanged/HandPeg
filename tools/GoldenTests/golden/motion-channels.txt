@@ -1,0 +1,3 @@
+# Every keyframed channel of a look is in LayerState.MotionChannels, the list every timing transform walks.
+ok: the keyframed channels of a look and the motion-channel list are the same
+ok: each channel's reader and writer reach its own property

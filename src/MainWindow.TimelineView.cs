@@ -385,8 +385,6 @@ public partial class MainWindow
     internal static string ZoomReadout(double extent, double span) =>
         string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{(extent > 0 && span > 0 ? extent / span : 1):0.#}x");
 
-    private void TimelineZoomFit_Click(object sender, RoutedEventArgs e) => FitTimeline();
-
     /// <summary>Stretches the Sequence Overview Scrubber to the time bars' view and slides it to their place, while that is switched on; otherwise it fills its place as it always did.</summary>
     private void UpdateMasterStretch()
     {

@@ -250,14 +250,25 @@ public static class ClipLibrary
             return null;
 
         var partial = target + ".part" + System.IO.Path.GetExtension(target);
-        var started = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(DependencyUpdater.FfmpegPath, string.Create(CultureInfo.InvariantCulture,
-            $"-hide_banner -loglevel error -y -ss {from:0.######} -t {to - from:0.######} -i \"{source}\" -map 0:a -c copy -map_metadata 0 \"{partial}\""))
+        System.Diagnostics.Process? started;
+        try
         {
-            UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true,
-        });
+            started = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(DependencyUpdater.FfmpegPath, string.Create(CultureInfo.InvariantCulture,
+                $"-hide_banner -loglevel error -y -ss {from:0.######} -t {to - from:0.######} -i \"{source}\" -map 0:a -c copy -map_metadata 0 \"{partial}\""))
+            {
+                UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true,
+            });
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            AppLog.Write("Clip Library: FFmpeg could not be started", ex);
+            return null;
+        }
+
         if (started is null)
             return null;
         using (started)
+        using (ProcessPipes.Adopt(started.Id))
         {
             using var _ = cancel.Register(() =>
             {

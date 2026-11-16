@@ -1,0 +1,6 @@
+# Downloads fail closed without a checksum; every model's SHA-256 is pinned; release addresses are https or the default.
+ok: a download with no known checksum is refused (fail closed)
+ok: a mismatch is refused; a match passes (case does not matter)
+ok: every model HandPeg offers has a pinned SHA-256 (11 of 11)
+ok: a release address of one's own is used only when it is an absolute https address
+ok: a tool whose release publishes no checksum is not installed, whatever its pin

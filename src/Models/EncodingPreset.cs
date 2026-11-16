@@ -35,13 +35,33 @@ public sealed record LabeledChoice<T>(T Key, string Value)
 /// <summary>
 /// A named snapshot of the export settings (the Export tab), and the layout, filters and captions of a preset saved with them.
 /// Nothing about the source or its cut points is stored.
-/// Since 5.4B it is also the one model of an Export Preset: the built-in ones (ExportPresetCatalog) carry a <see cref="Category"/>,
+/// Since 5.4.0 it is also the one model of an Export Preset: the built-in ones (ExportPresetCatalog) carry a <see cref="Category"/>,
 /// the user's own (presets.json, .hppreset files) none.
 /// </summary>
-public sealed class EncodingPreset
+public sealed class EncodingPreset : IJsonOnDeserialized
 {
     /// <summary>The Export Presets selector's groups (5.4B): the built-ins of each, then the user's own ("My Presets").</summary>
     public const string PlatformCategory = "Platform & Social", StudioCategory = "Studio & Archive", UserCategory = "My Presets";
+
+    /// <summary>
+    /// Fields this version does not know (a newer HandPeg's), kept so that saving does not drop them. Keys an older version wrote
+    /// and this one retired (<see cref="RetiredKeys"/>) are dropped as the preset is read instead.
+    /// </summary>
+    [JsonExtensionData]
+    public Dictionary<string, System.Text.Json.JsonElement>? Extra { get; set; }
+
+    /// <summary>Keys of retired settings: "VerticalFramer" is the Frame &amp; Layer Engine switch removed in 5.2.</summary>
+    private static readonly string[] RetiredKeys = ["VerticalFramer"];
+
+    void IJsonOnDeserialized.OnDeserialized()
+    {
+        if (Extra is null)
+            return;
+        foreach (var key in RetiredKeys)
+            Extra.Remove(key);
+        if (Extra.Count == 0)
+            Extra = null;
+    }
 
     public string Name { get; set; } = "";
 

@@ -26,8 +26,13 @@ public static class FileState
     /// <summary>How long an answer about a file in a folder with no watcher is taken as it is.</summary>
     public static readonly TimeSpan FreshFor = TimeSpan.FromSeconds(2);
 
-    // Watchers kept at most: past this, folders are looked at again by age only.
+    /// <summary>How long an answer about a file in a watched folder is taken as it is before it is looked at again anyway (settable for goldens).</summary>
+    internal static TimeSpan WatchedFreshFor { get; set; } = TimeSpan.FromSeconds(30);
+
+    // Live watchers kept at most: past this, folders are looked at again by age only. Counted apart from the table, whose null
+    // entries (folders not watched) must not use up the room.
     private const int MostWatchers = 64;
+    private static int _liveWatchers;
 
     private static readonly ConcurrentDictionary<string, Entry> Entries = new(StringComparer.OrdinalIgnoreCase);
     private static readonly ConcurrentDictionary<string, FileSystemWatcher?> Watchers = new(StringComparer.OrdinalIgnoreCase);
@@ -43,8 +48,9 @@ public static class FileState
 
         if (Entries.TryGetValue(full, out var known))
         {
-            // Watched: a change would have made it forget. Not watched and old: given as it is, and looked at again.
-            if (!IsWatched(full) && Environment.TickCount64 - known.CheckedAt > FreshFor.TotalMilliseconds && Refreshing.TryAdd(full, 0))
+            // Old: given as it is, and looked at again in the background (a watched folder's change makes it forget at once as well).
+            var freshFor = IsWatched(full) ? WatchedFreshFor : FreshFor;
+            if (Environment.TickCount64 - known.CheckedAt > freshFor.TotalMilliseconds && Refreshing.TryAdd(full, 0))
             {
                 _ = Task.Run(() =>
                 {
@@ -110,31 +116,53 @@ public static class FileState
         if (Path.GetDirectoryName(full) is not { } folder || Watchers.ContainsKey(folder))
             return;
 
+        // Whether the drive can be unplugged is learnt once per volume off this thread: until then the folder is not watched (and not
+        // marked, so a later question about a file in it tries again).
+        if (DriveKind.IsHotPluggable(folder) is not { } pluggable)
+        {
+            _ = DriveKind.Learn(folder);
+            return;
+        }
+
         FileSystemWatcher? watcher = null;
         try
         {
-            if (Watchers.Count < MostWatchers && Path.GetPathRoot(folder) is { Length: > 0 } root && !root.StartsWith(@"\\", StringComparison.Ordinal)
-                && new DriveInfo(root).DriveType == DriveType.Fixed && Directory.Exists(folder))
+            // Never watched (a drive that can be unplugged, a network or non-fixed drive): marked, so it is not asked again.
+            if (pluggable || Path.GetPathRoot(folder) is not { Length: > 0 } root || root.StartsWith(@"\\", StringComparison.Ordinal)
+                || new DriveInfo(root).DriveType != DriveType.Fixed)
             {
-                watcher = new FileSystemWatcher(folder)
-                {
-                    NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite | NotifyFilters.Size,
-                    IncludeSubdirectories = false,
-                    InternalBufferSize = 16384,
-                };
-                watcher.Changed += (_, e) => Forget(e.FullPath);
-                watcher.Created += (_, e) => Forget(e.FullPath);
-                watcher.Deleted += (_, e) => Forget(e.FullPath);
-                watcher.Renamed += (_, e) =>
-                {
-                    Forget(e.OldFullPath);
-                    Forget(e.FullPath);
-                };
-
-                // Too much happened at once to say what: everything in the folder is looked at again.
-                watcher.Error += (_, _) => ForgetFolder(folder);
-                watcher.EnableRaisingEvents = true;
+                Watchers.TryAdd(folder, null);
+                return;
             }
+
+            // Not now (the folder is not there yet, or every watcher is in use): not marked, so a later question tries again.
+            if (Volatile.Read(ref _liveWatchers) >= MostWatchers || !Directory.Exists(folder))
+                return;
+
+            watcher = new FileSystemWatcher(folder)
+            {
+                NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite | NotifyFilters.Size,
+                IncludeSubdirectories = false,
+                InternalBufferSize = 16384,
+            };
+            watcher.Changed += (_, e) => Forget(e.FullPath);
+            watcher.Created += (_, e) => Forget(e.FullPath);
+            watcher.Deleted += (_, e) => Forget(e.FullPath);
+            watcher.Renamed += (_, e) =>
+            {
+                Forget(e.OldFullPath);
+                Forget(e.FullPath);
+            };
+
+            // Too much happened at once to say what (a buffer overflow; the watcher goes on): everything in the folder is looked at
+            // again. Any other error stops the watcher (its folder deleted, its volume gone): it is removed and disposed as well.
+            watcher.Error += (sender, e) =>
+            {
+                if (e.GetException() is not InternalBufferOverflowException && sender is FileSystemWatcher failed)
+                    Retire(folder, failed);
+                ForgetFolder(folder);
+            };
+            watcher.EnableRaisingEvents = true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or PlatformNotSupportedException)
         {
@@ -144,6 +172,31 @@ public static class FileState
 
         if (!Watchers.TryAdd(folder, watcher))
             watcher?.Dispose();
+        else if (watcher is not null)
+            Interlocked.Increment(ref _liveWatchers);
+    }
+
+    /// <summary>A watcher that stopped: out of the table (so the folder can be watched again) and disposed.</summary>
+    private static void Retire(string folder, FileSystemWatcher watcher)
+    {
+        if (!Watchers.TryRemove(KeyValuePair.Create(folder, (FileSystemWatcher?)watcher)))
+            return;
+        Interlocked.Decrement(ref _liveWatchers);
+        watcher.Dispose();
+    }
+
+    /// <summary>Whether a folder has a live watcher (for goldens).</summary>
+    internal static bool IsFolderWatched(string folder) => Watchers.TryGetValue(Path.GetFullPath(folder), out var watcher) && watcher is not null;
+
+    /// <summary>Raises a watcher's failure as a dead folder would (for goldens): the watcher is retired and the folder forgotten.</summary>
+    internal static void FailWatcherForTests(string folder)
+    {
+        var full = Path.GetFullPath(folder);
+        if (Watchers.TryGetValue(full, out var watcher) && watcher is not null)
+        {
+            Retire(full, watcher);
+            ForgetFolder(full);
+        }
     }
 
     private static void ForgetFolder(string folder)

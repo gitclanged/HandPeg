@@ -1,0 +1,10 @@
+# MainWindow and MainViewModel: partial files, fields and field lines only shrink (recorded below; a lower count is written with -Update).
+MainWindow: 44 partial files, 305 fields, 272 field lines
+ok: MainWindow: no new partial file
+ok: MainWindow: no new field
+ok: MainWindow: no new field line
+MainViewModel: 52 partial files, 472 fields, 341 field lines
+ok: MainViewModel: no new partial file
+ok: MainViewModel: no new field
+ok: MainViewModel: no new field line
+ok: both classes are measured (files, fields and field lines found)

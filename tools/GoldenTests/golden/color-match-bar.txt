@@ -1,0 +1,14 @@
+# Color Match's bar (5.6A review): a click on Reference cancels, the target on screen, the pick ended by an edit or a view, Esc first for a drag, a square loupe.
+ok: F21: a release on the Reference button (a click) cancels, with no match; released anywhere off it, the colour there is the reference
+ok: F21, F26: the release checks the button's own bounds first; Cancel with no drag under way does nothing
+ok: F23: a clip is on screen from its start to its end (not hidden; a Duration of 0 runs to the end), the blur fill always
+ok: F23, F22, F24, G3: Pick Target refuses a target off screen at the playhead ("Target not shown"), a grade not drawn, a card with a LUT mixed in or a keyframed value
+ok: G3: a stack is bypassed by its clip's (or the blur fill's) Bypass All, the Sequence Output's by the Sequence's
+ok: F20: the grade is noted before the frame is read (and again after, and at the click); the target's colour is ungraded once under it; Match solves from that colour, never a stale graded one
+ok: F22, F24, G3: Match checks the card again before it writes (a grade not drawn, a LUT or keys refuse) and solves through its curves while it holds the curve table
+ok: G3: the grade the frame is read under leaves out the curves a Curves card above took (the table changing hands is another shot)
+ok: G3: OwnsCurveTable follows the plan: cards in order, a switched-off one skipped, a Curves card takes the table only when GpuColorTables.ToneCurve has one
+ok: F25: an edit, Undo, a grade moved (the preview state invalidated), Interactive Crop or a Draw target end the pick ("Pick the target again")
+ok: F25: a press or a move asks Refusal first: the 3D view or a source view ends the pick, the press left unhandled for that view
+ok: F26: TakeOverlayKey's Esc cancels a Reference drag first, before EscapeTakerFor (the 3D view's and Interactive Crop's Esc come later)
+ok: F27: the screen loupe keeps its size and squares its picture row in physical pixels (the swatch row at the content's pixels per DIP)

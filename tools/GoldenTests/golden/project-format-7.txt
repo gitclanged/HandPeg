@@ -1,0 +1,8 @@
+# Format 7 is written only for a project that uses 5.6 data; 6 is still read; a 5.5-era refusal of 7 holds.
+ok: a project with nothing of 5.6 is still written as format 6 (a 5.5 release opens it)
+ok: a clip at 16x (5.5 plays at most 10x): format 7
+ok: a look with Keep Pitch off: format 7
+ok: Smooth Slow-Mo or Spectral Audio: format 7
+ok: this version opens both formats
+ok: a format newer than this version's newest is refused unless the user asks to open it (as 5.5 now refuses format 7)
+ok: a format 5 project is refused, naming the formats this version opens (6 to 7)

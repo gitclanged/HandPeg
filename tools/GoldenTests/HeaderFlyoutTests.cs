@@ -91,7 +91,7 @@ public static class HeaderFlyoutTests
 
     private static void Xaml(StringBuilder text, List<string> problems)
     {
-        var main = XDocument.Load(Path.Combine(RepositoryRoot(), "src", "MainWindow.xaml"));
+        var main = XDocument.Load(Path.Combine(SourceProbe.Root, "src", "MainWindow.xaml"));
         XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
         Line(text, $"MainWindow.xaml, each placed in code by UiScale.PlaceAgainst (no Placement, PlacementTarget or offsets of its own):");
         // (5.4D: the Layout button's menu, LayoutFlyout, is retired: the Layout Selector is its one Layout UI.)
@@ -105,17 +105,6 @@ public static class HeaderFlyoutTests
             else if (own.Count > 0)
                 problems.Add($"{name} still sets {string.Join(", ", own)} in MainWindow.xaml");
         }
-    }
-
-    private static string RepositoryRoot()
-    {
-        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-        {
-            if (File.Exists(Path.Combine(dir.FullName, "HandPegApp.csproj")))
-                return dir.FullName;
-        }
-
-        throw new DirectoryNotFoundException("the repository (HandPegApp.csproj) above " + AppContext.BaseDirectory);
     }
 
     // ----- (3) A real window, a real dock, the five built-in layouts previewed under an open flyout -----

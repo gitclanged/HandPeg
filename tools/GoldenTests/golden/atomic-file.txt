@@ -1,0 +1,7 @@
+# AtomicFile: a failed write leaves the old file and no temporary file; keepPrevious keeps the replaced copy.
+ok: a write that throws part of the way: the failure is passed on and the file is still the old one
+ok: and its temporary file is deleted
+ok: a durable write keeping the previous copy: the new content in place, the replaced one as data.json.prev
+ok: a write without keepPrevious leaves .prev as it was
+ok: the text is UTF-8 with no byte order mark (as File.WriteAllText writes it)
+ok: SetAside moves a damaged file to <name>.damaged-<stamp>.json beside it

@@ -1,0 +1,10 @@
+# The Speed & Time card's options (5.6A): written only when not the default, read back, taken as a look, kept over a track's look.
+ok: a clip starts with Smooth Slow-Mo off, Keep Pitch on, Spectral Audio off
+ok: at the defaults nothing of them is written (older projects read the same)
+ok: set, each is written
+ok: and read back
+ok: a layer saved before 5.6A reads with the defaults
+ok: a look puts them on a clip, and no look puts back the defaults
+ok: the engine hears Spectral and the tape pitch of 0.5x (rate 0.5, pitch 0.5)
+ok: over a track's look the clip keeps its own options
+ok: a Preset's look, saved before 5.6A or with options of its own, leaves the clip's Smooth Slow-Mo, Keep Pitch and Spectral Audio as they were

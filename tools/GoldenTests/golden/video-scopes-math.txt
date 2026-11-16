@@ -13,3 +13,7 @@ ok: a frame narrower than the scope spreads each column over the scope's (a 9:16
 ok: the Luma Waveform of flat grey 128: 384 x 256, a bright line on row 127, the ground elsewhere, the graticule at 0
 ok: its Histogram: 256 x 256, level 128 a full white bar (the channels over the luma), its neighbour empty
 ok: the RGB Parade of flat red: 400 wide, the red third lit red at the top, the green third lit green at the bottom
+ok: pure red at Cb -0.1146, Cr 0.5; grey at the centre; the targets R, Mg, B, Cy, G, Yl (blue at Cb 0.5, yellow at -0.5), the 75 % ones three quarters out
+ok: flat red counted in one cell, up and to the left of the centre (100, 8); flat grey all in the centre cell (128, 128) and nowhere else
+ok: two skin tones within 10 degrees of the skin-tone line at 123: 125.5, 129.8
+ok: its picture: 256 x 256, the red target's box lit, red's dot bright in its cell, the skin-tone line warm, the crosshair's graticule, the ground in a corner

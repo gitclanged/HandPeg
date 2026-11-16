@@ -21,11 +21,12 @@ launch runs the old build (watch for MSB3026/MSB3027 in the build output).
 
 ## GoldenTests.ps1 (golden-file tests of the graphs, the project format and the runner)
 
-`pwsh -NoProfile -File tools\GoldenTests.ps1 [-Update] [-Filter <part of a name>] [-NoBuild]`
+`powershell -NoProfile -ExecutionPolicy Bypass -File tools\GoldenTests.ps1 [-Update] [-Filter "part|other part"] [-NoBuild]`
 
-Where there is no PowerShell 7 (a fresh Windows on ARM laptop), Windows PowerShell runs the same scripts:
-`powershell -NoProfile -ExecutionPolicy Bypass -File tools\GoldenTests.ps1`. A build that names no runtime is made for the
-machine it runs on (ARM64 there), so the tests run without an x64 .NET.
+A build that names no runtime is made for the machine it runs on (ARM64 on an ARM64 PC), so the tests run without an x64 .NET.
+`-Filter` takes one or more parts of golden names separated by `|`; a case whose name contains none of them is skipped before it
+runs (a filtered run takes seconds, not the full suite's minutes). Exit codes: 0 all passed, 1 a golden failed, 3 a filter term
+matched no golden. `-Update` never writes the golden of a case that reports a problem.
 
 The tests that compare with FFmpeg look for it in `HANDPEG_FFMPEG` first (a portable copy's
 `portable\deps\ffmpeg-arm64\ffmpeg.exe`, say), then in HandPeg's own tool folders under `%LOCALAPPDATA%` (`ffmpeg-arm64`, then
@@ -37,8 +38,8 @@ sources, each with a note; only with neither are they left out (or drawn from an
 SeekBench on a long project: always give `--from <s> --seconds <s>`: it runs in real time, so `MULTI VIDEO TEST` alone (6,703 s) would take hours. `--trace` prints every late frame with the lanes, seeks and render time, `--rest <ms>` is the pause before play. It clears the frame cache before each run: its numbers are cold-cache.
 
 Builds `tools\GoldenTests` (a console program referencing the app's build, so it tests the very code HandPeg runs)
-once, then runs it; the tests themselves take under 2 s (about 1.3 s of it the timeline model's 30,000 splits and
-frame loops). Each case writes a text file and compares it with its
+once, then runs it; the full suite takes about 8 minutes (the compositor, export and HEVC cases run real GPU work), and the
+output streams case by case with a `time` line for any case or suite over 2 s. Each case writes a text file and compares it with its
 golden file in `tools\GoldenTests\golden`; a difference is printed as a line diff (`-` golden, `+` now). `-Update`
 writes the golden files anew from what the code makes now: after a change meant to change the graphs, run it and
 review the golden files' diff in git before committing them (that diff is the review). Close HandPeg first: the build

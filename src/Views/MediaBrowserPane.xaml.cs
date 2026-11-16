@@ -334,7 +334,7 @@ public partial class MediaBrowserPane : UserControl
             {
                 var file = new FileInfo(clip.Path);
                 var tags = clip.Tags.Count > 0 ? " \u00B7 " + string.Join(", ", clip.Tags) : "";
-                return new MediaBrowserItem(file.FullName, MediaBrowserItem.KindOf(file.Name) ?? MediaBrowserKind.Video, clip.Title)
+                return new MediaBrowserItem(file.FullName, MediaFiles.KindOf(file.Name) ?? MediaBrowserKind.Video, clip.Title)
                 {
                     Info = MediaBrowserItem.FormatSeconds(clip.Duration) + tags, Bytes = file.Length, Modified = clip.Saved,
                 };
@@ -346,7 +346,7 @@ public partial class MediaBrowserPane : UserControl
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException or ArgumentException or NotSupportedException)
         {
-            StatusText.Text = $"The Clip Library could not be read: {ex.Message}";
+            Controls.UiFault.ShowOnce(StatusText, $"clip-library|{ex.HResult}", $"The Clip Library could not be read: {ex.Message}", "Media browser: the Clip Library", ex);
             return;
         }
 
@@ -424,7 +424,7 @@ public partial class MediaBrowserPane : UserControl
             entries = await Task.Run(() => files.Select(path =>
             {
                 var file = new FileInfo(path);
-                var kind = MediaBrowserItem.KindOf(file.Name) ?? MediaBrowserKind.Video;
+                var kind = MediaFiles.KindOf(file.Name) ?? MediaBrowserKind.Video;
                 return file.Exists
                     ? new MediaBrowserItem(file.FullName, kind, file.Name) { Info = MediaBrowserItem.FormatSize(file.Length), Bytes = file.Length, Modified = file.LastWriteTime }
                     : new MediaBrowserItem(path, kind, file.Name) { Info = "missing" };
@@ -436,7 +436,7 @@ public partial class MediaBrowserPane : UserControl
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException or ArgumentException or NotSupportedException)
         {
-            StatusText.Text = $"The project's files could not be read: {ex.Message}";
+            Controls.UiFault.ShowOnce(StatusText, $"project-files|{ex.HResult}", $"The project's files could not be read: {ex.Message}", "Media browser: the project's files", ex);
             _relistingFor = null;
             return;
         }
@@ -621,7 +621,7 @@ public partial class MediaBrowserPane : UserControl
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
         {
-            StatusText.Text = $"The folder could not be read: {ex.Message}";
+            Controls.UiFault.ShowOnce(StatusText, $"folder|{folder}|{ex.HResult}", $"The folder could not be read: {ex.Message}", $"Media browser: the folder {folder}", ex);
             return;
         }
 
@@ -640,7 +640,7 @@ public partial class MediaBrowserPane : UserControl
             return;
 
         if (folder is not null && !PickerMode)
-            AppSettings.Current.BrowserFolder = folder;
+            AppSettings.Set(s => s.BrowserFolder, (s, v) => s.BrowserFolder = v, folder);
 
         var files = entries.Count(e => e.IsFile);
         var folders = entries.Count - files;
@@ -732,7 +732,7 @@ public partial class MediaBrowserPane : UserControl
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
-            AppLog.Write($"Media browser: indexing {folder}: {ex.Message}");
+            AppLog.Write($"Media browser: indexing {folder}", ex);
         }
         finally
         {
@@ -765,7 +765,7 @@ public partial class MediaBrowserPane : UserControl
         {
             if (list.Count >= MostEntries)
                 break;
-            if (MediaBrowserItem.KindOf(file.Name) is not { } kind)
+            if (MediaFiles.KindOf(file.Name) is not { } kind)
                 continue;
 
             list.Add(new MediaBrowserItem(file.FullName, kind, file.Name) { Info = MediaBrowserItem.FormatSize(file.Length), Bytes = file.Length, Modified = file.LastWriteTime });
@@ -867,7 +867,7 @@ public partial class MediaBrowserPane : UserControl
 
         _sortKey = SortKeys[SortBox.SelectedIndex];
         if (!PickerMode)
-            AppSettings.Current.BrowserSort = _sortKey;
+            AppSettings.Set(s => s.BrowserSort, (s, v) => s.BrowserSort = v, _sortKey);
         ShowSortInHeader();
         if (_items.Count > 0)
             Resort();
@@ -876,7 +876,7 @@ public partial class MediaBrowserPane : UserControl
     private void SortDirection_Changed(object sender, RoutedEventArgs e)
     {
         if (!PickerMode)
-            AppSettings.Current.BrowserSortDescending = SortDirectionButton.IsChecked == true;
+            AppSettings.Set(s => s.BrowserSortDescending, (s, v) => s.BrowserSortDescending = v, SortDirectionButton.IsChecked == true);
         ShowSortInHeader();
         if (_items.Count > 0)
             Resort();
@@ -998,44 +998,28 @@ public partial class MediaBrowserPane : UserControl
     }
 
     /// <summary>
-    /// At rest, with every picture wanted made: the memory that making them took is given back to the system. After a
-    /// burst of work the collector keeps what it committed for later (24 MB of 45 after a folder's first pictures); a
-    /// picture's pixels are native memory, freed only once it is collected and its finalizer has run; and the process
-    /// heap keeps freed blocks committed. At rest nothing would bring any of it back for a long while. Once the window is
-    /// idle, away from it (a finalizer must never wait on the interface's thread): an aggressive collection, the
-    /// finalizers, another, and the heap's free blocks handed back.
+    /// At rest, with every wanted picture made: asks for one compacting collection and a process-heap compaction. After a burst of
+    /// work the collector keeps what it committed (24 MB of 45 after a folder's first pictures), a picture's pixels are native memory
+    /// freed only by its finalizer, and the process heap keeps freed blocks committed. The ask goes through <see cref="MemoryHygiene"/>,
+    /// which merges asks, waits until nothing plays, scrubs, records or switches tabs, and collects on the window's thread in the same
+    /// turn as that check (a blocking collection suspends the frame pump and the audio threads).
     /// </summary>
     private void GiveBackMemory()
     {
-        if (_givingBack)
+        if (_prefetching || _working)
             return;
-
-        _givingBack = true;
-        Dispatcher.BeginInvoke(() =>
-        {
-            if (_prefetching || _working)
-            {
-                _givingBack = false;
-                return;
-            }
-
-            Task.Run(() =>
-            {
-                GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
-                GC.WaitForPendingFinalizers();
-                GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
-                HeapCompact(GetProcessHeap(), 0);
-            }).ContinueWith(_ => _givingBack = false, TaskScheduler.Default);
-        }, DispatcherPriority.ApplicationIdle);
+        const string Reason = "media browser at rest";
+        if (AskCompact is { } ask)
+            ask(Reason);
+        else
+            MemoryHygiene.RequestCompactOnce(Reason, compactProcessHeap: true);
     }
 
-    private volatile bool _givingBack;
-
-    [System.Runtime.InteropServices.LibraryImport("kernel32.dll")]
-    private static partial IntPtr GetProcessHeap();
-
-    [System.Runtime.InteropServices.LibraryImport("kernel32.dll")]
-    private static partial nuint HeapCompact(IntPtr heap, uint flags);
+    /// <summary>
+    /// Set by the main window after its first frame: routes <see cref="GiveBackMemory"/> through the window's quiet check. Null for the
+    /// project manager's picker instance, whose asks go to <see cref="MemoryHygiene"/> directly (dropped when no window answers).
+    /// </summary>
+    public Action<string>? AskCompact { get; set; }
 
     /// <summary>What the held pictures and decoded strips take, in bytes.</summary>
     private long HeldBytes() =>
@@ -1177,7 +1161,7 @@ public partial class MediaBrowserPane : UserControl
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
-            AppLog.Write($"Media browser: {ex.Message}");
+            AppLog.Write("Media browser", ex);
         }
         finally
         {
@@ -1383,7 +1367,7 @@ public partial class MediaBrowserPane : UserControl
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
-            AppLog.Write($"Media browser: {ex.Message}");
+            AppLog.Write("Media browser", ex);
         }
         finally
         {
@@ -1771,11 +1755,11 @@ public partial class MediaBrowserPane : UserControl
     {
         try
         {
-            Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true })?.Dispose();
+            ShellOpen.Reveal(path);
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
         {
-            AppLog.Write($"Media browser: Explorer could not be opened: {ex.Message}");
+            AppLog.Write("Media browser: Explorer could not be opened", ex);
         }
     });
 }

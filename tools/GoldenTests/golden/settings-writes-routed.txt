@@ -1,0 +1,4 @@
+# The settings in effect change only through AppSettings.Update/Set; SaveAsCurrent only where the user saves on purpose.
+ok: no code assigns AppSettings.Current's properties directly (AppSettings.Update / Set / UpdateIf instead)
+ok: SaveAsCurrent only where a whole edited copy is saved on purpose (the first-run window)
+ok: the Settings window writes back only what it changed

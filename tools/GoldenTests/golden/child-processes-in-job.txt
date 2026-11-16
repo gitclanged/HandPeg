@@ -1,0 +1,4 @@
+# Every child process HandPeg starts is in its kill-on-close job (ProcessPipes, WorkerProcess, Adopt), or opened by the shell.
+ok: Process.Start only in the files that put the process in a job or hand it to the shell
+ok: the bundle's VOD trims and the Clip Library's audio cut are adopted into the job (they no longer outlive a crash)
+ok: a compositor worker that cannot be put in the job is ended before it runs

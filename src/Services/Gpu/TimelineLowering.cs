@@ -143,22 +143,18 @@ public static partial class TimelineLowering
 
     private static Lowered LowerAfresh(TimelineDocument document)
     {
-        // The whole timeline's length tells a video that repeats "to the end" (its rounds reach it); the canvas runs to the last
-        // picture (5.4A: no black frames for an audio tail past it).
-        var length = document.TotalDuration;
-        var program = SequenceSpans.ProgramSeconds(document);
-
-        // Each clip's look, made once: its own State, or its track's look with what is the clip's own taken from its State.
-        var looks = new Dictionary<TimelineClip, LayerState>(ReferenceEqualityComparer.Instance);
-        LayerState LookOf(TimelineClip clip, TimelineTrackModel track)
+        // A document that still carries a legacy track look (built in code, or never installed) is lowered from a copy with the looks
+        // folded into its clips (TimelineDocument.FoldTrackLooks: the one merge rule); the editor's own documents are folded already.
+        if (document.HasTrackLooks)
         {
-            if (!looks.TryGetValue(clip, out var look))
-                looks[clip] = look = Merged(track.TrackLook, clip.State);
-            return look;
+            document = document.Clone();
+            document.FoldTrackLooks();
         }
 
-        // (One delegate for every clip that may start a repeating video, not one made for each.)
-        Func<TimelineClip, TimelineTrackModel, LayerState> lookOf = LookOf;
+        // The whole timeline's length tells a video that repeats "to the end" (its rounds reach it); the canvas runs to the last
+        // picture (no black frames for an audio tail past it).
+        var length = document.TotalDuration;
+        var program = SequenceSpans.ProgramSeconds(document);
 
         // The tracks by id, for each track's header's switch (IsHiddenWithParents) at one look-up a
         // step, where looking along the tracks for every clip made a document of many tracks slow to lower after every edit.
@@ -179,7 +175,7 @@ public static partial class TimelineLowering
             foreach (var clip in track.Clips)
             {
                 if (clip.ContentKind is not (LayerKind.Captions or LayerKind.Background))
-                    layers[clip] = MakeLayer(clip, track, t + 1, LookOf(clip, track), hidden, document);
+                    layers[clip] = MakeLayer(clip, track, t + 1, clip.State, hidden, document);
             }
         }
 
@@ -190,7 +186,7 @@ public static partial class TimelineLowering
         {
             for (var i = 0; i < track.Clips.Count; i++)
             {
-                if (!layers.TryGetValue(track.Clips[i], out var looped) || Rounds(track, i, lookOf) is not { Count: > 0 } rounds || rounds[^1].End < length - 0.001)
+                if (!layers.TryGetValue(track.Clips[i], out var looped) || Rounds(track, i) is not { Count: > 0 } rounds || rounds[^1].End < length - 0.001)
                     continue;
 
                 (looped.Duration, looped.FadeOutSeconds) = (0, Math.Clamp(rounds[^1].FadeOutSeconds, 0, TimelineDocument.LongestFade));
@@ -269,7 +265,7 @@ public static partial class TimelineLowering
             foreach (var clip in track.Clips)
             {
                 if (layers.TryGetValue(clip, out var layer) && layer is { IsVideoFile: true, IsHidden: false } && (layer.Opacity > 0 || layer.AnimatesOpacity)
-                    && LookOf(clip, track).BlurFill == true)
+                    && clip.State.BlurFill == true)
                 {
                     twinList.Add(BlurTwinOf(layer, document));
                 }
@@ -383,7 +379,7 @@ public static partial class TimelineLowering
     /// again from its first frame with the same look (keys running on) and its sound silenced (4.2.0's loop played its
     /// sound once), whole but for the last, with no fade or crossfade where two meet. Empty when no round follows.
     /// </summary>
-    private static List<TimelineClip> Rounds(TimelineTrackModel track, int index, Func<TimelineClip, TimelineTrackModel, LayerState> lookOf)
+    private static List<TimelineClip> Rounds(TimelineTrackModel track, int index)
     {
         var rounds = new List<TimelineClip>();
         var first = track.Clips[index];
@@ -396,7 +392,7 @@ public static partial class TimelineLowering
         }
 
         JsonNode? firstTimeless = null;
-        var look = lookOf(first, track);
+        var look = first.State;
         var previous = first;
         for (var j = index + 1; j < track.Clips.Count; j++)
         {
@@ -404,7 +400,7 @@ public static partial class TimelineLowering
             if (round.ContentKind != LayerKind.VideoFile || round.SourcePath != first.SourcePath || round.Speed != first.Speed
                 || round.IsHidden != first.IsHidden || !round.IsMuted || round.MediaOffset > 1e-6 || round.MediaEnd > file + 0.001
                 || Math.Abs(round.Start - previous.End) > 1e-6 || round.FadeInSeconds > 0.001 || round.TransitionIn > 0.001
-                || !SameLook(lookOf(round, track), look, round.Start - first.Start, ref firstTimeless))
+                || !SameLook(round.State, look, round.Start - first.Start, ref firstTimeless))
             {
                 break;
             }
@@ -513,36 +509,13 @@ public static partial class TimelineLowering
 
     private static readonly JsonSerializerOptions TimelessOptions = new() { NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals };
 
-    /// <summary>
-    /// A clip's look over its track's: what the track's clips share from <paramref name="trackLook"/>, what is the clip's
-    /// own (its name and file, where it sits and how large, its shape, turn and crop, its blur fill, its keyframes, its
-    /// anchor and its effect stack) from <paramref name="state"/>. Just the clip's State when the track has no look. Neither
-    /// is changed.
-    /// </summary>
-    private static LayerState Merged(LayerState? trackLook, LayerState state)
-    {
-        if (trackLook is null)
-            return state;
-
-        var look = trackLook.ShallowCopy();
-        (look.Name, look.Kind, look.ImagePath, look.ImageWidth, look.ImageHeight) = (state.Name, state.Kind, state.ImagePath, state.ImageWidth, state.ImageHeight);
-        (look.MediaDuration, look.HasAudio, look.AudioCodec, look.AudioChannels) = (state.MediaDuration, state.HasAudio, state.AudioCodec, state.AudioChannels);
-        (look.PositionX, look.PositionY, look.SizeWidth, look.SizeHeight) = (state.PositionX, state.PositionY, state.SizeWidth, state.SizeHeight);
-        (look.LockAspectRatio, look.Rotation, look.BlurFill) = (state.LockAspectRatio, state.Rotation, state.BlurFill);
-        (look.TiltX, look.TiltY, look.KeysTiltX, look.KeysTiltY) = (state.TiltX, state.TiltY, state.KeysTiltX, state.KeysTiltY);
-        (look.CropLeft, look.CropTop, look.CropRight, look.CropBottom) = (state.CropLeft, state.CropTop, state.CropRight, state.CropBottom);
-        (look.KeysX, look.KeysY, look.KeysScale, look.KeysRotation, look.KeysOpacity) = (state.KeysX, state.KeysY, state.KeysScale, state.KeysRotation, state.KeysOpacity);
-        (look.AnchorX, look.AnchorY, look.Effects, look.EffectsBypassed) = (state.AnchorX, state.AnchorY, state.Effects, state.EffectsBypassed);
-        return look;
-    }
-
     // ----- Clips as layers -----
 
     /// <summary>
     /// A clip as the layer the picture and the sound are made from: its look, with its own kind, file, timing, fades,
     /// visibility (its track hides its picture, not its sound), sound (its track's gain added to its own, the track's filters
-    /// and ducking), its clip's id and a number for its track. Every clip is made so, on whatever track (5.2-AuditB). Its crop
-    /// reframes its picture (4.4-BugHunt, held by Layer.HeldCrop): the layer keeps it, the picture is cut by it where it is
+    /// and ducking), its clip's id and a number for its track. Every clip is made so, on whatever track. Its crop
+    /// reframes its picture (held by Layer.HeldCrop): the layer keeps it, the picture is cut by it where it is
     /// read, and the layer's box takes the shape it leaves (Layer.GetOutputRect, at the clip's own picture size). Keyframes
     /// that change nothing are folded (see <see cref="FoldConstantKeys"/>).
     /// </summary>

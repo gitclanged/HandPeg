@@ -7,6 +7,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using HandPegApp.Services;
 using HandPegApp.ViewModels;
+using static HandPegApp.UiBrushes;
 
 namespace HandPegApp;
 
@@ -268,11 +269,5 @@ public sealed class MaskLayersWindow : Window
             }
         }
 
-        private static SolidColorBrush Frozen(Color color)
-        {
-            var brush = new SolidColorBrush(color);
-            brush.Freeze();
-            return brush;
-        }
     }
 }

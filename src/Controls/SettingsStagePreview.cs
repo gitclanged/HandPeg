@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Documents;
 using System.Windows.Media;
 using HandPegApp.Services;
+using static HandPegApp.UiBrushes;
 
 namespace HandPegApp;
 
@@ -85,7 +86,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
             StageKind.Appearance => 236,
             StageKind.Timeline => 262,
             StageKind.Cache => 272,
-            StageKind.Hardware => 40 + CoreRows() * (CoreCell(width) + CoreGap) + 180 + BenchmarkHeight(),
+            StageKind.Hardware => 40 + CoreRows() * (CoreCell(width) + CoreGap) + 56 + BenchmarkHeight(),
             StageKind.Captions => 96,
             StageKind.Workspace => WorkspaceHeight(width),
             _ => 0,
@@ -594,30 +595,14 @@ public sealed partial class SettingsStagePreview : FrameworkElement
             : string.Create(CultureInfo.InvariantCulture, $"Auto, {WorkScheduler.LaneLimit(WorkLane.Background)}");
         Text(drawing, $"Background tools ({jobs} at once)", 146, y, 11, TextBrush);
 
-        // The four GPU roles (5.0-0): which card composites, decodes the timeline's clips, takes background work, and exports.
+        // 5.6A: the four GPU roles are the stage's role cards above this picture (SettingsWindow's RoleCardsPanel: clickable, one home),
+        // no longer drawn here.
         y += 24;
-        var adapters = GpuAdapters.All;
-        string Named(int index) => adapters.FirstOrDefault(a => a.Index == index)?.Name ?? "Automatic";
-        var compositor = _settings.CompositorGpuAdapter < 0 ? "Auto: the high-performance card" : Named(_settings.CompositorGpuAdapter);
-        var decode = _settings.DecodeGpuAdapter < 0 ? "Auto: the compositor's card" : Named(_settings.DecodeGpuAdapter);
-        var background = _settings.BackgroundGpu switch
-        {
-            -2 => "Processor only",
-            -1 => GpuAdapters.BackgroundAdapter is { } card ? $"Auto: {card.Name}" : "Automatic",
-            var index => Named(index),
-        };
-        var export = _settings.HardwareDecodeAdapter < 0 ? "Auto: the Compositor GPU" : Named(_settings.HardwareDecodeAdapter);
-
-        var half = (width - 10) / 2;
-        Card(drawing, new Rect(0, y, half, 54), "Compositor (player and shaders)", compositor);
-        Card(drawing, new Rect(half + 10, y, half, 54), "Timeline clips decode on", decode);
-        Card(drawing, new Rect(0, y + 62, half, 54), "Background work on", background);
-        Card(drawing, new Rect(half + 10, y + 62, half, 54), "Exports render on", export);
         var encoder = _settings.DefaultVideoEncoder.Length == 0 ? "the built-in default (Copy)" : _settings.DefaultVideoEncoder;
-        Text(drawing, $"A new export encodes with {encoder}", 0, y + 126, 11, MutedBrush, width: width);
+        Text(drawing, $"A new export encodes with {encoder}", 0, y, 11, MutedBrush, width: width);
 
         if (BenchmarkHeight() > 0)
-            DrawBenchmark(drawing, y + 150, width);
+            DrawBenchmark(drawing, y + 24, width);
     }
 
     // ----- The hardware benchmark (5.0-0): each card's measured decoding, seeking, accuracy and transfer speeds -----
@@ -702,8 +687,10 @@ public sealed partial class SettingsStagePreview : FrameworkElement
             if (result.Kind != HardwareBenchmarkResult.KindQuick)
                 Meter(drawing, "Processor", software, fastest, Fps(software), y + 34, width, processorBar);
 
+            // 5.6A: the compositor's all-slots frame first, where the card was timed.
             var line = card.Note.Length > 0 ? card.Note : string.Join("  ·  ", new[]
             {
+                card.CompositorMs > 0 ? string.Create(CultureInfo.InvariantCulture, $"Compositor {card.CompositorMs:0.00} ms") : "",
                 card.HardwareSeekMs > 0 ? string.Create(CultureInfo.InvariantCulture, $"Seek {card.HardwareSeekMs:0.#} ms") + (softwareSeek > 0 ? string.Create(CultureInfo.InvariantCulture, $" (processor {softwareSeek:0.#})") : "") : "",
                 card.BitExact || card.PsnrDb >= 99 ? "PSNR bit-exact" : card.PsnrDb > 0 ? string.Create(CultureInfo.InvariantCulture, $"PSNR {card.PsnrDb:0.0} dB") : "",
                 card.ReadbackMBps > 0 ? "Readback " + MegabytesPerSecond(card.ReadbackMBps) : "",
@@ -741,13 +728,6 @@ public sealed partial class SettingsStagePreview : FrameworkElement
     private static string Fps(double fps) => string.Create(CultureInfo.InvariantCulture, $"{fps:#,0} fps");
 
     private static string MegabytesPerSecond(double rate) => string.Create(CultureInfo.InvariantCulture, $"{rate:#,0} MB/s");
-
-    private void Card(DrawingContext drawing, Rect box, string heading, string value)
-    {
-        drawing.DrawRoundedRectangle(WellBrush, Line(BorderBrush, 1), box, 4, 4);
-        Text(drawing, heading, box.Left + 10, box.Top + 8, 11, MutedBrush);
-        Text(drawing, value, box.Left + 10, box.Top + 27, 12, TextBrush, bold: true, width: box.Width - 20);
-    }
 
     // ----- Auto-Captions: the speech model's speed against its accuracy -----
 
@@ -803,13 +783,6 @@ public sealed partial class SettingsStagePreview : FrameworkElement
     private static readonly Brush PlayheadBrush = Frozen(Color.FromRgb(0xE5, 0x48, 0x48));
     private static readonly Brush GainBrush = Frozen(Color.FromRgb(0xF2, 0xC1, 0x4E));
     private static readonly Brush FadeShade = Frozen(Color.FromArgb(0x70, 0x00, 0x00, 0x00));
-
-    private static SolidColorBrush Frozen(Color color)
-    {
-        var brush = new SolidColorBrush(color);
-        brush.Freeze();
-        return brush;
-    }
 
     // A brush's colour at a share of its opacity (a solid one; any other comes back as it was).
     private static Brush Tint(Brush brush, double opacity) => brush is SolidColorBrush { Color: var color }

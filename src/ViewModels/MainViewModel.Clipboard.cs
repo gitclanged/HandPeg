@@ -248,7 +248,7 @@ public partial class MainViewModel
         {
             foreach (var view in targets)
             {
-                using (Layer.Echo())
+                using (OwnLookScope())
                     PasteAttributesOn(view, source, parts);
                 _staleLooks.Add(view);
             }

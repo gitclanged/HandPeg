@@ -294,6 +294,7 @@ internal sealed class VoiceProducer
     // Made the first time a voice needs them (most play at the device's rate, at speed: the decoder's own samples).
     private PolyphaseResampler? _resampler;
     private WsolaStretcher? _wsola;
+    private AudioPhaseVocoder? _vocoder;
     private AudioDecoder? _decoder;
     private IStereoSource? _output;
     private long _served, _produced, _end;
@@ -428,13 +429,22 @@ internal sealed class VoiceProducer
             return true;
         }
 
-        // Otherwise from a little before, for the resampler's kernel (and WSOLA's first frames) to have what they reach back to.
-        var reach = PolyphaseResampler.HalfTaps + 4 + (stretched ? fs * 0.06 : 0);
+        // Otherwise from a little before, for the resampler's kernel (and WSOLA's first frames, or the vocoder's) to have what they
+        // reach back to. A Spectral voice (5.6.0) goes through the phase vocoder up to its fastest tempo (WSOLA's past it), whose
+        // frames are longer than WSOLA's at a low sample rate.
+        var spectral = stretched && voice.Spectral && tempo <= AudioPhaseVocoder.FastestTempo;
+        var reach = PolyphaseResampler.HalfTaps + 4 + (spectral ? Math.Max(fs * 0.06, AudioPhaseVocoder.WarmUp(fs)) : stretched ? fs * 0.06 : 0);
         var before = reach * (stretched ? tempo : 1) / fs;
         var at = Math.Round((media - before) * fs) / fs;
         decoder.Seek(at);
         IStereoSource input = decoder;
-        if (stretched)
+        if (spectral)
+        {
+            _vocoder ??= new AudioPhaseVocoder();
+            _vocoder.Reset(decoder, tempo, fs);
+            input = _vocoder;
+        }
+        else if (stretched)
         {
             _wsola ??= new WsolaStretcher();
             _wsola.Reset(decoder, tempo, fs);
@@ -472,6 +482,11 @@ internal sealed class AudioFeeders : IDisposable
 {
     private readonly Thread[] _threads;
     private readonly AutoResetEvent _wake = new(false);
+
+    // Set once to stop: a ManualResetEvent wakes both feeders at once (the auto-reset wake releases only one, which left the other
+    // to its 1 s timeout on every dispose and device reopen).
+    private readonly ManualResetEvent _stop = new(false);
+    private readonly WaitHandle[] _wakeOrStop;
     private readonly Func<VoiceState[]?> _voices;
     private readonly Func<long> _liveFrame;
     private readonly Func<long> _observedVersion;
@@ -483,6 +498,7 @@ internal sealed class AudioFeeders : IDisposable
     public AudioFeeders(int rate, int lead, int margin, AudioDecoderPool pool, Func<VoiceState[]?> voices, Func<long> liveFrame, Func<long> observedVersion)
     {
         (_rate, _lead, _margin, _pool, _voices, _liveFrame, _observedVersion) = (rate, lead, margin, pool, voices, liveFrame, observedVersion);
+        _wakeOrStop = [_wake, _stop];
         _threads = new Thread[2];
         for (var i = 0; i < _threads.Length; i++)
         {
@@ -501,9 +517,9 @@ internal sealed class AudioFeeders : IDisposable
         _ = Com.CoInitializeEx(0, Com.CoInitMultithreaded);
         while (!_stopping)
         {
-            // Woken by the mixer after every buffer while it plays and by every request; the timeout is only a safety net,
-            // so a paused engine's feeders do not wake by themselves.
-            _wake.WaitOne(1000);
+            // Woken by the mixer after every buffer while it plays, by every request and by the stop; the timeout is only a
+            // safety net, so a paused engine's feeders do not wake by themselves.
+            WaitHandle.WaitAny(_wakeOrStop, 1000);
             if (_stopping)
                 break;
             try
@@ -563,14 +579,29 @@ internal sealed class AudioFeeders : IDisposable
         }
     }
 
-    public void Dispose()
+    /// <summary>
+    /// Stops both feeders against one 2 s deadline (inside the mixer thread's 3 s budget) and releases the retired voices. When a
+    /// feeder did not stop it may still be inside a decoder's read: nothing it can reach is released (its voices, the decoders, the
+    /// events), and the caller keeps the decoder pool's busy decoders to it.
+    /// </summary>
+    /// <returns>Whether both feeders stopped.</returns>
+    public bool Stop()
     {
         _stopping = true;
-        _wake.Set();
-        foreach (var thread in _threads)
-            thread.Join(2000);
+        _stop.Set();
+        if (!ThreadStop.JoinAll(_threads, 2000, "Sound engine feeders"))
+            return false;
+
         while (_retired.TryDequeue(out var state))
-            state.Release(_pool);
+        {
+            if (Interlocked.CompareExchange(ref state.Busy, 1, 0) == 0)
+                state.Release(_pool);
+        }
+
         _wake.Dispose();
+        _stop.Dispose();
+        return true;
     }
+
+    public void Dispose() => Stop();
 }

@@ -30,9 +30,13 @@ public static class HardwareBenchmarkService
     /// <summary>Why the last run gave no result, in a few words for the status line ("Cancelled.", "FFmpeg is not installed yet."); empty after one that did.</summary>
     public static string LastFailure { get; private set; } = "";
 
+    /// <summary>What <see cref="LastFailure"/> says when another window's test holds the one benchmark gate (5.6.0: the first-run window shows it as a warning).</summary>
+    public const string BusyFailure = "The test is already running (in the other window).";
+
     /// <summary>
     /// Makes the test clip if it is not there yet, runs the benchmark on it and returns its result (also saved, and then
-    /// what <see cref="LoadSaved"/> returns); null when it could not be run, failed or was cancelled (<see cref="LastFailure"/>
+    /// what <see cref="LoadSaved"/> returns, unless it ran without the clip over a kept result that decoded: <see cref="ClipLessMayReplace"/>);
+    /// null when it could not be run, failed or was cancelled (<see cref="LastFailure"/>
     /// says which). Progress is reported from a pool thread: give a <see cref="Progress{T}"/> made on the UI thread.
     /// The roles are not applied here: <see cref="ApplyRoles"/> does that.
     /// </summary>
@@ -42,7 +46,7 @@ public static class HardwareBenchmarkService
         // first through the work key, with no progress of its own and a Stop that stops nothing.
         if (Interlocked.Exchange(ref _running, 1) == 1)
         {
-            LastFailure = "The test is already running (in the other window).";
+            LastFailure = BusyFailure;
             return null;
         }
 
@@ -74,15 +78,13 @@ public static class HardwareBenchmarkService
     private static async Task<HardwareBenchmarkResult?> MeasureAsync(WorkContext work, IProgress<HardwareBenchmarkProgress>? progress)
     {
         work.Report(0, "Making the test clip");
-        var clip = await EnsureClipAsync(work.Token);
-        if (clip is null)
-            return null;
+        var clip = File.Exists(ClipPath) || File.Exists(DependencyUpdater.FfmpegPath) ? await EnsureClipAsync(work.Token) ?? "" : "";
+        if (clip.Length == 0)
+            AppLog.Write($"The hardware benchmark runs without its test clip (no decoding measured): {(LastFailure.Length > 0 ? LastFailure : "FFmpeg is not installed yet.")}");
+        LastFailure = "";
 
-        // With the FFmpeg the app uses: the codecs its fallback decodes where Media Foundation cannot are listed (5.2-Arm64AndNpu).
-        var ffmpeg = DependencyUpdater.FfmpegPath;
-        var arguments = ffmpeg.Length > 0 && !ffmpeg.Contains('"')
-            ? $"{Compositor.HardwareBenchmark.Argument} \"{clip}\" {Compositor.CompositorWorker.FfmpegOption} \"{ffmpeg}\""
-            : $"{Compositor.HardwareBenchmark.Argument} \"{clip}\"";
+        var settings = AppSettings.Current;
+        var arguments = FullArguments(clip, DependencyUpdater.FfmpegPath, [settings.CompositorGpuAdapter, settings.ExportGpuAdapter]);
         var (exitCode, result, lastOther) = await RunWorkerAsync(arguments, progress, work, ProcessClass.Foreground, work.Token);
         work.Token.ThrowIfCancellationRequested();
         if (exitCode != 0 || result is null)
@@ -94,9 +96,24 @@ public static class HardwareBenchmarkService
 
         if (result.Error.Length > 0)
             AppLog.Write($"The hardware benchmark stopped short: {result.Error}");
-        Save(result);
+
+        // 5.6.0: a run without its test clip (no FFmpeg) never replaces a kept result that measured decoding on these same cards; it
+        // is still shown (returned).
+        if (clip.Length > 0 || ClipLessMayReplace(LoadSaved(), result))
+            Save(result);
+        else
+            AppLog.Write("The hardware benchmark ran without its test clip: the kept result, which measured decoding on these cards, is kept");
         return result;
     }
+
+    /// <summary>
+    /// Whether a full test run without its test clip (no decoding measured) may take the place of the result kept (5.6.0; pure:
+    /// the goldens check it): never of a full result measured on these same cards and drivers (its fingerprint the run's own, both
+    /// measured in a worker: nothing is asked of DXGI here) that measured decoding; of anything else, yes.
+    /// </summary>
+    internal static bool ClipLessMayReplace(HardwareBenchmarkResult? saved, HardwareBenchmarkResult result) =>
+        saved is null || saved.Kind.Length > 0 || saved.Fingerprint != result.Fingerprint
+        || !saved.Adapters.Any(a => a.HardwareDecodeFps > 0 || a.SoftwareDecodeFps > 0);
 
     /// <summary>
     /// Runs the benchmark's worker with these arguments and reads its lines: each progress line passed on (to the work's progress
@@ -195,7 +212,7 @@ public static class HardwareBenchmarkService
 
         if (Interlocked.Exchange(ref _running, 1) == 1)
         {
-            LastFailure = "The test is already running (in the other window).";
+            LastFailure = BusyFailure;
             return null;
         }
 
@@ -262,6 +279,24 @@ public static class HardwareBenchmarkService
 
         var export = estimate.Recommended.Export >= 0 ? working.FirstOrDefault(a => a.Index == estimate.Recommended.Export) : null;
         return export is not null && export.Index != compositor.Index ? [compositor.Index, export.Index] : [compositor.Index];
+    }
+
+    /// <summary>
+    /// The full test's command line (5.6.0): the clip when there is one; the FFmpeg the app uses (the codecs its fallback decodes where Media
+    /// Foundation cannot are listed, 5.2.0); --adapters with the roles chosen in Settings (the compositor stage times them too,
+    /// beside the cards the measurements point to), when any is a card.
+    /// </summary>
+    internal static string FullArguments(string clip, string ffmpeg, IReadOnlyList<int> chosen)
+    {
+        var text = new System.Text.StringBuilder(Compositor.HardwareBenchmark.Argument);
+        if (clip.Length > 0 && !clip.Contains('"'))
+            text.Append(" \"").Append(clip).Append('"');
+        if (ffmpeg.Length > 0 && !ffmpeg.Contains('"'))
+            text.Append(' ').Append(Compositor.CompositorWorker.FfmpegOption).Append(" \"").Append(ffmpeg).Append('"');
+        var cards = chosen.Where(c => c >= 0).Distinct().ToList();
+        if (cards.Count > 0)
+            text.Append(' ').Append(Compositor.HardwareBenchmark.AdaptersOption).Append(' ').Append(string.Join(",", cards.Select(c => c.ToString(System.Globalization.CultureInfo.InvariantCulture))));
+        return text.ToString();
     }
 
     /// <summary>The quick check's command line: the clip when there is one, then --quick --adapters with the cards ("0,2").</summary>
@@ -355,7 +390,7 @@ public static class HardwareBenchmarkService
         (_saved, _savedRead) = (result, true);
         try
         {
-            ProjectStore.WriteWhole(ResultPath, JsonSerializer.Serialize(result, Json));
+            ProjectStore.WriteWhole(ResultPath, JsonSerializer.Serialize(result, Json), durable: true);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -395,11 +430,10 @@ public static class HardwareBenchmarkService
     /// <summary>Puts the four roles into the settings in effect and saves them (the way the dialogs that save at once do).</summary>
     public static void ApplyRoles(HardwareBenchmarkRoles roles)
     {
-        var settings = AppSettings.Current;
-        WriteRoles(roles, settings);
         try
         {
-            settings.SaveAsCurrent();
+            // Saved before returning: GPU work restarts on the new roles right after, and a driver fault then must not lose them.
+            AppSettings.Update(settings => WriteRoles(roles, settings), saveNow: true);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

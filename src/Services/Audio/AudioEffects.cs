@@ -1141,18 +1141,5 @@ internal static class AudioMath
             target[i] += source[i];
     }
 
-    /// <summary>target += source * factor.</summary>
-    public static void AddScaled(Span<float> target, ReadOnlySpan<float> source, float factor)
-    {
-        var t = MemoryMarshal.Cast<float, Vector<float>>(target);
-        var s = MemoryMarshal.Cast<float, Vector<float>>(source);
-        var n = Math.Min(t.Length, s.Length);
-        var f = new Vector<float>(factor);
-        for (var i = 0; i < n; i++)
-            t[i] += s[i] * f;
-        for (var i = n * Vector<float>.Count; i < target.Length && i < source.Length; i++)
-            target[i] += source[i] * factor;
-    }
-
     public static float Decibels(float factor) => factor <= 1e-9f ? -180f : 20f * MathF.Log10(factor);
 }

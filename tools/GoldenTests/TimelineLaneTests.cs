@@ -20,37 +20,12 @@ public static class TimelineLaneTests
 {
     private const int W = 1920, H = 1080;
     private const string A = "D:/media/obs-a.mkv", B = "D:/media/obs-b.mp4";
-    private const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
-
     public static IEnumerable<GraphResult> All()
     {
         yield return Case("streams-in-line", "# Three multi-stream clips on one track: their streams in line on the track's lanes, by place in the file; one moved off.", StreamsInLine);
         yield return Case("clip-switches", "# A clip's own On/Off is its alone; a track header's takes its family; a child's Lock to its clip.", ClipSwitches);
         yield return Case("effect-blocks", "# An effect's block: locked to its clip's span, or unlocked to a stretch of its own the GPU engine keeps to; its On/Off.", EffectBlocks);
         yield return Case("effect-rotation", "# The Rotation of the spatial effects: one more lane each, where its shader reads it, the shared slots' variants kept.", EffectRotation);
-    }
-
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>, StringBuilder> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "FAILED: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect, text);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
     }
 
     // A video clip of a file on a track, with its sound on it (its first stream).

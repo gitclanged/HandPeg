@@ -83,7 +83,7 @@ public partial class MainViewModel
     private EffectInstance PutEffectOn(Layer layer, EffectDefinition definition)
     {
         EffectInstance card;
-        using (Layer.Echo())
+        using (OwnLookScope())
         {
             switch (definition.Feature)
             {
@@ -136,8 +136,16 @@ public partial class MainViewModel
         Log(string.Create(System.Globalization.CultureInfo.InvariantCulture, $"Added {element.Name}: its effects (Effects pane) work on everything under it from {element.StartTime:0.##} s for {element.Duration:0.##} s"));
     }
 
+    /// <summary>
+    /// The copied cards a clip can take (5.6.0), as the pane's own paste keeps them (ReplaceWith, Fits): an unknown effect is kept,
+    /// as AdoptEffect keeps it; one its kind cannot take (a picture's card on a sound clip) is left out, before AdoptEffect switches its
+    /// feature on (a chroma key, a shadow).
+    /// </summary>
+    internal static IEnumerable<EffectState> TakenBy(Layer clip, IReadOnlyList<EffectState> cards) =>
+        cards.Where(s => EffectRegistry.Find(s.Type) is not { } definition || clip.CanTake(definition, ignorePresent: true));
+
     /// <summary>Gives every clip on a clip's track a copy of a stack (Paste Effects with Shift, or Paste Selected Effects...), with the values its effects carry.</summary>
-    /// <param name="append">Added to each clip's stack (Paste Selected Effects..., 4.1.1-B), an effect a clip has once at most taking the
+    /// <param name="append">Added to each clip's stack (Paste Selected Effects..., 4.1.1), an effect a clip has once at most taking the
     /// place of the one there; otherwise each clip's stack is replaced (Paste Effects).</param>
     public void PasteEffectsToTrack(Layer on, IReadOnlyList<EffectState> cards, bool append = false)
     {
@@ -145,9 +153,9 @@ public partial class MainViewModel
         using var whole = DeferCommand();
         foreach (var clip in GetTrackClips(on))
         {
-            using (Layer.Echo())
+            using (OwnLookScope())
             {
-                var pasted = cards.Select(clip.AdoptEffect).ToList();
+                var pasted = TakenBy(clip, cards).Select(clip.AdoptEffect).ToList();
                 if (!append)
                 {
                     clip.SetEffects(pasted);

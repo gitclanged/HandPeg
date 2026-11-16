@@ -32,8 +32,6 @@ namespace HandPegGoldenTests;
 /// </summary>
 public static class MediaBrowserTests
 {
-    private const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
-
     public static IEnumerable<GraphResult> All()
     {
         yield return Case("project-media-pool", "# Project Media is the project's own bin: saved with it, kept by Undo, a clip's file taken in, kept after its clips go, removed only when no clip plays it.", Pool);
@@ -43,32 +41,9 @@ public static class MediaBrowserTests
         yield return Case("media-source-frames", "# The preview's stills: latest wins (one made at a time, a newer request takes a waiting one's place), none asked for while a drag and drop holds work.", SourceFramesCase);
     }
 
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
-    }
-
     // ----- project-media-pool -----
 
-    private static JsonSerializerOptions FileOptions => (JsonSerializerOptions)typeof(ProjectStore).GetField("JsonOptions", BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
+    private static JsonSerializerOptions FileOptions => ProjectStore.JsonOptions;
 
     private static TimelineClip Video(string path, double start, double end) =>
         new() { SourcePath = path, AudioStreamIndex = 0, Start = start, End = end, SourceDuration = 60 };
@@ -80,7 +55,7 @@ public static class MediaBrowserTests
     private static MainViewModel Empty()
     {
         var vm = new MainViewModel();
-        typeof(MainViewModel).GetMethod("InstallDocument", Hidden)!.Invoke(vm, [new TimelineDocument()]);
+        vm.InstallDocument(new TimelineDocument());
         return vm;
     }
 
@@ -89,9 +64,9 @@ public static class MediaBrowserTests
     {
         vm.SourceWidth = probe.Video!.Width;
         vm.SourceHeight = probe.Video.Height;
-        typeof(MainViewModel).GetField("_mediaInfo", Hidden)!.SetValue(vm, probe);
+        vm.SetMediaInfoForTests(probe);
         vm.LocalMediaPath = path;
-        typeof(MainViewModel).GetMethod("PlaceOpenedFile", Hidden)!.Invoke(vm, [""]);
+        vm.PlaceOpenedFile("");
     }
 
     private static List<(string What, byte[] State)> StepsOf(MainViewModel vm) =>

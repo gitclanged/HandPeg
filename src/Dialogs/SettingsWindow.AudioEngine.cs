@@ -1,6 +1,8 @@
 using System.Windows;
 using HandPegApp.Services.Audio;
 
+using HandPegApp.Services;
+
 namespace HandPegApp;
 
 // Settings > Timeline & Player > Audio playback (Pass 5.0-AudioAnd3D, 5.0C): the sound engine's output device, buffer and
@@ -10,7 +12,9 @@ public partial class SettingsWindow
 {
     private bool _audioDevicesListed;
 
-    private async void AudioEngineSection_Loaded(object sender, RoutedEventArgs e)
+    private void AudioEngineSection_Loaded(object sender, RoutedEventArgs e) => Faults.Forget(AudioEngineSection_LoadedAsync(sender, e), nameof(AudioEngineSection_Loaded));
+
+    private async Task AudioEngineSection_LoadedAsync(object sender, RoutedEventArgs e)
     {
         if (_audioDevicesListed)
             return;

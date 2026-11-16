@@ -2,7 +2,8 @@
 ok: the first-run window lists no card, NPU or encoder in its own process (no GpuAdapters, NpuAdapters.Enumerate, DxCore, Media Foundation, one-argument FromHardwareName)
 ok: the estimate is started from a pool thread (Task.Run): CreateProcess never waits on the window's thread
 ok: Start Editing kills the profile's workers before the settings are saved and the main window is made, and closing the window kills them too
-ok: the roles are written on a first start only, against the profile's own cards (the three-argument WriteRoles), Decode and Background Auto (5.5A review)
+ok: the recommended roles are written on a first start only, against the profile's own cards (the three-argument WriteRoles), Decode and Background Auto (5.5A review)
+ok: (5.6A) the roles picked on the cards are written whatever the start, against the profile's own first listings; the full test starts from a pool thread
 ok: no work-area height set in the constructor (UiScale would scale it again): FitToWorkArea runs as an instance Loaded handler, after UiScale's
 ok: App's start-up path has no profiling of its own (only the first-run window, shown before the main window exists)
 ok: the estimate makes no Direct3D 11 device, decodes nothing, asks for no fingerprint and runs no FFmpeg

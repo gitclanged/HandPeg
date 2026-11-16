@@ -48,10 +48,40 @@ public partial class MainViewModel
             _ = GpuAdapters.All;
             return still;
         });
+        NameEncodersForCards();
         if (!same)
             await ProbeHardwareEncodersAsync();
         else
             ShowHardwareEncoderStatus();
+    }
+
+    /// <summary>
+    /// The hardware encoders renamed for the card they reach once the cards are listed (after the first frame): on a Qualcomm Adreno machine
+    /// a Media Foundation encoder reads "(Qualcomm Adreno)". The selection stays on the same encoder.
+    /// </summary>
+    private void NameEncodersForCards()
+    {
+        if (!GpuAdapters.IsListed || !GpuAdapters.HasQualcommAdreno)
+            return;
+
+        _resolvingEncoder = true;
+        try
+        {
+            for (var i = 0; i < VideoEncoders.Count; i++)
+            {
+                var option = VideoEncoders[i];
+                if (option.Family != EncoderFamily.MediaFoundation || EncoderOption.FromHardwareName(option.Name, qualcommAdreno: true) is not { } named || named == option)
+                    continue;
+                var selected = VideoEncoder == option;
+                VideoEncoders[i] = named;
+                if (selected)
+                    VideoEncoder = named;
+            }
+        }
+        finally
+        {
+            _resolvingEncoder = false;
+        }
     }
 
     /// <summary>Tests the GPU encoders in the background and offers the working ones in the Export tab.</summary>
@@ -83,7 +113,8 @@ public partial class MainViewModel
         catch (Exception ex)
         {
             if (run == _hardwareProbeRun)
-                HardwareEncoderStatusText = $"Hardware encoder check failed: {ex.Message}";
+                AppLog.Write("Hardware encoder check failed", ex);
+            HardwareEncoderStatusText = $"Hardware encoder check failed: {ex.Message}";
             return;
         }
 
@@ -104,7 +135,7 @@ public partial class MainViewModel
         foreach (var stale in VideoEncoders.Where(e => e.IsHardware).ToList())
             VideoEncoders.Remove(stale);
         foreach (var name in supported)
-            VideoEncoders.Add(EncoderOption.FromHardwareName(name));
+            VideoEncoders.Add(EncoderOption.FromHardwareName(name, GpuAdapters.IsListed && GpuAdapters.HasQualcommAdreno));
         _hardwareEncodersListed = true;
         _resolvingEncoder = true;
         try
@@ -192,19 +223,8 @@ public partial class MainViewModel
             return;
         }
 
-        var settings = AppSettings.Current;
-        if (!settings.UseFfmpegForOlderNvidiaDrivers)
+        if (AppSettings.Set(s => s.UseFfmpegForOlderNvidiaDrivers, (s, v) => s.UseFfmpegForOlderNvidiaDrivers = v, true))
         {
-            settings.UseFfmpegForOlderNvidiaDrivers = true;
-            try
-            {
-                settings.SaveAsCurrent();
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                // The choice still holds for this session.
-            }
-
             AppLog.Write("NVENC needs a newer NVIDIA driver than is installed, so FFmpeg updates now install the build for older drivers.");
             _ = CheckDependencyUpdatesAsync();
         }
@@ -503,6 +523,7 @@ public partial class MainViewModel
         }
         catch (Exception ex)
         {
+            AppLog.Write("I-frame indexing failed", ex);
             IFrameStatusText = $"I-frame indexing failed: {ex.Message}";
         }
         finally
@@ -618,7 +639,7 @@ public partial class MainViewModel
 
         // Copy keeps the picture as it is: said once more before the time is spent, when there is work it would skip.
         if (CopyBypassWarning.Length > 0 && !IsCommandManuallyEdited && Confirm is not null
-            && !Confirm("Stream Copy", $"{CopyBypassWarning}\n\nThe video is copied as it is: no clip's effects, crop or place, nothing set on the Filters tab, and no resize reaches the output. To apply them, choose a video codec on the Export tab.", "Encode Anyway"))
+            && !Confirm("Stream Copy", $"{CopyBypassWarning}\n\nThe video is copied as it is: no clip's effects, crop or place, nothing set on the Color tab, and no resize reaches the output. To apply them, choose a video codec on the Export tab.", "Encode Anyway"))
         {
             return "Encode cancelled.";
         }
@@ -628,6 +649,10 @@ public partial class MainViewModel
 
         // Read after the overwrite question: renaming the target changes the command.
         var command = CommandPreview;
+
+        // A command or Extra options the opened project file brought (not this session's edits) runs only once the user has seen it.
+        if (!ConfirmFileCommand(command))
+            return "Not exported: the project's own command was not confirmed.";
 
         // Auto-captions: listen, transcribe and write the subtitle file the command is about to draw.
         if (await PrepareCaptionsForEncodeAsync(command, cancellationToken) is { } captionProblem)
@@ -678,7 +703,7 @@ public partial class MainViewModel
         {
             // The hardware encoder let us down: one more attempt on the software encoder for the same codec.
             HardwareFallback.TryRewrite(command, out var retry, out var hardware, out var software);
-            AppLog.Write($"{hardware} failed and {software} is tried instead: {ex.Message}");
+            AppLog.Write($"{hardware} failed and {software} is tried instead", ex);
             StatusText = $"Warning: {hardware} failed. Retrying with {software}...";
             Notifier.Show("Hardware encoder failed", $"{hardware} could not encode this video. HandPeg is trying again with {software}.");
 
@@ -784,9 +809,10 @@ public partial class MainViewModel
         var ended = "done";
 
         string? outcome;
+        Task<string?>? run = null;
         try
         {
-            outcome = await WorkScheduler.Run(new WorkSpec(title, lane), async work =>
+            run = WorkScheduler.Run(new WorkSpec(title, lane), async work =>
             {
                 // What the operation says of itself (the progress bar's value, the status line) is what its chip says.
                 void Mirror(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
@@ -808,14 +834,23 @@ public partial class MainViewModel
                     PropertyChanged -= Mirror;
                 }
             }, cancellation.Token);
+            outcome = await run;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (run is { IsCanceled: true } || cancellation.IsCancellationRequested)
         {
             outcome = "Cancelled.";
             ended = "cancelled";
         }
+        catch (OperationCanceledException ex)
+        {
+            // Not a cancel anyone asked for: an internal deadline (an HTTP request, a tool's timeout) ended the operation.
+            AppLog.Write($"{title} failed", ex);
+            outcome = ex.InnerException is TimeoutException ? $"{title} timed out." : $"Error: {ex.Message}";
+            ended = "failed: " + ex.GetType().Name;
+        }
         catch (Exception ex)
         {
+            AppLog.Write($"{title} failed", ex);
             outcome = $"Error: {ex.Message}";
             ended = "failed: " + ex.GetType().Name;
         }
@@ -859,7 +894,7 @@ public partial class MainViewModel
         // been looked at). The other clips stay; the bin and the markers were the old file's.
         SetBin(null);
         SetMarkers(null);
-        Document.Markers = [];
+        ClearDocumentMarkers();
         _previewState = null;
     }
 }

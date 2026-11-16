@@ -44,37 +44,71 @@ public sealed record GpuAdapter(int Index, string Name)
 /// </summary>
 public static partial class GpuAdapters
 {
-    private static IReadOnlyList<GpuAdapter>? _found;
+    /// <summary>One enumeration of DXGI: the cards and the software renderer's index, published together as one object.</summary>
+    private sealed record Listing(IReadOnlyList<GpuAdapter> Adapters, int? WarpIndex);
 
-    /// <summary>Every card that can decode, in DXGI's order. Empty when DXGI could not be asked.</summary>
-    public static IReadOnlyList<GpuAdapter> All => _found ??= Enumerate();
+    private static Listing? _listing;
+    private static readonly Lock ListGate = new();
 
     /// <summary>
-    /// Whether the cards have been listed already (<see cref="All"/> asked once): what may read them without listing them, which loads
-    /// each card's driver (up to a quarter of a second), asks this first (5.4B: EncoderProber.ProblemsForCardsHere, before the first frame).
+    /// The listing, made once: several threads can ask at once after Frame 1 (the encoder recheck, the crash sentinel, the strip workers),
+    /// and listing loads each card's driver (up to a quarter of a second), so the first caller lists under a lock and the rest wait for
+    /// it. Read through one reference, so the cards and the WARP index are always from the same enumeration. A failed enumeration
+    /// (an exception Enumerate does not catch) is not cached: the next call tries again.
     /// </summary>
-    public static bool IsListed => _found is not null;
+    private static Listing Listed => Volatile.Read(ref _listing) ?? ListOnce();
+
+    private static Listing ListOnce()
+    {
+        lock (ListGate)
+        {
+            if (Volatile.Read(ref _listing) is { } listed)
+                return listed;
+            var made = Enumerate();
+            Volatile.Write(ref _listing, made);
+            return made;
+        }
+    }
+
+    /// <summary>Every card that can decode, in DXGI's order. Empty when DXGI could not be asked.</summary>
+    public static IReadOnlyList<GpuAdapter> All => Listed.Adapters;
+
+    /// <summary>
+    /// Whether the cards have been listed already (<see cref="All"/> asked once): what may read them without listing them asks this first
+    /// (EncoderProber.ProblemsForCardsHere and the encoder names before the first frame, Law 1).
+    /// </summary>
+    public static bool IsListed => Volatile.Read(ref _listing) is not null;
+
+    /// <summary>
+    /// For goldens that model another machine's cards: replaces the listing (null: not listed yet) until the result is disposed, which
+    /// puts the real listing back, its WARP index included. <see cref="SetListingForTests"/> changes it again inside that scope.
+    /// </summary>
+    internal static IDisposable ListingForTests(IReadOnlyList<GpuAdapter>? cards)
+    {
+        var kept = Volatile.Read(ref _listing);
+        SetListingForTests(cards);
+        return new ListingRestore(kept);
+    }
+
+    /// <summary>Replaces the listing inside a <see cref="ListingForTests"/> scope.</summary>
+    internal static void SetListingForTests(IReadOnlyList<GpuAdapter>? cards) => Volatile.Write(ref _listing, cards is null ? null : new Listing(cards, null));
+
+    private sealed class ListingRestore(Listing? kept) : IDisposable
+    {
+        public void Dispose() => Volatile.Write(ref _listing, kept);
+    }
 
     /// <summary>A card here is a Qualcomm Adreno: the Media Foundation encoders reach it (EncoderOption.FromHardwareName names them so).</summary>
     public static bool HasQualcommAdreno => All.Any(a => a.IsQualcomm);
-
-    private static int? _warpIndex;
 
     /// <summary>
     /// The DXGI index of the processor's software renderer (WARP, the "Microsoft Basic Render Driver" Windows lists after
     /// the cards; not one of <see cref="All"/>), for the GPU preview's last resort when the card fails (MainWindow.OnGpuFailed).
     /// Null when DXGI lists none.
     /// </summary>
-    public static int? WarpIndex
-    {
-        get
-        {
-            _ = All;
-            return _warpIndex;
-        }
-    }
+    public static int? WarpIndex => Listed.WarpIndex;
 
-    // (DecodeArguments, the "-hwaccel auto" of the dead Enable Hardware Decoding switch, went with it, 5.4B: no export read it.)
+    // (DecodeArguments, the "-hwaccel auto" of the dead Enable Hardware Decoding switch, went with it, 5.4.0: no export read it.)
 
     /// <summary>
     /// The DXGI number of the card the player's compositor draws on, once its worker said so (GpuPreviewEngine); -1 until then.
@@ -139,8 +173,15 @@ public static partial class GpuAdapters
         ? ["-threads", Math.Clamp(AppSettings.Current.BackgroundToolThreads, 1, 64).ToString(CultureInfo.InvariantCulture)]
         : [];
 
-    [LibraryImport("dxgi.dll")]
-    private static partial int CreateDXGIFactory1(in Guid interfaceId, out IntPtr factory);
+    // IDXGIFactory1, made by the compositor's one CreateDXGIFactory1 declaration.
+    private static unsafe int CreateFactory(out IntPtr factory)
+    {
+        var id = new Guid("770aae78-f26f-4dba-a829-253c83d1b387");
+        nint made = 0;
+        var hr = Compositor.Native.Dxgi.CreateDXGIFactory1(&id, &made);
+        factory = made;
+        return hr;
+    }
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate int EnumAdaptersDelegate(IntPtr factory, uint index, out IntPtr adapter);
@@ -152,9 +193,6 @@ public static partial class GpuAdapters
     private delegate int CheckInterfaceSupportDelegate(IntPtr adapter, in Guid interfaceId, out long driverVersion);
 
     // Places in the COM method tables: IDXGIFactory::EnumAdapters, IDXGIAdapter::GetDesc and CheckInterfaceSupport.
-    private const int EnumAdaptersSlot = 7;
-    private const int GetDescSlot = 8;
-    private const int CheckInterfaceSupportSlot = 9;
 
     // Asked about IDXGIDevice, CheckInterfaceSupport answers with the version of the card's driver: the one way
     // DXGI tells it (as browsers read it too).
@@ -177,34 +215,35 @@ public static partial class GpuAdapters
     private const uint MicrosoftVendor = 0x1414;
     private const uint BasicRenderDevice = 0x8C;
 
-    private static List<GpuAdapter> Enumerate()
+    private static Listing Enumerate()
     {
         var adapters = new List<GpuAdapter>();
+        int? warpIndex = null;
         var factory = IntPtr.Zero;
         try
         {
-            if (CreateDXGIFactory1(new Guid("770aae78-f26f-4dba-a829-253c83d1b387"), out factory) < 0 || factory == IntPtr.Zero)
-                return adapters;
+            if (CreateFactory(out factory) < 0 || factory == IntPtr.Zero)
+                return new Listing(adapters, null);
 
-            var enumerate = Method<EnumAdaptersDelegate>(factory, EnumAdaptersSlot);
+            var enumerate = Method<EnumAdaptersDelegate>(factory, Compositor.Native.IDXGIFactorySlot.EnumAdapters);
             for (uint index = 0; index < 16 && enumerate(factory, index, out var adapter) >= 0 && adapter != IntPtr.Zero; index++)
             {
                 var description = Marshal.AllocHGlobal(DescriptionSize);
                 try
                 {
-                    if (Method<GetDescDelegate>(adapter, GetDescSlot)(adapter, description) < 0)
+                    if (Method<GetDescDelegate>(adapter, Compositor.Native.IDXGIAdapterSlot.GetDesc)(adapter, description) < 0)
                         continue;
 
                     var (vendor, device) = ((uint)Marshal.ReadInt32(description, DescriptionBytes), (uint)Marshal.ReadInt32(description, DescriptionBytes + 4));
                     if (vendor == MicrosoftVendor && device == BasicRenderDevice)
                     {
-                        _warpIndex = (int)index;
+                        warpIndex = (int)index;
                         continue;
                     }
 
                     var name = (Marshal.PtrToStringUni(description, DescriptionBytes / 2) ?? "").TrimEnd('\0');
                     var end = name.IndexOf('\0');
-                    var driver = Method<CheckInterfaceSupportDelegate>(adapter, CheckInterfaceSupportSlot)(adapter, DxgiDevice, out var version) >= 0
+                    var driver = Method<CheckInterfaceSupportDelegate>(adapter, Compositor.Native.IDXGIAdapterSlot.CheckInterfaceSupport)(adapter, DxgiDevice, out var version) >= 0
                         ? string.Create(CultureInfo.InvariantCulture, $"{(version >> 48) & 0xFFFF}.{(version >> 32) & 0xFFFF}.{(version >> 16) & 0xFFFF}.{version & 0xFFFF}")
                         : "";
                     adapters.Add(new GpuAdapter((int)index, (end >= 0 ? name[..end] : name).Trim())
@@ -233,7 +272,7 @@ public static partial class GpuAdapters
                 Marshal.Release(factory);
         }
 
-        return adapters;
+        return new Listing(adapters, warpIndex);
     }
 
     private static T Method<T>(IntPtr instance, int slot) where T : Delegate =>

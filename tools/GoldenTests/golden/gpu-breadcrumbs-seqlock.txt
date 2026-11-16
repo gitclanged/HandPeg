@@ -1,0 +1,3 @@
+# A slot copied while its thread keeps writing is never torn: the header's event count always matches its newest ring line.
+ok: copies taken while the thread kept writing: 200 or more
+ok: none torn: each copy's header (events=N) matches its newest ring line (detail N)

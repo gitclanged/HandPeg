@@ -1,0 +1,11 @@
+# The Color Studio's value and LUT boxes: only typed text is written, a lone write is shown at once, nothing to grade on a sound clip.
+ok: Temperature and Exposure left untouched: nothing written (no card put on, no step of Undo)
+ok: Temperature (no unit) typed and committed: no crash, the card put on holding 12, one step of Undo
+ok: ...the slider at 12 and the box showing 12 at once
+ok: Exposure typed past its range (9 EV): held to 3, the box and the slider show 3.00 EV
+ok: Undo, then the boxes left: nothing written back, the Undo stays undone and Redo kept; the boxes show the values after Undo
+ok: a LUT path typed (quoted): written without its quotes, the box shows it as written
+ok: Clear: the card's LUT gone and the box emptied with it (no stale path written back when the box is left)
+ok: the Compare eye's tooltip: no bracket (Hold \ is the Bypass, not the eye)
+ok: a sound clip as the target: Nothing to grade, the controls hidden, Reset off; a typed value puts no card on it, no step, no still captured
+ok: ...a Color Grade card it holds anyway is never the pane's: neither a typed value nor Reset writes it

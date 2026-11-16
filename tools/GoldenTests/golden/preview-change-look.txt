@@ -1,0 +1,8 @@
+# An effect value written in a look batch: one TimelineChanged and one command, look-only (no row rebuild, no Projected Output); a card added is not.
+ok: 30 flushes of 3 values: 30 TimelineChanged and 30 invalidations, one per flush (30, 30; was 6 each per flush)
+ok: each announced look-only (PreviewChange.Look)
+ok: the Projected Output was not rebuilt (0 changes)
+ok: outside an announcement the change reads Output (a listener never sees a stale Look)
+ok: a card switched off is not look-only: its lane and badge change (Rows)
+ok: a card added is not look-only either
+ok: the Timeline's rows ignore a look-only change on both their subscriptions

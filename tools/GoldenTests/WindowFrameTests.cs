@@ -6,17 +6,18 @@ using System.Windows.Media;
 using System.Windows.Shell;
 using System.Windows.Threading;
 using HandPegApp;
-using Answer = HandPegApp.MainWindow.FrameAnswer;
+using HandPegApp.Shell;
+using Answer = HandPegApp.Shell.WindowFrame.FrameAnswer;
 
 namespace HandPegGoldenTests;
 
 /// <summary>
 /// window-maximized-edge (Pass 5.2.1, the user's bugs): a window that draws its own frame (the main window's WindowChrome) never
 /// shows a frame painted by Windows. Maximized beside a taskbar that hides itself, it stops two pixels short of that edge (5.2.1:
-/// its client area did, and Windows filled that strip of frame white; since 5.3 the window itself, MainWindow.MaximizedPlace, so
+/// its client area did, and Windows filled that strip of frame white; since 5.3 the window itself, WindowFrame.MaximizedPlace, so
 /// the strip is the desktop's and "rows short" below counts the window's gap to the monitor's edge); and Windows' classic caption
 /// and border, painted through the window's whole DC over its picture, flashed as it was maximized, restored, minimized or
-/// retitled. A real window with HandPeg's window hook (MainWindow.FrameHook, the main window's and the Settings screen's) is put
+/// retitled. A real window with HandPeg's window hook (WindowFrame.FrameHook, the main window's and the Settings screen's) is put
 /// maximized, restored, and restored from minimized; in each, what makes Windows paint a frame is done (a new title, the frame
 /// worked out anew, WM_NCPAINT, the classic caption's and frame's own messages), and every pixel of the window on its monitor
 /// is read back from the window, drawn by the card and by the processor: none may be light. With those messages left to Windows
@@ -26,7 +27,7 @@ namespace HandPegGoldenTests;
 /// nothing to read back, which window-frame-messages (<see cref="Messages"/>) covers message by message.
 /// <para>
 /// window-frame-messages (Pass 5.3, the classic title bar flashing as the window was moved or sized): what the frame hook does
-/// with each of the frame's messages, and what of them goes on to Windows. (1) The pure decision (MainWindow.FrameDecision) as a
+/// with each of the frame's messages, and what of them goes on to Windows. (1) The pure decision (WindowFrame.FrameDecision) as a
 /// table, message by window state. (2) A real window, drawn by the card and by the processor, with HandPeg's hook, WindowChrome's
 /// own hook under it, and a spy under that (added first: a window's hooks are called from the last added to the first), which
 /// hears only what would reach the Window and DefWindowProc: WM_NCACTIVATE, WM_SETTEXT, WM_SETICON, WM_NCCALCSIZE and the classic
@@ -39,7 +40,7 @@ namespace HandPegGoldenTests;
 /// the classic caption's messages and each of ten move-and-size steps: no more light than a control window that leaves Windows'
 /// classic paths open shows (pixels the moves uncover; with the desktop drawing the frame neither paints a caption, so this layer
 /// alone proves little: layer 2 carries the guarantee, and the console says which case this PC is). (4) The maximized place of
-/// made-up monitors (MainWindow.MaximizedPlaceOf): a larger and a smaller monitor than the main one, one at a negative origin, one
+/// made-up monitors (WindowFrame.MaximizedPlaceOf): a larger and a smaller monitor than the main one, one at a negative origin, one
 /// with an ordinary taskbar and one that hides itself, and none. (5) A window made maximized, which Windows places before any hook is
 /// there: put at its maximized place before it is shown (KeepClearOfHiddenTaskbarNow at SourceInitialized), the desktop drawing its frame.
 /// </para>
@@ -128,9 +129,9 @@ public static partial class WindowFrameTests
             window.SourceInitialized += (_, _) =>
             {
                 // Without the frame paint: the hook as it was before 5.2.1 (the strip kept clear, Windows' frame messages left to it).
-                HwndSource.FromHwnd(new WindowInteropHelper(window).Handle)?.AddHook(paintsFrame ? MainWindow.FrameHook
+                HwndSource.FromHwnd(new WindowInteropHelper(window).Handle)?.AddHook(paintsFrame ? WindowFrame.FrameHook
                     : (IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled) =>
-                        message is 0x0085 or 0x00AE or 0x00AF ? IntPtr.Zero : MainWindow.FrameHook(hwnd, message, wParam, lParam, ref handled));
+                        message is 0x0085 or 0x00AE or 0x00AF ? IntPtr.Zero : WindowFrame.FrameHook(hwnd, message, wParam, lParam, ref handled));
             };
             window.Show();
             Idle();
@@ -248,7 +249,7 @@ public static partial class WindowFrameTests
 
     public static GraphResult Messages()
     {
-        var text = new StringBuilder("# The frame's messages (5.3): what the hook of a window that draws its own frame (MainWindow.FrameHook: the main window's,\n" +
+        var text = new StringBuilder("# The frame's messages (5.3): what the hook of a window that draws its own frame (WindowFrame.FrameHook: the main window's,\n" +
             "# through TitleBarHook, and the Settings screen's) does with each, and what of them goes on to Windows.\n");
         var problems = new List<string>();
         void Expect(bool holds, string what)
@@ -297,16 +298,16 @@ public static partial class WindowFrameTests
     }
 
     private static Answer Decide(int message, int wParam, (string Name, bool Zoomed, bool Iconic, bool Strip) state) =>
-        MainWindow.FrameDecision(message, wParam, state.Zoomed, state.Iconic, state.Strip);
+        WindowFrame.FrameDecision(message, wParam, state.Zoomed, state.Iconic, state.Strip);
 
     /// <summary>(1) The hook's decision for each message in each state, as a table, and what the table must say.</summary>
     /// <summary>
-    /// (4) Where a window maximizes beside a taskbar that hides itself (MainWindow.MaximizedPlaceOf), for monitors made up here: the
+    /// (4) Where a window maximizes beside a taskbar that hides itself (WindowFrame.MaximizedPlaceOf), for monitors made up here: the
     /// working area with each such edge two pixels in, whatever the monitor's size or origin (WM_WINDOWPOSCHANGING holds the window there).
     /// </summary>
     private static void MaximizedPlaces(StringBuilder text, Action<bool, string> expect)
     {
-        text.Append("## The maximized place beside a taskbar that hides itself (MainWindow.MaximizedPlaceOf), made-up monitors\n");
+        text.Append("## The maximized place beside a taskbar that hides itself (WindowFrame.MaximizedPlaceOf), made-up monitors\n");
         const int left = 1, top = 2, right = 4, bottom = 8;
         var cases = new (string Name, (int, int, int, int) Monitor, (int, int, int, int) Work, int Edges, (int, int, int, int) Place)[]
         {
@@ -318,12 +319,12 @@ public static partial class WindowFrameTests
         };
         foreach (var (name, monitor, work, edges, wanted) in cases)
         {
-            var place = MainWindow.MaximizedPlaceOf(monitor, work, edges);
+            var place = WindowFrame.MaximizedPlaceOf(monitor, work, edges);
             text.Append($"  {name}: placed {place.Left},{place.Top} - {place.Right},{place.Bottom}\n");
             expect(place == wanted, $"{name}: the working area with each hidden taskbar's edge two pixels in");
         }
 
-        var none = MainWindow.MaximizedPlaceOf((0, 0, 1920, 1080), (0, 0, 1920, 1040), 0);
+        var none = WindowFrame.MaximizedPlaceOf((0, 0, 1920, 1080), (0, 0, 1920, 1040), 0);
         expect(none == (0, 0, 1920, 1040), "no taskbar that hides itself: the working area itself (the window is then left where Windows maximizes it)");
     }
 
@@ -344,8 +345,8 @@ public static partial class WindowFrameTests
         window.SourceInitialized += (_, _) =>
         {
             var handle = new WindowInteropHelper(window).Handle;
-            HwndSource.FromHwnd(handle)?.AddHook(MainWindow.FrameHook);
-            MainWindow.KeepClearOfHiddenTaskbarNow(handle);
+            HwndSource.FromHwnd(handle)?.AddHook(WindowFrame.FrameHook);
+            WindowFrame.KeepClearOfHiddenTaskbarNow(handle);
             GetWindowRect(handle, out placedAtSource);
         };
         try
@@ -373,7 +374,7 @@ public static partial class WindowFrameTests
 
     private static void DecisionTable(StringBuilder text, Action<bool, string> expect)
     {
-        text.Append("## What the hook decides (MainWindow.FrameDecision), by the window's state\n");
+        text.Append("## What the hook decides (WindowFrame.FrameDecision), by the window's state\n");
         var header = new StringBuilder("message".PadRight(26));
         foreach (var state in TableStates)
             header.Append(state.Name.PadRight(22));
@@ -425,7 +426,7 @@ public static partial class WindowFrameTests
             // XAML and the code-behind order them: the handlers run in that order, and the hooks are called the other way round.
             window.SourceInitialized += (_, _) => HwndSource.FromHwnd(new WindowInteropHelper(window).Handle)?.AddHook(spy);
             WindowChrome.SetWindowChrome(window, NewChrome());
-            window.SourceInitialized += (_, _) => HwndSource.FromHwnd(new WindowInteropHelper(window).Handle)?.AddHook(MainWindow.FrameHook);
+            window.SourceInitialized += (_, _) => HwndSource.FromHwnd(new WindowInteropHelper(window).Handle)?.AddHook(WindowFrame.FrameHook);
             listening = true;
             window.Show();
             Idle();
@@ -433,7 +434,7 @@ public static partial class WindowFrameTests
 
             // The hook called directly, as Windows calls a window: deactivating, it answers TRUE.
             var handled = false;
-            var answer = MainWindow.FrameHook(hwnd, WmNcActivate, 0, IntPtr.Zero, ref handled);
+            var answer = WindowFrame.FrameHook(hwnd, WmNcActivate, 0, IntPtr.Zero, ref handled);
             expect(handled && answer != IntPtr.Zero, $"{drawn}: the hook given WM_NCACTIVATE with wParam 0 answers it, non-zero (TRUE: the window may go inactive)");
 
             var ownPlace = default(NativeRect);
@@ -538,7 +539,7 @@ public static partial class WindowFrameTests
     {
         var window = NewWindow("HandPeg golden: never shown");
         WindowChrome.SetWindowChrome(window, NewChrome());
-        window.SourceInitialized += (_, _) => HwndSource.FromHwnd(new WindowInteropHelper(window).Handle)?.AddHook(MainWindow.FrameHook);
+        window.SourceInitialized += (_, _) => HwndSource.FromHwnd(new WindowInteropHelper(window).Handle)?.AddHook(WindowFrame.FrameHook);
         try
         {
             var hwnd = new WindowInteropHelper(window).EnsureHandle();
@@ -552,7 +553,7 @@ public static partial class WindowFrameTests
             var words = Marshal.StringToHGlobalUni(again);
             try
             {
-                MainWindow.FrameHook(hwnd, WmSetText, 0, words, ref handled);
+                WindowFrame.FrameHook(hwnd, WmSetText, 0, words, ref handled);
             }
             finally
             {
@@ -590,7 +591,7 @@ public static partial class WindowFrameTests
                         handled = true;
                         return DefWindowProc(hwnd, message, wParam, lParam);
                     default:
-                        return MainWindow.FrameHook(hwnd, message, wParam, lParam, ref handled);
+                        return WindowFrame.FrameHook(hwnd, message, wParam, lParam, ref handled);
                 }
             });
         try

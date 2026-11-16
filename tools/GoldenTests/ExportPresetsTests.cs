@@ -28,7 +28,6 @@ namespace HandPegGoldenTests;
 /// </summary>
 public static class ExportPresetsTests
 {
-    private const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
     private const string Vbr = "Average Bitrate (ABR)", Cq = "Constant Quality (CQ)", Match = "Match Project Settings";
 
     public static IEnumerable<GraphResult> All()
@@ -41,38 +40,15 @@ public static class ExportPresetsTests
         yield return Case("export-audio-only", "# Audio Only (5.4C): FLAC, WAV and MP3 of the Sequence's sound alone, rendered by the engine, one track, no frame piped, no compositor.", AudioOnly);
     }
 
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>, StringBuilder> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect, text);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
-    }
-
     private static MainViewModel Empty()
     {
         var vm = new MainViewModel();
-        typeof(MainViewModel).GetMethod("InstallDocument", Hidden)!.Invoke(vm, [new TimelineDocument()]);
+        vm.InstallDocument(new TimelineDocument());
         return vm;
     }
 
     private static SequenceExportState ExportState(MainViewModel vm) =>
-        (SequenceExportState)typeof(MainViewModel).GetMethod("CompileExportState", Hidden)!.Invoke(vm, null)!;
+        vm.CompileExportState();
 
     private static EncodingPreset BuiltIn(string name) => ExportPresetCatalog.BuiltIns.First(p => p.Name == name);
 
@@ -408,11 +384,11 @@ public static class ExportPresetsTests
                && GpuExport.ExportAdapter(new AppSettings { ExportGpuAdapter = -1, CompositorGpuAdapter = 1 }, cards) == 1
                && GpuExport.ExportAdapter(new AppSettings(), cards) == -1 && new AppSettings().HardwareDecodeAdapter == -1,
             "the Export GPU: card 1 when chosen; a card no longer here, or Auto, is the Compositor GPU (-1, its own Auto, to start with)");
-        var gpuSource = File.ReadAllText(Path.Combine(RepositoryRoot(), "src", "Services", "GpuExport.cs"));
+        var gpuSource = File.ReadAllText(Path.Combine(SourceProbe.Root, "src", "Services", "GpuExport.cs"));
         var start = gpuSource[gpuSource.IndexOf("public static CompositorClient? StartCompositor", StringComparison.Ordinal)..];
         start = start[..start.IndexOf("static CompositorClient? Start(int adapter", StringComparison.Ordinal)];
-        var settingsXaml = File.ReadAllText(Path.Combine(RepositoryRoot(), "src", "Dialogs", "SettingsWindow.xaml"));
-        var settingsCode = File.ReadAllText(Path.Combine(RepositoryRoot(), "src", "Dialogs", "SettingsWindow.xaml.cs"));
+        var settingsXaml = File.ReadAllText(Path.Combine(SourceProbe.Root, "src", "Dialogs", "SettingsWindow.xaml"));
+        var settingsCode = File.ReadAllText(Path.Combine(SourceProbe.Root, "src", "Dialogs", "SettingsWindow.xaml.cs"));
         expect(start.Contains("ExportAdapter(settings, GpuAdapters.All)", StringComparison.Ordinal)
                && start.IndexOf("Start(settings.CompositorGpuAdapter", StringComparison.Ordinal) is > 0 and var fallback && fallback < start.IndexOf("Start(warp", StringComparison.Ordinal)
                && settingsXaml.Contains("AutomationProperties.Name=\"Export GPU\"", StringComparison.Ordinal) && !settingsCode.Contains("DecodeAdapterBox.ItemsSource", StringComparison.Ordinal),
@@ -424,7 +400,6 @@ public static class ExportPresetsTests
         // AppSettings.Load on files of the test's own, in the test's data folder (HANDPEG_DATA_DIR): what was there is put back after.
         var file = AppSettings.FilePath;
         var original = File.Exists(file) ? File.ReadAllBytes(file) : null;
-        var load = typeof(AppSettings).GetMethod("Load", BindingFlags.NonPublic | BindingFlags.Static, Type.EmptyTypes)!;
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(file)!);
@@ -438,16 +413,16 @@ public static class ExportPresetsTests
                 ],
             };
             File.WriteAllText(file, JsonSerializer.Serialize(old, AppSettingsJsonContext.Default.AppSettings));
-            var read = (AppSettings)load.Invoke(null, null)!;
+            var read = AppSettings.Load();
             old.SquisherPresets[0].TargetSizeMb = 18;
             File.WriteAllText(file, JsonSerializer.Serialize(old, AppSettingsJsonContext.Default.AppSettings));
-            var kept = (AppSettings)load.Invoke(null, null)!;
+            var kept = AppSettings.Load();
             expect(read is { ViewDefaultsVersion: >= 7 } && read.SquisherPresets[0] is { Name: "Discord (10 MB)", TargetSizeMb: 10 } && read.SquisherPresets[1].Name == "Discord (Nitro Basic)"
                    && kept.SquisherPresets[0] is { Name: "Discord (Non-Nitro)", TargetSizeMb: 18 },
                 "a settings file of before with the untouched Discord (Non-Nitro) of 20 MB reads as Discord (10 MB), 10 MB; one the user set to 18 MB stays theirs; the others keep their names");
             old.ViewDefaultsVersion = 8;
             File.WriteAllText(file, JsonSerializer.Serialize(old, AppSettingsJsonContext.Default.AppSettings));
-            var chosenSince = (AppSettings)load.Invoke(null, null)!;
+            var chosenSince = AppSettings.Load();
             expect(read is { ViewDefaultsVersion: >= 8, ExportGpuAdapter: -1 } && chosenSince.ExportGpuAdapter == 1,
                 "an Export GPU saved before 5.4C (it meant something else) goes back to Auto (the Compositor GPU) once; one chosen since stays");
         }
@@ -547,7 +522,7 @@ public static class ExportPresetsTests
 
         // The routes: RunExportAsync sends an Audio Only file to GpuExport.RunAudioOnlyAsync (never to FfmpegRunner with its token, never
         // to the compositor); the Export tab folds its video parts by Visibility (no control bound twice: export-tab-columns).
-        var root = RepositoryRoot();
+        var root = SourceProbe.Root;
         var command2 = File.ReadAllText(Path.Combine(root, "src", "ViewModels", "MainViewModel.Command.cs"));
         var run = command2[command2.IndexOf("private async Task RunExportAsync", StringComparison.Ordinal)..];
         run = run[..run.IndexOf("\n    }", StringComparison.Ordinal)];
@@ -633,10 +608,22 @@ public static class ExportPresetsTests
                 CaptionLayer = Layer.FromState(new LayerState { Kind = LayerKind.Captions, Name = "Subtitles", SizeWidth = 0.9, SizeHeight = 0.2 }, 1920, 1080, 1920, 1080),
             };
 
+            // The test's FFmpeg (a full path) is the configured FFmpeg for the run, as Settings would set it: a command runs only a bare
+            // ffmpeg or the FFmpeg HandPeg is configured with (FfmpegRunner.ResolveExecutable).
             float[] Make(string name, SequenceExportState with)
             {
                 var output = Path.Combine(folder, name);
-                Task.Run(() => GpuExport.RunAudioOnlyAsync(with with { OutputPath = output }, null, new Quiet(), CancellationToken.None)).GetAwaiter().GetResult();
+                var configured = AppSettings.Current.FfmpegPath;
+                AppSettings.Current.FfmpegPath = ffmpeg.Trim('"');
+                try
+                {
+                    Task.Run(() => GpuExport.RunAudioOnlyAsync(with with { OutputPath = output }, null, new Quiet(), CancellationToken.None)).GetAwaiter().GetResult();
+                }
+                finally
+                {
+                    AppSettings.Current.FfmpegPath = configured;
+                }
+
                 return Decode(ffmpeg, output, rate);
             }
 
@@ -813,27 +800,22 @@ public static class ExportPresetsTests
         }
 
         // Before the cards are listed (the first frame's path) nothing is filtered, and nothing lists them; once listed, the absent vendors go.
-        var found = typeof(GpuAdapters).GetField("_found", BindingFlags.NonPublic | BindingFlags.Static)!;
-        var kept = found.GetValue(null);
-        try
+        using (GpuAdapters.ListingForTests(null))
         {
-            found.SetValue(null, null);
             List<string> problems = ["h264_nvenc: Cannot load nvcuda.dll", "h264_amf: driver too old"];
             var early = EncoderProber.ProblemsForCardsHere(problems);
             expect(early.SequenceEqual(problems) && !GpuAdapters.IsListed, "not listed yet: every problem is kept, and asking listed no card (no DXGI before the first frame, Law 1)");
-            found.SetValue(null, (IReadOnlyList<GpuAdapter>)amd);
+            GpuAdapters.SetListingForTests(amd);
             expect(GpuAdapters.IsListed && EncoderProber.ProblemsForCardsHere(problems).SequenceEqual(["h264_amf: driver too old"]),
                 "listed (an AMD card): the NVENC problem is left out, AMD's is said");
         }
-        finally
-        {
-            found.SetValue(null, kept);
-        }
 
-        var source = File.ReadAllText(Path.Combine(RepositoryRoot(), "src", "ViewModels", "MainViewModel.EncodeAndLoad.cs"));
+        var source = File.ReadAllText(Path.Combine(SourceProbe.Root, "src", "ViewModels", "MainViewModel.EncodeAndLoad.cs"));
         var apply = source[source.IndexOf("private void ApplyHardwareEncoders", StringComparison.Ordinal)..];
         apply = apply[..apply.IndexOf("\n    }", StringComparison.Ordinal)];
-        expect(!apply.Contains("GpuAdapters.All", StringComparison.Ordinal) && source.Contains("EncoderProber.ProblemsForCardsHere(_hardwareProblems)", StringComparison.Ordinal),
+        expect(!apply.Contains("GpuAdapters.All", StringComparison.Ordinal) && !apply.Contains("FromHardwareName(name)", StringComparison.Ordinal)
+               && apply.Contains("FromHardwareName(name, GpuAdapters.IsListed && GpuAdapters.HasQualcommAdreno)", StringComparison.Ordinal)
+               && source.Contains("EncoderProber.ProblemsForCardsHere(_hardwareProblems)", StringComparison.Ordinal),
             "ApplyHardwareEncoders (which runs before the first frame) lists no card: the status line filters only what is listed, and the recheck after the first frame lists them off the window's thread");
     }
 
@@ -843,7 +825,7 @@ public static class ExportPresetsTests
 
     private static void Columns(Action<bool, string> expect, StringBuilder text)
     {
-        var root = RepositoryRoot();
+        var root = SourceProbe.Root;
         var mainText = File.ReadAllText(Path.Combine(root, "src", "MainWindow.xaml"));
         var main = XDocument.Parse(mainText);
         string? Attr(XElement e, XName name) => (string?)e.Attribute(name);
@@ -925,24 +907,13 @@ public static class ExportPresetsTests
         expect(tracks.Contains("Header = \"Interactive Crop\"", StringComparison.Ordinal) && tracks.Contains("\"Reset Crop\"", StringComparison.Ordinal)
                && typeof(MainViewModel).GetMethod("CropInteractively") is not null && typeof(MainViewModel).GetMethod("ResetClipCrop") is not null,
             "Interactive Crop and Reset Crop are on a clip's menu (Transform, Sizing & Position > Crop), on the clip");
-        expect(typeof(AppSettings).GetProperty("UseEasySocialExport") is null && typeof(AppSettings).GetProperty("DefaultHardwareDecoding") is null
-               && typeof(EncodingPreset).GetProperty("HardwareDecoding") is null && typeof(SequenceExportState).GetProperty("HardwareDecodeArguments") is null
-               && typeof(GpuAdapters).GetProperty("DecodeArguments") is null && typeof(MainViewModel).GetProperty("HardwareDecoding") is null,
+        expect(HasNoMember(typeof(AppSettings), "UseEasySocialExport", nameof(AppSettings.Current)) && HasNoMember(typeof(AppSettings), "DefaultHardwareDecoding", nameof(AppSettings.Current))
+               && HasNoMember(typeof(EncodingPreset), "HardwareDecoding", nameof(EncodingPreset.Name)) && HasNoMember(typeof(SequenceExportState), "HardwareDecodeArguments", nameof(SequenceExportState.Timeline))
+               && HasNoMember(typeof(GpuAdapters), "DecodeArguments", nameof(GpuAdapters.BackgroundAdapter)) && HasNoMember(typeof(MainViewModel), "HardwareDecoding", nameof(MainViewModel.Document)),
             "and their state is gone: no UseEasySocialExport, no DefaultHardwareDecoding, no HardwareDecoding on a preset or the view model, no -hwaccel arguments");
         var settings = File.ReadAllText(Path.Combine(root, "src", "Dialogs", "SettingsWindow.xaml"));
         expect(!settings.Contains("UseEasySocialExport", StringComparison.Ordinal) && !settings.Contains("DefaultHardwareDecoding", StringComparison.Ordinal),
             "Settings no longer offers Easy Social Export or a Hardware decoding default");
     }
 
-    /// <summary>The repository's folder (where HandPegApp.csproj is), found upwards from the built program.</summary>
-    private static string RepositoryRoot()
-    {
-        for (var folder = new DirectoryInfo(AppContext.BaseDirectory); folder is not null; folder = folder.Parent)
-        {
-            if (File.Exists(Path.Combine(folder.FullName, "HandPegApp.csproj")))
-                return folder.FullName;
-        }
-
-        throw new DirectoryNotFoundException("HandPegApp.csproj was not found above the golden tests' program.");
-    }
 }

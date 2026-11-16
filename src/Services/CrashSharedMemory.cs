@@ -188,7 +188,7 @@ public static unsafe class CrashSharedMemory
         if (Volatile.Read(ref *(long*)(crumb + CrumbSequence)) > sequence)
             return;
 
-        Volatile.Write(ref *(long*)(crumb + CrumbSequence), 0);
+        Interlocked.Exchange(ref *(long*)(crumb + CrumbSequence), 0);
         *(double*)(crumb + CrumbAt) = at;
         WriteUtf8(crumb, CrumbCategory, CrumbCategoryBytes, category);
         WriteUtf8(crumb, CrumbDetail, CrumbDetailBytes, detail ?? "");

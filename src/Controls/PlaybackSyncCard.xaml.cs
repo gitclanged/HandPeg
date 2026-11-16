@@ -3,6 +3,8 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Threading;
 using HandPegApp.Services;
+using HandPegApp.Native;
+using static HandPegApp.Native.User32;
 
 namespace HandPegApp;
 
@@ -65,7 +67,9 @@ public partial class PlaybackSyncCard : UserControl
     /// <summary>Stops a test running (nothing when none is).</summary>
     public void Cancel() => _run?.Cancel();
 
-    private async void Test_Click(object sender, RoutedEventArgs e)
+    private void Test_Click(object sender, RoutedEventArgs e) => Faults.Forget(Test_ClickAsync(sender, e), nameof(Test_Click));
+
+    private async Task Test_ClickAsync(object sender, RoutedEventArgs e)
     {
         if (_run is { } running)
         {
@@ -143,7 +147,7 @@ public partial class PlaybackSyncCard : UserControl
     {
         var running = _run is not null;
         TestButtonText.Text = running ? "Cancel Test" : "Test Playback & A/V Sync";
-        TestButtonIcon.Text = running ? "" : "";
+        TestButtonIcon.Text = running ? Glyphs.Stop : Glyphs.Play;
         TestButton.IsEnabled = running || _blockedBy is null;
         TestButton.ToolTip = running ? "Stops the test" : _blockedBy ?? "Plays a short test on screen and measures A/V sync";
     }
@@ -162,17 +166,4 @@ public partial class PlaybackSyncCard : UserControl
         StatusText.SetResourceReference(TextBlock.ForegroundProperty, warning ? "WarningTextBrush" : "MutedTextBrush");
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct NativeRect
-    {
-        public int Left, Top, Right, Bottom;
-    }
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool IsWindowVisible(nint window);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GetClientRect(nint window, out NativeRect rect);
 }

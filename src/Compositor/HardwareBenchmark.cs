@@ -46,16 +46,24 @@ public static unsafe partial class HardwareBenchmark
 
     public static int Run(string[] args)
     {
-        _ = CompositorWorker.SetErrorMode(0x0001 | 0x0002);
+        _ = HandPegApp.Native.Kernel32.SetErrorMode(0x0001 | 0x0002);
 
-        // 5.5A: the clip is optional (the estimate has none, a quick check may have none: the bus only), and the mode picks the body.
+        // An exception nothing caught (a driver call on one of the timing threads) is logged with its stack before the process ends:
+        // the test's result line only carries the message.
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+        {
+            if (e.ExceptionObject is Exception unhandled)
+                AppLog.Write("Hardware test: unhandled exception", unhandled);
+        };
+
+        // The clip is optional (the estimate has none, a quick check may have none: the bus only), and the mode picks the body.
         var clip = args.Length > 1 && !args[1].StartsWith("--", StringComparison.Ordinal) ? args[1] : "";
         _ffmpeg = CompositorWorker.OptionValue(args, CompositorWorker.FfmpegOption);
         _out = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };
         var exitCode = 0;
         Func<int> body = args.Contains(EstimateOption) ? Estimate
             : args.Contains(QuickOption) ? () => MeasureQuick(clip, ParseAdapters(CompositorWorker.OptionValue(args, AdaptersOption)))
-            : () => Measure(clip);
+            : () => Measure(clip, ParseAdapters(CompositorWorker.OptionValue(args, AdaptersOption)));
         var thread = new Thread(() => exitCode = body()) { Name = "Benchmark" };
         thread.SetApartmentState(ApartmentState.MTA);
         thread.Start();
@@ -64,10 +72,16 @@ public static unsafe partial class HardwareBenchmark
         return exitCode;
     }
 
-    private static int Measure(string clip)
+    /// <summary>
+    /// The full test. The clip is optional (a fresh install has no FFmpeg to make it yet): without it the cards are listed and each
+    /// card's bus measured, and the compositor timed, with no decoding (the window runs it again once FFmpeg is here). The compositor stage
+    /// times the cards the roles point to and those in <paramref name="chosen"/> (--adapters: the roles chosen in Settings).
+    /// </summary>
+    private static int Measure(string clip, IReadOnlySet<int> chosen)
     {
         Clock.Start();
-        var result = new HardwareBenchmarkResult { MeasuredAt = DateTime.UtcNow.ToString("o", System.Globalization.CultureInfo.InvariantCulture), Clip = "H.264 1920x1080 60 fps" };
+        var decodes = clip.Length > 0 && File.Exists(clip);
+        var result = new HardwareBenchmarkResult { MeasuredAt = DateTime.UtcNow.ToString("o", System.Globalization.CultureInfo.InvariantCulture), Clip = decodes ? "H.264 1920x1080 60 fps" : "" };
         try
         {
             _ = Com.CoInitializeEx(0, Com.CoInitMultithreaded);
@@ -79,26 +93,27 @@ public static unsafe partial class HardwareBenchmark
             Report("adapters", -1, 0.1, result.Npus.Count > 0
                 ? string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{result.Adapters.Count} graphics card(s), {result.Npus.Count} NPU(s)")
                 : $"{result.Adapters.Count} graphics card(s)", result);
-            if (!File.Exists(clip))
-                throw new FileNotFoundException("The benchmark clip is missing.", clip);
 
             // A card DXGI lists twice is measured once.
             NoteRepeats(result);
             var hardware = result.Adapters.Where(a => a.Note.Length == 0).ToList();
-            var share = 0.75 / Math.Max(hardware.Count + 1, 1);
+            var share = 0.6 / Math.Max(hardware.Count + 1, 1);
 
-            // The processor's decode, once: the reference for every card's pictures.
+            // The processor's decode, once: the reference for every card's pictures (only with a test clip).
             byte[][]? reference = null;
-            double softwareFps = 0, softwareSeek = 0;
-            using (var gpu = GpuDevice.Create(hardware.Count > 0 ? hardware[0].Index : -1))
+            if (decodes)
             {
-                (softwareFps, softwareSeek, reference) = DecodeRun(gpu, clip, hardware: false, out var frames);
-                result.Clip = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"H.264 1920x1080 60 fps, {frames} frames");
-            }
+                double softwareFps = 0, softwareSeek = 0;
+                using (var gpu = GpuDevice.Create(hardware.Count > 0 ? hardware[0].Index : -1))
+                {
+                    (softwareFps, softwareSeek, reference) = DecodeRun(gpu, clip, hardware: false, out var frames);
+                    result.Clip = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"H.264 1920x1080 60 fps, {frames} frames");
+                }
 
-            foreach (var adapter in result.Adapters)
-                (adapter.SoftwareDecodeFps, adapter.SoftwareSeekMs) = (Math.Round(softwareFps, 1), Math.Round(softwareSeek, 2));
-            Report("decode-sw", -1, 0.1 + share, $"Processor: {softwareFps:0} fps", result);
+                foreach (var adapter in result.Adapters)
+                    (adapter.SoftwareDecodeFps, adapter.SoftwareSeekMs) = (Math.Round(softwareFps, 1), Math.Round(softwareSeek, 2));
+                Report("decode-sw", -1, 0.1 + share, $"Processor: {softwareFps:0} fps", result);
+            }
 
             for (var i = 0; i < hardware.Count; i++)
             {
@@ -106,14 +121,20 @@ public static unsafe partial class HardwareBenchmark
                 try
                 {
                     using var gpu = GpuDevice.Create(adapter.Index, allowWarp: false);
-                    var (fps, seek, frames) = DecodeRun(gpu, clip, hardware: true, out _);
-                    (adapter.HardwareDecodeFps, adapter.HardwareSeekMs) = (Math.Round(fps, 1), Math.Round(seek, 2));
-                    Report("decode-hw", adapter.Index, 0.1 + share * (i + 1.5), $"{adapter.Name}: {fps:0} fps", result);
+                    if (decodes)
+                    {
+                        var (fps, seek, frames) = DecodeRun(gpu, clip, hardware: true, out _);
+                        (adapter.HardwareDecodeFps, adapter.HardwareSeekMs) = (Math.Round(fps, 1), Math.Round(seek, 2));
+                        Report("decode-hw", adapter.Index, 0.1 + share * (i + 1.5), $"{adapter.Name}: {fps:0} fps", result);
 
-                    if (reference is not null && frames is not null)
-                        Compare(adapter, reference, frames);
+                        if (reference is not null && frames is not null)
+                            Compare(adapter, reference, frames);
+                    }
+
                     (adapter.ReadbackMBps, adapter.UploadMBps) = Bus(gpu);
-                    Report("transfer", adapter.Index, 0.1 + share * (i + 2), $"{adapter.Name}: PSNR {(adapter.BitExact ? "bit-exact" : adapter.PsnrDb.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture))}", result);
+                    Report("transfer", adapter.Index, 0.1 + share * (i + 2), decodes
+                        ? $"{adapter.Name}: PSNR {(adapter.BitExact ? "bit-exact" : adapter.PsnrDb.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture))}"
+                        : string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{adapter.Name}: {adapter.ReadbackMBps:0} MB/s"), result);
                 }
                 catch (Exception ex) when (ex is GpuException or IOException or InvalidDataException)
                 {
@@ -121,7 +142,10 @@ public static unsafe partial class HardwareBenchmark
                 }
             }
 
-            if (hardware.Where(a => a.DecodesInHardware && a.SameCardAs < 0).Select(a => (a.VendorId, a.DeviceId)).Distinct().Count() >= 2)
+            // The compositor's all-slots frame on the cards that hold a role (HardwareBenchmark.Compositor.cs).
+            TimeCompositors(result, CompositorTargets(result, chosen), 0.7, 0.88);
+
+            if (decodes && hardware.Where(a => a.DecodesInHardware && a.SameCardAs < 0).Select(a => (a.VendorId, a.DeviceId)).Distinct().Count() >= 2)
             {
                 try
                 {
@@ -139,6 +163,7 @@ public static unsafe partial class HardwareBenchmark
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
+            AppLog.Write("Hardware test failed", ex);
             result.Error = ex.Message;
         }
 
@@ -241,11 +266,11 @@ public static unsafe partial class HardwareBenchmark
         {
             if (video == 0)
                 return codecs;
-            var count = ((delegate* unmanaged<nint, uint>)Com.Table(video)[11])(video);
+            var count = ((delegate* unmanaged<nint, uint>)Com.Table(video)[ID3D11VideoDeviceSlot.GetVideoDecoderProfileCount])(video);
             for (uint i = 0; i < count; i++)
             {
                 Guid profile;
-                if (((delegate* unmanaged<nint, uint, Guid*, int>)Com.Table(video)[12])(video, i, &profile) < 0)
+                if (((delegate* unmanaged<nint, uint, Guid*, int>)Com.Table(video)[ID3D11VideoDeviceSlot.GetVideoDecoderProfile])(video, i, &profile) < 0)
                     continue;
                 foreach (var (known, codec) in Profiles)
                 {
@@ -696,7 +721,8 @@ public static unsafe partial class HardwareBenchmark
             // without a test clip (no FFmpeg yet) measures the bus only.
             : result.Kind == HardwareBenchmarkResult.KindEstimate
                 ? "Decode: Auto, the compositor's card (measured next)."
-            : result.Kind == HardwareBenchmarkResult.KindQuick && !compositor.DecodesInHardware && result.Clip.Length == 0
+            // The full test without a test clip (no FFmpeg yet) measures the bus and the compositor only, as the quick check does.
+            : result.Kind != HardwareBenchmarkResult.KindEstimate && !compositor.DecodesInHardware && result.Clip.Length == 0
                 ? "Decode: Auto, the compositor's card (its decoding is measured once FFmpeg is here)."
             : compositor.DecodesInHardware
                 ? $"Decode: Auto, the compositor's card ({compositor.HardwareDecodeFps:0} fps): frames stay in its memory, nothing crosses the bus."

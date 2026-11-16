@@ -129,7 +129,7 @@ public partial class MainViewModel
             }
             catch (Exception ex) when (DependencyUpdater.IsInstallFailure(ex))
             {
-                AppLog.Write($"Auto-update: {DependencyUpdater.DisplayName(tool)} could not be checked: {ex.Message}");
+                AppLog.Write($"Auto-update: {DependencyUpdater.DisplayName(tool)} could not be checked", ex);
             }
         }
 
@@ -151,7 +151,7 @@ public partial class MainViewModel
             catch (Exception ex) when (DependencyUpdater.IsInstallFailure(ex))
             {
                 CrashReporter.Note("deps", $"auto-update of {tool} failed: {ex.GetType().Name}");
-                AppLog.Write($"Auto-update: {name} was not updated: {ex.Message}");
+                AppLog.Write($"Auto-update: {name} was not updated", ex);
             }
         }
 

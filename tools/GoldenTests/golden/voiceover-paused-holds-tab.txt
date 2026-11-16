@@ -1,0 +1,3 @@
+# A paused voiceover take belongs to its project: the tabs stay as they are.
+ok: a take paused (not recording) still holds the project: another tab is not attached
+ok: no take: nothing held

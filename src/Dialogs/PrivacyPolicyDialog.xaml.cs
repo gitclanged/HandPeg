@@ -39,15 +39,7 @@ public partial class PrivacyPolicyDialog : Window
             return;
 
         var on = SendBox.IsChecked == true;
-        AppSettings.Current.SendCrashReports = on;
-        try
-        {
-            AppSettings.Current.SaveAsCurrent();
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            AppLog.Write("The crash report setting could not be saved", ex);
-        }
+        AppSettings.Update(settings => settings.SendCrashReports = on);
 
         CrashReporter.Note("settings", on ? "crash reports on (privacy policy)" : "crash reports off (privacy policy)");
         CrashReporter.FollowSetting();
@@ -66,7 +58,7 @@ public partial class PrivacyPolicyDialog : Window
         try
         {
             Directory.CreateDirectory(AppPaths.Crashes);
-            System.Diagnostics.Process.Start("explorer.exe", $"\"{AppPaths.Crashes}\"")?.Dispose();
+            ShellOpen.OpenFolder(AppPaths.Crashes);
             return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)

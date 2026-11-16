@@ -15,6 +15,7 @@ using HandPegApp.Models.Effects;
 using HandPegApp.Services;
 using HandPegApp.ViewModels;
 using Microsoft.Win32;
+using static HandPegApp.UiBrushes;
 
 namespace HandPegApp;
 
@@ -158,6 +159,13 @@ public partial class MainWindow
     /// Lays the timeline's rows out again once, however many things have just changed (never under a drag: its end lays
     /// them out). Until then they are owed: the next press on the timeline lays them out first (<see cref="FlushClipRedraw"/>).
     /// </summary>
+    private void ScheduleClipRedrawUnlessLook()
+    {
+        if (_viewModel.LastChange == PreviewChange.Look)
+            return;
+        ScheduleClipRedraw();
+    }
+
     private void ScheduleClipRedraw()
     {
         _rowsStale = true;
@@ -343,15 +351,18 @@ public partial class MainWindow
 
         // A waveform is as tall as it is heard (5.3-Stage2): its clip's gain and its track's together, as the sound engine mixes it, so a
         // lane's own waveform and its share of its video's (StackSound) agree.
-        var trackGainDb = _viewModel.TrackOfRow(layer)?.GainDb ?? 0;
+        var trackModel = _viewModel.TrackOfRow(layer);
+        var trackGainDb = trackModel?.GainDb ?? 0;
         foreach (var clip in clipsOnTrack)
         {
+            // The clip as the timeline has it, resolved once for every per-block question below.
+            var model = _viewModel.ClipOf(clip);
             var (from, to) = clip.GetSpan(seconds);
             var duration = to - from;
             var speed = ClipSpeed(clip);
-            var linked = _viewModel.IsClipAudioLinked(clip);
-            var slip = linked ? 0 : _viewModel.ClipAudioSlip(clip);
-            var split = _viewModel.ClipAudioSplit(clip);
+            var linked = MainViewModel.IsClipAudioLinked(model);
+            var slip = linked ? 0 : MainViewModel.ClipAudioSlip(model);
+            var split = MainViewModel.ClipAudioSplit(model);
 
             // Its sound is drawn in its block while it is linked to its picture (a sound clip's always): a video clip's own.
             // Unlinked, it has a block of its own (below).
@@ -363,7 +374,6 @@ public partial class MainWindow
             // where it was when the block was made. A let-go edits the clip as it is then (found by its id), only while it is
             // still where the block showed it, and measures from the block's change: a block drawn wider than its clip (3 px
             // at least) never stretches it.
-            var model = _viewModel.ClipOf(clip);
             (double Start, double End) built = model is null ? (from, to) : (model.Start, model.End);
             var (left, width) = (from * scale, Math.Max(duration * scale, 3));
             row.Blocks.Add(new TimelineBlock
@@ -377,9 +387,9 @@ public partial class MainWindow
 
                 // Its frames, from its file's strip, and its sound: both laid on the file's own time.
                 Film = clip.IsHidden || !filmstrips ? null
-                    : clip.IsVideoFile && !clip.IsLoading ? FilmOf(clip.Filmstrip, clip.ImageWidth, clip.ImageHeight, clip.MediaOffset, clip.MediaDuration, speed)
+                    : clip.IsVideoFile && !clip.IsLoading ? FilmOf(_viewModel.FilmstripOf(clip), clip.ImageWidth, clip.ImageHeight, clip.MediaOffset, clip.MediaDuration, speed)
                     : null,
-                SoundWindow = showsSound && waveforms ? SoundOf(clip.Waveform, clip.MediaOffset, duration, speed, clip.GainDb + trackGainDb) : null,
+                SoundWindow = showsSound && waveforms ? SoundOf(_viewModel.WaveformOf(clip), clip.MediaOffset, duration, speed, clip.GainDb + trackGainDb) : null,
                 Keys = ClipKeys(clip, 0, scale)?.ToList(),
                 Beats = BeatTicks(model, from, scale),
                 Badge = BadgeOf(speed, slip, BadgeEffects(clip, CountsAsCutout(_viewModel, clip), settings)),
@@ -387,9 +397,9 @@ public partial class MainWindow
                 Resizable = true,
 
                 // Its own switches (5.2): On/Off for this clip alone (its children keep theirs), and a child's Lock to its parent clip.
-                IsOn = model is null || clip.IsLoading ? null : _viewModel.IsClipOn(clip),
+                IsOn = model is null || clip.IsLoading ? null : MainViewModel.IsClipOn(model),
                 SwitchIsSound = clip.IsAudio,
-                IsLocked = model is null || clip.IsLoading ? null : _viewModel.ClipLock(clip),
+                IsLocked = model is null || clip.IsLoading || (trackModel ?? _viewModel.Document.TrackOf(model)) is not { } onTrack ? null : _viewModel.ClipLock(model, onTrack),
                 Switched = which => BlockSwitched(clip, which),
 
                 // Let go a little over the clip it meets: a crossfade instead (see CommitClipMove).
@@ -490,7 +500,7 @@ public partial class MainWindow
                     Fill = clip.IsHidden || clip.IsMuted ? OffClipBrush : LayerAudioBrush,
                     Clip = new LayerSound(clip),
                     Family = model is null ? null : new BlockFamily(("sound", model.Id), model.Id, true, BlockEdges.Start | BlockEdges.End),
-                    SoundWindow = waveforms ? SoundOf(clip.Waveform, clip.MediaOffset, duration, speed, clip.GainDb + trackGainDb) : null,
+                    SoundWindow = waveforms ? SoundOf(_viewModel.WaveformOf(clip), clip.MediaOffset, duration, speed, clip.GainDb + trackGainDb) : null,
                     Beats = BeatTicks(model, from + slip, scale),
                     Badge = BadgeOf(1, slip),
                     CanDrag = AlwaysDraggable,
@@ -1067,6 +1077,10 @@ public partial class MainWindow
 
         // The blur fill's settings row (5.0-Release): no clip, and the Effects pane's all the same while its row or block is selected.
         _viewModel.BackgroundSelected = clip is Layer { IsBackground: true };
+
+        // A sound clip is the Effects pane's target (5.6A review: its Speed & Pitch and SOUND cards), told to the pane alone: the key layer
+        // above stays the picture the Keyframes pane, the keyframe buttons, the text tools and the crop work on. Anything else lets it go.
+        EffectsView.SelectSound(clip as Layer);
         if (!keepGroup)
         {
             _rangeAnchor = null;
@@ -1272,8 +1286,6 @@ public partial class MainWindow
 
     // ----- The editing tools: each works on whatever is selected -----
 
-    private void SplitClip_Click(object sender, RoutedEventArgs e) => SplitSelectedClip();
-
     /// <summary>The razor: cuts the selected block in two at the playhead. Nothing selected means the video there.</summary>
     private void SplitSelectedClip()
     {
@@ -1312,10 +1324,6 @@ public partial class MainWindow
         ScheduleClipRedraw();
     }
 
-    private void TrimStart_Click(object sender, RoutedEventArgs e) => TrimSelectedClip(start: true);
-
-    private void TrimEnd_Click(object sender, RoutedEventArgs e) => TrimSelectedClip(start: false);
-
     private void TrimSelectedClip(bool start)
     {
         // A clip's sound is trimmed as its clip is; nothing selected, the video at the playhead.
@@ -1341,8 +1349,6 @@ public partial class MainWindow
         Layer { IsBackground: true } => $"The blur fill's settings are not a clip: they are not {what}. Select a clip to cut it.",
         _ => null,
     };
-
-    private void DeleteClip_Click(object sender, RoutedEventArgs e) => DeleteSelectedClip();
 
     /// <summary>
     /// Delete: a clip goes. Clips selected together (5.0) all go, one step of Undo.

@@ -51,6 +51,9 @@ public partial class MainViewModel
 
     private MediaInfo? _mediaInfo;
 
+    /// <summary>Sets the probed media information directly, for tests that need a source without probing a file.</summary>
+    internal void SetMediaInfoForTests(MediaInfo? info) => _mediaInfo = info;
+
     public ObservableCollection<AudioTrack> AudioTracks { get; } = [];
     public ObservableCollection<SubtitleTrack> SubtitleTracks { get; } = [];
 
@@ -217,6 +220,7 @@ public partial class MainViewModel
         foreach (var track in SubtitleTracks)
             track.PropertyChanged -= OnTrackChanged;
         AudioTracks.Clear();
+        SourceWaveforms.Clear();
         SubtitleTracks.Clear();
 
         foreach (var stream in info?.Audio ?? [])
@@ -265,8 +269,7 @@ public partial class MainViewModel
             RefreshAudioRows();
 
         // A picture arriving is not a change of settings.
-        if (e.PropertyName is not (nameof(AudioTrack.Waveform) or nameof(AudioTrack.TrackWaveform)
-            or nameof(AudioTrack.Description) or nameof(AudioTrack.SourceFileName) or nameof(AudioTrack.HasOwnFormat)))
+        if (e.PropertyName is not (nameof(AudioTrack.Description) or nameof(AudioTrack.SourceFileName) or nameof(AudioTrack.HasOwnFormat)))
             GenerateCommand();
     }
 

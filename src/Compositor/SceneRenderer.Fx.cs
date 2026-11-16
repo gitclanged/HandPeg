@@ -160,7 +160,8 @@ internal sealed unsafe partial class SceneRenderer
     private static bool Paired(in GpuEffectPacket packet, in GpuEffectPacket next) =>
         next.Slot == packet.Slot && packet.Slot switch
         {
-            GpuShaderSlot.ColorBalance or GpuShaderSlot.Explosion or GpuShaderSlot.Sparks or GpuShaderSlot.AnimeLines or GpuShaderSlot.EnergyField => true,
+            GpuShaderSlot.ColorBalance or GpuShaderSlot.Explosion or GpuShaderSlot.Sparks or GpuShaderSlot.AnimeLines or GpuShaderSlot.EnergyField
+                or GpuShaderSlot.ColorStudio => true,
             GpuShaderSlot.ShockwaveLens when packet.P7 >= 0.5f => true,
             GpuShaderSlot.ShockwaveLens or GpuShaderSlot.HalationGlow => GpuEffectPacket.IsPulsePacket(next),
             _ => false,
@@ -441,9 +442,24 @@ internal sealed unsafe partial class SceneRenderer
         if ((layer.Flags & GpuLayerDescriptor.FlagPreviousMoment) == 0)
             return false;
         var step = layer.MediaSeconds - layer.PreviousMoment;
-        if (Math.Abs(step) < 1e-5 || _decoders.Resolve(layer.SourceId, layer.MediaSeconds, layer.SourcePathHash, layer.ClipKey) is not { LumaSrv: not 0 } frame)
+        if (Math.Abs(step) < 1e-5 || _decoders.Resolve(layer.SourceId, layer.MediaSeconds, layer.SourcePathHash, layer.ClipKey) is not { LumaSrv: not 0 } frame
+            || FlowOf(frame, null, out var gap) is not { } field)
+        {
             return false;
+        }
 
+        (flow, perFrame) = (field, (float)(step / Math.Max(gap, 1e-4)));
+        return true;
+    }
+
+    /// <summary>
+    /// The flow of a frame of a source from a frame before it (this(x) = before(x - f), in flow texels), solved once and kept by the later frame
+    /// (Motion Blur's measure of a frame and Smooth Slow-Mo's in-between before it share one solve). <paramref name="before"/> null: the frame
+    /// the cache holds before it (no demand). Null when there is none; <paramref name="gap"/> the seconds between the two frames it was solved on.
+    /// </summary>
+    private GpuTexture? FlowOf(CachedFrame frame, CachedFrame? before, out double gap)
+    {
+        gap = 0;
         FlowEntry? entry = null;
         foreach (var known in _flows)
         {
@@ -453,22 +469,22 @@ internal sealed unsafe partial class SceneRenderer
 
         if (entry is null)
         {
-            if (_decoders.FrameBefore(frame) is not { LumaSrv: not 0 } before)
-                return false;
+            if ((before ?? _decoders.FrameBefore(frame)) is not { LumaSrv: not 0 } was || !(was.Time < frame.Time))
+                return null;
 
             var (width, height) = FlowSize(frame.Width, frame.Height);
             entry = TakeFlow(width, height);
             var whole = new Vector4(0, 0, 1, 1);
-            var (now, was) = (_gpu.Textures.Rent(width, height), _gpu.Textures.Rent(width, height));
-            DrawFrame(frame, now, whole);
-            DrawFrame(before, was, whole);
-            SolveFlow(now, was, entry.Field!);
-            (entry.Source, entry.Time, entry.Gap, entry.Ready) = (frame.Source, frame.Time, frame.Time - before.Time, true);
+            var (nowSmall, wasSmall) = (_gpu.Textures.Rent(width, height), _gpu.Textures.Rent(width, height));
+            DrawFrame(frame, nowSmall, whole);
+            DrawFrame(was, wasSmall, whole);
+            SolveFlow(nowSmall, wasSmall, entry.Field!);
+            (entry.Source, entry.Time, entry.Gap, entry.Ready) = (frame.Source, frame.Time, frame.Time - was.Time, true);
         }
 
         entry.LastFrame = _frame;
-        (flow, perFrame) = (entry.Field!, (float)(step / Math.Max(entry.Gap, 1e-4)));
-        return true;
+        gap = entry.Gap;
+        return entry.Field;
     }
 
     /// <summary>The flow of the canvas under an adjustment layer (or the Sequence Output) from the last one it was drawn on, while frames come in order.</summary>
@@ -545,8 +561,18 @@ internal sealed unsafe partial class SceneRenderer
         var part = adjustment ? new Vector4(0, 0, 1, 1) : CropUv(layer);
         var share = Math.Clamp(packet.P0, 0, 720) / 360 * perFrame * Math.Clamp(packet.P4, 0, 100) / 100;
         var samples = Math.Clamp((int)MathF.Round(packet.P1), 8, 16);
-        var (stepX, stepY) = (share / flow.Width / Math.Max(part.Z - part.X, 1e-4f), share / flow.Height / Math.Max(part.W - part.Y, 1e-4f));
         var longest = Math.Clamp(packet.P5, 0.1f, 50) / 100;
+
+        // The Amount's top half reaches further (MotionBoost.Span, 2.5 times at 100 %), and its longest streak with it (at most half the
+        // picture); the samples and passes stay, so it costs nothing more. Up to 50 % nothing here changes, to the bit.
+        if (packet.P4 > MotionBoost.Plain)
+        {
+            var span = (float)MotionBoost.Span(packet.P4);
+            share *= span;
+            longest = Math.Min(longest * span, MotionBoost.LongestStreak);
+        }
+
+        var (stepX, stepY) = (share / flow.Width / Math.Max(part.Z - part.X, 1e-4f), share / flow.Height / Math.Max(part.W - part.Y, 1e-4f));
         for (var pass = 0; pass < 2; pass++)
         {
             var output = _gpu.Textures.Rent(work.Width, work.Height);

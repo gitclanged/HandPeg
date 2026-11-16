@@ -19,11 +19,20 @@ public static class BackupExporter
     /// </summary>
     public static void ExportSettingsAndPresets(string path)
     {
+        // This PC's tool paths, folders, devices and download sources stay out of the backup (BackupImporter.ProtectedKeys): an import
+        // never takes them, and a backup shared with someone names none of this PC's folders.
+        var settings = ReadFile(AppSettings.FilePath) ?? JsonSerializer.SerializeToNode(AppSettings.Current);
+        if (settings is JsonObject fields)
+        {
+            foreach (var key in BackupImporter.ProtectedKeys)
+                fields.Remove(key);
+        }
+
         var export = new JsonObject
         {
             [SchemaVersionKey] = SchemaVersion,
             ["ExportedAt"] = DateTime.Now.ToString("s"),
-            ["AppSettings"] = ReadFile(AppSettings.FilePath) ?? JsonSerializer.SerializeToNode(AppSettings.Current),
+            ["AppSettings"] = settings,
             ["Presets"] = ReadFile(PresetStore.FilePath) ?? JsonSerializer.SerializeToNode(PresetStore.Load()),
 
             // The mask pictures the layers refer to, by file name, so a backup brings them along.

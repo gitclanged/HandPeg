@@ -130,7 +130,7 @@ internal static unsafe partial class Mf
         uint result = 0;
         int hr;
         fixed (Guid* k = &key)
-            hr = ((delegate* unmanaged<nint, Guid*, uint*, int>)Com.Table(attributes)[7])(attributes, k, &result);
+            hr = ((delegate* unmanaged<nint, Guid*, uint*, int>)Com.Table(attributes)[IMFAttributesSlot.GetUINT32])(attributes, k, &result);
         value = result;
         return hr;
     }
@@ -140,7 +140,7 @@ internal static unsafe partial class Mf
         ulong result = 0;
         int hr;
         fixed (Guid* k = &key)
-            hr = ((delegate* unmanaged<nint, Guid*, ulong*, int>)Com.Table(attributes)[8])(attributes, k, &result);
+            hr = ((delegate* unmanaged<nint, Guid*, ulong*, int>)Com.Table(attributes)[IMFAttributesSlot.GetUINT64])(attributes, k, &result);
         value = result;
         return hr;
     }
@@ -150,7 +150,7 @@ internal static unsafe partial class Mf
         Guid result = default;
         int hr;
         fixed (Guid* k = &key)
-            hr = ((delegate* unmanaged<nint, Guid*, Guid*, int>)Com.Table(attributes)[10])(attributes, k, &result);
+            hr = ((delegate* unmanaged<nint, Guid*, Guid*, int>)Com.Table(attributes)[IMFAttributesSlot.GetGUID])(attributes, k, &result);
         value = result;
         return hr;
     }
@@ -159,7 +159,7 @@ internal static unsafe partial class Mf
     {
         uint written;
         fixed (Guid* k = &key)
-            return ((delegate* unmanaged<nint, Guid*, void*, uint, uint*, int>)Com.Table(attributes)[15])(attributes, k, buffer, size, &written);
+            return ((delegate* unmanaged<nint, Guid*, void*, uint, uint*, int>)Com.Table(attributes)[IMFAttributesSlot.GetBlob])(attributes, k, buffer, size, &written);
     }
 
     public static string? GetString(nint attributes, in Guid key)
@@ -168,7 +168,7 @@ internal static unsafe partial class Mf
         uint length;
         fixed (Guid* k = &key)
         {
-            if (((delegate* unmanaged<nint, Guid*, nint*, uint*, int>)Com.Table(attributes)[13])(attributes, k, &text, &length) < 0)
+            if (((delegate* unmanaged<nint, Guid*, nint*, uint*, int>)Com.Table(attributes)[IMFAttributesSlot.GetAllocatedString])(attributes, k, &text, &length) < 0)
                 return null;
         }
 
@@ -185,42 +185,42 @@ internal static unsafe partial class Mf
     public static void SetUInt32(nint attributes, in Guid key, uint value)
     {
         fixed (Guid* k = &key)
-            Com.Check(((delegate* unmanaged<nint, Guid*, uint, int>)Com.Table(attributes)[21])(attributes, k, value), "IMFAttributes::SetUINT32");
+            Com.Check(((delegate* unmanaged<nint, Guid*, uint, int>)Com.Table(attributes)[IMFAttributesSlot.SetUINT32])(attributes, k, value), "IMFAttributes::SetUINT32");
     }
 
     public static void SetGuid(nint attributes, in Guid key, in Guid value)
     {
         fixed (Guid* k = &key)
         fixed (Guid* v = &value)
-            Com.Check(((delegate* unmanaged<nint, Guid*, Guid*, int>)Com.Table(attributes)[24])(attributes, k, v), "IMFAttributes::SetGUID");
+            Com.Check(((delegate* unmanaged<nint, Guid*, Guid*, int>)Com.Table(attributes)[IMFAttributesSlot.SetGUID])(attributes, k, v), "IMFAttributes::SetGUID");
     }
 
     public static void SetBlob(nint attributes, in Guid key, void* data, uint size)
     {
         fixed (Guid* k = &key)
-            Com.Check(((delegate* unmanaged<nint, Guid*, void*, uint, int>)Com.Table(attributes)[26])(attributes, k, data, size), "IMFAttributes::SetBlob");
+            Com.Check(((delegate* unmanaged<nint, Guid*, void*, uint, int>)Com.Table(attributes)[IMFAttributesSlot.SetBlob])(attributes, k, data, size), "IMFAttributes::SetBlob");
     }
 
     public static void SetUnknown(nint attributes, in Guid key, nint value)
     {
         fixed (Guid* k = &key)
-            Com.Check(((delegate* unmanaged<nint, Guid*, nint, int>)Com.Table(attributes)[27])(attributes, k, value), "IMFAttributes::SetUnknown");
+            Com.Check(((delegate* unmanaged<nint, Guid*, nint, int>)Com.Table(attributes)[IMFAttributesSlot.SetUnknown])(attributes, k, value), "IMFAttributes::SetUnknown");
     }
 
     // ----- IMFDXGIDeviceManager -----
 
     public static void ResetDevice(nint manager, nint device, uint resetToken) =>
-        Com.Check(((delegate* unmanaged<nint, nint, uint, int>)Com.Table(manager)[7])(manager, device, resetToken), "IMFDXGIDeviceManager::ResetDevice");
+        Com.Check(((delegate* unmanaged<nint, nint, uint, int>)Com.Table(manager)[IMFDXGIDeviceManagerSlot.ResetDevice])(manager, device, resetToken), "IMFDXGIDeviceManager::ResetDevice");
 
     // ----- IMFSourceReader -----
 
     public static int SetStreamSelection(nint reader, uint stream, bool selected) =>
-        ((delegate* unmanaged<nint, uint, int, int>)Com.Table(reader)[4])(reader, stream, selected ? 1 : 0);
+        ((delegate* unmanaged<nint, uint, int, int>)Com.Table(reader)[IMFSourceReaderSlot.SetStreamSelection])(reader, stream, selected ? 1 : 0);
 
     public static int GetNativeMediaType(nint reader, uint stream, uint index, out nint mediaType)
     {
         nint result = 0;
-        var hr = ((delegate* unmanaged<nint, uint, uint, nint*, int>)Com.Table(reader)[5])(reader, stream, index, &result);
+        var hr = ((delegate* unmanaged<nint, uint, uint, nint*, int>)Com.Table(reader)[IMFSourceReaderSlot.GetNativeMediaType])(reader, stream, index, &result);
         mediaType = result;
         return hr;
     }
@@ -228,13 +228,13 @@ internal static unsafe partial class Mf
     public static int GetCurrentMediaType(nint reader, uint stream, out nint mediaType)
     {
         nint result = 0;
-        var hr = ((delegate* unmanaged<nint, uint, nint*, int>)Com.Table(reader)[6])(reader, stream, &result);
+        var hr = ((delegate* unmanaged<nint, uint, nint*, int>)Com.Table(reader)[IMFSourceReaderSlot.GetCurrentMediaType])(reader, stream, &result);
         mediaType = result;
         return hr;
     }
 
     public static int SetCurrentMediaType(nint reader, uint stream, nint mediaType) =>
-        ((delegate* unmanaged<nint, uint, uint*, nint, int>)Com.Table(reader)[7])(reader, stream, null, mediaType);
+        ((delegate* unmanaged<nint, uint, uint*, nint, int>)Com.Table(reader)[IMFSourceReaderSlot.SetCurrentMediaType])(reader, stream, null, mediaType);
 
     /// <summary>Seeks to a moment in 100 ns units (the reader goes to the key frame at or before it).</summary>
     public static int SetCurrentPosition(nint reader, long ticks)
@@ -242,7 +242,7 @@ internal static unsafe partial class Mf
         var position = new PropVariant { Type = PropVariant.I8, Value = ticks };
         var format = Guid.Empty;
         var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("MF.SetCurrentPosition", ticks);
-        var hr = ((delegate* unmanaged<nint, Guid*, PropVariant*, int>)Com.Table(reader)[8])(reader, &format, &position);
+        var hr = ((delegate* unmanaged<nint, Guid*, PropVariant*, int>)Com.Table(reader)[IMFSourceReaderSlot.SetCurrentPosition])(reader, &format, &position);
         crumb.Leave(hr);
         return hr;
     }
@@ -252,8 +252,8 @@ internal static unsafe partial class Mf
         uint actual, f;
         long time;
         nint s = 0;
-        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("MF.ReadSample", stream);
-        var hr = ((delegate* unmanaged<nint, uint, uint, uint*, uint*, long*, nint*, int>)Com.Table(reader)[9])(reader, stream, 0, &actual, &f, &time, &s);
+        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.EnterHot("MF.ReadSample", stream);
+        var hr = ((delegate* unmanaged<nint, uint, uint, uint*, uint*, long*, nint*, int>)Com.Table(reader)[IMFSourceReaderSlot.ReadSample])(reader, stream, 0, &actual, &f, &time, &s);
         crumb.Leave(hr);
         flags = f;
         timestamp = time;
@@ -267,8 +267,8 @@ internal static unsafe partial class Mf
         uint actual, f;
         long time;
         nint s = 0;
-        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("MF.ReadSampleAny");
-        var hr = ((delegate* unmanaged<nint, uint, uint, uint*, uint*, long*, nint*, int>)Com.Table(reader)[9])(reader, AllStreams, 0, &actual, &f, &time, &s);
+        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.EnterHot("MF.ReadSampleAny");
+        var hr = ((delegate* unmanaged<nint, uint, uint, uint*, uint*, long*, nint*, int>)Com.Table(reader)[IMFSourceReaderSlot.ReadSample])(reader, AllStreams, 0, &actual, &f, &time, &s);
         crumb.Leave(hr);
         (stream, flags, timestamp, sample) = (actual, f, time, s);
         return hr;
@@ -277,7 +277,7 @@ internal static unsafe partial class Mf
     public static int Flush(nint reader, uint stream)
     {
         var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("MF.Flush", stream);
-        var hr = ((delegate* unmanaged<nint, uint, int>)Com.Table(reader)[10])(reader, stream);
+        var hr = ((delegate* unmanaged<nint, uint, int>)Com.Table(reader)[IMFSourceReaderSlot.Flush])(reader, stream);
         crumb.Leave(hr);
         return hr;
     }
@@ -287,7 +287,7 @@ internal static unsafe partial class Mf
     {
         var value = default(PropVariant);
         var key = MfGuids.Duration;
-        var hr = ((delegate* unmanaged<nint, uint, Guid*, PropVariant*, int>)Com.Table(reader)[12])(reader, MediaSource, &key, &value);
+        var hr = ((delegate* unmanaged<nint, uint, Guid*, PropVariant*, int>)Com.Table(reader)[IMFSourceReaderSlot.GetPresentationAttribute])(reader, MediaSource, &key, &value);
         return hr >= 0 && value.Type == PropVariant.UI8 ? value.Value : 0;
     }
 
@@ -296,7 +296,7 @@ internal static unsafe partial class Mf
     public static int GetBufferByIndex(nint sample, uint index, out nint buffer)
     {
         nint result = 0;
-        var hr = ((delegate* unmanaged<nint, uint, nint*, int>)Com.Table(sample)[40])(sample, index, &result);
+        var hr = ((delegate* unmanaged<nint, uint, nint*, int>)Com.Table(sample)[IMFSampleSlot.GetBufferByIndex])(sample, index, &result);
         buffer = result;
         return hr;
     }
@@ -304,14 +304,14 @@ internal static unsafe partial class Mf
     public static long SampleTime(nint sample)
     {
         long time = 0;
-        ((delegate* unmanaged<nint, long*, int>)Com.Table(sample)[35])(sample, &time);
+        ((delegate* unmanaged<nint, long*, int>)Com.Table(sample)[IMFSampleSlot.GetSampleTime])(sample, &time);
         return time;
     }
 
     public static long SampleDuration(nint sample)
     {
         long time = 0;
-        ((delegate* unmanaged<nint, long*, int>)Com.Table(sample)[37])(sample, &time);
+        ((delegate* unmanaged<nint, long*, int>)Com.Table(sample)[IMFSampleSlot.GetSampleDuration])(sample, &time);
         return time;
     }
 
@@ -321,9 +321,9 @@ internal static unsafe partial class Mf
         nint result = 0;
         uint index = 0;
         var id = Iid.D3D11Texture2D;
-        var hr = ((delegate* unmanaged<nint, Guid*, nint*, int>)Com.Table(dxgiBuffer)[3])(dxgiBuffer, &id, &result);
+        var hr = ((delegate* unmanaged<nint, Guid*, nint*, int>)Com.Table(dxgiBuffer)[IMFDXGIBufferSlot.GetResource])(dxgiBuffer, &id, &result);
         if (hr >= 0)
-            hr = ((delegate* unmanaged<nint, uint*, int>)Com.Table(dxgiBuffer)[4])(dxgiBuffer, &index);
+            hr = ((delegate* unmanaged<nint, uint*, int>)Com.Table(dxgiBuffer)[IMFDXGIBufferSlot.GetSubresourceIndex])(dxgiBuffer, &index);
         texture = result;
         subresource = index;
         return hr;
@@ -334,26 +334,26 @@ internal static unsafe partial class Mf
     {
         byte* line;
         int p;
-        var hr = ((delegate* unmanaged<nint, byte**, int*, int>)Com.Table(buffer2D)[3])(buffer2D, &line, &p);
+        var hr = ((delegate* unmanaged<nint, byte**, int*, int>)Com.Table(buffer2D)[IMF2DBufferSlot.Lock2D])(buffer2D, &line, &p);
         scanline0 = line;
         pitch = p;
         return hr;
     }
 
-    public static int Unlock2D(nint buffer2D) => ((delegate* unmanaged<nint, int>)Com.Table(buffer2D)[4])(buffer2D);
+    public static int Unlock2D(nint buffer2D) => ((delegate* unmanaged<nint, int>)Com.Table(buffer2D)[IMF2DBufferSlot.Unlock2D])(buffer2D);
 
     /// <summary>IMFMediaBuffer::Lock (a buffer without the 2D interface).</summary>
     public static int Lock(nint buffer, out byte* data, out uint length)
     {
         byte* d;
         uint max, current;
-        var hr = ((delegate* unmanaged<nint, byte**, uint*, uint*, int>)Com.Table(buffer)[3])(buffer, &d, &max, &current);
+        var hr = ((delegate* unmanaged<nint, byte**, uint*, uint*, int>)Com.Table(buffer)[IMFMediaBufferSlot.Lock])(buffer, &d, &max, &current);
         data = d;
         length = current;
         return hr;
     }
 
-    public static int Unlock(nint buffer) => ((delegate* unmanaged<nint, int>)Com.Table(buffer)[4])(buffer);
+    public static int Unlock(nint buffer) => ((delegate* unmanaged<nint, int>)Com.Table(buffer)[IMFMediaBufferSlot.Unlock])(buffer);
 }
 
 // ----- Media Foundation transforms driven directly: the Export Quality Preview's encoder and decoder (Pass 5.4B) -----
@@ -466,7 +466,7 @@ internal static unsafe partial class Mf
     public static void SetUInt64(nint attributes, in Guid key, ulong value)
     {
         fixed (Guid* k = &key)
-            Com.Check(((delegate* unmanaged<nint, Guid*, ulong, int>)Com.Table(attributes)[22])(attributes, k, value), "IMFAttributes::SetUINT64");
+            Com.Check(((delegate* unmanaged<nint, Guid*, ulong, int>)Com.Table(attributes)[IMFAttributesSlot.SetUINT64])(attributes, k, value), "IMFAttributes::SetUINT64");
     }
 
     /// <summary>Two 32-bit halves packed as MFSetAttributeSize / MFSetAttributeRatio do: the first in the high half.</summary>
@@ -478,7 +478,7 @@ internal static unsafe partial class Mf
         uint size;
         fixed (Guid* k = &key)
         {
-            if (((delegate* unmanaged<nint, Guid*, uint*, int>)Com.Table(attributes)[14])(attributes, k, &size) < 0 || size == 0)
+            if (((delegate* unmanaged<nint, Guid*, uint*, int>)Com.Table(attributes)[IMFAttributesSlot.GetBlobSize])(attributes, k, &size) < 0 || size == 0)
                 return null;
         }
 
@@ -495,7 +495,7 @@ internal static unsafe partial class Mf
         nint result = 0;
         var id = MfIid.Transform;
         var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("MFT.ActivateObject");
-        var hr = ((delegate* unmanaged<nint, Guid*, nint*, int>)Com.Table(activate)[33])(activate, &id, &result);
+        var hr = ((delegate* unmanaged<nint, Guid*, nint*, int>)Com.Table(activate)[IMFActivateSlot.ActivateObject])(activate, &id, &result);
         crumb.Leave(hr);
         transform = result;
         return hr;
@@ -504,7 +504,7 @@ internal static unsafe partial class Mf
     public static int ShutdownObject(nint activate)
     {
         var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("MFT.ShutdownObject");
-        var hr = ((delegate* unmanaged<nint, int>)Com.Table(activate)[34])(activate);
+        var hr = ((delegate* unmanaged<nint, int>)Com.Table(activate)[IMFActivateSlot.ShutdownObject])(activate);
         crumb.Leave(hr);
         return hr;
     }
@@ -514,7 +514,7 @@ internal static unsafe partial class Mf
     public static int GetOutputStreamInfo(nint transform, uint stream, out MftOutputStreamInfo info)
     {
         MftOutputStreamInfo result;
-        var hr = ((delegate* unmanaged<nint, uint, MftOutputStreamInfo*, int>)Com.Table(transform)[7])(transform, stream, &result);
+        var hr = ((delegate* unmanaged<nint, uint, MftOutputStreamInfo*, int>)Com.Table(transform)[IMFTransformSlot.GetOutputStreamInfo])(transform, stream, &result);
         info = result;
         return hr;
     }
@@ -523,13 +523,13 @@ internal static unsafe partial class Mf
     public static nint TransformAttributes(nint transform)
     {
         nint result = 0;
-        return ((delegate* unmanaged<nint, nint*, int>)Com.Table(transform)[8])(transform, &result) < 0 ? 0 : result;
+        return ((delegate* unmanaged<nint, nint*, int>)Com.Table(transform)[IMFTransformSlot.GetAttributes])(transform, &result) < 0 ? 0 : result;
     }
 
     public static int GetInputAvailableType(nint transform, uint stream, uint index, out nint mediaType)
     {
         nint result = 0;
-        var hr = ((delegate* unmanaged<nint, uint, uint, nint*, int>)Com.Table(transform)[13])(transform, stream, index, &result);
+        var hr = ((delegate* unmanaged<nint, uint, uint, nint*, int>)Com.Table(transform)[IMFTransformSlot.GetInputAvailableType])(transform, stream, index, &result);
         mediaType = result;
         return hr;
     }
@@ -537,21 +537,21 @@ internal static unsafe partial class Mf
     public static int GetOutputAvailableType(nint transform, uint stream, uint index, out nint mediaType)
     {
         nint result = 0;
-        var hr = ((delegate* unmanaged<nint, uint, uint, nint*, int>)Com.Table(transform)[14])(transform, stream, index, &result);
+        var hr = ((delegate* unmanaged<nint, uint, uint, nint*, int>)Com.Table(transform)[IMFTransformSlot.GetOutputAvailableType])(transform, stream, index, &result);
         mediaType = result;
         return hr;
     }
 
     public static int SetInputType(nint transform, uint stream, nint mediaType) =>
-        ((delegate* unmanaged<nint, uint, nint, uint, int>)Com.Table(transform)[15])(transform, stream, mediaType, 0);
+        ((delegate* unmanaged<nint, uint, nint, uint, int>)Com.Table(transform)[IMFTransformSlot.SetInputType])(transform, stream, mediaType, 0);
 
     public static int SetOutputType(nint transform, uint stream, nint mediaType) =>
-        ((delegate* unmanaged<nint, uint, nint, uint, int>)Com.Table(transform)[16])(transform, stream, mediaType, 0);
+        ((delegate* unmanaged<nint, uint, nint, uint, int>)Com.Table(transform)[IMFTransformSlot.SetOutputType])(transform, stream, mediaType, 0);
 
     public static int GetOutputCurrentType(nint transform, uint stream, out nint mediaType)
     {
         nint result = 0;
-        var hr = ((delegate* unmanaged<nint, uint, nint*, int>)Com.Table(transform)[18])(transform, stream, &result);
+        var hr = ((delegate* unmanaged<nint, uint, nint*, int>)Com.Table(transform)[IMFTransformSlot.GetOutputCurrentType])(transform, stream, &result);
         mediaType = result;
         return hr;
     }
@@ -559,15 +559,15 @@ internal static unsafe partial class Mf
     public static int ProcessMessage(nint transform, uint message, nint parameter)
     {
         var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("MFT.ProcessMessage", message);
-        var hr = ((delegate* unmanaged<nint, uint, nint, int>)Com.Table(transform)[23])(transform, message, parameter);
+        var hr = ((delegate* unmanaged<nint, uint, nint, int>)Com.Table(transform)[IMFTransformSlot.ProcessMessage])(transform, message, parameter);
         crumb.Leave(hr);
         return hr;
     }
 
     public static int ProcessInput(nint transform, uint stream, nint sample)
     {
-        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("MFT.ProcessInput");
-        var hr = ((delegate* unmanaged<nint, uint, nint, uint, int>)Com.Table(transform)[24])(transform, stream, sample, 0);
+        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.EnterHot("MFT.ProcessInput");
+        var hr = ((delegate* unmanaged<nint, uint, nint, uint, int>)Com.Table(transform)[IMFTransformSlot.ProcessInput])(transform, stream, sample, 0);
         crumb.Leave(hr);
         return hr;
     }
@@ -577,9 +577,9 @@ internal static unsafe partial class Mf
     {
         uint result = 0;
         int hr;
-        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("MFT.ProcessOutput");
+        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.EnterHot("MFT.ProcessOutput");
         fixed (MftOutputDataBuffer* b = &buffer)
-            hr = ((delegate* unmanaged<nint, uint, uint, MftOutputDataBuffer*, uint*, int>)Com.Table(transform)[25])(transform, 0, 1, b, &result);
+            hr = ((delegate* unmanaged<nint, uint, uint, MftOutputDataBuffer*, uint*, int>)Com.Table(transform)[IMFTransformSlot.ProcessOutput])(transform, 0, 1, b, &result);
         crumb.Leave(hr);
         status = result;
         return hr;
@@ -591,7 +591,7 @@ internal static unsafe partial class Mf
     public static int GetEventNoWait(nint generator, out nint mediaEvent)
     {
         nint result = 0;
-        var hr = ((delegate* unmanaged<nint, uint, nint*, int>)Com.Table(generator)[3])(generator, EventNoWait, &result);
+        var hr = ((delegate* unmanaged<nint, uint, nint*, int>)Com.Table(generator)[IMFMediaEventGeneratorSlot.GetEvent])(generator, EventNoWait, &result);
         mediaEvent = result;
         return hr;
     }
@@ -599,14 +599,14 @@ internal static unsafe partial class Mf
     public static uint EventType(nint mediaEvent)
     {
         uint type = 0;
-        ((delegate* unmanaged<nint, uint*, int>)Com.Table(mediaEvent)[33])(mediaEvent, &type);
+        ((delegate* unmanaged<nint, uint*, int>)Com.Table(mediaEvent)[IMFMediaEventSlot.GetEventType])(mediaEvent, &type);
         return type;
     }
 
     public static int EventStatus(nint mediaEvent)
     {
         var status = 0;
-        ((delegate* unmanaged<nint, int*, int>)Com.Table(mediaEvent)[35])(mediaEvent, &status);
+        ((delegate* unmanaged<nint, int*, int>)Com.Table(mediaEvent)[IMFMediaEventSlot.GetStatus])(mediaEvent, &status);
         return status;
     }
 
@@ -616,7 +616,7 @@ internal static unsafe partial class Mf
     public static bool IsModifiable(nint codecApi, in Guid api)
     {
         fixed (Guid* a = &api)
-            return ((delegate* unmanaged<nint, Guid*, int>)Com.Table(codecApi)[4])(codecApi, a) == 0;
+            return ((delegate* unmanaged<nint, Guid*, int>)Com.Table(codecApi)[ICodecAPISlot.IsModifiable])(codecApi, a) == 0;
     }
 
     /// <summary>ICodecAPI::SetValue with a VT_UI4 (the 24-byte PropVariant has a VARIANT's layout for it).</summary>
@@ -624,7 +624,7 @@ internal static unsafe partial class Mf
     {
         var variant = new PropVariant { Type = CodecApi.VtUi4, Value = value };
         fixed (Guid* a = &api)
-            return ((delegate* unmanaged<nint, Guid*, PropVariant*, int>)Com.Table(codecApi)[9])(codecApi, a, &variant);
+            return ((delegate* unmanaged<nint, Guid*, PropVariant*, int>)Com.Table(codecApi)[ICodecAPISlot.SetValue])(codecApi, a, &variant);
     }
 
     /// <summary>ICodecAPI::SetValue with a VT_BOOL (VARIANT_TRUE is -1 in the low 16 bits).</summary>
@@ -632,24 +632,24 @@ internal static unsafe partial class Mf
     {
         var variant = new PropVariant { Type = CodecApi.VtBool, Value = value ? 0xFFFF : 0 };
         fixed (Guid* a = &api)
-            return ((delegate* unmanaged<nint, Guid*, PropVariant*, int>)Com.Table(codecApi)[9])(codecApi, a, &variant);
+            return ((delegate* unmanaged<nint, Guid*, PropVariant*, int>)Com.Table(codecApi)[ICodecAPISlot.SetValue])(codecApi, a, &variant);
     }
 
     // ----- IMFSample and IMFMediaBuffer (more) -----
 
-    public static int SetSampleTime(nint sample, long time) => ((delegate* unmanaged<nint, long, int>)Com.Table(sample)[36])(sample, time);
+    public static int SetSampleTime(nint sample, long time) => ((delegate* unmanaged<nint, long, int>)Com.Table(sample)[IMFSampleSlot.SetSampleTime])(sample, time);
 
-    public static int SetSampleDuration(nint sample, long duration) => ((delegate* unmanaged<nint, long, int>)Com.Table(sample)[38])(sample, duration);
+    public static int SetSampleDuration(nint sample, long duration) => ((delegate* unmanaged<nint, long, int>)Com.Table(sample)[IMFSampleSlot.SetSampleDuration])(sample, duration);
 
     public static int GetBufferCount(nint sample, out uint count)
     {
         uint result = 0;
-        var hr = ((delegate* unmanaged<nint, uint*, int>)Com.Table(sample)[39])(sample, &result);
+        var hr = ((delegate* unmanaged<nint, uint*, int>)Com.Table(sample)[IMFSampleSlot.GetBufferCount])(sample, &result);
         count = result;
         return hr;
     }
 
-    public static int AddBuffer(nint sample, nint buffer) => ((delegate* unmanaged<nint, nint, int>)Com.Table(sample)[42])(sample, buffer);
+    public static int AddBuffer(nint sample, nint buffer) => ((delegate* unmanaged<nint, nint, int>)Com.Table(sample)[IMFSampleSlot.AddBuffer])(sample, buffer);
 
-    public static int SetCurrentLength(nint buffer, uint length) => ((delegate* unmanaged<nint, uint, int>)Com.Table(buffer)[6])(buffer, length);
+    public static int SetCurrentLength(nint buffer, uint length) => ((delegate* unmanaged<nint, uint, int>)Com.Table(buffer)[IMFMediaBufferSlot.SetCurrentLength])(buffer, length);
 }

@@ -12,8 +12,8 @@ using HandPegApp.ViewModels;
 namespace HandPegApp.Views;
 
 /// <summary>
-/// The Video Scopes pane (5.4C): the Histogram, the Luma Waveform or the RGB Parade of the frame the player shows, chosen in its title
-/// row. Fed by a small capture of the paused player (GpuPreviewEngine.CaptureThumbnailAsync: never while it plays, so no played frame
+/// The Video Scopes pane (5.4C): the Histogram, the Luma Waveform, the RGB Parade or (5.6A) the Vectorscope of the frame the player
+/// shows, chosen in its title row (the Vectorscope kept square). Fed by a small capture of the paused player (GpuPreviewEngine.CaptureThumbnailAsync: never while it plays, so no played frame
 /// waits for one, Law 3), asked for only while the pane is in sight and paused, after the frame, the timeline or the preview changed,
 /// at most about eight times a second; the counting and drawing run off the interface's thread (Services/VideoScopes.cs) into one
 /// bitmap, reused. While the player plays the pane keeps its last picture and says it updates when paused. Built in code and light
@@ -22,7 +22,7 @@ namespace HandPegApp.Views;
 public sealed class VideoScopesPane : UserControl
 {
     /// <summary>The scopes as the title row's box lists them, in <see cref="VideoScopeKind"/>'s order.</summary>
-    internal static readonly string[] KindNames = ["Histogram", "Luma Waveform", "RGB Parade"];
+    internal static readonly string[] KindNames = ["Histogram", "Luma Waveform", "RGB Parade", "Vectorscope"];
 
     /// <summary>The least time between two captures, milliseconds (about 8 Hz).</summary>
     internal const int ThrottleMs = 125;
@@ -50,8 +50,8 @@ public sealed class VideoScopesPane : UserControl
         AutomationProperties.SetName(this, "Video Scopes Pane");
 
         _kindBox = new ComboBox { MinWidth = 120, Margin = new Thickness(6, 0, 0, 0), ItemsSource = KindNames, SelectedIndex = (int)VideoScopeKind.LumaWaveform };
-        _kindBox.ToolTip = "Histogram: how many pixels are at each level, red, green, blue and the luma. Luma Waveform: the brightness of each column of the "
-                           + "picture, black at the bottom, white at the top. RGB Parade: the same for red, green and blue side by side.";
+        // 5.6A: the microcopy law's tooltip (12 words at most); what each scope reads is its name.
+        _kindBox.ToolTip = "The scope drawn from the paused frame";
         AutomationProperties.SetName(_kindBox, "Scope");
         _kindBox.SelectionChanged += (_, _) => _ = DrawAsync();
 
@@ -190,7 +190,7 @@ public sealed class VideoScopesPane : UserControl
         }
         catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException or TaskCanceledException)
         {
-            AppLog.Write($"Video Scopes: the frame could not be read: {ex.Message}");
+            AppLog.Write("Video Scopes: the frame could not be read", ex);
         }
         finally
         {
@@ -213,6 +213,9 @@ public sealed class VideoScopesPane : UserControl
         var (pixels, width, height) = await Task.Run(() => VideoScopes.Render(kind, frame.Bgra, frame.Width, frame.Height));
         if (turn != _drawn)
             return;
+
+        // 5.6A: the Vectorscope keeps its circle round (Uniform); the waveforms fill the pane.
+        _picture.Stretch = kind == VideoScopeKind.Vectorscope ? Stretch.Uniform : Stretch.Fill;
 
         if (_bitmap is null || _bitmap.PixelWidth != width || _bitmap.PixelHeight != height)
             _bitmap = new WriteableBitmap(width, height, 96, 96, PixelFormats.Bgr32, null);

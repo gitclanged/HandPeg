@@ -28,29 +28,6 @@ public static class GpuFxTests
         yield return Case("gpufx-left-out", "# An export says what the compositor could not draw (5.2-Audit: no shader-only effect is left out any more; a second LUT on a clip is named).", LeftOut);
     }
 
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
-    }
-
     private static void Cards(Action<bool, string> expect)
     {
         var cards = EffectRegistry.All.Where(d => d.GpuOnly).ToList();
@@ -509,19 +486,29 @@ public static class GpuFxTests
         var without = Layer();
         expect(without is { } a && (a.Flags & (GpuLayerDescriptor.FlagShutterPlace | GpuLayerDescriptor.FlagPreviousMoment)) == 0, "with no such effect, no shutter is written");
 
-        layer.AddEffect(EffectRegistry.Find(EffectRegistry.MotionBlur)!.NewEffect());
+        var card = EffectRegistry.Find(EffectRegistry.MotionBlur)!.NewEffect();
+        layer.AddEffect(card);
         var moving = Layer();
         expect(moving is { } b && (b.Flags & GpuLayerDescriptor.FlagShutterPlace) != 0, "with the card, a keyframed layer has its shutter's places");
+        var frame = vm.Document.FrameRate.FrameDuration;
         if (moving is { } d)
         {
             // 0.2 of the frame's width a second, half a frame of the Sequence open (its rate since 5.2-AuditB, 30 fps here): 1920 x 0.2 / 60 = 6.4 px
-            // across the shutter, a little either side of where it is.
-            var frame = vm.Document.FrameRate.FrameDuration;
+            // across the shutter, a little either side of where it is; at the card's Amount of 100 % (5.6A, MotionBoost) 2.5 times as far: 16 px.
             var swept = d.ShutterToX - d.ShutterFromX;
-            expect(Math.Abs(swept - 1920 * 0.2 * frame / 2) < 0.3f, "the shutter sweeps half a frame of its move");
+            expect(Math.Abs(MotionBoost.Span(100) - 2.5) < 1e-12 && Math.Abs(swept - 1920 * 0.2 * frame / 2 * 2.5) < 0.3f,
+                "at its Amount of 100 % the shutter sweeps 2.5 times half a frame of its move (5.6A: the boosted top end)");
             expect(d.ShutterFromX < d.X && d.X < d.ShutterToX, "either side of where it is at the frame");
             expect((d.Flags & GpuLayerDescriptor.FlagPreviousMoment) != 0 && Math.Abs(d.MediaSeconds - d.PreviousMoment - frame) < 1e-3, "and its source's moment a frame ago");
         }
+
+        // Up to 50 % the Amount widens nothing, as before 5.6A: half a frame of the move; the ramp above it is smooth and rises to 2.5.
+        card.Set("amount", 50);
+        if (Layer() is { } half)
+            expect(Math.Abs(half.ShutterToX - half.ShutterFromX - 1920 * 0.2 * frame / 2) < 0.3f, "at 50 % the shutter sweeps half a frame of its move, as it always did");
+        expect(MotionBoost.Span(0) == 1 && MotionBoost.Span(50) == 1 && MotionBoost.Span(double.NaN) == 1 && MotionBoost.Span(75) is > 1 and < 2.5
+               && MotionBoost.Span(90) > MotionBoost.Span(75) && MotionBoost.Span(150) == 2.5 && MotionBoost.Span(50.01) - 1 < 1e-6,
+            "the boost: 1 up to 50 % (and for no number), rising smoothly from there to 2.5 at 100 %, no further");
 
         layer.SetKeys(KeyProperty.X, null);
         var still = Layer();
@@ -537,7 +524,7 @@ public static class GpuFxTests
         var first = document.Tracks[0].Clips[0];
         first.End = 4;
         document.Tracks[0].Clips.Add(new TimelineClip { ContentKind = LayerKind.VideoFile, SourcePath = first.SourcePath, Start = 4, End = 8, MediaOffset = 2, SourceDuration = 8, State = first.State });
-        typeof(MainViewModel).GetMethod("InstallDocument", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.Invoke(vm, [document]);
+        vm.InstallDocument(document);
         vm.ViewOf(vm.Document.Tracks[0].Clips[1])!.AddEffect(EffectRegistry.Find(EffectRegistry.MotionBlur)!.NewEffect());
 
         using var broker = new GpuResourceBroker(null, bakeOnCallingThread: true);
@@ -562,7 +549,8 @@ public static class GpuFxTests
         expect(At(4.005) is { } cut && (cut.Flags & GpuLayerDescriptor.FlagPreviousMoment) == 0, "the first frame after a cut measures no motion across it");
         expect(At(4.2) is { } on && (on.Flags & GpuLayerDescriptor.FlagPreviousMoment) != 0, "the frames after it do");
 
-        var clip = DogfoodTests.FileClip(Overlay, 0, 4);
+        // (3.5 s at 16x is 56 s of the 60 s file: 5.6A's top speed.)
+        var clip = DogfoodTests.FileClip(Overlay, 0, 3.5);
         clip.Speed = Layer.FastestSpeed;
         var fast = DogfoodTests.Open(DogfoodTests.Lane(clip));
         var view = fast.ViewOf(fast.Document.Tracks[1].Clips[0])!;

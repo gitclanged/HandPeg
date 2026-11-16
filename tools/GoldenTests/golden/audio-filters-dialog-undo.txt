@@ -1,0 +1,6 @@
+# The audio filters dialog's Undo: Reset and the mix keys are steps, put back whole.
+ok: Reset gives a fresh set (the compressor off)
+ok: Undo puts the whole set back (on, -43 dB), and the dialog shows that set
+ok: Add Mix Key puts a key at the playhead
+ok: Undo takes the key off again
+ok: Redo puts it back

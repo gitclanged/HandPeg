@@ -52,6 +52,7 @@ public static class PortableBootstrapTests
             Outcomes(Expect, Note);
             Constants(Expect);
             ShadowStacks(Expect);
+            Versions(Expect);
             Programs(Expect);
         }
         catch (Exception ex)
@@ -612,37 +613,51 @@ public static class PortableBootstrapTests
     }
 
     /// <summary>
-    /// No CET shadow stacks for HandPeg.exe (Pass 5.3-Stage2, the user's answer): CETCompat false, unconditional, in both projects that make
-    /// a HandPeg.exe (the app's apphost and the released bootstrapper), and never in Explorer's thumbnail handler's, which stays
-    /// CET-compatible for Explorer's surrogate. Read from the projects themselves, so it holds with nothing published.
+    /// Exploit mitigations (docs/DECISIONS.md D-07): no project opts out of CET shadow stacks (no CETCompat element anywhere, so .NET's
+    /// and NativeAOT's CET-compatible default holds for the app's HandPeg.exe, the released bootstrapper and Explorer's thumbnail
+    /// handler), and the bootstrapper is linked with Control Flow Guard, unconditionally. Read from the projects themselves, so it holds
+    /// with nothing published.
     /// </summary>
     private static void ShadowStacks(Action<bool, string> expect)
     {
         var root = RepositoryRoot() ?? "";
-        bool? Off(params string[] parts)
-        {
-            var project = Path.Combine(root, Path.Combine(parts));
-            if (!File.Exists(project))
-                return null;
+        // Elements only (comments are not read).
+        List<System.Xml.Linq.XElement> Elements(string name, params string[] parts) =>
+            System.Xml.Linq.XDocument.Load(Path.Combine(root, Path.Combine(parts))).Descendants(name).ToList();
 
-            // Elements only (comments are not read): CETCompat in an unconditional PropertyGroup, false.
-            var settings = System.Xml.Linq.XDocument.Load(project).Descendants("CETCompat").ToList();
-            return settings.Count > 0 && settings.All(e => e.Value.Trim().Equals("false", StringComparison.OrdinalIgnoreCase)
-                                                           && e.Attribute("Condition") is null && e.Parent?.Attribute("Condition") is null);
+        string[][] projects = [["HandPegApp.csproj"], ["tools", "PortableBootstrap", "HandPegBootstrap.csproj"], ["src", "ShellThumbnails", "HandPeg.ShellThumbnails.csproj"]];
+        expect(projects.All(p => Elements("CETCompat", p).Count == 0),
+            "no project opts out of CET shadow stacks: HandPeg.exe (the app's and the released bootstrapper) and Explorer's thumbnail handler keep the CET-compatible default");
+        var guard = Elements("ControlFlowGuard", "tools", "PortableBootstrap", "HandPegBootstrap.csproj");
+        expect(guard.Count == 1 && guard[0].Value.Trim() == "Guard" && guard[0].Attribute("Condition") is null && guard[0].Parent?.Attribute("Condition") is null,
+            "the released HandPeg.exe (the bootstrapper) is linked with Control Flow Guard, unconditionally");
+    }
+
+    /// <summary>
+    /// The release version is written in two projects (the app and the bootstrapper that is the released HandPeg.exe): Version,
+    /// AssemblyVersion and FileVersion agree within each and across both, so a missed bump fails here before tools\Release.ps1 refuses it.
+    /// </summary>
+    private static void Versions(Action<bool, string> expect)
+    {
+        var root = RepositoryRoot() ?? "";
+        string[] Trio(params string[] parts)
+        {
+            var project = System.Xml.Linq.XDocument.Load(Path.Combine(root, Path.Combine(parts)));
+            return [.. new[] { "Version", "AssemblyVersion", "FileVersion" }.Select(n => project.Descendants(n).FirstOrDefault()?.Value.Trim() ?? "")];
         }
 
-        expect(Off("HandPegApp.csproj") == true && Off("tools", "PortableBootstrap", "HandPegBootstrap.csproj") == true,
-            "HandPeg.exe is never marked CET-compatible: CETCompat false, unconditional, for the app's own HandPeg.exe and for the bootstrapper that is the released one "
-            + "(no shadow stacks: about 16 ms of an x64 start; ARM64 has no such mark)");
-        expect(Off("src", "ShellThumbnails", "HandPeg.ShellThumbnails.csproj") == false,
-            "Explorer's thumbnail handler keeps NativeAOT's CET-compatible default (Explorer's surrogate may enforce shadow stacks)");
+        var (app, boot) = (Trio("HandPegApp.csproj"), Trio("tools", "PortableBootstrap", "HandPegBootstrap.csproj"));
+        var consistent = System.Text.RegularExpressions.Regex.IsMatch(app[0], @"^\d+\.\d+\.\d+$") && app[1] == app[0] + ".0" && app[2] == app[0] + ".0";
+        expect(consistent && app.SequenceEqual(boot),
+            "the app and the bootstrapper carry one release version (Version X.Y.Z, AssemblyVersion and FileVersion X.Y.Z.0, the same in both projects)"
+            + (consistent && app.SequenceEqual(boot) ? "" : $": app {string.Join("/", app)}, bootstrapper {string.Join("/", boot)}"));
     }
 
     private static void Programs(Action<bool, string> expect)
     {
         var folder = Path.Combine(RepositoryRoot() ?? "", "tools", "PortableBootstrap", "bin", "Release", "net10.0");
         var wrong = new List<string>();
-        var marked = new List<string>();
+        var unmarked = new List<string>();
         foreach (var (rid, machine) in new[] { ("win-x64", (ushort)0x8664), ("win-arm64", (ushort)0xAA64) })
         {
             var exe = Path.GetFullPath(Path.Combine(folder, rid, "publish", "HandPegBootstrap.exe"));
@@ -653,17 +668,18 @@ public static class PortableBootstrapTests
             }
 
             var header = ReadPe(exe);
-            Console.WriteLine($"        {rid} HandPeg.exe: machine 0x{header.Machine:X4}, subsystem {header.Subsystem}, .NET header {header.HasClrHeader}, CET-compatible {header.CetCompatible}, {new FileInfo(exe).Length / 1024} KB");
+            Console.WriteLine($"        {rid} HandPeg.exe: machine 0x{header.Machine:X4}, subsystem {header.Subsystem}, .NET header {header.HasClrHeader}, CET-compatible {header.CetCompatible}, CFG {header.GuardCf}, {new FileInfo(exe).Length / 1024} KB");
             if (header.Machine != machine || header.Subsystem != 2 || header.HasClrHeader || new FileInfo(exe).Length > 4 << 20)
                 wrong.Add(rid);
-            if (header.CetCompatible)
-                marked.Add(rid);
+            // CET exists on x64 only (ARM64 has no such mark); CFG on both.
+            if ((machine == 0x8664 && !header.CetCompatible) || !header.GuardCf)
+                unmarked.Add(rid);
         }
 
         expect(wrong.Count == 0, "each published HandPeg.exe is a native window program of its processor (x64 0x8664, ARM64 0xAA64), with no .NET header, under 4 MB"
             + (wrong.Count > 0 ? $": not {string.Join(", ", wrong)}" : ""));
-        expect(marked.Count == 0, "and neither is marked CET-compatible (a publish from a clean obj takes CETCompat false)"
-            + (marked.Count > 0 ? $": marked {string.Join(", ", marked)}" : ""));
+        expect(unmarked.Count == 0, "and each carries Control Flow Guard, the x64 one CET-compatible too (a publish from a clean obj takes both)"
+            + (unmarked.Count > 0 ? $": missing on {string.Join(", ", unmarked)}" : ""));
     }
 
     /// <summary>The repository's folder: the first folder up from this test's own with HandPegApp.csproj in it; null when there is none.</summary>
@@ -678,9 +694,13 @@ public static class PortableBootstrapTests
     /// <summary>
     /// What the golden tests read of a PE file: its machine, its subsystem, whether it is a DLL, whether it has a .NET (CLR) header (data
     /// directory 14), whether it is marked CET-compatible (the debug directory's IMAGE_DEBUG_TYPE_EX_DLLCHARACTERISTICS entry, type 20,
-    /// bit 0x1; ARM64 has none), and the names it exports.
+    /// bit 0x1; ARM64 has none), whether it is linked with Control Flow Guard (IMAGE_DLLCHARACTERISTICS_GUARD_CF, 0x4000), and the names
+    /// it exports.
     /// </summary>
-    internal readonly record struct PeFacts(ushort Machine, ushort Subsystem, bool IsDll, bool HasClrHeader, bool CetCompatible, IReadOnlyList<string> Exports);
+    internal readonly record struct PeFacts(ushort Machine, ushort Subsystem, bool IsDll, bool HasClrHeader, bool CetCompatible, IReadOnlyList<string> Exports)
+    {
+        public bool GuardCf { get; init; }
+    }
 
     internal static PeFacts ReadPe(string path)
     {
@@ -731,6 +751,9 @@ public static class PortableBootstrapTests
             }
         }
 
-        return new PeFacts(U16(pe + 4), U16(optional + 68), (U16(pe + 22) & 0x2000) != 0, U32(directories + 14 * 8) != 0, cet, exports);
+        return new PeFacts(U16(pe + 4), U16(optional + 68), (U16(pe + 22) & 0x2000) != 0, U32(directories + 14 * 8) != 0, cet, exports)
+        {
+            GuardCf = (U16(optional + 70) & 0x4000) != 0,
+        };
     }
 }

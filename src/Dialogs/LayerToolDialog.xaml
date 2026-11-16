@@ -129,31 +129,31 @@
                 <RowDefinition Height="32" />
             </Grid.RowDefinitions>
             <TextBlock Grid.Row="0" Text="Grow / Shrink:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Row="0" Grid.Column="1" Minimum="-40" Maximum="40" VerticalAlignment="Center"
+            <Slider local:NumericInput.EdgeKind="Mask" Grid.Row="0" Grid.Column="1" Minimum="-40" Maximum="40" VerticalAlignment="Center"
                     Value="{Binding MaskGrow}" AutomationProperties.Name="Mask Grow" local:NumericInput.Default="0"
                     ToolTip="Grows what the mask shows outwards (to the right), to take in a glow or a border round a HUD element, or shrinks it inwards (to the left), to trim one off. In pixels of the finished video." />
             <StackPanel Grid.Row="0" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                <TextBox Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding MaskGrow, StringFormat={}{0:0}}"
+                <TextBox local:NumericInput.EdgeKind="Mask" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding MaskGrow, StringFormat={}{0:0}}"
                          AutomationProperties.Name="Mask Grow Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="0"
                          local:NumericInput.Minimum="-40" local:NumericInput.Maximum="40" />
                 <TextBlock Text="px" VerticalAlignment="Center" Margin="4,0,0,0" Width="18" Foreground="{DynamicResource MutedTextBrush}" />
             </StackPanel>
             <TextBlock Grid.Row="1" Text="Mask Offset X (%):" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Row="1" Grid.Column="1" Minimum="-50" Maximum="50" VerticalAlignment="Center"
+            <Slider local:NumericInput.EdgeKind="Mask" Grid.Row="1" Grid.Column="1" Minimum="-50" Maximum="50" VerticalAlignment="Center"
                     Value="{Binding MaskOffsetX}" AutomationProperties.Name="Mask Offset X" local:NumericInput.Default="0"
                     ToolTip="Moves the mask picture left (negative) or right across the clip, as a percentage of its width: one HUD mask nudged to fit a variation of the HUD, without drawing it again. What it uncovers at the far edge is hidden. Double-click to put it back to 0." />
             <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                <TextBox Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding MaskOffsetX, StringFormat={}{0:0.0}}"
+                <TextBox local:NumericInput.EdgeKind="Mask" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding MaskOffsetX, StringFormat={}{0:0.0}}"
                          AutomationProperties.Name="Mask Offset X Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.1" local:NumericInput.Decimals="1"
                          local:NumericInput.Minimum="-50" local:NumericInput.Maximum="50" />
                 <TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" Width="18" Foreground="{DynamicResource MutedTextBrush}" />
             </StackPanel>
             <TextBlock Grid.Row="2" Text="Mask Offset Y (%):" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Row="2" Grid.Column="1" Minimum="-50" Maximum="50" VerticalAlignment="Center"
+            <Slider local:NumericInput.EdgeKind="Mask" Grid.Row="2" Grid.Column="1" Minimum="-50" Maximum="50" VerticalAlignment="Center"
                     Value="{Binding MaskOffsetY}" AutomationProperties.Name="Mask Offset Y" local:NumericInput.Default="0"
                     ToolTip="Moves the mask picture up (negative) or down across the clip, as a percentage of its height. What it uncovers at the far edge is hidden. Double-click to put it back to 0." />
             <StackPanel Grid.Row="2" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                <TextBox Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding MaskOffsetY, StringFormat={}{0:0.0}}"
+                <TextBox local:NumericInput.EdgeKind="Mask" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding MaskOffsetY, StringFormat={}{0:0.0}}"
                          AutomationProperties.Name="Mask Offset Y Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.1" local:NumericInput.Decimals="1"
                          local:NumericInput.Minimum="-50" local:NumericInput.Maximum="50" />
                 <TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" Width="18" Foreground="{DynamicResource MutedTextBrush}" />
@@ -229,21 +229,21 @@
                 <RowDefinition Height="32" />
             </Grid.RowDefinitions>
             <TextBlock Grid.Row="0" Text="Corner Radius:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Row="0" Grid.Column="1" Minimum="0" Maximum="50" VerticalAlignment="Center"
+            <Slider local:NumericInput.EdgeKind="Feather" Grid.Row="0" Grid.Column="1" Minimum="0" Maximum="50" VerticalAlignment="Center"
                     Value="{Binding CornerRadius}" AutomationProperties.Name="Mask Corner Radius" local:NumericInput.Default="0"
                     ToolTip="Rounds the corners of the clip's rectangle, as a percentage of its shorter side." />
             <StackPanel Grid.Row="0" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                <TextBox Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding CornerRadius, StringFormat={}{0:0}}"
+                <TextBox local:NumericInput.EdgeKind="Feather" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding CornerRadius, StringFormat={}{0:0}}"
                          AutomationProperties.Name="Mask Corner Radius Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.25" local:NumericInput.Decimals="0"
                          local:NumericInput.Minimum="0" local:NumericInput.Maximum="50" />
                 <TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" Width="18" Foreground="{DynamicResource MutedTextBrush}" />
             </StackPanel>
             <TextBlock Grid.Row="1" Text="Soft Edge:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Row="1" Grid.Column="1" Minimum="1" Maximum="80" VerticalAlignment="Center"
+            <Slider local:NumericInput.EdgeKind="Feather" Grid.Row="1" Grid.Column="1" Minimum="1" Maximum="80" VerticalAlignment="Center"
                     Value="{Binding FeatherRadius}" AutomationProperties.Name="Mask Soft Edge" local:NumericInput.Default="12"
                     ToolTip="How wide the soft edge is, in pixels, while Soft Edges is ticked." />
             <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                <TextBox Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding FeatherRadius, StringFormat={}{0:0}}"
+                <TextBox local:NumericInput.EdgeKind="Feather" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding FeatherRadius, StringFormat={}{0:0}}"
                          AutomationProperties.Name="Mask Soft Edge Value" local:NumericInput.Default="12" local:NumericInput.DragStep="0.25" local:NumericInput.Decimals="0"
                          local:NumericInput.Minimum="1" local:NumericInput.Maximum="80" />
                 <TextBlock Text="px" VerticalAlignment="Center" Margin="4,0,0,0" Width="18" Foreground="{DynamicResource MutedTextBrush}" />

@@ -1,0 +1,4 @@
+# The Settings window's save writes back only what it changed: a change made meanwhile survives.
+ok: only the property the window changed is copied back (ShowTimesAsFrames)
+ok: the change made meanwhile survives the window's save, and the window's own change is in effect
+ok: both are on disk

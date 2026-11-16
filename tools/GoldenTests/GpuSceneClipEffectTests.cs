@@ -17,14 +17,13 @@ namespace HandPegGoldenTests;
 /// of two clips of the file opened (named the anchor and the rider for what they were until 5.2-AuditB: one chain drawn in
 /// one piece; now each clip of a file draws itself) and a video from another file over them. Each clip is selected as a press on its block selects it (KeyLayer),
 /// and the clip the Effects pane edits (ActiveKeyLayer) is given a card and a value the way the pane's Add and its slider
-/// write them (a checkpoint, then the change inside Layer.Echo). The state the GPU engine is pushed (LivePreviewState, which
+/// write them (a checkpoint, then the change inside the view model's OwnLookScope). The state the GPU engine is pushed (LivePreviewState, which
 /// writes the views' looks into their clips) is planned (GpuScenePlan.Create) and evaluated inside each clip: the layer the
 /// worker is told to draw for that clip must carry the card's passes. Last, a clip split (as Remove Dead Air splits) keeps
 /// its selection on a view that is drawn, and an effect on the new half reaches the scene too.
 /// </summary>
 public static class GpuSceneClipEffectTests
 {
-    private const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
     private const int W = 320, H = 180;
 
     public static GraphResult Run()
@@ -75,7 +74,7 @@ public static class GpuSceneClipEffectTests
         mainTrack.Clips.Add(anchor);
         mainTrack.Clips.Add(rider);
         insetTrack.Clips.Add(file);
-        typeof(MainViewModel).GetMethod("InstallDocument", Hidden)!.Invoke(vm, [document]);
+        vm.InstallDocument(document);
 
         var names = new Dictionary<long, string> { [GpuHash.Of(anchor.Id)] = "anchor", [GpuHash.Of(rider.Id)] = "rider", [GpuHash.Of(file.Id)] = "inset" };
         using var broker = new GpuResourceBroker(null, bakeOnCallingThread: true);
@@ -162,7 +161,7 @@ public static class GpuSceneClipEffectTests
         var track = new TimelineTrackModel { Kind = TimelineTrackKind.Video, TrackNumber = 1 };
         track.Clips.Add(Clip(inset, LayerKind.VideoFile, 0, 8, 0, Look(LayerKind.VideoFile, "inset", 0.5, 0.1, 0.4, inset)));
         alone.Tracks.Add(track);
-        typeof(MainViewModel).GetMethod("InstallDocument", Hidden)!.Invoke(empty, [alone]);
+        empty.InstallDocument(alone);
         var standIn = empty.ActiveKeyLayer;
         text.Append(CultureInfo.InvariantCulture,
             $"\none inset clip, nothing selected: the clip the panes work on is {(empty.Layers.Contains(standIn) ? "a clip on the timeline" : "a stand-in that is no clip")}\n");
@@ -183,7 +182,7 @@ public static class GpuSceneClipEffectTests
     {
         var vm = new MainViewModel { SourceWidth = W, SourceHeight = H, LocalMediaPath = main };
         var probed = new MediaInfo("mov,mp4,m4a,3gp,3g2,mj2", 8, 0, new VideoStreamInfo(W, H, "h264", 30, "16:9", "1:1", "bt709", "bt709", 0), [], []);
-        (typeof(MainViewModel).GetField("_mediaInfo", Hidden) ?? throw new MissingFieldException(nameof(MainViewModel), "_mediaInfo")).SetValue(vm, probed);
+        vm.SetMediaInfoForTests(probed);
         var document = new TimelineDocument { Width = W, Height = H, NaturalWidth = W, NaturalHeight = H, FrameRate = FrameRate.Fps30 };
         var track = new TimelineTrackModel { Kind = TimelineTrackKind.Video, TrackNumber = 1 };
 
@@ -192,7 +191,7 @@ public static class GpuSceneClipEffectTests
         look.BlurFill = true;
         track.Clips.Add(Clip(main, LayerKind.VideoFile, 0, 8, 0, look));
         document.Tracks.Add(track);
-        typeof(MainViewModel).GetMethod("InstallDocument", Hidden)!.Invoke(vm, [document]);
+        vm.InstallDocument(document);
 
         using var broker = new GpuResourceBroker(null, bakeOnCallingThread: true);
         void Show(string step)
@@ -444,11 +443,14 @@ public static class GpuSceneClipEffectTests
     private static EffectInstance Add(MainViewModel vm, string type) =>
         vm.AddEffect(vm.ActiveKeyLayer, EffectRegistry.Find(type)!) ?? throw new InvalidOperationException($"{type} could not be added to {vm.ActiveKeyLayer.Name}");
 
-    /// <summary>EffectsPane.WriteValue: a value dragged on the card.</summary>
+    /// <summary>
+    /// A value written as an editing pane writes one, without the pane's pacing: an undo step taken by hand, then the value set as the
+    /// pane's own look (no step of the view model's for it).
+    /// </summary>
     private static void Write(MainViewModel vm, EffectInstance card, string key, double value)
     {
         vm.Checkpoint($"change {key}");
-        using (Layer.Echo())
+        using (vm.OwnLookScope())
             card.Set(key, value);
     }
 

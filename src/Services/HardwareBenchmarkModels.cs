@@ -145,6 +145,13 @@ public sealed class HardwareBenchmarkAdapter
     /// <summary>What went wrong on this card, when something did (the other numbers are then 0).</summary>
     public string Note { get; set; } = "";
 
+    /// <summary>
+    /// 5.6.0: the compositor's all-slots frame on this card, GPU ms (1920 x 1080, every shader slot on test patterns, the best of four
+    /// frames after 90 that raise its clocks: the compositor-parity golden's Timing scene, HardwareBenchmark.Compositor.cs); 0 when it
+    /// was not timed (only the cards that hold a role are).
+    /// </summary>
+    public double CompositorMs { get; set; }
+
     [JsonIgnore]
     public bool DecodesInHardware => HardwareDecodeFps > 0;
 }

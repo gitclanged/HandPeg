@@ -1,0 +1,19 @@
+# The shader entry points compiled into HandPeg, against the HLSL that defines them and the C# that names them.
+73 entry points:
+  PSAlphaOf PSAnamorphic PSAnimeLines PSBoxBlur PSChromaKey PSColorBalance
+  PSColorGrade PSColorStudio PSColorTemperature PSComposite PSCompositeBlend PSCopy
+  PSCornerFeather PSDebris PSDenoise PSDespill PSDim PSEnergyShield
+  PSExplodedBackdrop PSExplodedFrame PSExplodedLine PSExplodedOutline PSExplodedPlane PSExplosion
+  PSFinal PSFlip PSFlowInterpolate PSFlowSmooth PSFlowSolve PSFrostedGlass
+  PSGlowBright PSGlowMix PSHueSaturation PSJfaSeed PSJfaStep PSKawaseDown
+  PSKawaseUp PSLayerMask PSLoopbackCompare PSLoupeFind PSLoupeView PSLut3D
+  PSMatteChoke PSMatteSmooth PSMatteTemporal PSMotionBlur PSParticleSnap PSPattern
+  PSRgbGlitch PSRgbSource PSRgbToNv12 PSRgbToNv12Chroma PSRgbToP010 PSRgbToP010Chroma
+  PSRimLight PSSaber PSShadowSeed PSSharpen PSShockwave PSSolid
+  PSSparks PSSpin PSStreak PSToneCurve PSVfxComposite PSVignette
+  PSWhipPan PSYuvSource PSZoomWarp VSExploded VSFull VSQuad
+  VSSparks
+ok: the embedded entry points are exactly the ones the shader files define
+ok: each entry point is defined in one shader file only
+ok: every shader name in the C# code is an embedded entry point
+ok: every embedded entry point is named somewhere in the C# code

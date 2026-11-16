@@ -7,6 +7,9 @@ namespace HandPegApp.Models;
 /// </summary>
 public sealed class StylePreset
 {
+    /// <summary>The extension of a Game Preset file in the Styles folder.</summary>
+    public const string FileExtension = ".hpstyle";
+
     [System.Text.Json.Serialization.JsonPropertyName("schema_version")]
     public string SchemaVersion { get; set; } = "1.0";
 

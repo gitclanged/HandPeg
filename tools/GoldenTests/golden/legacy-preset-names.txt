@@ -12,4 +12,4 @@ overlay: Overwatch Vertical.hpstyle | Fortnite Vertical.hpstyle | My Own.hpstyle
 ok: the drop overlay's Game Presets of an old name have the new one, in order, a duplicate of a mapped name dropped; the user's own kept
 ok: the default preset and Smart Rules (Export Presets) are never mapped
 ok: mapped again, nothing changes
-ok: the settings are mapped as they are read (AppSettings.Load calls MapLegacyPresetNames)
+ok: the settings are mapped as they are read (SettingsMigrations.Migrate, which every load runs)

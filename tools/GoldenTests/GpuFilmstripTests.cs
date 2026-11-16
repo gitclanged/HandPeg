@@ -19,22 +19,15 @@ public static class GpuFilmstripTests
 {
     public static IEnumerable<GraphResult> All()
     {
-        var text = new StringBuilder("# GPU filmstrips (5.0D): the strip's layout as FFmpeg's, key-frame snapping, the shrink, and a strip made both ways.\n");
-        var problems = new List<string>();
-        try
-        {
-            Layouts(text, problems);
-            Moments(text, problems);
-            Snapping(text, problems);
-            Shrinking(text, problems);
-            BothWays(problems);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        yield return new GraphResult("gpu-filmstrip", text.ToString(), problems, 0);
+        yield return Case("gpu-filmstrip", "# GPU filmstrips (5.0D): the strip's layout as FFmpeg's, key-frame snapping, the shrink, and a strip made both ways.",
+            (text, problems) =>
+            {
+                Layouts(text, problems);
+                Moments(text, problems);
+                Snapping(text, problems);
+                Shrinking(text, problems);
+                BothWays(problems);
+            });
     }
 
     private static void Line(StringBuilder text, FormattableString line) => text.Append(line.ToString(CultureInfo.InvariantCulture)).Append('\n');

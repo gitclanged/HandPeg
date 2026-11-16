@@ -1,8 +1,10 @@
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using HandPegApp.Docking;
 using HandPegApp.Services;
+using HandPegApp.Views;
 
 namespace HandPegApp;
 
@@ -28,6 +30,16 @@ public partial class MainWindow
     /// </summary>
     private const string TimelinePaneId = "UnifiedTimeline";
 
+    /// <summary>
+    /// Panes saved arrangements may name that are another now (DockManager.Replaced, applied to the main window's, every side window's and
+    /// Pane Docker's trees on every load): the Source pane is the Media pane, and every rename the settings' hidden-tab list follows too
+    /// (<see cref="SettingsMigrations.PaneRenames"/>: the Filters tab is the Color tab since 5.6.0). Shared with the goldens.
+    /// </summary>
+    internal static readonly IReadOnlyDictionary<string, string> ReplacedPanes = new Dictionary<string, string>(SettingsMigrations.PaneRenames)
+    {
+        ["Source"] = "Media",
+    };
+
     /// <summary>Takes the panes out of the library, tells the dock manager what each is, and lays the window out as it was left.</summary>
     private void InitializeDocking()
     {
@@ -36,7 +48,7 @@ public partial class MainWindow
         // Layers tab was, and one from before 4.4-BugHunt the timeline first among the settings tabs (UpgradeLayout).
         _dock = new DockManager(this, MainDockHost, DefaultDockLayout)
         {
-            Replaced = new Dictionary<string, string> { ["Source"] = "Media" },
+            Replaced = ReplacedPanes,
             Upgrade = UpgradeLayout,
 
             // A tab's menu's Reset Panes Layout is the Views menu's (5.4D): the user's Default layout, the scrubber's height put back.
@@ -99,6 +111,9 @@ public partial class MainWindow
         Add("Presets", "Preset Bar", PresetBarPane, PaneHandle.Hover, fits: true, shown: () => _viewModel.ShowPresetBarAtTop);
         // The studios (5.4C): made by their factories when first shown, never in PaneLibrary (MainWindow.Studios.cs).
         RegisterStudioPanes();
+
+        // The Effects pane's Color Grade card opens the Color tab (Pass 5.6A, MainWindow.ColorStudio.cs).
+        EffectsView.OpenColorStudioRequested += OpenColorStudio;
 
         // The settings tabs: each a pane with a tab, made when first shown (RealizeTabContent), shown while its tab would be.
         // Audio is a box, its content moved between it and the Export tab (MainWindow.Export.cs). (5.4B retired the Video tab: a saved
@@ -314,6 +329,10 @@ public partial class MainWindow
         // The Audio tab's master meter and fader (5.2B): fed and wired as the pane's is.
         if (content.FindName("AudioTabMeter") is AudioMeterControl tabMeter)
             WireMeter(tabMeter);
+
+        // The Color tab's Color Studio (Pass 5.6A): wired to the window as it is made (it builds its own parts when first shown).
+        if ((content as ColorStudioPane ?? content.FindName("ColorStudio")) is ColorStudioPane studio)
+            AttachColorStudio(studio);
 
         // The Export tab's parts (MainWindow.Export.cs); ExportContent fills it once they are found. ExportPanel is the template's root.
         if ((content.Name == nameof(ExportPanel) ? content : content.FindName(nameof(ExportPanel))) is DockPanel export)
@@ -538,53 +557,6 @@ public partial class MainWindow
         return DockTree.Tidy(DockTree.InsertBeside(root, anchor, DockZone.Left, DockNode.Group(TimelinePaneId), TimelineShare));
     }
 
-    /// <summary>
-    /// The start's warm-up is over (every tab made): what it took and let go is given back to the system once, away
-    /// from the interface's thread (v4.1.0). A start allocates little after its first frame, so the collector would not
-    /// run again for a long while and kept about 40 MB of the start's garbage committed: 10 s after the first frame
-    /// HandPeg read 212 to 215 MB where the collection leaves it under 200 (the Media pane did the same by chance in
-    /// 4.0, after making its pictures). Done once per start, at ApplicationIdle, as the Media pane's GiveBackMemory.
-    ///
-    /// 4.2D: 4.2's panes brought the 10 s reading back to 213 to 219 MB (4.2C), so the give-back goes further. The large
-    /// object heap is compacted too (the start's big buffers: XAML, the JIT profile, the dock's first measure), the process
-    /// heap is compacted (the native side's start: WPF's own allocations and the drivers'), and the pages the start touched
-    /// once and never again (start-up code, resources read once) leave the working set. They stay in memory as standby
-    /// pages, so what is touched again comes back at once, from RAM, without a disk read.
-    /// </summary>
-    private void GiveBackStartupMemory()
-    {
-        if (_startupMemoryGivenBack)
-            return;
-
-        _startupMemoryGivenBack = true;
-        Task.Run(() =>
-        {
-            System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
-            GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
-            GC.WaitForPendingFinalizers();
-            GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
-
-            HeapCompact(GetProcessHeap(), 0);
-            K32EmptyWorkingSet(GetCurrentProcess());
-        });
-    }
-
-    private bool _startupMemoryGivenBack;
-
-    [System.Runtime.InteropServices.LibraryImport("kernel32.dll")]
-    private static partial IntPtr GetProcessHeap();
-
-    [System.Runtime.InteropServices.LibraryImport("kernel32.dll")]
-    private static partial nuint HeapCompact(IntPtr heap, uint flags);
-
-    // The pseudo-handle of this process (-1): never closed, needs no rights beyond the process's own.
-    [System.Runtime.InteropServices.LibraryImport("kernel32.dll")]
-    private static partial IntPtr GetCurrentProcess();
-
-    [System.Runtime.InteropServices.LibraryImport("kernel32.dll")]
-    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
-    private static partial bool K32EmptyWorkingSet(IntPtr process);
-
     // ----- The side windows (5.4C: any number, each a Live Video Preview or a Pane Docker) -----
 
     /// <summary>
@@ -627,7 +599,7 @@ public partial class MainWindow
 
             var close = new Button
             {
-                Content = "", FontFamily = new System.Windows.Media.FontFamily("Segoe MDL2 Assets"), FontSize = 10, Padding = new Thickness(8, 4, 8, 4),
+                Content = Glyphs.Cancel, FontFamily = new System.Windows.Media.FontFamily("Segoe MDL2 Assets"), FontSize = 10, Padding = new Thickness(8, 4, 8, 4),
                 ToolTip = $"Closes side window {number} (a Pane Docker's panes go back to this window).", Margin = new Thickness(2, 0, 0, 0),
             };
             System.Windows.Automation.AutomationProperties.SetName(close, $"Close Side Window {number}");
@@ -654,6 +626,22 @@ public partial class MainWindow
     // The side windows answer keys and dropped files as this window does.
     private readonly HashSet<Window> _hookedSides = [];
     private bool _mirrorNotesHooked;
+
+    /// <summary>A window over the editor that takes its keys and mouse buttons (the Fullscreen Preview): the editor's and the 3D view's.</summary>
+    private void HookSideKeys(Window side)
+    {
+        side.PreviewKeyDown += MainWindow_PreviewKeyDown;
+        side.AddHandler(Keyboard.PreviewKeyDownEvent, new KeyEventHandler(ExplodedWindow_PreviewKeyDown));
+        _hookedSides.Add(side);
+    }
+
+    /// <summary>Takes back what <see cref="HookSideKeys"/> gave (the window is closing).</summary>
+    private void UnhookSideKeys(Window side)
+    {
+        side.PreviewKeyDown -= MainWindow_PreviewKeyDown;
+        side.RemoveHandler(Keyboard.PreviewKeyDownEvent, new KeyEventHandler(ExplodedWindow_PreviewKeyDown));
+        _hookedSides.Remove(side);
+    }
 
     private void HookSideWindow(SideWindow side)
     {

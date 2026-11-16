@@ -278,6 +278,7 @@ public partial class MainWindow
             ExportId => "The Export tab: the Export Presets, the format, the video and audio settings and the chapters in three cards, the Live Encoded Preview, the Projected Output, with Save As, Add to Queue and Start Encode.",
             "Tab:Audio" => "The Audio tab of its own: ducking, the master mix and the voiceover (the sounds themselves are on the timeline; how they are encoded is the Export tab's). Hidden, what it holds is in the Export tab.",
             "Tab:Command Preview" => "The FFmpeg command, to read or edit (the same as the setting in Settings).",
+            ColorTabId => "The Color tab (the Color Studio): wheels, curves, LUT, Before/After.",
             _ => $"The {t.Tab.Header} tab.",
         }));
 

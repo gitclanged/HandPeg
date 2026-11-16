@@ -18,12 +18,12 @@ public partial class MainViewModel
     /// Gathers everything an export, the GPU preview and the sound engine are made from into one snapshot. The sequence comes
     /// first: a copy of the timeline document (TimelineForBuilder: its tracks of clips, the frame it is composed on and the rate
     /// its canvas ticks at), which the lowering reads (TimelineLowering), so that the black canvas every clip is laid on is as
-    /// long, as large and as fast as the timeline says. No clip and no file is privileged (5.2-AuditB): each reads its own file.
+    /// long, as large and as fast as the timeline says. No clip and no file is privileged (5.2.0): each reads its own file.
     ///
     /// The document copy and the caption box are made for the snapshot: its own, so the builder cannot be handed a clip
     /// that changes while it works (it keeps what it lowers by the document), nor change one itself.
     /// </summary>
-    private SequenceExportState CompileExportState()
+    internal SequenceExportState CompileExportState()
     {
         var (frameWidth, frameHeight) = (FrameWidth, FrameHeight);
 
@@ -55,21 +55,30 @@ public partial class MainViewModel
         var alphaMasks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var layer in stack.Append(caption))
         {
-            var mask = layer.MaskSource;
+            var mask = MaskStore.SourceOf(layer);
             Note(mask);
-            foreach (var lut in layer.Effects.Where(e => e.Type == Models.Effects.EffectRegistry.Lut))
-                Note(lut.GetText("file"));
+            NoteLuts(layer.Effects);
             if (layer.CustomMask && files.Contains(mask) && !MaskStore.IsDrawn(mask) && MaskStore.UsesAlpha(mask))
                 alphaMasks.Add(mask);
         }
 
         Note(CaptionsFilePath);
-        foreach (var lut in SequenceEffects.Where(e => e.Type == Models.Effects.EffectRegistry.Lut))
-            Note(lut.GetText("file"));
+        NoteLuts(SequenceEffects);
 
-        // The blur fill's own cards (5.0-Release): its LUT files too, or neither renderer draws them.
-        foreach (var lut in _backgroundRow.Effects.Where(e => e.Type == Models.Effects.EffectRegistry.Lut))
-            Note(lut.GetText("file"));
+        // The blur fill's own cards (5.0.0): its LUT files too, or neither renderer draws them.
+        NoteLuts(_backgroundRow.Effects);
+
+        // A LUT card's file, and a Color Grade card's (5.6.0: its LUT): the plan draws only a file listed here.
+        void NoteLuts(IEnumerable<Models.Effects.EffectInstance> cards)
+        {
+            foreach (var card in cards)
+            {
+                if (card.Type == Models.Effects.EffectRegistry.Lut)
+                    Note(card.GetText("file"));
+                else if (card.Type == Models.Effects.EffectRegistry.ColorStudio)
+                    Note(card.GetText(Models.Effects.ColorGradeKeys.Lut));
+            }
+        }
 
         // Where each video layer's picture starts in its file, so the builder can seek in it (see MediaStarts).
         // And where their I-frames are, so a live graph opens each exactly at one (see SeekIndexes).
@@ -197,7 +206,7 @@ public partial class MainViewModel
         _ = Task.Run(async () =>
         {
             if (File.Exists(file) && await MediaProbe.ProbeAsync(file, _shutdown.Token) is not null)
-                System.Windows.Application.Current?.Dispatcher.BeginInvoke(GenerateCommand);
+                System.Windows.Application.Current?.Dispatcher.BeginInvoke(() => GenerateCommand());
         });
     }
 
@@ -416,11 +425,23 @@ public partial class MainViewModel
     /// </summary>
     public event Action? PreviewStateInvalidated;
 
-    /// <summary>Something the preview is made from has changed: the state is gathered afresh for the next scene plan.</summary>
-    private void InvalidatePreviewState()
+    /// <summary>
+    /// Something the preview is made from has changed: the state is gathered afresh for the next scene plan. Listeners read the change's
+    /// breadth from <see cref="LastChange"/> (the Timeline's rows ignore <see cref="PreviewChange.Look"/>).
+    /// </summary>
+    internal void InvalidatePreviewState(PreviewChange change = PreviewChange.Output)
     {
         _previewState = null;
-        PreviewStateInvalidated?.Invoke();
+        var outer = _lookWrites.Announcing;
+        _lookWrites.Announcing = change;
+        try
+        {
+            PreviewStateInvalidated?.Invoke();
+        }
+        finally
+        {
+            _lookWrites.Announcing = outer;
+        }
     }
 
 

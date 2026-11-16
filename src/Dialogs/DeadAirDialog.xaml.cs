@@ -75,23 +75,18 @@ public partial class DeadAirDialog : Window
 
     private void Save()
     {
-        var settings = AppSettings.Current;
-        (settings.DeadAirThresholdDb, settings.DeadAirMinSeconds) = (ThresholdSlider.Value, Math.Round(DurationSlider.Value, 1));
-        settings.DeadAirSource = Source switch
+        var (threshold, minimum) = (ThresholdSlider.Value, Math.Round(DurationSlider.Value, 1));
+        var source = Source switch
         {
             ViewModels.DeadAirSource.Captions => AppSettings.DeadAirFromCaptions,
             _ => AppSettings.DeadAirFromAudio,
         };
-        (settings.DeadAirCaptionMinGapSeconds, settings.DeadAirCaptionPadBeforeSeconds, settings.DeadAirCaptionPadAfterSeconds) =
-            (Math.Round(MinGapSlider.Value, 2), Math.Round(PadBeforeSlider.Value, 3), Math.Round(PadAfterSlider.Value, 3));
-        try
+        var (gap, before, after) = (Math.Round(MinGapSlider.Value, 2), Math.Round(PadBeforeSlider.Value, 3), Math.Round(PadAfterSlider.Value, 3));
+        AppSettings.Update(settings =>
         {
-            settings.SaveAsCurrent();
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            // The values still hold for this session.
-        }
+            (settings.DeadAirThresholdDb, settings.DeadAirMinSeconds, settings.DeadAirSource) = (threshold, minimum, source);
+            (settings.DeadAirCaptionMinGapSeconds, settings.DeadAirCaptionPadBeforeSeconds, settings.DeadAirCaptionPadAfterSeconds) = (gap, before, after);
+        });
 
         DialogResult = true;
     }

@@ -56,6 +56,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         _playing = header.IsPlaying != 0;
         (_audioBass, _audioMid, _audioHigh) = (Band(header.AudioBass), Band(header.AudioMid), Band(header.AudioHigh));
         _decoders.BeginFrame(_frame, _playing, header.PlayheadSeconds, exactOnly: (header.Flags & FrameSceneHeader.FlagExactFrames) != 0);
+        _resources.BeginFrame();
         try
         {
             RenderLayers(header, layers, outputRtv, outputWidth, outputHeight, raw, DrawScale(header, raw));
@@ -474,8 +475,19 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         var fadeIn = w.P4 > 0.5f;
         var keepLow = fadeIn ? dx + dy > 0 : dx + dy < 0;
         var size = (MathF.Abs(box.W), MathF.Abs(box.H));
-        constants.Params2 = new Vector4(1, keepLow ? 1 : 0, dx != 0 ? 0 : 1, Math.Clamp(w.P0, 0, 1));
-        constants.Params3 = new Vector4(Math.Max(2, MathF.Round(Math.Max(size.Item1, size.Item2) * 0.02f)), 0, size.Item1, size.Item2);
+        var (shown, feather) = (Math.Clamp(w.P0, 0, 1), Math.Max(2, MathF.Round(Math.Max(size.Item1, size.Item2) * 0.02f)));
+        if (w.P5 > 0)
+        {
+            // The grade's Before/After (GpuScenePlan.CompareWipe): P0 is where the divider stands across the box and P5 its edge in
+            // pixels; each side's edge is centred on the divider, so the two halves meet with neither a gap nor a seam.
+            feather = w.P5;
+            var across = dx != 0 ? size.Item1 : size.Item2;
+            var at = (shown * across + feather / 2) / (across + feather);
+            shown = keepLow ? at : 1 - at;
+        }
+
+        constants.Params2 = new Vector4(1, keepLow ? 1 : 0, dx != 0 ? 0 : 1, shown);
+        constants.Params3 = new Vector4(feather, 0, size.Item1, size.Item2);
     }
 
     private bool OffScreen((float X, float Y, float W, float H) box, float rotation, bool tilted = false)
@@ -516,6 +528,9 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
                         _layerStep = double.IsFinite(frame.Until) && frame.Until > frame.Time ? frame.Until - frame.Time : 0;
                     if (cover)
                         uv = Cover(uv, frame.Width, frame.Height, target.Width, target.Height);
+                    // Smooth Slow-Mo: an in-between of this frame and the next by optical flow (SceneRenderer.Interpolate.cs).
+                    if (!cover && (layer.Flags & GpuLayerDescriptor.FlagInterpolate) != 0 && Interpolate(layer, frame, target, uv))
+                        return true;
                     DrawFrame(frame, target, uv, layer.Flags);
                     return true;
                 }
@@ -698,6 +713,10 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
 
             case GpuShaderSlot.ColorGrade:
                 return Effect("PSColorGrade", packet, default, work);
+
+            // The Color Studio's grade (SceneRenderer.ColorStudio.cs): two packets, its curves and its LUT.
+            case GpuShaderSlot.ColorStudio:
+                return RunColorStudio(layer, packet, second, work);
 
             case GpuShaderSlot.ColorBalance:
                 return Effect("PSColorBalance", packet, second.Slot == GpuShaderSlot.ColorBalance ? second : default, work);

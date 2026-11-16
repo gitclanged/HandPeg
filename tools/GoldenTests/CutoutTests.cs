@@ -33,82 +33,38 @@ public static partial class CutoutTests
 
     public static IEnumerable<GraphResult> All()
     {
-        var text = new StringBuilder("# A press on the preview: hidden clips, sticky selection and mask-aware hits, through WPF's hit test on real LayerBoxes.\n");
-        var problems = new List<string>();
-        var folder = Path.Combine(Path.GetTempPath(), $"handpeg-hits-{Guid.NewGuid():N}");
-        try
-        {
-            Directory.CreateDirectory(folder);
-            Hits(text, problems, folder);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-        finally
-        {
-            if (Directory.Exists(folder))
-                Directory.Delete(folder, recursive: true);
-        }
+        yield return Case("preview-layer-hits", "# A press on the preview: hidden clips, sticky selection and mask-aware hits, through WPF's hit test on real LayerBoxes.",
+            (text, problems) =>
+            {
+                var folder = Path.Combine(Path.GetTempPath(), $"handpeg-hits-{Guid.NewGuid():N}");
+                try
+                {
+                    Directory.CreateDirectory(folder);
+                    Hits(text, problems, folder);
+                }
+                finally
+                {
+                    if (Directory.Exists(folder))
+                        Directory.Delete(folder, recursive: true);
+                }
+            });
 
-        yield return new GraphResult("preview-layer-hits", text.ToString(), problems, 0);
+        yield return Case("cutout-studio", "# The Cutout Studio on a real view model: its window, zoomed to the pixels; Cutouts to a Game Preset, and to the timeline; what is not drawn.",
+            Studio);
 
-        var studio = new StringBuilder("# The Cutout Studio on a real view model: its window, zoomed to the pixels; Cutouts to a Game Preset, and to the timeline; what is not drawn.\n");
-        var trouble = new List<string>();
-        try
-        {
-            Studio(studio, trouble);
-        }
-        catch (Exception ex)
-        {
-            trouble.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
+        yield return Case("cutout-studio-pan-navigator", "# The Cutout Studio's view (5.3.1): a right-drag, Alt + drag, the middle button and the wheels pan, a right-click still acts;\n"
+                                     + "# scroll bars while zoomed in; the Source Navigator shows the whole frame and moves the view; the Output Stage's move pointer only over a Cutout.",
+            PanAndNavigator);
 
-        yield return new GraphResult("cutout-studio", studio.ToString(), trouble, 0);
+        yield return Case("game-presets-builtin", "# The built-in Game Presets (5.1-Release): made as the Studio makes one, written where missing and never over a file, on a clip.",
+            BuiltIns);
 
-        var view = new StringBuilder("# The Cutout Studio's view (5.3.1): a right-drag, Alt + drag, the middle button and the wheels pan, a right-click still acts;\n"
-                                     + "# scroll bars while zoomed in; the Source Navigator shows the whole frame and moves the view; the Output Stage's move pointer only over a Cutout.\n");
-        var astray = new List<string>();
-        try
-        {
-            PanAndNavigator(view, astray);
-        }
-        catch (Exception ex)
-        {
-            astray.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        yield return new GraphResult("cutout-studio-pan-navigator", view.ToString(), astray, 0);
-
-        var builtIn = new StringBuilder("# The built-in Game Presets (5.1-Release): made as the Studio makes one, written where missing and never over a file, on a clip.\n");
-        var wrong = new List<string>();
-        try
-        {
-            BuiltIns(builtIn, wrong);
-        }
-        catch (Exception ex)
-        {
-            wrong.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        yield return new GraphResult("game-presets-builtin", builtIn.ToString(), wrong, 0);
-
-        var order = new StringBuilder("# A Game Preset's family in the stack (5.2.0's re-cut, the user's P0): the Background Blur at the bottom, the clip over it,\n"
-                                      + "# its Cutouts over both, in the picture (2D), in the 3D view's planes and on the Timeline's rows.\n");
-        var disorder = new List<string>();
-        try
-        {
-            BlurOrder(order, disorder);
-        }
-        catch (Exception ex)
-        {
-            disorder.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        yield return new GraphResult("game-preset-blur-order", order.ToString(), disorder, 0);
+        yield return Case("game-preset-blur-order", "# A Game Preset's family in the stack (5.2.0's re-cut, the user's P0): the Background Blur at the bottom, the clip over it,\n"
+                                      + "# its Cutouts over both, in the picture (2D), in the 3D view's planes and on the Timeline's rows.",
+            BlurOrder);
 
         // Pass 5.5.1: the touchpad's two-finger scroll pans, the wheel and the pinch zoom; the instructions are a card behind a '?'.
-        yield return WheelAndShortcuts();
+        yield return Lazy("cutout-studio-wheel", WheelAndShortcuts);
     }
 
     private static void BlurOrder(StringBuilder text, List<string> problems)
@@ -369,7 +325,7 @@ public static partial class CutoutTests
         var pieces = vm.CutoutLayers.Select(l => l.Name).Order().ToList();
         Expect(pieces.SequenceEqual(["Abilities & Ammo", "Health & Name", "Killfeed"]), $"its three Cutouts are the clip's, and the Studio's to edit ({string.Join(", ", pieces)})");
         Expect(vm.UseVerticalResolution && Math.Abs(ZoomOf(vm) - GamePresetLibrary.DefaultZoom) < 1e-6, "on a tall frame, the video zoomed");
-        Expect(vm.CutoutLayers.All(l => l.MaskPath == "" && MaskStore.IsDrawn(l.MaskSource) && MaskStore.Exists(l.MaskSource)),
+        Expect(vm.CutoutLayers.All(l => l.MaskPath == "" && MaskStore.IsDrawn(MaskStore.SourceOf(l)) && MaskStore.Exists(MaskStore.SourceOf(l))),
             "on the timeline each Cutout's mask is its outlines, there to be drawn, with no file");
 
         // Drawn masks are filled in memory (5.1-Release): exact coverage, nonzero winding, holes, the cut, the baker, FFmpeg's temp picture.
@@ -638,15 +594,14 @@ public static partial class CutoutTests
     /// </summary>
     private static MainViewModel Opened(string main, int width, int height, string codec)
     {
-        const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
         var vm = new MainViewModel { SourceWidth = width, SourceHeight = height, LocalMediaPath = main };
-        typeof(MainViewModel).GetField("_mediaInfo", Hidden)!.SetValue(vm, new MediaInfo("matroska", 8, 0, new VideoStreamInfo(width, height, codec, 60, "16:9", "1:1", "bt709", "bt709", 0), [], []));
+        vm.SetMediaInfoForTests(new MediaInfo("matroska", 8, 0, new VideoStreamInfo(width, height, codec, 60, "16:9", "1:1", "bt709", "bt709", 0), [], []));
         var document = new TimelineDocument { Width = width, Height = height, NaturalWidth = width, NaturalHeight = height, FrameRate = FrameRate.Fps30 };
         var track = new TimelineTrackModel { Kind = TimelineTrackKind.Video, TrackNumber = 1 };
         var look = new LayerState { Kind = LayerKind.VideoFile, Name = "Main", SizeWidth = 1, ImagePath = main, ImageWidth = width, ImageHeight = height, MediaDuration = 8 };
         track.Clips.Add(new TimelineClip { ContentKind = LayerKind.VideoFile, SourcePath = main, Start = 0, End = 8, MediaOffset = 0, SourceDuration = 8, State = look });
         document.Tracks.Add(track);
-        typeof(MainViewModel).GetMethod("InstallDocument", Hidden)!.Invoke(vm, [document]);
+        vm.InstallDocument(document);
         return vm;
     }
 

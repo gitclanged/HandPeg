@@ -392,11 +392,12 @@ public partial class MainWindow
         // ----- Speed & Time -----
         var time = new MenuItem { Header = "Speed & Time" };
 
-        // How fast the clip runs: a few usual speeds, the one it has ticked. Anything between is typed into its Speed box.
+        // How fast the clip runs: a few usual speeds, the one it has ticked (up to 16x, Pass 5.6A). Anything between is typed into its
+        // Speed box or set on the Effects pane's Speed & Time card; what follows ripples as the card's Ripple Timeline says.
         if (clip.HasSpeed)
         {
             var speeds = new MenuItem { Header = string.Create(CultureInfo.InvariantCulture, $"Clip Speed ({clip.Speed:0.##}x)") };
-            foreach (var speed in new[] { 0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 4, 10 })
+            foreach (var speed in new[] { 0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 4, 10, 16 })
             {
                 var item = new MenuItem
                 {
@@ -1081,9 +1082,9 @@ public partial class MainWindow
     {
         var icon = new System.Windows.Shapes.Path
         {
-            Data = TransitionStyles.IconGeometry(style),
-            Width = EasingCurves.IconWidth,
-            Height = EasingCurves.IconHeight,
+            Data = IconGeometry.Of(style),
+            Width = IconGeometry.Width,
+            Height = IconGeometry.Height,
             StrokeThickness = 1.1,
             StrokeLineJoin = PenLineJoin.Round,
             SnapsToDevicePixels = true,

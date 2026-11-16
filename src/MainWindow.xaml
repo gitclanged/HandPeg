@@ -50,6 +50,7 @@
         <local:FractionToOffsetConverter x:Key="FractionToOffset" />
         <local:EncoderPresetLabelConverter x:Key="EncoderPresetLabel" />
         <local:DecibelToScaleConverter x:Key="DecibelToScale" />
+        <local:EasingIconConverter x:Key="EasingIcon" />
 
         <!-- The parts of a slider's track either side of the thumb: there to be clicked, not seen. -->
         <Style x:Key="BareRepeatButton" TargetType="RepeatButton">
@@ -926,7 +927,7 @@
                         </Button.Visibility>
                     </Button>
                     <Button local:OverflowStrip.Priority="20" Style="{StaticResource BarButton}" Content="&#xE7C1;" Margin="14,0,3,0" Tag="AddMarker" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[AddMarker], Converter={StaticResource BoolToVisibility}}"
-                            local:KeyTip.Action="marker.add" local:KeyTip.Text="Add Marker{keys}: a marker at the playhead. Right-click a marker (on the timeline or the ruler) to rename or delete it." AutomationProperties.Name="Add Marker" />
+                            local:KeyTip.Action="marker.add" local:KeyTip.Text="Add Marker{keys}: a marker at the playhead; right-click one to rename or delete." AutomationProperties.Name="Add Marker" />
                     <Button local:OverflowStrip.Priority="15" Style="{StaticResource BarButton}" Tag="PrevMarker" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[PrevMarker], Converter={StaticResource BoolToVisibility}}"
                             local:KeyTip.Action="marker.prev" local:KeyTip.Text="Previous Marker{keys}" AutomationProperties.Name="Previous Marker">
                         <StackPanel Orientation="Horizontal">
@@ -952,7 +953,7 @@
                     <!-- 3D Exploded View (5.0D, MainWindow.Exploded.cs): the GPU engine's layer stack in 3D, and back. Its icon is geometry: three planes apart. -->
                     <ToggleButton x:Name="ExplodedToggle" local:OverflowStrip.Priority="12" Style="{StaticResource BarToggle}" Margin="3,0,3,0" Checked="ExplodedToggle_Changed" Unchecked="ExplodedToggle_Changed"
                                   Visibility="{Binding PlaybackControls[Exploded3D], Converter={StaticResource BoolToVisibility}}" AutomationProperties.Name="3D Exploded View"
-                                  local:KeyTip.Action="view.exploded3d" local:KeyTip.Text="3D Exploded View{keys}: the player shows the layer stack in 3D, each layer a plane in compositing order. Drag a layer to move it in its plane, Shift + drag to move it through the stack (its track's place); right-drag, a touchpad's two-finger scroll or a finger on the empty space to orbit (Alt + middle-drag from the flat player); the wheel or a pinch to zoom; Alt + the wheel or [ and ] for the layer in front or behind. Esc or this button goes back. Needs the GPU preview engine.">
+                                  local:KeyTip.Action="view.exploded3d" local:KeyTip.Text="3D Exploded View{keys}: layers as planes in 3D; drag to move, right-drag to orbit.">
                         <Path Width="18" Height="16" Stretch="None" VerticalAlignment="Center" StrokeThickness="1.3" StrokeLineJoin="Round"
                               Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
                               Data="M 2,3 L 9,0.8 L 16,3 L 9,5.2 Z M 2,8 L 9,5.8 L 16,8 L 9,10.2 Z M 2,13 L 9,10.8 L 16,13 L 9,15.2 Z" />
@@ -1121,7 +1122,7 @@
                             </ItemsControl>
                             <Image Source="{Binding TimelineWaveform}" Stretch="Fill" Margin="5,0" Opacity="0.75"
                                    IsHitTestVisible="False" AutomationProperties.Name="Timeline Waveform" />
-                            <Slider x:Name="TimelineSlider" Style="{StaticResource TimelineSlider}" Minimum="0" Maximum="{Binding TimelineMaximum}"
+                            <Slider x:Name="TimelineSlider" local:DragHold.Exempt="True" Style="{StaticResource TimelineSlider}" Minimum="0" Maximum="{Binding TimelineMaximum}"
                                     Value="{Binding PositionMs, UpdateSourceTrigger=Explicit}" SmallChange="1000" LargeChange="5000"
                                     IsMoveToPointEnabled="True" AutomationProperties.Name="Timeline"
                                     ValueChanged="TimelineSlider_ValueChanged"
@@ -1308,7 +1309,7 @@
                         <Button Content="&#xE892;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="10,5" Margin="0,0,4,0" Click="PreviousKeyframe_Click" local:OverflowStrip.Priority="80"
                                 AutomationProperties.Name="Previous Keyframe" local:KeyTip.Action="key.prev" local:KeyTip.Text="Previous Keyframe{keys}: moves the playhead to the keyframe before it." />
                         <Button Content="&#x2666; Key All" Padding="10,4" Margin="0,0,4,0" Click="ToggleKeyframe_Click" Foreground="{DynamicResource KeyAccentBrush}" local:OverflowStrip.Priority="100"
-                                AutomationProperties.Name="Key All" local:KeyTip.Action="key.toggle" local:KeyTip.Text="Key All{keys}: sets a keyframe at the playhead holding the clip's place, size, rotation and opacity as they are there; on a keyframe, removes it. A single property is keyed with the diamond at its row's name." />
+                                AutomationProperties.Name="Key All" local:KeyTip.Action="key.toggle" local:KeyTip.Text="Key All{keys}: keys place, size, rotation and opacity at the playhead." />
                         <Button Content="&#xE893;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="10,5" Margin="0,0,10,0" Click="NextKeyframe_Click" local:OverflowStrip.Priority="80"
                                 AutomationProperties.Name="Next Keyframe" local:KeyTip.Action="key.next" local:KeyTip.Text="Next Keyframe{keys}: moves the playhead to the keyframe after it." />
                         <Button Content="Clear" Padding="10,4" Click="ClearKeyframes_Click" AutomationProperties.Name="Clear Keyframes" Margin="0,0,4,0" local:OverflowStrip.Priority="10"
@@ -1334,13 +1335,13 @@
                     <StackPanel Orientation="Horizontal" Margin="0,6,0,0" ToolTipService.ShowOnDisabled="True"
                                 ToolTip="Easing: how the clip gets from the selected keyframe to the next one. Linear moves at one speed; the others start or end slowly. The selected keyframe is the one the playhead is on: step onto one with the previous and next keyframe buttons.">
                         <TextBlock Text="Easing:" VerticalAlignment="Center" Margin="0,0,8,0" />
-                        <!-- Each easing with its curve drawn beside its name (EasingChoice.Icon, from the formula: 4.2B-3), in the text's colour. -->
+                        <!-- Each easing with its curve drawn beside its name (IconGeometry, from the formula), in the text's colour. -->
                         <ComboBox MinWidth="140" Margin="0" ItemsSource="{Binding EasingChoices}" SelectedValuePath="Type"
                                   SelectedValue="{Binding SelectedKeyEasing}" IsEnabled="{Binding HasSelectedKeyframe}" AutomationProperties.Name="Keyframe Easing">
                             <ComboBox.ItemTemplate>
                                 <DataTemplate>
                                     <StackPanel Orientation="Horizontal">
-                                        <Path Data="{Binding Icon}" Width="16" Height="12" VerticalAlignment="Center" Margin="0,0,8,0" StrokeThickness="1.3"
+                                        <Path Data="{Binding Type, Converter={StaticResource EasingIcon}}" Width="16" Height="12" VerticalAlignment="Center" Margin="0,0,8,0" StrokeThickness="1.3"
                                               StrokeLineJoin="Round" Stroke="{Binding (TextElement.Foreground), RelativeSource={RelativeSource Self}}" />
                                         <TextBlock Text="{Binding Name}" VerticalAlignment="Center" />
                                     </StackPanel>
@@ -1434,49 +1435,16 @@
         <!-- The preset bar above the tabs, as Settings may have it: a pane of its own, with no band under it (5.3-Stage2: the dock's seams part the panes). -->
         <ContentControl x:Name="PresetBarPane" Content="{Binding}" ContentTemplate="{StaticResource PresetBarFrame}" Focusable="False" Margin="0" />
         <TabControl x:Name="SettingsTabs" Padding="16,8">
-            <!-- Everything that is done to the picture as a whole: the standard filters, the look, and the color grading. -->
-            <TabItem Header="Filters" x:Name="AdvancedTab">
-                <!--
-                    Not built with the window: what is in a template is only made when it is asked for, which is
-                    when the tab is first opened or, failing that, once the window is up and idle (RealizeTab).
-                -->
+            <!--
+                The Color tab (Pass 5.6A, pane "Tab:Color"; saved arrangements' "Tab:Filters" become it, MainWindow.Docking.cs): the Color Studio,
+                the Color Grade of the Effects pane's target. Not built with the window: what is in a template is only made when it is asked
+                for, which is when the tab is first opened or, failing that, once the window is up and idle (RealizeTab); the pane builds its
+                own parts the first time it is shown.
+            -->
+            <TabItem Header="Color" x:Name="ColorTab">
                 <TabItem.Tag>
                 <DataTemplate>
-                <DockPanel IsEnabled="{Binding IsVideoReencoded}">
-                    <WrapPanel DockPanel.Dock="Bottom" Margin="0,4,0,0">
-                        <Button Content="Live Frame Preview" Click="LiveFramePreview_Click" Margin="0,2,6,0"
-                                ToolTip="Shows one frame of the video with these settings applied, updated as the controls move, with an optional histogram." />
-                        <Button Content="Reset Colors" Margin="0,2,0,0" Command="{Binding ResetColorCommand}" ToolTip="Puts every color control back where it changes nothing."
-                                Visibility="{Binding ShowAdvancedFiltersTab, Converter={StaticResource BoolToVisibility}}" />
-                    </WrapPanel>
-                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                        <StackPanel>
-                            <WrapPanel>
-                                <CheckBox Content="Deinterlace (yadif)" IsChecked="{Binding Deinterlace}" Margin="0,4,24,4" />
-                                <CheckBox Content="Denoise (hqdn3d)" IsChecked="{Binding Denoise}" Margin="0,4,24,4" />
-                                <CheckBox Content="Audio/Video Fade In (1s)" IsChecked="{Binding FadeIn}" Margin="0,4,24,4"
-                                          ToolTip="Fades the picture and every encoded audio track in from black and silence." />
-                                <CheckBox Content="Audio/Video Fade Out (1s)" IsChecked="{Binding FadeOut}" Margin="0,4,24,4"
-                                          ToolTip="Fades the last second of the output to black and silence." />
-                            </WrapPanel>
-                            <!-- 760 wide at most, and narrower with the pane (a column of at most 760, so it stays at the left). -->
-                            <Grid Margin="0,4,0,0">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" MaxWidth="760" />
-                                </Grid.ColumnDefinitions>
-                                <DockPanel>
-                                    <TextBlock DockPanel.Dock="Left" Text="LUT (.cube):" VerticalAlignment="Center" Margin="0,0,12,0" />
-                                    <Button DockPanel.Dock="Right" Content="Clear" Margin="6,4,0,4" Click="ClearLut_Click" />
-                                    <Button DockPanel.Dock="Right" Content="Browse..." Margin="6,4,0,4" Click="BrowseLut_Click" />
-                                    <TextBox Margin="0,4" Text="{Binding LutPath, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="LUT File"
-                                             ToolTip="A 3D lookup table applied to the colours (lut3d). Leave blank for none." />
-                                </DockPanel>
-                            </Grid>
-                            <!-- Color grading and sharpening. Can be hidden in Settings; values set here keep applying while it is. -->
-                            <local:ColorControls Margin="0,10,0,0" Visibility="{Binding ShowAdvancedFiltersTab, Converter={StaticResource BoolToVisibility}}" />
-                        </StackPanel>
-                    </ScrollViewer>
-                </DockPanel>
+                    <views:ColorStudioPane x:Name="ColorStudio" IsEnabled="{Binding IsVideoReencoded}" />
                 </DataTemplate>
                 </TabItem.Tag>
             </TabItem>
@@ -1601,7 +1569,7 @@
                                 MouseLeftButtonDown="Waveform_MouseLeftButtonDown" MouseMove="Waveform_MouseMove" MouseLeftButtonUp="Waveform_MouseLeftButtonUp"
                                 ToolTip="Click or drag to move the playhead to that moment.">
                             <Grid>
-                            <ItemsControl ItemsSource="{Binding AudioTracks}" Focusable="False" AutomationProperties.Name="Master Mix View">
+                            <ItemsControl ItemsSource="{Binding SourceWaveforms}" Focusable="False" AutomationProperties.Name="Master Mix View">
                                 <ItemsControl.ItemsPanel>
                                     <ItemsPanelTemplate>
                                         <Grid />
@@ -1609,7 +1577,7 @@
                                 </ItemsControl.ItemsPanel>
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
-                                        <Image Source="{Binding Waveform}" Stretch="Fill" Opacity="0.55" />
+                                        <Image Source="{Binding}" Stretch="Fill" Opacity="0.55" />
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>

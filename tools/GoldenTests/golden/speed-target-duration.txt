@@ -1,0 +1,13 @@
+# Target Duration (5.6A): the speed is the clip's file stretch over the length typed; the card's slider, box and pills.
+ok: the speed is the file stretch over the length (8 s in 4 s: 2x; in 16 s: 0.5x; 10 s in 3 s: 3.333x)
+ok: held to 0.1x and 16x
+ok: no speed for no length
+ok: a length typed as a time (HH:MM:SS.mmm)
+ok: or as seconds
+ok: nothing else, and no nought
+ok: the slider's place is log2 of the speed (1x in the middle of 0.1x and 16x on a log scale), resting on the pills near them
+ok: 1x sits near the middle of the slider
+ok: the box reads 2x and 0.25, holds 40 to 16x, refuses 0 and words
+ok: the pills: 0.25x 0.5x 1x 2x 4x
+ok: a drag let go commits, then puts the slider on the speed written once the pointer is let go (the dispatcher's next input turn)
+ok: a 4 s clip given 10 s runs at 0.4x and lasts 10 s

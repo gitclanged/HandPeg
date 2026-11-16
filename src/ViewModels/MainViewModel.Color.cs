@@ -3,12 +3,13 @@ using System.Text.Json;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using HandPegApp.Models;
+using HandPegApp.Models.Effects;
 using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-// The Advanced tab: colour grading and sharpening (the single-frame preview that shows them is the GPU engine's capture,
-// FramePreviewDialog), and layout files.
+// The colour sliders' grade of the whole picture (the old Filters tab's: 5.6.0 shows it only in the Color tab's Legacy Grade fold, whose
+// Convert turns it into Sequence Output cards), and layout files.
 public partial class MainViewModel
 {
     // What each control is at when it does nothing.
@@ -77,6 +78,134 @@ public partial class MainViewModel
 
         // The controls move in hundredths; anything closer to neutral than that is neutral.
         static bool IsChanged(double value, double neutral) => Math.Abs(value - neutral) >= 0.005;
+    }
+
+    // ----- The legacy grade as Sequence Output cards (5.6.0: the Color tab's Legacy Grade fold) -----
+
+    /// <summary>Whether the project still has the colour sliders' grade or the old Filters tab's LUT (the Color tab's Legacy Grade fold shows while it does).</summary>
+    public bool HasLegacyGrade => !GetSequenceGrade().IsNeutral || !string.IsNullOrWhiteSpace(LutPath);
+
+    /// <summary>
+    /// Whether a Sequence Output card already holds a LUT (5.6.0: a LUT 3D card with a file, a Color Grade card with a LUT; switched on
+    /// or not): Convert then keeps the legacy LUT as it is (its own entry draws it before every card), so no stack ever holds two.
+    /// </summary>
+    public bool SequenceOutputHoldsLut => SequenceEffects.Any(HoldsLutFile);
+
+    // A card that names a LUT file (the plan gives the first such card on a stack its table: GpuScenePlan.Create.LookCards).
+    private static bool HoldsLutFile(EffectInstance card) =>
+        card.Type == EffectRegistry.Lut ? card.GetText("file").Trim().Trim('"').Length > 0
+        : card.Type == EffectRegistry.ColorStudio && card.GetText(ColorGradeKeys.Lut).Trim().Trim('"').Length > 0;
+
+    /// <summary>
+    /// Moves the legacy grade into Sequence Output cards that draw the same picture (<see cref="LegacyGradeCards"/>), put first in its stack (the
+    /// legacy grade was drawn before it), and puts the sliders back where they do nothing and the LUT path to none: one step of Undo, which
+    /// holds the LUT path too (SequenceLook). Never a second Color Grade card nor a second LUT (5.6.0): when a Sequence Output card holds a
+    /// LUT already, the legacy LUT stays as it is (the sliders alone move); when the stack has a Color Grade card, the LUT goes in as a LUT 3D
+    /// card (the user's card stays the one the Color Studio grades); else the new Color Grade card holds it at 100 %. False when there is
+    /// nothing to convert.
+    /// </summary>
+    public bool ConvertLegacyGrade()
+    {
+        var grade = GetSequenceGrade();
+        var lut = (LutPath ?? "").Trim().Trim('"');
+        if (lut.Length > 0 && SequenceOutputHoldsLut)
+            lut = "";
+        if (grade.IsNeutral && lut.Length == 0)
+            return false;
+
+        var hasGrade = SequenceEffects.Any(c => c.Type == EffectRegistry.ColorStudio);
+        var cards = LegacyGradeCards(grade, lut, FrameWidth, lutAsCard: hasGrade);
+        Checkpoint("convert Legacy Grade");
+        using (HoldLookSteps())
+        using (OwnLookScope())
+        {
+            for (var i = 0; i < cards.Count; i++)
+                SequenceEffects.Insert(i, cards[i]);
+            ResetColor();
+        }
+
+        // After the step was taken, which holds the path (Undo and Redo move it with the cards).
+        if (lut.Length > 0)
+            LutPath = "";
+        return true;
+    }
+
+    /// <summary>
+    /// The Legacy Grade fold's Reset (5.6.0): the sliders back where they do nothing and the legacy LUT path to none, kept or not, as
+    /// one step of Undo (it holds the path too: SequenceLook), so a LUT that Convert keeps as it is can still be taken away. False when
+    /// there is nothing to reset.
+    /// </summary>
+    public bool ResetLegacyGrade()
+    {
+        if (!HasLegacyGrade)
+            return false;
+
+        Checkpoint("reset Legacy Grade");
+        using (HoldLookSteps())
+        {
+            ResetColor();
+            LutPath = "";
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// The cards a legacy grade becomes, in the order GpuScenePlan drew it (its Whole entry: the LUT, eq's grade, the hue turn, the sharpening),
+    /// each lane as that entry's packet had it: a Color Grade card holding the LUT at 100 % (its other values neutral; with
+    /// <paramref name="lutAsCard"/>, a LUT 3D card: its packet is the legacy one), Brightness &amp; Contrast
+    /// (gamma times green's gamma, the channel balance as its Cb and Cr gammas: PSColorGrade's own), Hue (saturation 1) and Sharpen (the
+    /// radius of unsharp's 5 x 5 square at <paramref name="frameWidth"/>). No LUT card for an empty <paramref name="lut"/>. Pure (the goldens).
+    /// </summary>
+    public static List<EffectInstance> LegacyGradeCards(in SequenceGrade grade, string lut, int frameWidth, bool lutAsCard = false)
+    {
+        var cards = new List<EffectInstance>();
+        EffectInstance? Card(string type) => EffectRegistry.Find(type) is { } definition ? definition.NewEffect() : null;
+
+        if (lut.Length > 0 && Card(lutAsCard ? EffectRegistry.Lut : EffectRegistry.ColorStudio) is { } holder)
+        {
+            if (lutAsCard)
+            {
+                holder.SetText("file", lut);
+            }
+            else
+            {
+                holder.SetText(ColorGradeKeys.Lut, lut);
+                holder.Set(ColorGradeKeys.LutMix, 100);
+            }
+
+            cards.Add(holder);
+        }
+
+        if (grade.Balance is { } balance && Card(EffectRegistry.Grade) is { } eq)
+        {
+            var (red, green, blue) = (balance.GammaRed, balance.GammaGreen, balance.GammaBlue);
+            var balanced = Math.Abs(red - 1) > 0.005 || Math.Abs(green - 1) > 0.005 || Math.Abs(blue - 1) > 0.005;
+            eq.Set("contrast", balance.Contrast);
+            eq.Set("brightness", balance.Brightness);
+            eq.Set("saturation", balance.Saturation);
+            eq.Set("gamma", balance.Gamma * green);
+            eq.Set(EffectRegistry.GradeBalanceBlue, balanced ? Math.Sqrt(blue / green) : 0);
+            eq.Set(EffectRegistry.GradeBalanceRed, balanced ? Math.Sqrt(red / green) : 0);
+            cards.Add(eq);
+        }
+
+        if (grade.Hue is { } hue && Card(EffectRegistry.Hue) is { } turn)
+        {
+            turn.Set("h", hue);
+            turn.Set("s", 1);
+            cards.Add(turn);
+        }
+
+        if (grade.Sharpen is { } strength && Card(EffectRegistry.Sharpen) is { } sharpen)
+        {
+            sharpen.Set("strength", strength);
+            sharpen.Set("radius", 2 * 1080.0 / Math.Max(frameWidth, 1));
+            sharpen.Set("threshold", 0);
+            cards.Add(sharpen);
+        }
+
+        return cards;
     }
 
     // ----- Layout files -----
@@ -160,7 +289,7 @@ public partial class MainViewModel
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return StatusText = $"Could not export the layout: {ex.Message}";
+            return Fail($"Could not export the layout: {ex.Message}", "Export a layout", ex);
         }
     }
 
@@ -224,7 +353,7 @@ public partial class MainViewModel
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
-            StatusText = $"Could not read the layout: {ex.Message}";
+            Fail($"Could not read the layout: {ex.Message}", "Read a layout", ex);
             return null;
         }
     }

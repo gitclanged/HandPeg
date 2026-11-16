@@ -5,6 +5,8 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Shell;
+using HandPegApp.Native;
+using static HandPegApp.Native.User32;
 
 namespace HandPegApp.Services;
 
@@ -52,6 +54,18 @@ public static partial class UiScale
     public static void SetKeepsItsSize(Window window, bool value) => window.SetValue(KeepsItsSizeProperty, value);
 
     public static bool GetKeepsItsSize(Window window) => (bool)window.GetValue(KeepsItsSizeProperty);
+
+    /// <summary>
+    /// The window whose monitor sets this window's pixels per DIP (null: its own). A window laid exactly over part of another (the
+    /// video's overlay) takes that window's scale, so its content is drawn at the same pixels per DIP as what it covers even while
+    /// Windows still reports it on another monitor (before its first placement, or straddling two monitors).
+    /// </summary>
+    public static readonly DependencyProperty ScaleSourceProperty =
+        DependencyProperty.RegisterAttached("ScaleSource", typeof(Window), typeof(UiScale), new PropertyMetadata(null));
+
+    public static void SetScaleSource(Window window, Window? source) => window.SetValue(ScaleSourceProperty, source);
+
+    public static Window? GetScaleSource(Window window) => (Window?)window.GetValue(ScaleSourceProperty);
 
     /// <summary>The smallest and largest UI Scale the settings allow, in percent.</summary>
     public const int LeastPercent = 75, MostPercent = 150;
@@ -283,9 +297,6 @@ public static partial class UiScale
         return dpi > 0 ? dpi / 96.0 : VisualTreeHelper.GetDpi(window).DpiScaleX;
     }
 
-    [LibraryImport("user32.dll")]
-    private static partial uint GetDpiForWindow(nint window);
-
     /// <summary>The longer side, in pixels, of the monitor a window is on (its width when it stands landscape); 0 when it is not known.</summary>
     public static int MonitorPixels(Window window)
     {
@@ -298,27 +309,6 @@ public static partial class UiScale
     }
 
     private const uint MonitorDefaultToNearest = 2;
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MonitorRect
-    {
-        public int Left, Top, Right, Bottom;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MonitorInfo
-    {
-        public int Size;
-        public MonitorRect Monitor, Work;
-        public uint Flags;
-    }
-
-    [LibraryImport("user32.dll")]
-    private static partial nint MonitorFromWindow(nint window, uint flags);
-
-    [LibraryImport("user32.dll", EntryPoint = "GetMonitorInfoW")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GetMonitorInfo(nint monitor, ref MonitorInfo info);
 
     /// <summary>The settings were saved: every window open takes the scale they make now.</summary>
     public static void ApplyAll()
@@ -385,7 +375,9 @@ public static partial class UiScale
                 return;
 
             var monitor = MonitorScale(window);
-            var scale = For(monitor, MonitorPixels(window));
+            var source = GetScaleSource(window) is { } owner && new WindowInteropHelper(owner).Handle != 0 ? owner : window;
+            var pixelsPerDip = PixelsPerDip(MonitorScale(source), MonitorPixels(source));
+            var scale = pixelsPerDip / (double.IsFinite(monitor) && monitor > 1.001 ? monitor : 1);
             var rootDpiChanged = SetRootDpi(window, scale * monitor);
             var applied = (double)window.GetValue(AppliedProperty);
             if (applied == scale)

@@ -84,7 +84,7 @@ public static class LayerHitMask
     // Null with no mask on it. Whether the picture is read by its transparency is asked as it is baked: that looks at the file.
     private static MaskRecipe? RecipeOf(Layer layer, double boxWidth, double boxHeight)
     {
-        var file = layer.CustomMask && layer.HasMask && layer.FxOn(EffectRegistry.Mask) ? layer.MaskSource : "";
+        var file = layer.CustomMask && layer.HasMask && layer.FxOn(EffectRegistry.Mask) ? MaskStore.SourceOf(layer) : "";
         if (file.Length == 0 || !MaskStore.Exists(file) || boxWidth <= 0 || boxHeight <= 0)
             return null;
 

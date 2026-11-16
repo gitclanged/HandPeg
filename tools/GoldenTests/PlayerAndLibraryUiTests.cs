@@ -17,6 +17,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Xml.Linq;
 using HandPegApp;
+using HandPegApp.Shell;
 using HandPegApp.Docking;
 using HandPegApp.Models;
 using HandPegApp.Services;
@@ -47,41 +48,7 @@ public static class PlayerAndLibraryUiTests
         yield break;
     }
 
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>, StringBuilder> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect, text);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
-    }
-
     private static string F(FormattableString text) => text.ToString(CultureInfo.InvariantCulture);
-
-    private static string RepositoryRoot()
-    {
-        for (var folder = new DirectoryInfo(AppContext.BaseDirectory); folder is not null; folder = folder.Parent)
-        {
-            if (File.Exists(Path.Combine(folder.FullName, "HandPegApp.csproj")))
-                return folder.FullName;
-        }
-
-        throw new DirectoryNotFoundException("the repository (HandPegApp.csproj) above " + AppContext.BaseDirectory);
-    }
 
     private static string? Attr(XElement? element, XName name) => (string?)element?.Attribute(name);
 
@@ -271,7 +238,7 @@ public static class PlayerAndLibraryUiTests
             (settings.BrowserShowsProject, settings.BrowserShowsLibrary) = kept;
         }
 
-        var host = File.ReadAllText(Path.Combine(RepositoryRoot(), "src", "MainWindow.ClipLibrary.cs"));
+        var host = File.ReadAllText(Path.Combine(SourceProbe.Root, "src", "MainWindow.ClipLibrary.cs"));
         var drop = host[host.IndexOf("private bool Timeline_DropOutside", StringComparison.Ordinal)..];
         drop = drop[..drop.IndexOf("\n    }", StringComparison.Ordinal)];
         expect(host.Contains("surface.DragOutside = Timeline_DragOutside;", StringComparison.Ordinal) && host.Contains("surface.DropOutside = Timeline_DropOutside;", StringComparison.Ordinal)
@@ -478,7 +445,7 @@ public static class PlayerAndLibraryUiTests
             "its value set through RangeValue; its one child the icon, Mute Player, a toggle that mutes");
 
         // Their homes.
-        var src = Path.Combine(RepositoryRoot(), "src");
+        var src = Path.Combine(SourceProbe.Root, "src");
         var main = XDocument.Load(Path.Combine(src, "MainWindow.xaml"));
         var timeline = XDocument.Load(Path.Combine(src, "Views", "UnifiedTimelinePane.xaml"));
         var transport = main.Descendants().FirstOrDefault(e => Attr(e, X + "Name") == "TransportRight");
@@ -558,7 +525,7 @@ public static class PlayerAndLibraryUiTests
     private static void SpeedPill(Action<bool, string> expect, StringBuilder text)
     {
         // Its home: the transport row's one Playback Speed, after the Volume pill; the box it replaces gone.
-        var main = XDocument.Load(Path.Combine(RepositoryRoot(), "src", "MainWindow.xaml"));
+        var main = XDocument.Load(Path.Combine(SourceProbe.Root, "src", "MainWindow.xaml"));
         var transport = main.Descendants().FirstOrDefault(e => Attr(e, X + "Name") == "TransportRight");
         var homes = transport?.Descendants().Where(e => Attr(e, "AutomationProperties.Name") == "Playback Speed").ToList() ?? [];
         var home = homes.FirstOrDefault();
@@ -884,7 +851,7 @@ public static class PlayerAndLibraryUiTests
         speedPill.OpenAtOnce(false);
         elsewhere.RaiseEvent(Press());
         host.Children.Remove(elsewhere);
-        var bar2 = File.ReadAllText(Path.Combine(RepositoryRoot(), "src", "MainWindow.PlaybackBar.cs"));
+        var bar2 = File.ReadAllText(Path.Combine(SourceProbe.Root, "src", "MainWindow.PlaybackBar.cs"));
         expect(clickedOff && reached == 2 && pressedOn && !speedPill.IsExpanded && !bar2.Contains("OpenPillOverhang", StringComparison.Ordinal),
             "a click anywhere off an open pill closes it at once and goes on to what it was meant for; a press on the pill keeps it open; the bar keeps no room for an open pill (it opens over the other buttons)");
 
@@ -1057,7 +1024,7 @@ public static class PlayerAndLibraryUiTests
         var audioOnly = !bar.EncodedPreview.IsEnabled;
         state.IsVideoExport = true;
         bar.EncodedPreview.IsChecked = false;
-        expect(encodedOn && audioOnly && !state.IsExportQualityPreview && bar.EncodedPreview.Content as string == MainWindow.LoopbackGlyph,
+        expect(encodedOn && audioOnly && !state.IsExportQualityPreview && bar.EncodedPreview.Content as string == LoopbackPreviewController.LoopbackGlyph,
             "its Live Encoded Preview toggle is the preview's own switch (on, off), greyed out for an Audio Only export");
 
         var playStyle = new Style(typeof(Button));
@@ -1128,25 +1095,25 @@ public static class PlayerAndLibraryUiTests
         expect(refused && closed && asked == 1, "closed by anything but its owner (Alt+F4) it stays and asks to be left; let close, it closes");
 
         // Where it all lives.
-        var src = Path.Combine(RepositoryRoot(), "src");
+        var src = Path.Combine(SourceProbe.Root, "src");
         var main = XDocument.Load(Path.Combine(src, "MainWindow.xaml"));
         var video = main.Descendants().FirstOrDefault(e => Attr(e, X + "Name") == "VideoView");
         expect(video?.Elements().ToList() is [{ Name.LocalName: "Grid" } hud] && Attr(hud, X + "Name") == "PlayerHud"
                && hud.Elements().ToList() is [{ } overlay] && Attr(overlay, X + "Name") == "PlayerOverlay",
             "MainWindow.xaml: the player's surface holds PlayerHud, which holds only PlayerOverlay (zoomed with the picture, hidden in 3D); the HUD itself is made in code");
-        var fullscreen = File.ReadAllText(Path.Combine(src, "MainWindow.Fullscreen.cs")).ReplaceLineEndings("\n");
+        var fullscreen = File.ReadAllText(Path.Combine(src, "Shell", "FullscreenController.cs")).ReplaceLineEndings("\n");
         var windowSource = File.ReadAllText(Path.Combine(src, "Controls", "PlayerFullscreenWindow.cs"));
         var keys = File.ReadAllText(Path.Combine(src, "MainWindow.Keybinds.cs"));
         expect(!fullscreen.Contains("_dock.", StringComparison.Ordinal) && !fullscreen.Contains("DockManager", StringComparison.Ordinal)
-               && fullscreen.Contains("fullscreen.Host.Children.Remove(VideoView);\n        VideoBorder.Child = VideoView;", StringComparison.Ordinal),
-            "MainWindow.Fullscreen.cs never touches the dock, and puts the surface straight back into its pane (VideoBorder.Child = VideoView)");
+               && fullscreen.Contains("fullscreen.Host.Children.Remove(video);\n        _host.VideoPane.Child = video;", StringComparison.Ordinal),
+            "FullscreenController.cs never touches the dock, and puts the surface straight back into its pane (VideoBorder.Child = VideoView)");
         expect(!windowSource.Contains("WindowChrome", StringComparison.Ordinal) && !windowSource.Contains("FrameHook", StringComparison.Ordinal)
                && !windowSource.Contains("NCCALCSIZE", StringComparison.Ordinal) && !windowSource.Contains("0x0083", StringComparison.Ordinal),
             "PlayerFullscreenWindow.cs: no WindowChrome, FrameHook or WM_NCCALCSIZE");
-        expect(fullscreen.Contains("partial void InitializePlayerHud() => ContentRendered += PlayerHud_ContentRendered;", StringComparison.Ordinal)
+        expect(SourceProbe.Member(fullscreen, "public FullscreenController(FullscreenHost host)").Contains("host.Owner.ContentRendered += Owner_ContentRendered;", StringComparison.Ordinal)
                && fullscreen.Contains("Dispatcher.BeginInvoke(HookPlayerHud, DispatcherPriority.ApplicationIdle);", StringComparison.Ordinal),
             "Law 1: before the first frame only a ContentRendered hook; the HUD's own hooks at the first idle moment after it, the rest at first use");
-        expect(keys.Contains("[\"view.fullscreen\"] = (() => _fullscreen is not null || VideoView.IsVisible, ToggleFullscreen),", StringComparison.Ordinal)
+        expect(keys.Contains("[\"view.fullscreen\"] = (() => _fullscreen.IsOpen || VideoView.IsVisible, _fullscreen.Toggle),", StringComparison.Ordinal)
                && keys.Contains("switch (EscapeTakerFor(", StringComparison.Ordinal),
             "MainWindow.Keybinds.cs: F11 goes in (with a picture) and out; Esc asks EscapeTakerFor");
     }

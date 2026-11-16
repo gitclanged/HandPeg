@@ -64,7 +64,10 @@ public static class DevFlightRecorder
 
         var sequence = Interlocked.Increment(ref _recorded);
         var slot = (int)((sequence - 1) % Capacity);
-        Volatile.Write(ref Sequences[slot], 0);
+
+        // A full fence, not a release store: the plain stores below must not become visible before the slot reads as being written
+        // (ARM64 can reorder a later store ahead of a release store).
+        Interlocked.Exchange(ref Sequences[slot], 0);
         Stamps[slot] = DateTime.Now.Ticks;
         Categories[slot] = category;
         Details[slot] = detail;
@@ -97,7 +100,14 @@ public static class DevFlightRecorder
         for (var sequence = Math.Max(end - Math.Min(newest, Capacity), 0) + 1; sequence <= end; sequence++)
         {
             var slot = (int)((sequence - 1) % Capacity);
+
+            // A seqlock read: the slot holds this sequence before the copy and still holds it after it (with a full barrier between
+            // the copy and the re-check), or the line is skipped. Without the first check a slot still being written for the newest
+            // sequence could be read half old, half new and pass the single check after it, on x64 as well.
+            if (Volatile.Read(ref Sequences[slot]) != sequence)
+                continue;
             var (stamp, category, detail) = (Stamps[slot], Categories[slot], Details[slot]);
+            Interlocked.MemoryBarrier();
             if (Volatile.Read(ref Sequences[slot]) != sequence)
                 continue;
 

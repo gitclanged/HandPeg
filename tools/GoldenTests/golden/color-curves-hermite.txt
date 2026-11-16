@@ -1,0 +1,11 @@
+# The Color Grade's curves: a monotone cubic Hermite (Fritsch-Carlson), identity, ends, no overshoot, each channel with the master after it.
+ok: every curve empty or on the diagonal: no table (the identity)
+ok: a lone point bends the diagonal through it: its ends (0, 0) and (1, 1) put in
+ok: points that rise give a curve that only rises, through each point, never past its neighbours (no overshoot)
+ok: the ends: the first point's value at 0, the last's at 1
+ok: a falling curve (an inverted channel) only falls
+ok: points on the diagonal: the curve is the diagonal
+ok: a 256 x 1 RGBA32F table: R, G and B each a channel's curve with the master after it, A the master alone
+ok: the Color Studio draws the curve the table is baked from (CurveSamples is the same Hermite)
+ok: a bake of four curves takes well under 0.1 ms (the plan bakes it on the UI thread)
+ok: the curves' text: empty for the two ends on the diagonal, else each point as x/y

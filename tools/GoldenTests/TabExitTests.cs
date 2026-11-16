@@ -40,7 +40,6 @@ namespace HandPegGoldenTests;
 /// </summary>
 public static class TabExitTests
 {
-    private const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
     private const string First = "D:/media/first.mkv", Second = "D:/media/second.mkv";
 
     /// <summary>The cases that need no WPF Application (run before UiScaleTests makes one).</summary>
@@ -56,29 +55,6 @@ public static class TabExitTests
     {
         yield return Case("tabs-exit-dialog", "# One dialog for every tab holding work: a checked row for each unsaved one (a saved one shown as saved), a name for one never saved, Save only when it can, and the words of each purpose.", ExitDialog);
         yield return Case("project-tabs-slide-out", "# Restored tabs slide out from behind the tab in front after the first frame: 180 ms, cubic ease out, frozen, the tab in front on top, nothing left behind.", SlideOut);
-    }
-
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
     }
 
     private static string Fresh(string name)
@@ -103,7 +79,7 @@ public static class TabExitTests
         two.Clips.Add(DogfoodTests.FileClip(Second, 0, 6));
         document.Tracks.AddRange([one, two]);
         document.MediaPool.AddRange([First, Second]);
-        typeof(MainViewModel).GetMethod("InstallDocument", Hidden)!.Invoke(vm, [document]);
+        vm.InstallDocument(document);
         vm.MarkSaved();
         for (var i = 0; i < edits; i++)
             vm.TrimClip(vm.ViewOf(vm.Document.Tracks[0].Clips[i % 3]), start: false, seconds: 4 * (i % 3) + 2 + 0.5 * (i / 3));
@@ -186,60 +162,60 @@ public static class TabExitTests
         next.ForgetSession();
 
         // The close's wiring (the window's side).
-        var tabsSource = Source("MainWindow.ProjectTabs.cs");
-        var exit = Source("MainWindow.TabExit.cs");
-        var window = Source("MainWindow.xaml.cs");
-        var menu = Source("MainWindow.TabMenu.cs");
-        expect(Ordered(MemberOf(tabsSource, "private bool MayCloseProjectTabs("), "FinishTabWrites();", "ExitAnsweredByTabs = false;",
+        var tabsSource = SourceProbe.Src("MainWindow.ProjectTabs.cs");
+        var exit = SourceProbe.Src("MainWindow.TabExit.cs");
+        var window = SourceProbe.Src("MainWindow.xaml.cs");
+        var menu = SourceProbe.Src("MainWindow.TabMenu.cs");
+        expect(SourceProbe.InOrder(SourceProbe.Member(tabsSource, "private bool MayCloseProjectTabs("), "FinishTabWrites();", "ExitAnsweredByTabs = false;",
                    "if (settings.PromptToSaveOnExit && !settings.KeepOpenTabsOnClose)", "RefreshActiveTab();", "var held = _tabs.Tabs.Where(t => !t.Empty).ToList();",
                    "UnsavedForExit(t)", "ExitPlanFor(settings.KeepOpenTabsOnClose, settings.PromptToSaveOnExit, held.Count, unsaved.Count,",
                    "unsaved.Count == 1 && !KeptInFile(unsaved[0])", "case TabExitPlan.SuspendAll:", "SuspendFrontForExit();", "case TabExitPlan.KeepDirtyBehind:",
                    "case ExitQuestion.Tabs:", "return AskAboutTabsOnExit(held);", "case ExitQuestion.Classic:", "return true;", "default:", "ExitAnsweredByTabs = true;"),
             "the close takes its plan from the settings once every tab's disk work is done, the tab in front's dot made exact first whenever it may ask (one project alone too)");
-        expect(Ordered(MemberOf(tabsSource, "private void ForgetProjectTabs("), "FinishTabWrites();", "_tabExitPlan == TabExitPlan.Forget", "_tabs.ForgetSession();",
+        expect(SourceProbe.InOrder(SourceProbe.Member(tabsSource, "private void ForgetProjectTabs("), "FinishTabWrites();", "_tabExitPlan == TabExitPlan.Forget", "_tabs.ForgetSession();",
                    "WaitForKeptTabWrites();", "_tabExitPlan == TabExitPlan.SuspendAll ? t => !t.Empty : t => KeptInFile(t) && t.Dirty && !t.Empty",
                    "WriteKeptTabsNow(keep);", "CancelTabWrites(keep);", "_tabs.WriteKeptManifest();", "_tabs.ForgetSession(keep);"),
             "and carries it out: every file forgotten; or the kept tabs written, the rest let go, tabs.json written (marked kept) when tabs are kept for the next start");
-        expect(Ordered(MemberOf(window, "private bool MayClose("), "if (!MayCloseProjectTabs())", "if (ExitAnsweredByTabs)", "return true;", "PromptToSaveOnExit", "new SaveOnExitDialog("),
+        expect(SourceProbe.InOrder(SourceProbe.Member(window, "private bool MayClose("), "if (!MayCloseProjectTabs())", "if (ExitAnsweredByTabs)", "return true;", "PromptToSaveOnExit", "new SaveOnExitDialog("),
             "MayClose asks nothing more once the tabs answered for the tab in front; one project alone keeps the classic question");
-        expect(Ordered(MemberOf(window, "private bool MayClose("), "var unsaved = _exitQuestion == ExitQuestion.Classic;", "if (!unsaved || !AppSettings.Current.PromptToSaveOnExit)", "new SaveOnExitDialog(")
-               && !MemberOf(window, "private bool MayClose(").Contains("var unsaved = _viewModel.HasUnsavedChanges;", StringComparison.Ordinal)
-               && MemberOf(window, "private bool MayCloseAfterFault(").Contains("!UnsavedForExit(false, _viewModel.HoldsNothingForTab, _viewModel.CurrentProjectPath)", StringComparison.Ordinal),
+        expect(SourceProbe.InOrder(SourceProbe.Member(window, "private bool MayClose("), "var unsaved = _exitQuestion == ExitQuestion.Classic;", "if (!unsaved || !AppSettings.Current.PromptToSaveOnExit)", "new SaveOnExitDialog(")
+               && !SourceProbe.Member(window, "private bool MayClose(").Contains("var unsaved = _viewModel.HasUnsavedChanges;", StringComparison.Ordinal)
+               && SourceProbe.Member(window, "private bool MayCloseAfterFault(").Contains("!UnsavedForExit(false, _viewModel.HoldsNothingForTab, _viewModel.CurrentProjectPath)", StringComparison.Ordinal),
             "(addenda) the classic question is the plan's (work never saved counted), never HasUnsavedChanges alone; a fault's own question counts it too");
-        expect(Ordered(MemberOf(window, "private bool MayClose("), "var projectPath = _viewModel.CurrentProjectPath;", "new SaveOnExitDialog(", ", projectPath)",
+        expect(SourceProbe.InOrder(SourceProbe.Member(window, "private bool MayClose("), "var projectPath = _viewModel.CurrentProjectPath;", "new SaveOnExitDialog(", ", projectPath)",
                    "case ExitChoice.SaveAndClose:", "projectPath.Length > 0 ? _viewModel.SaveProjectTo(projectPath) : _viewModel.SaveProject(dialog.ProjectName)"),
             "(review) the classic question's Save & Close saves a project with a file to that file, as Ctrl+S does; a name only for work never saved");
         expect(MainWindow.RowDetail("D:/projects/Alpha.hproj", 0) == "D:/projects/Alpha.hproj" && MainWindow.RowDetail("", 0) == "Never saved"
                && MainWindow.RowDetail("D:/projects/Alpha.hproj", 2) == "Recovered 2 actions back · D:/projects/Alpha.hproj" && MainWindow.RowDetail("", 2) == "Recovered 2 actions back · Never saved",
             "(review) a row's detail: its project file or Never saved, after \"Recovered 2 actions back\" for a tab whose file is a lagged crash-recovery copy");
-        var suspend = MemberOf(exit, "private bool TrySuspendActiveTab(");
-        expect(Ordered(suspend, "if (_unresumed.Contains(tab.Id))", "HoldsNothingForTab", "CaptureWindowStateForTab(tab);", "StopPlayingForTabs();", "TakeHeaderForTab(tab);",
+        var suspend = SourceProbe.Member(exit, "private bool TrySuspendActiveTab(");
+        expect(SourceProbe.InOrder(suspend, "if (_unresumed.Contains(tab.Id))", "HoldsNothingForTab", "CaptureWindowStateForTab(tab);", "StopPlayingForTabs();", "TakeHeaderForTab(tab);",
                    "tab.Dirty = _viewModel.HasUnsavedChanges;", "_viewModel.CaptureStateForTab(tab.Title)", "_tabs.Enqueue(id, () => _tabs.WriteTab(id, state, saved, header)).Wait();")
                && !suspend.Contains("TakeRecoveryLag", StringComparison.Ordinal),
             "the tab in front kept exactly as it is (never lagged), on its own queue after its recovery file, a tab not brought back kept as its file is");
-        expect(Ordered(MemberOf(exit, "private bool SuspendFrontForExit("), "if (TrySuspendActiveTab(out var why))", "if (!front.Dirty)", "DefaultsToCancel = true, CancelText = \"Keep HandPeg Open\"",
+        expect(SourceProbe.InOrder(SourceProbe.Member(exit, "private bool SuspendFrontForExit("), "if (TrySuspendActiveTab(out var why))", "if (!front.Dirty)", "DefaultsToCancel = true, CancelText = \"Keep HandPeg Open\"",
                    "DeleteTabFiles(front.Id);"),
             "one that could not be kept with unsaved changes asks whether to close anyway, staying by default (and keeps no half-written file in front)");
-        expect(Ordered(MemberOf(tabsSource, "private bool MayCloseProjectTabs("), "RefreshActiveTab();", "ExitPlanFor(") && Ordered(MemberOf(exit, "private bool AskAboutTabsOnExit("), "var rows = RowsOf(held);", "SaveTabsOnExitDialog.Purpose.Exit", "case TabsExitChoice.SaveChecked:",
+        expect(SourceProbe.InOrder(SourceProbe.Member(tabsSource, "private bool MayCloseProjectTabs("), "RefreshActiveTab();", "ExitPlanFor(") && SourceProbe.InOrder(SourceProbe.Member(exit, "private bool AskAboutTabsOnExit("), "var rows = RowsOf(held);", "SaveTabsOnExitDialog.Purpose.Exit", "case TabsExitChoice.SaveChecked:",
                    "SaveCheckedTabs(rows, failed);", "!CloseAnyway(failed)", "return false;", "case TabsExitChoice.KeepSuspended:", "_tabExitPlan = TabExitPlan.SuspendAll;",
                    "case TabsExitChoice.Discard:", "default:", "return false;", "ExitAnsweredByTabs = true;"),
             "the one dialog: Save Checked & Close (a failed save asks first), Keep Suspended for Next Launch, Discard & Close; Cancel stays");
-        expect(Ordered(MemberOf(exit, "private List<TabExitRow> RowsOf("), "if (!UnsavedForExit(tab))", "saved: true", "continue;", "new TabExitRow(tab.Id, tab.Title, RowDetail(path, tab.StepsBack), path.Length == 0, name)"),
+        expect(SourceProbe.InOrder(SourceProbe.Member(exit, "private List<TabExitRow> RowsOf("), "if (!UnsavedForExit(tab))", "saved: true", "continue;", "new TabExitRow(tab.Id, tab.Title, RowDetail(path, tab.StepsBack), path.Length == 0, name)"),
             "(addenda) it lists every tab holding work: a saved one as a row shown as saved, an unsaved one checked (with a name when never saved)");
-        expect(MemberOf(exit, "private bool CloseAnyway(").Contains("DefaultsToCancel = true, CancelText = \"Keep HandPeg Open\"", StringComparison.Ordinal)
-               && Ordered(MemberOf(exit, "private void SaveCheckedTabs("), "rows.Where(r => r.IsChecked && !r.Saved)", "SaveTabInPlace(tab, name)", "_viewModel.SaveProjectTo(_viewModel.CurrentProjectPath)", "_viewModel.SaveProject(name)"),
+        expect(SourceProbe.Member(exit, "private bool CloseAnyway(").Contains("DefaultsToCancel = true, CancelText = \"Keep HandPeg Open\"", StringComparison.Ordinal)
+               && SourceProbe.InOrder(SourceProbe.Member(exit, "private void SaveCheckedTabs("), "rows.Where(r => r.IsChecked && !r.Saved)", "SaveTabInPlace(tab, name)", "_viewModel.SaveProjectTo(_viewModel.CurrentProjectPath)", "_viewModel.SaveProject(name)"),
             "a tab behind saved from its file, the tab in front to its project file or under the row's name (a saved row never); closing after a failed save is never the default");
-        expect(Ordered(MemberOf(menu, "private async Task CloseOtherProjectTabsAsync("), "TakeWrittenDots();", ">= 2", "await CloseOthersAskedOnceAsync(keep);")
-               && Ordered(MemberOf(menu, "private async Task CloseOthersAskedOnceAsync("), "SaveTabsOnExitDialog.Purpose.CloseOthers", "case TabsExitChoice.SaveChecked:", "SaveTabInPlace(",
+        expect(SourceProbe.InOrder(SourceProbe.Member(menu, "private async Task CloseOtherProjectTabsAsync("), "TakeWrittenDots();", ">= 2", "await CloseOthersAskedOnceAsync(keep);")
+               && SourceProbe.InOrder(SourceProbe.Member(menu, "private async Task CloseOthersAskedOnceAsync("), "SaveTabsOnExitDialog.Purpose.CloseOthers", "case TabsExitChoice.SaveChecked:", "SaveTabInPlace(",
                    "staying.Add(tab.Id);", "case TabsExitChoice.KeepSuspended:", "default:", "return;", "await CloseProjectTabAsync(other, asked: true);")
-               && MemberOf(tabsSource, "private async Task CloseProjectTabAsync(").Contains("if (!asked && UnsavedForExit(tab) && !await AskToSaveTabAsync(tab))", StringComparison.Ordinal),
+               && SourceProbe.Member(tabsSource, "private async Task CloseProjectTabAsync(").Contains("if (!asked && UnsavedForExit(tab) && !await AskToSaveTabAsync(tab))", StringComparison.Ordinal),
             "Close Other Tabs with two or more unsaved: the same dialog in its own words, each tab then closed with no second question (one whose save failed stays)");
-        expect(Ordered(MemberOf(tabsSource, "private async Task<bool> AskToSaveTabAsync("), "var never = !tab.Dirty && (KeptInFile(tab) ? tab.ProjectPath : _viewModel.CurrentProjectPath).Length == 0;",
+        expect(SourceProbe.InOrder(SourceProbe.Member(tabsSource, "private async Task<bool> AskToSaveTabAsync("), "var never = !tab.Dirty && (KeptInFile(tab) ? tab.ProjectPath : _viewModel.CurrentProjectPath).Length == 0;",
                    "was never saved as a project.", "has changes that were not saved as a project.", "return FirstSaveInFront();"),
             "(5.5.0, Q3 b) closing one tab (x, Ctrl+W) asks by the exit's rule (UnsavedForExit): a never-saved tab with content asks too, in its own words, and is saved as a first save");
-        var settingsXaml = File.ReadAllText(Path.Combine(RepositoryRoot(), "src", "Dialogs", "SettingsWindow.xaml"));
-        expect(Ordered(settingsXaml, "IsChecked=\"{Binding PromptToSaveOnExit}\"", "IsChecked=\"{Binding KeepOpenTabsOnClose}\"", "AutomationProperties.Name=\"Keep Open Project Tabs Between Sessions\"")
-               && !File.ReadAllText(Path.Combine(RepositoryRoot(), "src", "Dialogs", "SaveOnExitDialog.xaml")).Contains("Behavior tab", StringComparison.Ordinal),
+        var settingsXaml = File.ReadAllText(Path.Combine(SourceProbe.Root, "src", "Dialogs", "SettingsWindow.xaml"));
+        expect(SourceProbe.InOrder(settingsXaml, "IsChecked=\"{Binding PromptToSaveOnExit}\"", "IsChecked=\"{Binding KeepOpenTabsOnClose}\"", "AutomationProperties.Name=\"Keep Open Project Tabs Between Sessions\"")
+               && !File.ReadAllText(Path.Combine(SourceProbe.Root, "src", "Dialogs", "SaveOnExitDialog.xaml")).Contains("Behavior tab", StringComparison.Ordinal),
             "Settings > General > Projects and saving holds the setting under the prompt; the classic question names that page (not a Behavior tab)");
         expect(settingsXaml.Contains("ToolTip=\"Off at first. Ticked, closing HandPeg keeps every open project tab", StringComparison.Ordinal)
                && settingsXaml.Contains("Off: closing asks when a tab holds work not saved", StringComparison.Ordinal) && !settingsXaml.Contains("On at first. Closing HandPeg keeps", StringComparison.Ordinal),
@@ -251,7 +227,6 @@ public static class TabExitTests
     {
         var file = AppSettings.FilePath;
         var original = File.Exists(file) ? File.ReadAllBytes(file) : null;
-        var load = typeof(AppSettings).GetMethod("Load", BindingFlags.NonPublic | BindingFlags.Static, Type.EmptyTypes)!;
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(file)!);
@@ -259,7 +234,7 @@ public static class TabExitTests
             {
                 File.WriteAllText(file, JsonSerializer.Serialize(new AppSettings { ViewDefaultsVersion = version, FirstRunComplete = true, KeepOpenTabsOnClose = keepOpen },
                     AppSettingsJsonContext.Default.AppSettings));
-                return (AppSettings)load.Invoke(null, null)!;
+                return AppSettings.Load();
             }
 
             var preview = Read(11, true);
@@ -443,21 +418,21 @@ public static class TabExitTests
         sixth.ForgetSession();
 
         // The window's side: after the first frame, only once the tabs are taken in, through the switch's own steps, with no layout laid out.
-        var tabsSource = Source("MainWindow.ProjectTabs.cs");
-        var exit = Source("MainWindow.TabExit.cs");
-        var recover = MemberOf(tabsSource, "private async void RecoverProjectTabs(");
-        expect(MemberOf(tabsSource, "private void InitializeProjectTabs(").Contains("ContentRendered += (_, _) => Dispatcher.BeginInvoke(RecoverProjectTabs, DispatcherPriority.ApplicationIdle);", StringComparison.Ordinal)
-               && Ordered(recover, "_tabs.TakeLeftBehind(known, out var front)", "adopted.Add(tab.Id);", "if (adopted.Count == 0)", "RestoredFrontToBring(leftFront, adopted, known)",
+        var tabsSource = SourceProbe.Src("MainWindow.ProjectTabs.cs");
+        var exit = SourceProbe.Src("MainWindow.TabExit.cs");
+        var recover = SourceProbe.Member(tabsSource, "private async Task RecoverProjectTabsAsync(");
+        expect(SourceProbe.MemberOfType("MainWindow", "private void InitializeProjectTabs(").Contains("ContentRendered += (_, _) => Dispatcher.BeginInvoke(RecoverProjectTabs, DispatcherPriority.ApplicationIdle);", StringComparison.Ordinal)
+               && SourceProbe.InOrder(recover, "_tabs.TakeLeftBehind(known, out var front)", "adopted.Add(tab.Id);", "if (adopted.Count == 0)", "RestoredFrontToBring(leftFront, adopted, known)",
                    "await BringRestoredTabForwardAsync(forward, Show)", "Show();", "WriteTabManifest();", "RestoredLine(broughtForward ? forward!.Title : null, adopted.Count)"),
             "Law 1: at idle after the first frame (the blank Timeline, the strip collapsed), and only once the tabs are taken in; the strip shown once, tabs.json written, the status line set");
-        var bring = MemberOf(exit, "private async Task<bool> BringRestoredTabForwardAsync(");
-        expect(Ordered(bring, "_switchingTab = true;", "PutActiveBehind(out var write);", "SwapStartTabFor(_tabs, blank, front);", "shown();", "await ResumeTabAsync(front, null);",
+        var bring = SourceProbe.Member(exit, "private async Task<bool> BringRestoredTabForwardAsync(");
+        expect(SourceProbe.InOrder(bring, "_switchingTab = true;", "PutActiveBehind(out var write);", "SwapStartTabFor(_tabs, blank, front);", "shown();", "await ResumeTabAsync(front, null);",
                    "RefreshActiveTab();", "finally", "PutStartTabBack(_tabs, at);", "AppLog.Write(", "_switchingTab = false;"),
             "through a switch's own steps: the blank tab put behind and gone, the tab shown in front (the slide comes out from it), then resumed from its cache file; a failure puts a blank tab back in front and is logged");
         expect(bring.Length > 0 && recover.Length > 0 && !bring.Contains("ApplyTabLayout", StringComparison.Ordinal) && !bring.Contains("_dock.Load", StringComparison.Ordinal)
                && !recover.Contains("ApplyTabLayout", StringComparison.Ordinal),
             "Law 1: no layout laid out for it (the first frame's single dock build stays the only one): it takes the window as it is");
-        expect(Ordered(MemberOf(exit, "private ProjectTabHeader? RestoredFrontToBring("), "known.Count == 1", "_tabs.Count == adopted.Count + 1", "_switchingTab", "_openingName is not null",
+        expect(SourceProbe.InOrder(SourceProbe.Member(exit, "private ProjectTabHeader? RestoredFrontToBring("), "known.Count == 1", "_tabs.Count == adopted.Count + 1", "_switchingTab", "_openingName is not null",
                    "_viewModel.IsBusy", "_viewModel.HoldsNothingForTab", "_viewModel.CurrentProjectPath", "_tabsRevealed", "SingleInstance.LaunchFile() is not null"),
             "the start-up tab read as it is now: the only other tab and in front, nothing under way, holding nothing, no project file, not shown on purpose, no project to open");
         expect(MainWindow.RestoredLine("Wedding", 3) == "Wedding is open again: 3 project tabs left open when HandPeg last closed came back."
@@ -468,21 +443,21 @@ public static class TabExitTests
         // (final review, AD-1) A tab with unsaved changes brought back keeps its files as the tab in front's crash-recovery copy: the 20 s tick
         // leaves them while its history has not moved, writes them anew once it moves, and lets them go once the tab is clean.
         DirtyResumeKeepsItsFile(expect);
-        expect(Ordered(MemberOf(tabsSource, "private async Task<bool> ResumeTabAsync("), "_unresumed.Remove(id);", "if (tab.Dirty)",
+        expect(SourceProbe.InOrder(SourceProbe.Member(tabsSource, "private async Task<bool> ResumeTabAsync("), "_unresumed.Remove(id);", "if (tab.Dirty)",
                    "_frontRecovery = new FrontLook(id, _viewModel.HistoryPosition, Written: true);", "else", "DeleteTabFiles(id);", "if (tab.ExplodedOpen)")
-               && Ordered(MemberOf(Source("MainWindow.TabCache.cs"), "private bool AttachHydrated("), "ForgetUnwritten(live.Write);", "if (live.Write?.Dirty == true)",
+               && SourceProbe.InOrder(SourceProbe.Member(SourceProbe.Src("MainWindow.TabCache.cs"), "private bool AttachHydrated("), "ForgetUnwritten(live.Write);", "if (live.Write?.Dirty == true)",
                    "_frontRecovery = new FrontLook(tab.Id, _viewModel.HistoryPosition, Written: true);", "else", "DeleteTabFiles(tab.Id);"),
             "(final review) every resume keeps the files of a tab with unsaved changes (from its cache: AD-1, a click, Ctrl+Tab; from memory once its file was written whole), a clean tab's still go");
 
         // (final review) The tab brought forward without its layout keeps its own as it goes behind, until it is laid out, the user changes the window's, or it closes.
-        var capture = MemberOf(tabsSource, "private void CaptureWindowStateForTab(");
-        expect(Ordered(capture, "if (_unresumed.Contains(tab.Id))", "return;", "if (!LayoutNotTaken(tab))", "tab.LayoutJson = TabLayoutOf(_dock, perTab);",
+        var capture = SourceProbe.Member(tabsSource, "private void CaptureWindowStateForTab(");
+        expect(SourceProbe.InOrder(capture, "if (_unresumed.Contains(tab.Id))", "return;", "if (!LayoutNotTaken(tab))", "tab.LayoutJson = TabLayoutOf(_dock, perTab);",
                    "tab.MediaView = TabMediaViewOf(MediaBrowser.ViewMode, perTab);", "TakeExplodedState(")
-               && Ordered(bring, "await ResumeTabAsync(front, null);", "if (resumed)", "RefreshActiveTab();", "KeepLayoutNotTaken(front);", "finally")
-               && Ordered(MemberOf(exit, "private void KeepLayoutNotTaken("), "AppSettings.Current.PerTabWindowLayouts", "tab.LayoutJson is not { Length: > 0 }", "_layoutNotTaken = tab.Id;",
+               && SourceProbe.InOrder(bring, "await ResumeTabAsync(front, null);", "if (resumed)", "RefreshActiveTab();", "KeepLayoutNotTaken(front);", "finally")
+               && SourceProbe.InOrder(SourceProbe.Member(exit, "private void KeepLayoutNotTaken("), "AppSettings.Current.PerTabWindowLayouts", "tab.LayoutJson is not { Length: > 0 }", "_layoutNotTaken = tab.Id;",
                    "_dock.Changed += () => _layoutNotTaken = null;")
-               && Ordered(MemberOf(tabsSource, "private void ApplyTabLayout("), "LoadTabLayout(_dock, tab, perTab)", "ForgetLayoutNotTaken(tab.Id);")
-               && MemberOf(Source("MainWindow.TabCache.cs"), "private void ForgetKeptTab(").Contains("ForgetLayoutNotTaken(id);", StringComparison.Ordinal),
+               && SourceProbe.InOrder(SourceProbe.Member(tabsSource, "private void ApplyTabLayout("), "LoadTabLayout(_dock, tab, perTab)", "ForgetLayoutNotTaken(tab.Id);")
+               && SourceProbe.Member(SourceProbe.Src("MainWindow.TabCache.cs"), "private void ForgetKeptTab(").Contains("ForgetLayoutNotTaken(id);", StringComparison.Ordinal),
             "(final review) the tab brought forward (with a layout of its own) keeps it as it goes behind (the start-up layout never taken for it); a switch back lays it out, and a change by hand (DockManager.Changed) or its close lets it go");
         var window = (MainWindow)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(MainWindow));
         var notTaken =(Func<ProjectTabHeader, bool>)Delegate.CreateDelegate(typeof(Func<ProjectTabHeader, bool>), window, typeof(MainWindow).GetMethod("LayoutNotTaken", Hidden)!);
@@ -497,11 +472,11 @@ public static class TabExitTests
 
         // (final review) No tab is taken in while a close is asking (its idle callback runs in the dialog's loop too): they stay for the next start,
         // or are taken in once the close is called off; and should a close begin all the same, the files moved in are no tab's and stay.
-        expect(Ordered(recover, "if (!_tabGesturesSet)", "if (_closeAsked || _recoveringTabs)", "_leftTabsPutOff |= _closeAsked;", "return;", "_recoveringTabs = true;",
+        expect(SourceProbe.InOrder(recover, "if (!_tabGesturesSet)", "if (_closeAsked || _recoveringTabs)", "_leftTabsPutOff |= _closeAsked;", "return;", "_recoveringTabs = true;",
                    "_tabs.TakeLeftBehind(known, out var front)", "if (!_closeAsked && _tabs.Adopt(tab))", "adopted.Add(tab.Id);")
-               && Ordered(MemberOf(Source("MainWindow.xaml.cs"), "private void MainWindow_Closing("), "_closeAsked = true;", "finally", "_closeAsked = false;", "if (!close)",
+               && SourceProbe.InOrder(SourceProbe.Member(SourceProbe.Src("MainWindow.xaml.cs"), "private void MainWindow_Closing("), "_closeAsked = true;", "finally", "_closeAsked = false;", "if (!close)",
                    "TakeInLeftTabsPutOff();", "return;")
-               && Ordered(MemberOf(exit, "private void TakeInLeftTabsPutOff("), "if (!_leftTabsPutOff)", "_leftTabsPutOff = false;",
+               && SourceProbe.InOrder(SourceProbe.Member(exit, "private void TakeInLeftTabsPutOff("), "if (!_leftTabsPutOff)", "_leftTabsPutOff = false;",
                    "Dispatcher.BeginInvoke(RecoverProjectTabs, System.Windows.Threading.DispatcherPriority.ApplicationIdle);"),
             "(final review) RecoverProjectTabs takes nothing in while a close is asking (put off, run again once the close is called off) and adopts nothing should one begin meanwhile");
         var asking = Fresh("project-tabs-restored-front-closing");
@@ -619,11 +594,11 @@ public static class TabExitTests
         expect(dirtyNone == "0/0" && StampOf(ProjectTabs.HeaderJson(carried)) == "0/0"
                && StampOf(ProjectTabs.HeaderJson(new ProjectTabHeader { Id = "e", ProjectPath = "D:/projects/Empty.hproj", ProjectFileTicks = 5, ProjectFileLength = 7 })) == "0/0",
             "(final review) none for a tab with unsaved changes, one with no project file, or an empty one");
-        var service = Source("Services", "ProjectTabs.cs");
-        var stamped = MemberOf(service, "public static string Stamped(");
+        var service = SourceProbe.Src("Services", "ProjectTabs.cs");
+        var stamped = SourceProbe.Member(service, "public static string Stamped(");
         expect(stamped.Length > 0 && !new[] { "FileStamp(", "FileInfo", "File.", "Directory." }.Any(call => stamped.Contains(call, StringComparison.Ordinal))
-               && Ordered(MemberOf(service, "public void WriteTab("), "ProjectStore.WriteWhole(HeaderFile(id), Stamped(headerJson));")
-               && Ordered(MemberOf(service, "public void WriteHeader("), "ProjectStore.WriteWhole(HeaderFile(id), Stamped(headerJson));"),
+               && SourceProbe.InOrder(SourceProbe.Member(service, "public void WriteTab("), "ProjectStore.WriteWhole(HeaderFile(id), Stamped(headerJson));")
+               && SourceProbe.InOrder(SourceProbe.Member(service, "public void WriteHeader("), "ProjectStore.WriteWhole(HeaderFile(id), Stamped(headerJson));"),
             "(final review) every header written for a tab (put behind, kept for the next start, renamed) goes through Stamped, which makes no file call: the close's waited write never touches a share");
 
         // A tab kept with nothing unsaved, its stamp taken as its project was opened (09:00); its header written with it: it comes back from its cache.
@@ -711,9 +686,9 @@ public static class TabExitTests
         tabs.ForgetSession();
 
         // The window: a cold tab coming back reads its file or its cache on its queue, then opens it as a project is, and says which.
-        var tabsSource = Source("MainWindow.ProjectTabs.cs");
-        var resume = MemberOf(tabsSource, "private async Task<bool> ResumeTabAsync(");
-        expect(Ordered(resume, "if (!tab.Dirty && tab.ProjectPath is { Length: > 0 } clean)",
+        var tabsSource = SourceProbe.Src("MainWindow.ProjectTabs.cs");
+        var resume = SourceProbe.Member(tabsSource, "private async Task<bool> ResumeTabAsync(");
+        expect(SourceProbe.InOrder(resume, "if (!tab.Dirty && tab.ProjectPath is { Length: > 0 } clean)",
                    "read = await _tabs.Enqueue(id, () => _tabs.ReadForResume(id, clean));", "else",
                    "(state, saved) = await _tabs.Enqueue(id, () => (_tabs.ReadState(id), _tabs.ReadSaved(id)));", "var unreadable = read.From == TabResumeSource.CacheFileUnreadable;",
                    "var (projectPath, dirty) = unreadable ? (\"\", true) : (tab.ProjectPath, tab.Dirty);", "await _viewModel.ResumeTabAsync(state, projectPath, dirty, saved,",
@@ -730,22 +705,22 @@ public static class TabExitTests
         // it, a tab behind saved from its cache; a stamp for another file than the tab's by then dropped. (Fix round 3: an open's taken before its read,
         // a save's off the tab's queue, and only the last asked lands.)
         WindowTakesStamps(root, expect);
-        var cache = Source("MainWindow.TabCache.cs");
-        var stampAsk = MemberOf(cache, "private async Task StampProjectFileAsync(");
-        expect(Ordered(MemberOf(cache, "private void ViewModel_ProjectSaved("), "DropFrontRecovery(_tabs.Active);", "StampProjectFileAsync(_tabs.Active, _viewModel.CurrentProjectPath)")
-               && Ordered(MemberOf(tabsSource, "internal async Task OpenProjectInTabAsync("), "var stamp = await Task.Run(() => ProjectTabs.FileStamp(path));",
+        var cache = SourceProbe.Src("MainWindow.TabCache.cs");
+        var stampAsk = SourceProbe.Member(cache, "private async Task StampProjectFileAsync(");
+        expect(SourceProbe.InOrder(SourceProbe.Member(cache, "private void ViewModel_ProjectSaved("), "DropFrontRecovery(_tabs.Active);", "StampProjectFileAsync(_tabs.Active, _viewModel.CurrentProjectPath)")
+               && SourceProbe.InOrder(SourceProbe.Member(tabsSource, "internal async Task OpenProjectInTabAsync("), "var stamp = await Task.Run(() => ProjectTabs.FileStamp(path));",
                    "if (_closeAsked || _windowClosing is { IsCancellationRequested: true })", "if (SameProjectFile(_viewModel.CurrentProjectPath, path))", "var (into, opening) = (_tabs.Active, _viewModel.CurrentProjectPath);", "var asked = ++into.StampsAsked;",
                    "await _viewModel.LoadProjectAsync(path);", "StampOpenedProject(into, opening, path, stamp, asked);", "var asked = ++made.StampsAsked;",
                    "await _viewModel.LoadProjectAsync(path);", "StampOpenedProject(made, \"\", path, stamp, asked);")
-               && Ordered(MemberOf(tabsSource, "private string SaveTabInPlace("), "ProjectStore.SaveTo(state, path);", "(tab.ProjectPath, tab.Dirty, tab.NewProjectName, tab.NewProjectFolder) = (path, false, \"\", null);",
+               && SourceProbe.InOrder(SourceProbe.Member(tabsSource, "private SaveOutcome SaveTabInPlace("), "ProjectStore.SaveTo(state, path);", "(tab.ProjectPath, tab.Dirty, tab.NewProjectName, tab.NewProjectFolder) = (path, false, \"\", null);",
                    "_ = StampProjectFileAsync(tab, path);")
-               && Ordered(stampAsk, "(tab.ProjectFileTicks, tab.ProjectFileLength) = (0L, 0L);", "var asked = ++tab.StampsAsked;",
+               && SourceProbe.InOrder(stampAsk, "(tab.ProjectFileTicks, tab.ProjectFileLength) = (0L, 0L);", "var asked = ++tab.StampsAsked;",
                    "await Task.Run(() => ProjectTabs.FileStamp(path));", "asked != tab.StampsAsked", "!string.Equals(now, path, StringComparison.OrdinalIgnoreCase)", "WriteTabHeader(tab);")
                && !stampAsk.Contains("_tabs.Enqueue", StringComparison.Ordinal)
-               && Ordered(MemberOf(tabsSource, "private async Task<bool> ResumeTabAsync("), "tab.StampsAsked++;", "(tab.ProjectFileTicks, tab.ProjectFileLength) = (read.FileTicks, read.FileLength);")
+               && SourceProbe.InOrder(SourceProbe.Member(tabsSource, "private async Task<bool> ResumeTabAsync("), "tab.StampsAsked++;", "(tab.ProjectFileTicks, tab.ProjectFileLength) = (read.FileTicks, read.FileLength);")
                && !ProjectTabs.HeaderJson(new ProjectTabHeader { Id = "x", StampsAsked = 3 }).Contains("StampsAsked", StringComparison.Ordinal)
-               && MemberOf(tabsSource, "private void RefreshActiveTab(").Contains("TakeProjectPath(tab, _viewModel.CurrentProjectPath);", StringComparison.Ordinal)
-               && MemberOf(tabsSource, "private void TakeHeaderForTab(").Contains("TakeProjectPath(tab, _viewModel.CurrentProjectPath);", StringComparison.Ordinal),
+               && SourceProbe.Member(tabsSource, "private void RefreshActiveTab(").Contains("TakeProjectPath(tab, _viewModel.CurrentProjectPath);", StringComparison.Ordinal)
+               && SourceProbe.Member(tabsSource, "private void TakeHeaderForTab(").Contains("TakeProjectPath(tab, _viewModel.CurrentProjectPath);", StringComparison.Ordinal),
             "(final review) wired: every save of the tab in front, the two opens into a tab, and a save of a tab behind take the stamp; the tab in front's header follows its file (another file's stamp let go); (fix round 3) an open's stamp taken before its read, a save's off the tab's queue, only the last asked landing (a tab read back drops one on its way), the count never written");
     }
 
@@ -794,7 +769,7 @@ public static class TabExitTests
         var written = ProjectTabs.FileStamp(path);
         var landedFirst = Until(() => front.ProjectFileTicks != 0) && !held.IsCompleted;
         gate.Set();
-        expect(line.StartsWith("Project saved", StringComparison.Ordinal) && landedFirst && tabs.WaitFor(front.Id, 10_000)
+        expect(line.IsSaved && landedFirst && tabs.WaitFor(front.Id, 10_000)
                && (front.ProjectFileTicks, front.ProjectFileLength) == written && front.ProjectPath == path,
             "(fix round 3) a save of the tab in front: it carries the stamp of the file just written, taken off its queue (it lands while a write of the tab is still under way there), its header's file the saved one");
 
@@ -1146,53 +1121,16 @@ public static class TabExitTests
         }
 
         // Only after the first frame, once tabs are restored.
-        var tabsSource = Source("MainWindow.ProjectTabs.cs");
-        var stripSource = Source("Controls", "ProjectTabStrip.xaml.cs");
-        expect(Ordered(MemberOf(tabsSource, "private async void RecoverProjectTabs("), "_tabs.TakeLeftBehind(known, out var front)", "adopted.Add(tab.Id);", "ShowTabs();", "ProjectTabStrip.SlideOutFromActive(adopted);")
-               && !MemberOf(tabsSource, "private void InitializeProjectTabs(").Contains("SlideOutFromActive", StringComparison.Ordinal)
+        var tabsSource = SourceProbe.Src("MainWindow.ProjectTabs.cs");
+        var stripSource = SourceProbe.Src("Controls", "ProjectTabStrip.xaml.cs");
+        expect(SourceProbe.InOrder(SourceProbe.Member(tabsSource, "private async Task RecoverProjectTabsAsync("), "_tabs.TakeLeftBehind(known, out var front)", "adopted.Add(tab.Id);", "ShowTabs();", "ProjectTabStrip.SlideOutFromActive(adopted);")
+               && !SourceProbe.MemberOfType("MainWindow", "private void InitializeProjectTabs(").Contains("SlideOutFromActive", StringComparison.Ordinal)
                && tabsSource.Split("SlideOutFromActive(").Length == 2,
             "called only as the tabs left by the last session are taken in (ApplicationIdle after ContentRendered: never on the first frame)");
         expect(stripSource.Contains("private static IEasingFunction? _slideEase;", StringComparison.Ordinal) && stripSource.Contains("private static DoubleAnimation? _slideFade;", StringComparison.Ordinal)
                && !stripSource.Contains("static readonly CubicEase", StringComparison.Ordinal) && !stripSource.Contains("static readonly DoubleAnimation", StringComparison.Ordinal)
-               && MemberOf(stripSource, "internal bool BeginReorder(").Contains("FinishSlide();", StringComparison.Ordinal),
+               && SourceProbe.Member(stripSource, "internal bool BeginReorder(").Contains("FinishSlide();", StringComparison.Ordinal),
             "the ease and the fade are made on first use (nothing at type load), and a drag ends a slide first");
     }
 
-    private static string RepositoryRoot()
-    {
-        for (var folder = new DirectoryInfo(AppContext.BaseDirectory); folder is not null; folder = folder.Parent)
-        {
-            if (File.Exists(Path.Combine(folder.FullName, "HandPegApp.csproj")))
-                return folder.FullName;
-        }
-
-        throw new DirectoryNotFoundException("HandPegApp.csproj was not found above the golden tests' program.");
-    }
-
-    private static string Source(params string[] parts) => File.ReadAllText(Path.Combine([RepositoryRoot(), "src", .. parts])).ReplaceLineEndings("\n");
-
-    /// <summary>A member's text: from its signature to the end of its body (the next line that closes at its indent).</summary>
-    private static string MemberOf(string source, string signature)
-    {
-        var start = source.IndexOf(signature, StringComparison.Ordinal);
-        if (start < 0)
-            return "";
-        var end = source.IndexOf("\n    }\n", start, StringComparison.Ordinal);
-        return end < 0 ? source[start..] : source[start..(end + 6)];
-    }
-
-    /// <summary>Whether every one of <paramref name="parts"/> is in <paramref name="text"/>, each after the one before.</summary>
-    private static bool Ordered(string text, params string[] parts)
-    {
-        var at = 0;
-        foreach (var part in parts)
-        {
-            var found = text.IndexOf(part, at, StringComparison.Ordinal);
-            if (found < 0)
-                return false;
-            at = found + part.Length;
-        }
-
-        return true;
-    }
 }

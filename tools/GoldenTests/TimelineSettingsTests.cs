@@ -29,36 +29,11 @@ namespace HandPegGoldenTests;
 /// </summary>
 public static class TimelineSettingsTests
 {
-    private const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
-
     public static IEnumerable<GraphResult> All()
     {
         yield return Case("timeline-effect-lanes-fold", "# A track's effect lanes take no room until its own stack is open; its Cutouts and its sound stay thin bars while closed.", LanesFold);
         yield return Case("timeline-effect-lane-cards", "# Overwatch 2's Cutouts: their own Mask and Edges cards have no lanes and no fx badge unless asked for; any other effect has.", LaneCards);
         yield return Case("timeline-settings-menu", "# The Timeline Settings menu: its groups and items from one table, each kept in a real setting; the six new settings' defaults.", SettingsMenu);
-    }
-
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>, StringBuilder> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "FAILED: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect, text);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
     }
 
     // ----- timeline-effect-lanes-fold -----
@@ -248,7 +223,7 @@ public static class TimelineSettingsTests
 
         // An effect of the user's on a Cutout: its one lane card, on the first lane though it is not the first card of the stack.
         var killfeed = cutouts.First(c => c.Name == "Killfeed");
-        using (Layer.Echo())
+        using (vm.OwnLookScope())
             killfeed.AddEffect(EffectRegistry.Find(EffectRegistry.MotionBlur)!.NewEffect());
         text.Append("   Killfeed with Motion Blur: cards ").Append(Types(killfeed.Effects)).Append("; lane cards ").Append(Types(Cards(killfeed))).Append('\n');
         expect(Cards(killfeed) is [{ Type: EffectRegistry.MotionBlur }], "Motion Blur added to Killfeed: exactly one lane card, Motion Blur, on its first lane (\"Effects\")");
@@ -259,7 +234,7 @@ public static class TimelineSettingsTests
         settings.ShowBuiltInMaskEffectLanes = false;
 
         // A Mask a user puts on a clip that is no Cutout is an effect like any other: on its lanes.
-        using (Layer.Echo())
+        using (vm.OwnLookScope())
             parent.AddEffect(EffectRegistry.Find(EffectRegistry.Mask)!.NewEffect());
         text.Append("   the clip they hang from, with a Mask: lane cards ").Append(Types(Cards(parent))).Append('\n');
         expect(Cards(parent).Any(e => e.Type == EffectRegistry.Mask), "a Mask card on the clip they hang from (no Cutout) is a lane card");
@@ -279,13 +254,13 @@ public static class TimelineSettingsTests
     private static MainViewModel Opened(string main, int width, int height, string codec)
     {
         var vm = new MainViewModel { SourceWidth = width, SourceHeight = height, LocalMediaPath = main };
-        typeof(MainViewModel).GetField("_mediaInfo", Hidden)!.SetValue(vm, new MediaInfo("matroska", 8, 0, new VideoStreamInfo(width, height, codec, 60, "16:9", "1:1", "bt709", "bt709", 0), [], []));
+        vm.SetMediaInfoForTests(new MediaInfo("matroska", 8, 0, new VideoStreamInfo(width, height, codec, 60, "16:9", "1:1", "bt709", "bt709", 0), [], []));
         var document = new TimelineDocument { Width = width, Height = height, NaturalWidth = width, NaturalHeight = height, FrameRate = FrameRate.Fps30 };
         var track = new TimelineTrackModel { Kind = TimelineTrackKind.Video, TrackNumber = 1 };
         var look = new LayerState { Kind = LayerKind.VideoFile, Name = "Main", SizeWidth = 1, ImagePath = main, ImageWidth = width, ImageHeight = height, MediaDuration = 8 };
         track.Clips.Add(new TimelineClip { ContentKind = LayerKind.VideoFile, SourcePath = main, Start = 0, End = 8, MediaOffset = 0, SourceDuration = 8, State = look });
         document.Tracks.Add(track);
-        typeof(MainViewModel).GetMethod("InstallDocument", Hidden)!.Invoke(vm, [document]);
+        vm.InstallDocument(document);
         return vm;
     }
 

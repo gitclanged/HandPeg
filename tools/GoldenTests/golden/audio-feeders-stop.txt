@@ -1,0 +1,4 @@
+# An idle mixer with its two feeder threads disposes at once (both woken by one stop event, one shared deadline).
+ok: disposed in under 150 ms (median of 5; was up to 1 s while the second feeder slept out its timeout)
+ok: both feeders against one 2 s deadline; when one did not stop, nothing it can reach is released
+ok: the mixer releases a voice only when no feeder holds it (no decoder freed under a read)

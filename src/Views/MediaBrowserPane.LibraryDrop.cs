@@ -1,6 +1,8 @@
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
+using HandPegApp.Native;
+using static HandPegApp.Native.User32;
 
 namespace HandPegApp.Views;
 
@@ -20,14 +22,6 @@ public partial class MediaBrowserPane
 {
     private const uint RootAncestor = 2; // GA_ROOT
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct ScreenPoint
-    {
-        public int X, Y;
-    }
-
-    [LibraryImport("user32.dll")]
-    private static partial IntPtr WindowFromPoint(ScreenPoint point);
 
     [LibraryImport("user32.dll")]
     private static partial IntPtr GetAncestor(IntPtr window, uint flags);
@@ -76,7 +70,7 @@ public partial class MediaBrowserPane
     // own: another window over it (a side window, a dialog) takes nothing.
     private static bool IsTopWindowAt(Point screen, HwndSource source)
     {
-        var under = WindowFromPoint(new ScreenPoint { X = (int)Math.Floor(screen.X), Y = (int)Math.Floor(screen.Y) });
+        var under = WindowFromPoint(new NativePoint { X = (int)Math.Floor(screen.X), Y = (int)Math.Floor(screen.Y) });
         return under != IntPtr.Zero && source.Handle != IntPtr.Zero && GetAncestor(under, RootAncestor) == GetAncestor(source.Handle, RootAncestor);
     }
 }

@@ -13,7 +13,7 @@ namespace HandPegApp.Services;
 /// <item>the compositor worker (<see cref="CompositorClient"/>), drawing <see cref="GpuScenePlan"/>'s scenes, decoding on the
 /// card with Instant Seek;</item>
 /// <item>the WASAPI mixer (<see cref="WasapiAudioEngine"/>), whose device clock is the master clock while playing;</item>
-/// <item>the viewport (<see cref="GpuViewportControl"/>) on the video surface's native window;</item>
+/// <item>the viewport (<see cref="GpuViewport"/>) on the video surface's native window;</item>
 /// <item>the frame pump, a thread of its own: while playing it waits for the swap chain's turn, evaluates the plan at the
 /// moment the picture will be on the screen (the audio clock plus one refresh), publishes the scene, and presents the
 /// worker's frame; paused, it publishes only what changed (a seek, an edit, a resize) and presents what the worker drew
@@ -27,7 +27,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
 {
     private readonly CompositorClient _client;
     private readonly WasapiAudioEngine _audio;
-    private readonly GpuViewportControl _viewport;
+    private readonly GpuViewport _viewport;
     private readonly GpuResourceBroker _broker;
     private readonly Thread _pump;
     private readonly AutoResetEvent _dirty = new(false);
@@ -77,14 +77,14 @@ public sealed partial class GpuPreviewEngine : IDisposable
 
     private GpuPreviewEngine(CompositorClient client, WasapiAudioEngine audio, nint surface, bool player)
     {
-        (_client, _audio) = (client, audio);
+        (_client, _audio, _player) = (client, audio, player);
 
         // The player's tabs put behind are parked lean on unified memory or on battery (5.4.4): asked of the worker and its standby alike
         // (they share the control block); strip, export, bench and test clients never ask.
         // 5.5.2: the Playback & A/V Sync Test's engine (player: false) has no tabs and never asks.
         if (player)
             client.TabParking = 1;
-        _viewport = new GpuViewportControl(client, surface);
+        _viewport = new GpuViewport(client, surface);
         _broker = new GpuResourceBroker(client);
 
         // A texture finished on the background lane (a mask, a LUT, a caption): the paused picture is drawn again with it.
@@ -108,7 +108,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
     public static GpuPreviewEngine? Current { get; private set; }
 
     /// <summary>The swap chain it presents on (the Playback &amp; A/V Sync Test's sampler reads its frame statistics).</summary>
-    internal GpuViewportControl Viewport => _viewport;
+    internal GpuViewport Viewport => _viewport;
 
     /// <summary>
     /// Starts the engine for a player surface: the worker and its standby (off the UI thread), the audio device, then the
@@ -116,11 +116,13 @@ public sealed partial class GpuPreviewEngine : IDisposable
     /// the reason in <see cref="LastStartFailure"/>: the player then says so and tries again (MainWindow.OnGpuFailed). On the
     /// card of Settings' Compositor GPU role, or on <paramref name="adapter"/> (a DXGI index: the processor's WARP after the
     /// card failed). Call after Frame 1.
-    /// <para><paramref name="player"/> false (Pass 5.5.2-Release, the Playback &amp; A/V Sync Test): an engine beside the player's, never
+    /// <para><paramref name="player"/> false (5.5.2, the Playback &amp; A/V Sync Test): an engine beside the player's, never
     /// <see cref="Current"/>, with no standby worker, a small frame cache, no tab parking, and the card it draws on not taken for Auto's.</para>
     /// </summary>
     public static async Task<GpuPreviewEngine?> StartAsync(nint surface, int? adapter = null, bool player = true)
     {
+        // An engine still being torn down (DisposeInBackground) goes first: a window takes one flip-model swap chain at a time.
+        await Volatile.Read(ref _teardown);
         var settings = AppSettings.Current;
         var card = adapter ?? settings.CompositorGpuAdapter;
         var budget = !player ? 64L << 20 : settings.GpuFrameCacheMb switch { < 0 => -1L, 0 => 0L, var mb => (long)mb << 20 };
@@ -205,6 +207,16 @@ public sealed partial class GpuPreviewEngine : IDisposable
         set => _audio.Muted = value;
     }
 
+    /// <summary>Every window input at once (<see cref="PlayerInputs"/>): what a new engine is told before its first frame.</summary>
+    public void Apply(PlayerInputs inputs)
+    {
+        Volume = inputs.Volume;
+        Muted = inputs.Muted;
+        Rate = inputs.Rate;
+        SetView(inputs.ZoomLog2, inputs.PanX, inputs.PanY);
+        SetGradeCompare(inputs.GradeCompare, inputs.GradeWipe);
+    }
+
     /// <summary>The frame cache's counters (Settings' readout, diagnostics).</summary>
     public FrameCacheStats CacheStats => _client.CacheStats;
 
@@ -216,6 +228,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
     /// </summary>
     public void SetState(SequenceExportState state, AudioBuildOptions? audio = null)
     {
+        _uiOwner.Check();
         try
         {
             var plan = GpuScenePlan.Create(state, _broker);
@@ -359,7 +372,14 @@ public sealed partial class GpuPreviewEngine : IDisposable
         _audio.ApplySettings(settings.AudioOutputDeviceId, settings.AudioBufferMs, settings.AudioSyncOffsetMs);
 
     /// <summary>Rasterizes the captions near the playhead (UI thread, a couple of milliseconds a call): called as the playhead moves.</summary>
-    public void PrepareAround(double sequenceSeconds) => Volatile.Read(ref _plan).PrepareAround(sequenceSeconds);
+    public void PrepareAround(double sequenceSeconds)
+    {
+        _uiOwner.Check();
+        Volatile.Read(ref _plan).PrepareAround(sequenceSeconds);
+    }
+
+    // The UI thread, which owns SetState, PrepareAround, Prewarm and PrewarmTabs (the first of them to be called takes it).
+    private readonly ThreadOwner _uiOwner = new();
 
     /// <summary>Draw again (the window was resized, the DPI changed, a resource arrived).</summary>
     public void Invalidate()
@@ -428,6 +448,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
     /// </summary>
     public void Prewarm(string? path)
     {
+        _uiOwner.Check();
         if (path is null)
         {
             if (Interlocked.Exchange(ref _prewarm, null) is not null)
@@ -457,6 +478,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
     /// <param name="frames">Each video's file, its video stream (0 the first) and the moment of the file at its tab's playhead.</param>
     public void PrewarmTabs(IReadOnlyList<(string Path, int Stream, double MediaSeconds)> frames)
     {
+        _uiOwner.Check();
         var hints = new List<GpuSeekHint>(frames.Count);
         foreach (var (path, stream, media) in frames)
         {
@@ -479,6 +501,15 @@ public sealed partial class GpuPreviewEngine : IDisposable
 
     // ----- The clock -----
 
+    // ----- The transport: Play, Pause, Seek, the priming hand-off and the end of the sequence -----
+    // The UI thread calls Play, Pause and Seek; the pump pauses by itself at the end of the sequence (tools\AvSync and the
+    // Playback & A/V Sync Test rely on that, with no dispatcher) and starts the sound when priming ends. Every one of these state
+    // changes runs under _transport, for a few instructions and never across I/O (the play session's log line is written after
+    // the lock), and bumps _transportSerial. The pump reads the serial before it measures the end, so a Seek, Play or Pause made
+    // after the end was measured wins over the pump's own pause. Lock order: _transport, then the sound engine's locks.
+    private readonly Lock _transport = new();
+    private long _transportSerial;
+
     /// <summary>Sends the playhead to a moment (exact; a scrub calls this at the pointer's rate, no pacing needed).</summary>
     public void Seek(double sequenceSeconds)
     {
@@ -486,48 +517,62 @@ public sealed partial class GpuPreviewEngine : IDisposable
 
         // A paused drag of the playhead: its heading, for the hint a little ahead of it.
         var now = Stopwatch.GetTimestamp();
-        if (!_playing && !double.IsNaN(_lastSeekAt))
+        var holdBackground = false;
+        lock (_transport)
         {
-            var elapsed = (now - _lastSeekTicks) / (double)Stopwatch.Frequency;
-            if (elapsed is > 0.001 and < 0.25)
-                _scrubVelocity = 0.6 * _scrubVelocity + 0.4 * ((seconds - _lastSeekAt) / elapsed);
-            if (elapsed < ScrubbingFor)
-            {
-                Volatile.Write(ref _scrubMovedTicks, now);
+            _transportSerial++;
 
-                // A scrub's move holds background work back a moment (5.4.4: the strip workers stop between pictures meanwhile).
-                WorkScheduler.HoldBackground(ScrubHold);
-            }
-            else
+            // A paused drag of the playhead: its heading, for the decode hint a little ahead of it.
+            if (!_playing && !double.IsNaN(_lastSeekAt))
             {
-                _scrubVelocity = 0;
+                var elapsed = (now - _lastSeekTicks) / (double)Stopwatch.Frequency;
+                if (elapsed is > 0.001 and < 0.25)
+                    _scrubVelocity = 0.6 * _scrubVelocity + 0.4 * ((seconds - _lastSeekAt) / elapsed);
+                if (elapsed < ScrubbingFor)
+                {
+                    Volatile.Write(ref _scrubMovedTicks, now);
+                    holdBackground = true;
+                }
+                else
+                {
+                    _scrubVelocity = 0;
+                }
             }
+
+            _lastSeekAt = seconds;
+            Volatile.Write(ref _lastSeekTicks, now);
+            Volatile.Write(ref _pausedAt, seconds);
+            _audio.Seek(seconds);
         }
 
-        _lastSeekAt = seconds;
-        Volatile.Write(ref _lastSeekTicks, now);
-        Volatile.Write(ref _pausedAt, seconds);
-        _audio.Seek(seconds);
+        // A scrub's move holds background work back a moment (the strip workers stop between pictures meanwhile).
+        if (holdBackground)
+            WorkScheduler.HoldBackground(ScrubHold);
         Invalidate();
     }
 
     public void Play()
     {
-        if (_playing)
-            return;
-        var from = Volatile.Read(ref _pausedAt);
-        if (_rate >= 0 && from >= SequenceSeconds - 1e-3)
-            from = 0;
-        _audio.Seek(from);
-        _scrubVelocity = 0;
+        lock (_transport)
+        {
+            if (_playing)
+                return;
+            _transportSerial++;
+            var from = Volatile.Read(ref _pausedAt);
+            if (_rate >= 0 && from >= SequenceSeconds - 1e-3)
+                from = 0;
+            _audio.Seek(from);
+            _scrubVelocity = 0;
 
         // Several videos at once: the clock waits for their first frames (PlayStartWait), so none is shown late or out of step.
-        _primingSince = _state is { } state && VideosAt(state, from) > 1 ? Stopwatch.GetTimestamp() : 0;
-        _primingScene = 0;
-        if (_primingSince == 0)
-            _audio.Play();
-        BeginPlaySession();
-        _playing = true;
+            _primingSince = _state is { } state && VideosAt(state, from) > 1 ? Stopwatch.GetTimestamp() : 0;
+            _primingScene = 0;
+            if (_primingSince == 0)
+                _audio.Play();
+            BeginPlaySession();
+            _playing = true;
+        }
+
         Invalidate();
     }
 
@@ -564,16 +609,62 @@ public sealed partial class GpuPreviewEngine : IDisposable
 
     public void Pause()
     {
-        if (!_playing)
-            return;
-        var at = _audio.Position;
+        string? session;
+        lock (_transport)
+        {
+            if (!_playing)
+                return;
+            _transportSerial++;
+            session = PauseCore(_audio.Position);
+        }
+
+        if (session is not null)
+            AppLog.Write(session);
+        Invalidate();
+    }
+
+    /// <summary>Pauses at <paramref name="at"/> (under <see cref="_transport"/>); returns the play session's log line, written after the lock.</summary>
+    private string? PauseCore(double at)
+    {
         _audio.Pause();
         _primingSince = 0;
         _playing = false;
         Volatile.Write(ref _pausedAt, Math.Clamp(at, 0, Math.Max(SequenceSeconds, 0)));
         _audio.Seek(Volatile.Read(ref _pausedAt));
-        EndPlaySession();
+        return EndPlaySession();
+    }
+
+    /// <summary>
+    /// The pump reached the end of the sequence: paused there and <see cref="Ended"/> raised, unless the transport changed after the end
+    /// was measured (<paramref name="serial"/>): a Seek, Play or Pause the user made meanwhile wins, and no stale Ended is raised.
+    /// </summary>
+    private void PauseAtEnd(long serial, double end)
+    {
+        string? session;
+        lock (_transport)
+        {
+            if (!_playing || _transportSerial != serial)
+                return;
+            _transportSerial++;
+            session = PauseCore(end);
+        }
+
+        if (session is not null)
+            AppLog.Write(session);
         Invalidate();
+        Ended?.Invoke();
+    }
+
+    /// <summary>Priming is over (every video's first frames are in): the sound starts, unless the user paused meanwhile.</summary>
+    private void EndPriming()
+    {
+        lock (_transport)
+        {
+            if (!_playing || _primingSince == 0)
+                return;
+            _primingSince = 0;
+            _audio.Play();
+        }
     }
 
     // ----- The frame pump -----
@@ -623,7 +714,8 @@ public sealed partial class GpuPreviewEngine : IDisposable
                     {
                         playBegun = true;
                         monitorPeriod = _viewport.MonitorRefreshSeconds;
-                        _refresh = GpuViewportControl.StartRefresh(_refresh, monitorPeriod);
+                        _refresh = GpuViewport.StartRefresh(_refresh, monitorPeriod);
+                        SeedLeadOnce(monitorPeriod);
                     }
 
                     // Paced by the swap chain: one frame queued at most, so what is drawn now is on screen one refresh on. A
@@ -641,23 +733,20 @@ public sealed partial class GpuPreviewEngine : IDisposable
                     // measured at 1/60 s, the picture 15 ms ahead of the sound). A turn over 1.5 of the monitor's refresh is a stall, not
                     // a refresh, and is left out (5.5.2: a cold play's 37-52 ms turns took a 500 Hz estimate to ~18 ms, the frames that far ahead).
                     if (paced && presentedLast)
-                        _refresh = GpuViewportControl.NextRefresh(_refresh, interval, monitorPeriod);
+                        _refresh = GpuViewport.NextRefresh(_refresh, interval, monitorPeriod);
                     presentedLast = false;
 
                     if (_primingSince != 0 && PlayStartReady(_client, _primingSince, _primingScene))
-                    {
-                        _primingSince = 0;
-                        _audio.Play();
-                    }
+                        EndPriming();
 
                     // The marks asked for so far, read before the plan and the playhead: the scene made of them comes after them (PresentedSince).
                     _turnMark = Volatile.Read(ref _sceneMark);
                     var plan = Volatile.Read(ref _plan);
 
-                    // Drawing ahead (5.4.4-Final, the user's Q2 a; unified memory, the XPS): the frame drawn during the last refresh shown now,
+                    // Drawing ahead (5.4.4; unified-memory GPUs such as the Snapdragon's Adreno): the frame drawn during the last refresh shown now,
                     // and the next one handed to the worker at once, drawn while this one is on the screen (DrawAheadTurn).
                     // A stalled turn (a cold play's first second) measures no lead: its frame's long way to the screen is not the display's (5.5.2).
-                    var origin = GpuViewportControl.LeadOrigin(now, interval, monitorPeriod, _refresh);
+                    var origin = GpuViewport.LeadOrigin(now, interval, monitorPeriod, _refresh);
                     if (DrawsAhead)
                     {
                         DrawAheadTurn(plan, origin, hints, ref owedTurn, ref presentedLast);
@@ -665,14 +754,13 @@ public sealed partial class GpuPreviewEngine : IDisposable
                     }
 
                     // The frame is drawn for the moment it will be on the screen (5.4.4-Final, the user's Q4 a): the swap chain's measured lead
-                    // from this turn to the vblank that shows it (GpuViewportControl.DisplayLeadSeconds), else one refresh as before.
+                    // from this turn to the vblank that shows it (GpuViewport.DisplayLeadSeconds), else one refresh as before.
                     _viewport.FrameOrigin = origin;
-                    var at = _audio.Position + GpuViewportControl.PlayingLead(_refresh, _viewport.DisplayLeadSeconds) * Math.Max(_rate, 0);
+                    var serial = Volatile.Read(ref _transportSerial);
+                    var at = _audio.Position + GpuViewport.PlayingLead(_refresh, _viewport.DisplayLeadSeconds) * Math.Max(_rate, 0);
                     if (_rate >= 0 && at >= plan.SequenceSeconds - 1e-3 || _rate < 0 && at <= 0)
                     {
-                        Pause();
-                        Volatile.Write(ref _pausedAt, _rate >= 0 ? plan.SequenceSeconds : 0);
-                        Ended?.Invoke();
+                        PauseAtEnd(serial, _rate >= 0 ? plan.SequenceSeconds : 0);
                         continue;
                     }
 
@@ -793,27 +881,32 @@ public sealed partial class GpuPreviewEngine : IDisposable
         if (plan.SequenceSeconds > 0.002 && seconds > plan.SequenceSeconds - 0.001)
             seconds = plan.SequenceSeconds - 0.001;
 
+        // The UI thread's display inputs read once for the whole scene: a Show Source toggle or a pinch landing part-way through must
+        // not mix a source evaluation with the sequence-only extras, or a new zoom with the old pan (the next turn redraws anyway).
+        var sourceView = _sourceView;
+        var (viewScale, viewPanX, viewPanY) = (_viewScale, _viewPanX, _viewPanY);
+
         _client.ClearScene();
         ref var header = ref _client.Scene;
         var layers = MemoryMarshal.CreateSpan(ref _client.Layer(0), CompositorProtocol.MaxLayers);
-        if (_sourceView)
+        if (sourceView)
             plan.EvaluateSource(seconds, Volatile.Read(ref _sourceKey), ref header, layers);
         else
-            plan.Evaluate(seconds, ref header, layers);
+            plan.Evaluate(seconds, ref header, layers, PlayerCompare());
         header.PlayheadSeconds = seconds;
         header.IsPlaying = playing ? 1 : 0;
         (header.OutputWidth, header.OutputHeight) = (width, height);
         header.Flags |= FrameSceneHeader.FlagLetterbox;
         header.PreviewScale = PreviewScaleFor(playing, width, height, header.CanvasWidth > 0 ? header.CanvasWidth : 1920, header.CanvasHeight > 0 ? header.CanvasHeight : 1080);
-        if (!_sourceView)
+        if (!sourceView)
             WriteAudioBands(ref header, seconds, playing);
-        (header.ViewScale, header.ViewPanX, header.ViewPanY) = (_viewScale, _viewPanX, _viewPanY);
-        if (!_sourceView && Volatile.Read(ref _loupeKey) is var loupe and not 0)
+        (header.ViewScale, header.ViewPanX, header.ViewPanY) = (viewScale, viewPanX, viewPanY);
+        if (!sourceView && Volatile.Read(ref _loupeKey) is var loupe and not 0)
             (header.LoupeClipKey, header.LoupeKind, header.LoupeZoom) = (loupe, Volatile.Read(ref _loupeKind), LoupeZoom);
         if (header.CanvasWidth <= 0 || header.CanvasHeight <= 0)
             (header.CanvasWidth, header.CanvasHeight) = (1920, 1080);
         _shownCanvas = (header.CanvasWidth, header.CanvasHeight);
-        if (!_sourceView)
+        if (!sourceView)
         {
             WriteCamera(ref header, layers);
             WriteLoopback(ref header);
@@ -846,7 +939,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
     private readonly System.Collections.Concurrent.ConcurrentQueue<(bool Attach, nint Window)> _mirrorRequests = new();
 
     // The mirrors, on the pump's thread only; the canvas the player's picture was last drawn at, and the shape last told.
-    private readonly List<GpuViewportControl> _mirrors = [];
+    private readonly List<GpuViewport> _mirrors = [];
     private (int Width, int Height) _shownCanvas = (1920, 1080);
     private double _mirrorAspectTold;
 
@@ -885,7 +978,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
             var at = _mirrors.FindIndex(m => m.Window == request.Window);
             if (request.Attach && at < 0)
             {
-                _mirrors.Add(new GpuViewportControl(_viewport, request.Window));
+                _mirrors.Add(new GpuViewport(_viewport, request.Window));
                 _mirrorAspectTold = 0;
             }
             else if (!request.Attach && at >= 0)
@@ -896,7 +989,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
         }
     }
 
-    /// <summary>Each mirror's turn, after the player's (never waits: GpuViewportControl.PresentMirror), and the shape told when it changed.</summary>
+    /// <summary>Each mirror's turn, after the player's (never waits: GpuViewport.PresentMirror), and the shape told when it changed.</summary>
     private void PresentMirrors()
     {
         if (_mirrors.Count == 0)
@@ -938,22 +1031,32 @@ public sealed partial class GpuPreviewEngine : IDisposable
 
     // ----- One picture of the frame, read back (Export Frame) -----
 
-    private TaskCompletionSource<(byte[] Bgra, int Width, int Height)?>? _capture;
+    /// <summary>
+    /// One frame capture asked for: its result and the plan it draws (the originals', made on the UI thread; null for the player's own),
+    /// exchanged as one object so the pump never draws one request with another's plan.
+    /// </summary>
+    private sealed record FrameRequest(TaskCompletionSource<(byte[] Bgra, int Width, int Height)?> Done, GpuScenePlan? Plan);
 
-    // The state the plan was made from, and the plan a capture draws (the originals', never a proxy's: Export Frame).
+    private FrameRequest? _capture;
+
+    // The state the plan was made from.
     private SequenceExportState? _state;
-    private GpuScenePlan? _capturePlan;
-    private double _captureAt = double.NaN;
+
+    // Set as Dispose begins: captures asked for after it end at once with null (a retry after Reload Player must neither wait for a
+    // pump that is gone nor signal its disposed wake event).
+    private volatile bool _disposed;
 
     /// <summary>
     /// The frame at the playhead as the export makes it: the canvas's own size, no letterbox, no zoom, no 3D view, every
     /// exact frame, from the original files (a clip optimized for scrubbing shows its original, not its proxy), BGRA8
-    /// (alpha meaningless). Null when it could not be read. Called on the UI thread (a plan of the originals is made
-    /// there when the player's reads proxies); drawn on the pump's thread.
+    /// (alpha meaningless). Null when it could not be read, or when a newer capture replaced this one before it was drawn.
+    /// Called on the UI thread (a plan of the originals is made there when the player's reads proxies); drawn on the pump's thread.
     /// </summary>
-    /// <param name="at">The moment of the sequence to draw; null for the playhead.</param>
-    public Task<(byte[] Bgra, int Width, int Height)?> CaptureFrameAsync(double? at = null)
+    public Task<(byte[] Bgra, int Width, int Height)?> CaptureFrameAsync()
     {
+        if (_disposed)
+            return Task.FromResult<(byte[] Bgra, int Width, int Height)?>(null);
+
         var request = new TaskCompletionSource<(byte[], int, int)?>(TaskCreationOptions.RunContinuationsAsynchronously);
         GpuScenePlan? originals = null;
         if (_state is { IsPreview: true } state)
@@ -968,20 +1071,18 @@ public sealed partial class GpuPreviewEngine : IDisposable
             }
         }
 
-        Volatile.Write(ref _capturePlan, originals);
-        Interlocked.Exchange(ref _captureAt, at ?? double.NaN);
-        Interlocked.Exchange(ref _capture, request)?.TrySetResult(null);
+        Interlocked.Exchange(ref _capture, new FrameRequest(request, originals))?.Done.TrySetResult(null);
         _dirty.Set();
         return request.Task;
     }
 
-    private void Capture(TaskCompletionSource<(byte[] Bgra, int Width, int Height)?> request)
+    private void Capture(FrameRequest asked)
     {
+        var request = asked.Done;
         try
         {
-            var plan = Interlocked.Exchange(ref _capturePlan, null) ?? Volatile.Read(ref _plan);
-            var wanted = Interlocked.Exchange(ref _captureAt, double.NaN);
-            var at = Math.Min(double.IsNaN(wanted) ? Position : Math.Max(wanted, 0), Math.Max(plan.SequenceSeconds - 0.001, 0));
+            var plan = asked.Plan ?? Volatile.Read(ref _plan);
+            var at = Math.Min(Position, Math.Max(plan.SequenceSeconds - 0.001, 0));
             _client.ClearScene();
             ref var header = ref _client.Scene;
             var layers = MemoryMarshal.CreateSpan(ref _client.Layer(0), CompositorProtocol.MaxLayers);
@@ -1040,7 +1141,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
     /// </summary>
     public Task<(byte[] Bgra, int Width, int Height)?> CaptureThumbnailAsync(int shortSide = ProjectThumbnail.ShortSide, bool asShown = false)
     {
-        if (_playing || _state is not { } state)
+        if (_disposed || _playing || _state is not { } state)
             return Task.FromResult<(byte[] Bgra, int Width, int Height)?>(null);
 
         var request = new TaskCompletionSource<(byte[] Bgra, int Width, int Height)?>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1102,7 +1203,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
             _client.ClearScene();
             ref var header = ref _client.Scene;
             var layers = MemoryMarshal.CreateSpan(ref _client.Layer(0), CompositorProtocol.MaxLayers);
-            plan.Evaluate(at, ref header, layers);
+            plan.Evaluate(at, ref header, layers, ThumbnailCompare(request.Task));
             header.PlayheadSeconds = at;
 
             if (asked.AsShown && ShownPose() is { } pose)
@@ -1327,8 +1428,36 @@ public sealed partial class GpuPreviewEngine : IDisposable
         (header.AudioBass, header.AudioMid, header.AudioHigh) = _audio.LiveBands;
     }
 
+    // The last engine torn down on the pool (DisposeInBackground); the next StartAsync waits for it. Written on the UI thread only.
+    private static Task _teardown = Task.CompletedTask;
+
+    /// <summary>
+    /// Disposes the engine on the pool, after any earlier background teardown (the next <see cref="StartAsync"/> waits for this one), so
+    /// the pump's join (up to 2 s) and the compositor's and sound engine's ends never hold the window's thread (a Reload Player, a worker
+    /// given up on). The caller has let go of the engine: nothing calls it after this. UI thread.
+    /// </summary>
+    public Task DisposeInBackground()
+    {
+        var previous = Volatile.Read(ref _teardown);
+        var teardown = Task.Run(async () =>
+        {
+            await previous.ConfigureAwait(false);
+            try
+            {
+                Dispose();
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                AppLog.Write("GPU engine: its teardown on the pool failed", ex);
+            }
+        });
+        Volatile.Write(ref _teardown, teardown);
+        return teardown;
+    }
+
     public void Dispose()
     {
+        _disposed = true;
         if (ReferenceEquals(Current, this))
             Current = null;
         ForgetEnergies();
@@ -1336,10 +1465,10 @@ public sealed partial class GpuPreviewEngine : IDisposable
         // The stop event also ends a frame's or a thumbnail's readback wait within a slice (TryReadback's abort), so the pump is
         // out well inside the join (Pass 5.2D).
         _stop.Set();
-        var pumpEnded = _pump.Join(2000);
+        var pumpEnded = ThreadStop.Join(_pump, 2000, "Player pump");
 
         // A frame or a thumbnail asked for and not drawn (the engine stopped first): none, so that what waits on it goes on.
-        Interlocked.Exchange(ref _capture, null)?.TrySetResult(null);
+        Interlocked.Exchange(ref _capture, null)?.Done.TrySetResult(null);
         Interlocked.Exchange(ref _thumbnail, null)?.Done.TrySetResult(null);
         if (!pumpEnded)
         {

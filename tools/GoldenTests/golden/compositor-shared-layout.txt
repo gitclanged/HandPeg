@@ -1,0 +1,6 @@
+# The compositor's shared memory: each struct fits its slot; the longest source path stays inside its own entry.
+ok: SharedLayout.Verify finds every shared struct within its slot (the control block, the scene header, a layer, a source and a resource entry)
+ok: a source entry is exactly its 1 KB stride: 32 bytes of fields and a path field of MaxPathChars UTF-16 characters
+ok: the longest path a source entry accepts (MaxPathChars - 1 characters) reads back whole
+ok: writing it leaves the next entry's generation and kind untouched
+ok: writing it into the last source entry leaves the resource table's first entry untouched

@@ -63,6 +63,9 @@ public sealed partial class GpuScenePlan
         public long PathHash;
         public double MediaStart, MediaOffset, Speed = 1, MediaDuration;
         public bool Loops;
+
+        // Smooth Slow-Mo: slower than 1x and asked for, so drawn as in-betweens (GpuLayerDescriptor.FlagInterpolate).
+        public bool Interpolate;
         public GpuResourceRef Still = GpuResourceRef.None;
 
         // A video's own picture size, in its pixels (the source view's canvas; 1920 x 1080 while it is not known).
@@ -93,6 +96,9 @@ public sealed partial class GpuScenePlan
         public GpuEffectPacket Edges;
         public GpuEffectPacket[] Packets = [];
         public GpuResourceRef Lut = GpuResourceRef.None, Curve = GpuResourceRef.None, Mask = GpuResourceRef.None, MaskStandIn = GpuResourceRef.None;
+
+        // The Color Grade card that holds the LUT and the curve table (null: a LUT or Curves card holds them, or none does).
+        public EffectInstance? LutCard, CurveCard;
         public Fade[] Fades = [];
 
         // A twin's blur (BlurRadius, BlurPasses, BackgroundDim), and its video when that hides every pixel of it whenever it is
@@ -222,7 +228,7 @@ public sealed partial class GpuScenePlan
         }
 
         /// <summary>A layer's box on the frame, in its pixels, at its own picture's shape (Layer.GetOutputRect).</summary>
-        private (int X, int Y, int Width, int Height) BoxOf(Layer layer) => layer.GetOutputRect(_width, _height, layer.ImageWidth, layer.ImageHeight);
+        private (int X, int Y, int Width, int Height) BoxOf(Layer layer) => layer.ComputeOutputRect(_width, _height, layer.ImageWidth, layer.ImageHeight);
 
         /// <summary>
         /// A video from its own file (AppendVideoFile): its clip's stream at its clip's moments, cut by its crop, in its box. A
@@ -458,6 +464,7 @@ public sealed partial class GpuScenePlan
         {
             (entry.MediaStart, entry.MediaOffset, entry.MediaDuration) = (layer.StartTime, layer.MediaOffset, layer.MediaDuration);
             entry.Speed = layer.HasSpeed && double.IsFinite(layer.Speed) ? Math.Clamp(layer.Speed, Layer.SlowestSpeed, Layer.FastestSpeed) : 1;
+            entry.Interpolate = entry.Speed < 1 && layer.SmoothSlowMo;
             entry.Loops = layer.Duration <= 0.001;
             if (entry.Loops)
                 (entry.From, entry.To) = (layer.StartTime, double.PositiveInfinity);
@@ -536,6 +543,17 @@ public sealed partial class GpuScenePlan
                 {
                     continue;
                 }
+                else if (definition.GpuSlot == GpuShaderSlot.ColorStudio)
+                {
+                    // The Color Grade: drawn with or without its tables, which it takes as a LUT card and a Curves card take theirs
+                    // (the first of each on the layer wins); the plan's AddCard tells the shader which it holds.
+                    var file = card.GetText(ColorGradeKeys.Lut).Trim().Trim('"');
+                    if (file.Length > 0 && state.ExistingFiles.Contains(file) && TakeTable(ref entry.Lut, () => resources.Lut(file)))
+                        entry.LutCard = card;
+                    if (ColorGradeMath.CurvesActive(card) && TakeTable(ref entry.Curve, () => resources.ColorCurves(card.GetText(ColorGradeKeys.CurveMaster),
+                            card.GetText(ColorGradeKeys.CurveRed), card.GetText(ColorGradeKeys.CurveGreen), card.GetText(ColorGradeKeys.CurveBlue))))
+                        entry.CurveCard = card;
+                }
 
                 look.Add(card);
             }
@@ -596,7 +614,7 @@ public sealed partial class GpuScenePlan
 
         private void PlaceMasks(Entry entry, Layer layer, (int Width, int Height) size, (double Left, double Top, double Right, double Bottom) pictureCrop)
         {
-            var file = layer.CustomMask && layer.HasMask && layer.FxOn(EffectRegistry.Mask) ? layer.MaskSource : "";
+            var file = layer.CustomMask && layer.HasMask && layer.FxOn(EffectRegistry.Mask) ? MaskStore.SourceOf(layer) : "";
             var hasMask = file.Length > 0 && state.ExistingFiles.Contains(file);
             if (hasMask)
             {
@@ -679,7 +697,7 @@ public sealed partial class GpuScenePlan
                 return false;
 
             var covers = video.X <= 0 && video.Y <= 0 && video.X + video.W >= _width && video.Y + video.H >= _height;
-            var mask = layer.MaskSource;
+            var mask = MaskStore.SourceOf(layer);
             var opaque = layer.Opacity >= 100 && !layer.HasKeys(KeyProperty.Opacity) && !layer.ChromaKey && !(layer.CustomMask && state.ExistingFiles.Contains(mask))
                          && layer.CornerRadius == 0 && !layer.Feather && Math.Abs(layer.Rotation % 360) < 0.05 && !layer.IsTilted;
             var plain = video.Mask.IsNone && video.Edges.Slot == GpuShaderSlot.None && Array.TrueForAll(video.Matte, static step => step.Card is null)
@@ -693,7 +711,8 @@ public sealed partial class GpuScenePlan
         /// </summary>
         private static bool KeepsOpaque(EffectInstance card) => card.Definition?.GpuSlot is GpuShaderSlot.BoxBlur or GpuShaderSlot.Flip or GpuShaderSlot.Lut3D or GpuShaderSlot.Denoise
             or GpuShaderSlot.ColorGrade or GpuShaderSlot.ColorBalance or GpuShaderSlot.ColorTemperature or GpuShaderSlot.Vignette or GpuShaderSlot.FilmGrain
-            or GpuShaderSlot.HueSaturation or GpuShaderSlot.ToneCurve or GpuShaderSlot.Sharpen or GpuShaderSlot.HalationGlow or GpuShaderSlot.MotionBlur;
+            or GpuShaderSlot.HueSaturation or GpuShaderSlot.ToneCurve or GpuShaderSlot.Sharpen or GpuShaderSlot.HalationGlow or GpuShaderSlot.MotionBlur
+            or GpuShaderSlot.ColorStudio;
 
         // ----- The whole picture -----
 
@@ -760,7 +779,7 @@ public sealed partial class GpuScenePlan
         private Entry Captions()
         {
             var caption = state.CaptionLayer;
-            var (x, y, w, h) = caption.GetOutputRect(_width, _height, 0, 0);
+            var (x, y, w, h) = caption.ComputeOutputRect(_width, _height, 0, 0);
             (w, h) = (Math.Max(w, 16), Math.Max(h, 16));
             resources.Text.UseCaptionBox(w, h);
 

@@ -20,29 +20,6 @@ public static class ScrubTests
         yield return Case("scrub-zero-lag", "# A drag of the playhead moves its lines and the player on every pointer move; the playhead's value follows at most once per 16 ms and exactly as the drag is let go.", ZeroLag);
     }
 
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
-    }
-
     private static string F(FormattableString text) => text.ToString(CultureInfo.InvariantCulture);
 
     private static void ZeroLag(Action<bool, string> expect)
@@ -84,7 +61,7 @@ public static class ScrubTests
         expect(flushed.Count == count + 1 && flushed[^1].Ms == 4321 && !scrub.Tick(now + 20), "a click let go at once sets the playhead once, where it was pressed");
 
         // The wiring, read from the source.
-        var root = RepositoryRoot();
+        var root = SourceProbe.Root;
         string Read(params string[] parts) => File.ReadAllText(Path.Combine([root, .. parts])).Replace("\r\n", "\n");
         var parts = Read("src", "Controls", "TimelineParts.cs");
         var view = Read("src", "MainWindow.TimelineView.cs");
@@ -110,14 +87,4 @@ public static class ScrubTests
             "the frame loop is hooked only while a scrub has something to set");
     }
 
-    private static string RepositoryRoot()
-    {
-        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-        {
-            if (File.Exists(Path.Combine(dir.FullName, "HandPegApp.csproj")))
-                return dir.FullName;
-        }
-
-        throw new DirectoryNotFoundException("the repository (HandPegApp.csproj) above " + AppContext.BaseDirectory);
-    }
 }

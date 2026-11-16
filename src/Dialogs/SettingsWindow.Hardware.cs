@@ -8,7 +8,8 @@ namespace HandPegApp;
 // and the timeline decode's lists (the background's and the export's are filled with the Performance lists,
 // SettingsWindow.xaml.cs), Test & Auto-Tune Hardware, whose measurements the stage draws as they come in
 // (SettingsStagePreview.ShowBenchmark), the NPUs found (listed off the UI thread once the screen is up) and what Auto-Captions
-// run on (AppSettings.CaptionAccelerator).
+// run on (AppSettings.CaptionAccelerator). 5.6A: the stage's role cards (RoleCardsPanel: each role a click to pick, the S-F tier pills of
+// the result shown, the System tier, the sync test's last result).
 public partial class SettingsWindow
 {
     // The benchmark running from here, while it runs: pressing the button again cancels it.
@@ -19,6 +20,11 @@ public partial class SettingsWindow
 
     // The Export GPU's Auto, under its own words (GpuAdapter.Automatic says "Automatic", which meant FFmpeg's choice before 5.4C).
     private static readonly GpuAdapter ExportGpuAuto = new(-1, "Auto (the Compositor GPU)");
+
+    // 5.6A: the stage's role cards: the cards the lists offer (first listings), the first NPU's name, and the test's progress while it runs.
+    private IReadOnlyList<GpuAdapter> _stageCards = [];
+    private string? _npuName;
+    private HardwareBenchmarkResult? _benchmarkPartial;
 
     private void InitializeGpuRoles(IReadOnlyList<GpuAdapter> adapters)
     {
@@ -62,6 +68,15 @@ public partial class SettingsWindow
         CaptionAcceleratorBox.SelectedValue = _settings.CaptionAccelerator;
         CaptionAcceleratorBox.SelectionChanged += (_, _) => ShowSpeechPlan();
 
+        // 5.6A: the stage's role cards (RoleCardsPanel, as the first run has them), offering the cards these lists offer; a pick writes
+        // this window's copy and the lists follow it, and a list changed by hand redraws the cards.
+        _stageCards = distinct;
+        StageRoleCards.Devices = [.. distinct.Select(a => new RoleDevice(a.Index, a.Name))];
+        StageRoleCards.RoleChosen += StageRole_Chosen;
+        StageSyncCheck.Foreground = RoleCardsPanel.MeasuredBrush;
+        foreach (var box in new[] { CompositorGpuBox, DecodeGpuBox, BackgroundGpuBox, DecodeAdapterBox, CaptionAcceleratorBox })
+            box.SelectionChanged += (_, _) => ShowStageRoles();
+
         // The last result, read off the UI thread once the screen is up (a small file), for the stage and the status line; the
         // NPUs, listed off it too (DXCore, once a session).
         Loaded += async (_, _) =>
@@ -86,7 +101,9 @@ public partial class SettingsWindow
         InitializeSyncTest();
     }
 
-    private async void Benchmark_Click(object sender, RoutedEventArgs e)
+    private void Benchmark_Click(object sender, RoutedEventArgs e) => Faults.Forget(Benchmark_ClickAsync(sender, e), nameof(Benchmark_Click));
+
+    private async Task Benchmark_ClickAsync(object sender, RoutedEventArgs e)
     {
         if (_benchmarkRun is { } running)
         {
@@ -114,6 +131,13 @@ public partial class SettingsWindow
             BenchmarkStatusText.Text = step.Message;
             StagePreview.ShowBenchmark(step.Partial ?? _benchmarkShown, fraction,
                 string.Create(CultureInfo.InvariantCulture, $"{step.Message}  {fraction * 100:0}%"), stale: false);
+
+            // 5.6A: the stage's cards take the figures and tier pills as they come.
+            if (step.Partial is { } partial)
+            {
+                _benchmarkPartial = partial;
+                ShowStageRoles();
+            }
         });
 
         HardwareBenchmarkResult? result;
@@ -124,7 +148,12 @@ public partial class SettingsWindow
         finally
         {
             _benchmarkRun = null;
+            _benchmarkPartial = null;
             SetBenchmarkRunning(false);
+
+            // 5.6A review: a run stopped or failed drops its partial figures and pills from the stage's cards, and brings the kept
+            // result's System tier back (a result shown next draws them again).
+            ShowStageRoles();
         }
 
         if (result is null)
@@ -155,6 +184,7 @@ public partial class SettingsWindow
         DecodeGpuBox.SelectedValue = _settings.DecodeGpuAdapter;
         BackgroundGpuBox.SelectedValue = _settings.BackgroundGpu;
         DecodeAdapterBox.SelectedValue = _settings.HardwareDecodeAdapter;
+        ShowStageRoles();
     }
 
     // 5.5.0 (the user's Q10 b): Apply Recommended Roles: the kept result's roles set again (after the user changed them by hand, say).
@@ -190,13 +220,17 @@ public partial class SettingsWindow
     // The NPUs found, each with what it is used for (nothing yet: said as it is).
     private void ShowNpus(IReadOnlyList<NpuAdapter> npus)
     {
+        (_npuName, StageRoleCards.HasNpu) = (npus.FirstOrDefault()?.Name, npus.Count > 0);
+        ShowStageRoles();
         NpuText.Text = npus.Count == 0
             ? "None found (an NPU's driver lists it to Windows: a Snapdragon X, an Intel Core Ultra or an AMD Ryzen AI laptop has one)."
             : string.Join(Environment.NewLine, npus.Select(NpuAdapters.Describe)) + Environment.NewLine + NpuAdapters.UsedFor;
     }
 
     // What Auto-Captions would run on with the choice shown, in a sentence (a few file checks, on a pool thread).
-    private async void ShowSpeechPlan()
+    private void ShowSpeechPlan() => Faults.Forget(ShowSpeechPlanAsync(), nameof(ShowSpeechPlan));
+
+    private async Task ShowSpeechPlanAsync()
     {
         var choice = CaptionAcceleratorBox.SelectedValue as string ?? AppSettings.SpeechOnAuto;
         try
@@ -218,6 +252,7 @@ public partial class SettingsWindow
         BenchmarkButtonText.Text = running ? "Stop the Test" : "Test & Auto-Tune Hardware";
         foreach (var box in new[] { CompositorGpuBox, DecodeGpuBox, BackgroundGpuBox, DecodeAdapterBox })
             box.IsEnabled = !running;
+        StageRoleCards.IsEnabled = !running;
         ApplyRolesButton.IsEnabled = !running && CanApplyRoles(_benchmarkShown);
         SyncTestCard.BlockedBy = running ? "Waits for the hardware test" : null;
     }
@@ -229,18 +264,20 @@ public partial class SettingsWindow
     {
         SyncTestCard.ShowKept(_settings.LastPlaybackSyncTest);
         SyncTestCard.RunningChanged += () => BenchmarkButton.IsEnabled = !SyncTestCard.IsRunning;
-        SyncTestCard.Completed += result => KeepSyncResult(_settings, result);
+        SyncTestCard.Completed += result =>
+        {
+            KeepSyncResult(_settings, result);
+            ShowStageRoles();
+        };
     }
 
     /// <summary>A Playback &amp; A/V Sync Test's result kept (the golden test calls it): in the screen's copy, and in the settings in effect, saved.</summary>
     internal static void KeepSyncResult(AppSettings screenCopy, PlaybackSyncResult result)
     {
         screenCopy.LastPlaybackSyncTest = result;
-        var current = AppSettings.Current;
-        current.LastPlaybackSyncTest = result;
         try
         {
-            current.SaveAsCurrent();
+            AppSettings.Update(current => current.LastPlaybackSyncTest = result, saveNow: true);
         }
         catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException)
         {
@@ -253,6 +290,7 @@ public partial class SettingsWindow
     {
         _benchmarkShown = result;
         var stale = !HardwareBenchmarkService.IsCurrent(result);
+        ShowStageRoles();
         ApplyRolesButton.IsEnabled = _benchmarkRun is null && CanApplyRoles(result);
         StagePreview.ShowBenchmark(result, null, "", stale);
 
@@ -276,6 +314,123 @@ public partial class SettingsWindow
         BenchmarkReasonsText.Text = string.Join(Environment.NewLine, reasons);
         BenchmarkReasonsText.Visibility = reasons.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         BenchmarkStatusText.ToolTip = reasons.Count > 0 ? BenchmarkReasonsText.Text : null;
+    }
+
+    // ----- The stage's role cards (Pass 5.6A): RoleCardsPanel above the stage's picture, Export & Hardware only -----
+
+    /// <summary>The stage's role cards, System tier and sync line, from this window's copy and the result shown (while the stage shows them).</summary>
+    private void ShowStageRoles()
+    {
+        if (_stageKind != StageKind.Hardware)
+            return;
+
+        // A result of other cards or drivers gives no figures; the test's progress gives them as they come.
+        var result = _benchmarkPartial ?? (_benchmarkShown is { } shown && HardwareBenchmarkService.IsCurrent(shown) ? shown : null);
+        StageRoleCards.ItemsSource = StageRoleCardsOf(_settings, _stageCards, _npuName, result, GpuAdapters.CompositorIndex);
+        var system = _benchmarkPartial is null && result is not null ? PerformanceTiers.System(result) : null;
+        StageSystemTier.Child = system is { } tier ? RoleCardsPanel.TierPill(tier, PerformanceTiers.SystemTip(result!, tier)) : null;
+        StageSystemTier.Visibility = system is null ? Visibility.Collapsed : Visibility.Visible;
+
+        // The Playback & A/V Sync Test's last result, read-only: its test is the GPU & NPU Roles section's own card (one home).
+        var sync = _settings.LastPlaybackSyncTest;
+        StageSyncText.Text = sync is null ? "Sync test not run" : PlaybackSyncTest.Summary(sync);
+        StageSyncText.ToolTip = sync is null ? null : PlaybackSyncTest.Detail(sync);
+        StageSyncCheck.Visibility = sync is { Passed: true } ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    // A role picked on a stage card: into this window's copy, as its list would put it, the list showing it (refused while the test runs).
+    private void StageRole_Chosen(string role, string value)
+    {
+        if (_benchmarkRun is not null)
+            return;
+
+        if (role == HardwareRoles.Npu)
+        {
+            if (AppSettings.CaptionAccelerators.Contains(value))
+                (_settings.CaptionAccelerator, CaptionAcceleratorBox.SelectedValue) = (value, value);
+        }
+        else if (int.TryParse(value, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var card))
+        {
+            switch (role)
+            {
+                case HardwareRoles.Compositor:
+                    (_settings.CompositorGpuAdapter, CompositorGpuBox.SelectedValue) = (card, card);
+                    break;
+                case HardwareRoles.Decode:
+                    (_settings.DecodeGpuAdapter, DecodeGpuBox.SelectedValue) = (card, card);
+                    break;
+                case HardwareRoles.Background:
+                    (_settings.BackgroundGpu, BackgroundGpuBox.SelectedValue) = (card, card);
+                    break;
+                case HardwareRoles.Export:
+                    (_settings.HardwareDecodeAdapter, DecodeAdapterBox.SelectedValue) = (card, card);
+                    break;
+            }
+        }
+
+        ShowStageRoles();
+        RefreshStageSoon();
+    }
+
+    /// <summary>
+    /// The stage's role cards (5.6A; pure: the goldens check it): each role as this window's copy of the settings has it, named from the
+    /// cards the lists offer (Auto: the card it lands on, the compositor's running card when known), the figures and tier pills of a
+    /// result measured on these cards (none: "Not tested"), and the NPU's Auto-Captions choice.
+    /// </summary>
+    internal static IReadOnlyList<FirstRunRoleCard> StageRoleCardsOf(AppSettings settings, IReadOnlyList<GpuAdapter> cards, string? npu,
+        HardwareBenchmarkResult? result, int runningCompositor)
+    {
+        GpuAdapter? Listed(int index) => index >= 0 ? cards.FirstOrDefault(a => a.Index == index) : null;
+        var compositor = Listed(settings.CompositorGpuAdapter) ?? Listed(runningCompositor)
+                         ?? (result is not null && PerformanceTiers.CompositorCard(result) is { } measured ? Listed(measured.Index) : null)
+                         ?? cards.OrderByDescending(a => a.DedicatedVideoMemoryMb).ThenBy(a => a.Index).FirstOrDefault();
+        var compositorName = compositor?.Name ?? "No graphics card found";
+        string Named(int value) => value == HardwareRoles.ProcessorOnly ? "Processor Only" : Listed(value)?.Name ?? $"Auto · {compositorName}";
+
+        FirstRunRoleCard Card(string role, string detail, GpuAdapter? holder, int value, string id)
+        {
+            var tierCard = value == HardwareRoles.ProcessorOnly ? value : holder?.Index ?? HardwareRoles.Auto;
+            var (tier, tip) = PerformanceTiers.ForRole(result, role, tierCard);
+            var measured = holder is null || result is null ? null : PerformanceTiers.Card(result, holder.Index);
+            var figures = measured is null ? "" : RoleCardsPanel.Figures(measured);
+            var badge = figures.Length > 0 ? figures : result is null ? "Not tested" : tier is null ? "Not measured" : "";
+            var isMeasured = figures.Length > 0 || measured is { CompositorMs: > 0 } || tier is not null && value == HardwareRoles.ProcessorOnly;
+            return new(role, Named(value), detail, badge, isMeasured, id)
+            {
+                Tier = tier, TierTip = tip, Value = value.ToString(CultureInfo.InvariantCulture),
+            };
+        }
+
+        var decode = Listed(settings.DecodeGpuAdapter);
+        var background = Listed(settings.BackgroundGpu);
+        var processorOnly = settings.BackgroundGpu == HardwareRoles.ProcessorOnly;
+        var export = Listed(settings.HardwareDecodeAdapter);
+        var encoding = export ?? compositor;
+        var encoders = encoding is null || result is null ? null : PerformanceTiers.Card(result, encoding.Index)?.EncodeCodecs;
+        var codecs = encoders is null ? "Exports composite on this card"
+            : encoders.Count == 0 ? "No hardware encoder listed: exports use the software encoders"
+            : string.Join(" · ", new[] { "AV1", "HEVC", "H.264" }.Where(encoders.Contains)) + " in hardware";
+        var accelerator = AppSettings.CaptionAccelerators.Contains(settings.CaptionAccelerator) ? settings.CaptionAccelerator : AppSettings.SpeechOnAuto;
+        var npuDetail = accelerator switch
+        {
+            AppSettings.SpeechOnNpu => "Auto-Captions on the NPU, once a speech build for it is here",
+            AppSettings.SpeechOnGpu => "Auto-Captions on the graphics card",
+            AppSettings.SpeechOnCpu => "Auto-Captions on the processor",
+            _ => npu is null ? "Auto-Captions run on the graphics card or the processor" : "Detected, not used yet: Auto-Captions on the NPU are planned with the AI worker",
+        };
+
+        return
+        [
+            Card(HardwareRoles.Compositor, "The player, its effects and shaders", compositor, settings.CompositorGpuAdapter, "CompositorRole"),
+            Card(HardwareRoles.Decode, decode is null || decode == compositor
+                ? "Timeline Clips decode on the compositor's card: zero-copy, nothing crosses the bus"
+                : "Timeline Clips decode here, each frame copied to the compositor's card", decode ?? compositor, settings.DecodeGpuAdapter, "DecodeRole"),
+            Card(HardwareRoles.Background, processorOnly ? "Thumbnails, waveforms and proxies, on the processor"
+                : background is null || background == compositor ? "Thumbnails, waveforms and proxies, on the compositor's card"
+                : "Thumbnails, waveforms and proxies, on this card", processorOnly ? null : background ?? compositor, settings.BackgroundGpu, "BackgroundRole"),
+            Card(HardwareRoles.Export, codecs, encoding, settings.HardwareDecodeAdapter, "ExportRole"),
+            new(HardwareRoles.Npu, npu ?? "No NPU found", npuDetail, npu is null ? "" : "Detected", false, "NpuRole") { Value = accelerator },
+        ];
     }
 
     /// <summary>

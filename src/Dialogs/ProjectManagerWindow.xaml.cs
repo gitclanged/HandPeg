@@ -401,7 +401,7 @@ public partial class ProjectManagerWindow : Window
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
             {
-                MessageText.Text = $"The folder could not be made: {ex.Message}";
+                Controls.UiFault.Show(MessageText, $"The folder could not be made: {ex.Message}", "Project Manager: make a folder", ex);
                 return;
             }
         }
@@ -629,7 +629,9 @@ public partial class ProjectManagerWindow : Window
     }
 
     // The pointer across a picture: the frame at that point of the video (the strip decoded once, on the way in).
-    private async void Picture_MouseMove(object sender, MouseEventArgs e)
+    private void Picture_MouseMove(object sender, MouseEventArgs e) => Faults.Forget(Picture_MouseMoveAsync(sender, e), nameof(Picture_MouseMove));
+
+    private async Task Picture_MouseMoveAsync(object sender, MouseEventArgs e)
     {
         if (sender is not FrameworkElement { DataContext: ProjectRow row } picture || row.Strip is not { } strip)
             return;
@@ -669,15 +671,7 @@ public partial class ProjectManagerWindow : Window
         if (on == AppSettings.Current.ShowProjectPreviews)
             return;
 
-        AppSettings.Current.ShowProjectPreviews = on;
-        try
-        {
-            AppSettings.Current.SaveAsCurrent();
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            // Not written: the choice holds for this session.
-        }
+        AppSettings.Update(settings => settings.ShowProjectPreviews = on);
 
         RefreshList();
     }
@@ -698,8 +692,9 @@ public partial class ProjectManagerWindow : Window
             return;
         }
 
-        MessageText.Text = _viewModel.SaveProject(NameBox.Text);
-        if (_closeOnSave && MessageText.Text.StartsWith("Project saved", StringComparison.Ordinal))
+        var saved = _viewModel.SaveProject(NameBox.Text);
+        MessageText.Text = saved.Line;
+        if (_closeOnSave && saved.IsSaved)
         {
             Close();
             return;
@@ -745,7 +740,9 @@ public partial class ProjectManagerWindow : Window
         LoadButton.IsEnabled = DeleteButton.IsEnabled = ProjectList.SelectedItem is ProjectRow;
 
     // On the thread pool (4.3E): making the folder and starting Explorer took the interface's thread for tens of milliseconds.
-    private async void OpenDirectory_Click(object sender, RoutedEventArgs e)
+    private void OpenDirectory_Click(object sender, RoutedEventArgs e) => Faults.Forget(OpenDirectory_ClickAsync(sender, e), nameof(OpenDirectory_Click));
+
+    private async Task OpenDirectory_ClickAsync(object sender, RoutedEventArgs e)
     {
         var folder = ProjectStore.Folder;
         var problem = await Task.Run<string?>(() =>
@@ -754,11 +751,12 @@ public partial class ProjectManagerWindow : Window
             {
                 // The folder only comes into being with the first saved project.
                 Directory.CreateDirectory(folder);
-                System.Diagnostics.Process.Start("explorer.exe", $"\"{folder}\"")?.Dispose();
+                ShellOpen.OpenFolder(folder);
                 return null;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
             {
+                AppLog.Write($"Project Manager: open the folder {folder}", ex);
                 return ex.Message;
             }
         });
@@ -784,7 +782,7 @@ public partial class ProjectManagerWindow : Window
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            MessageText.Text = $"Could not delete the project: {ex.Message}";
+            Controls.UiFault.Show(MessageText, $"Could not delete the project: {ex.Message}", "Project Manager: delete a project", ex);
             return;
         }
 

@@ -37,29 +37,6 @@ public static class PlaybackSyncTests
         yield return Case("playback-sync-card", "# The Playback & A/V Sync Test's card on the first-run window, run by a stand-in (5.5.2).", Card);
     }
 
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
-    }
-
     // ----- playback-sync-analysis -----
 
     private static List<double> Moments(int count, params int[] skipsAfter)
@@ -163,11 +140,11 @@ public static class PlaybackSyncTests
         // A stalled playing turn measures no display lead (the Desktop's on-screen session: a cold play's 20-60 ms turns drew frames ~60 ms ahead).
         var origins = new[]
         {
-            GpuViewportControl.LeadOrigin(1000, 0.002, 0.002, 0.002), GpuViewportControl.LeadOrigin(1000, 0.0029, 0.002, 0.002),
-            GpuViewportControl.LeadOrigin(1000, 0.0031, 0.002, 0.002), GpuViewportControl.LeadOrigin(1000, 0.032, 0.002, 0.002),
-            GpuViewportControl.LeadOrigin(1000, 0.0167, 1 / 60.0, 1 / 60.0), GpuViewportControl.LeadOrigin(1000, 0.034, 1 / 60.0, 1 / 60.0),
-            GpuViewportControl.LeadOrigin(1000, 0.020, double.NaN, 1 / 60.0), GpuViewportControl.LeadOrigin(1000, 0.030, double.NaN, 1 / 60.0),
-            GpuViewportControl.LeadOrigin(1000, 5.0, 0.002, 0.002),
+            GpuViewport.LeadOrigin(1000, 0.002, 0.002, 0.002), GpuViewport.LeadOrigin(1000, 0.0029, 0.002, 0.002),
+            GpuViewport.LeadOrigin(1000, 0.0031, 0.002, 0.002), GpuViewport.LeadOrigin(1000, 0.032, 0.002, 0.002),
+            GpuViewport.LeadOrigin(1000, 0.0167, 1 / 60.0, 1 / 60.0), GpuViewport.LeadOrigin(1000, 0.034, 1 / 60.0, 1 / 60.0),
+            GpuViewport.LeadOrigin(1000, 0.020, double.NaN, 1 / 60.0), GpuViewport.LeadOrigin(1000, 0.030, double.NaN, 1 / 60.0),
+            GpuViewport.LeadOrigin(1000, 5.0, 0.002, 0.002),
         };
         expect(origins.SequenceEqual([1000L, 1000, 0, 0, 1000, 0, 1000, 0, 0]),
             $"lead origins: 500 Hz turns of 2 and 2.9 ms kept, 3.1 and 32 ms stalls; 60 Hz 16.7 kept, 34 ms a stall; monitor unknown: by the estimate; a play's first turn none ({string.Join(",", origins)})");
@@ -323,7 +300,7 @@ public static class PlaybackSyncTests
             AppSettings.Current.SaveAsCurrent();
         }
 
-        var finish = File.ReadAllText(Path.Combine(RepositoryRoot(), "src", "Dialogs", "FirstRunWindow.xaml.cs"));
+        var finish = File.ReadAllText(Path.Combine(SourceProbe.Root, "src", "Dialogs", "FirstRunWindow.xaml.cs"));
         expect(finish.Contains("SyncTestCard.Cancel();", StringComparison.Ordinal) && finish.Contains("settings.LastPlaybackSyncTest = sync;", StringComparison.Ordinal),
             "Start Editing (Finish) stops a test running and writes the window's result with the other choices");
     }
@@ -363,14 +340,4 @@ public static class PlaybackSyncTests
         }
     }
 
-    private static string RepositoryRoot()
-    {
-        for (var folder = new DirectoryInfo(AppContext.BaseDirectory); folder is not null; folder = folder.Parent)
-        {
-            if (File.Exists(Path.Combine(folder.FullName, "HandPegApp.csproj")))
-                return folder.FullName;
-        }
-
-        throw new DirectoryNotFoundException("HandPegApp.csproj was not found above the golden tests' program.");
-    }
 }

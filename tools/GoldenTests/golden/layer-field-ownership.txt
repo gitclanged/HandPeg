@@ -1,0 +1,11 @@
+# One ownership table (LayerFields): every Layer property is the clip's, the view's, probed, or a look LayerState holds; no Apply* writes a clip field; track looks folded once.
+ok: Layer's settable properties read: more than 60
+ok: every Layer property is the clip's, the view's, probed, or a look LayerState saves under its name
+ok: the table names only properties Layer has
+ok: the undoable looks are LayerState's look properties only (no clip, view or probed value)
+ok: ApplyLook, ApplySource and ApplyPlace write no clip field (the clip's own come from TakeClip)
+ok: the view model's sync and undo read the one table (no hand-kept ClipFields, ViewOnly or UndoLooks lists)
+ok: folding a copy clears its track looks and leaves the original's
+ok: a folded clip keeps its own name, place and speed options and takes the track's shared look (opacity, corners); the original's look untouched
+ok: the lowering merges nothing itself: a document with track looks is lowered from a folded copy
+ok: a document put in place is folded before it becomes the timeline

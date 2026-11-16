@@ -1,0 +1,4 @@
+# The Effects pane's Detach takes off every handler Attach and its target hooked; a hidden pane draws nothing until shown.
+ok: Attach hooks the view model's three handlers once (again: no second set); Detach takes every one off
+ok: the pane's hooks live while it is loaded: unloaded (closed, moved), it holds none
+ok: loaded but hidden it rebuilds and refreshes nothing until it shows; its queued runs are RunGates, not flags

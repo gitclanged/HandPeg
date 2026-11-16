@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Media;
 using HandPegApp.Models;
 using HandPegApp.Services;
+using static HandPegApp.UiBrushes;
 
 namespace HandPegApp.Views;
 
@@ -221,13 +222,6 @@ public sealed class SubtitlePreview : FrameworkElement
         return hex.Length == 6 && int.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var rgb)
             ? Color.FromRgb((byte)(rgb >> 16), (byte)(rgb >> 8), (byte)rgb)
             : fallback;
-    }
-
-    private static SolidColorBrush Frozen(Color color)
-    {
-        var brush = new SolidColorBrush(color);
-        brush.Freeze();
-        return brush;
     }
 
     private static Pen FrozenPen(Color color, double thickness)

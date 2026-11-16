@@ -65,6 +65,7 @@ public partial class MainWindow
         CloseLightningDial();
         EndNavigation();
         HideXRay();
+        EndGradeHold();
         _holdTimer?.Stop();
         _holdKey = Key.None;
         _capsToRestore = false;
@@ -143,14 +144,16 @@ public partial class MainWindow
             ["marker.next"] = (source, () => _viewModel.GoToMarker(forward: true)),
             ["marker.prev"] = (source, () => _viewModel.GoToMarker(forward: false)),
 
-            // The time bars: = and - zoom about the playhead, \ shows the whole timeline again.
+            // The time bars: = and - zoom about the playhead, Shift+\ shows the whole timeline again (Pass 5.6A: \ alone is the Before/After).
             ["view.zoomIn"] = (source, () => ZoomAboutPlayhead(1.6)),
             ["view.zoomOut"] = (source, () => ZoomAboutPlayhead(1 / 1.6)),
             ["view.fit"] = (source, () => FitTimeline()),
             ["view.toggleSnap"] = (always, ToggleSnap),
             ["view.exploded3d"] = (() => CanToggleExplodedView, ToggleExplodedView),
             // In and out of the Fullscreen Preview (5.4.4): in only with a picture in the player.
-            ["view.fullscreen"] = (() => _fullscreen is not null || VideoView.IsVisible, ToggleFullscreen),
+            ["view.fullscreen"] = (() => _fullscreen.IsOpen || VideoView.IsVisible, _fullscreen.Toggle),
+            // The grade's Before/After (Pass 5.6A): held, \ shows the picture without its grade; from the dial or a hotbar slot, on and off.
+            ["view.compareGrade"] = (() => _gpu is not null, ToggleGradeBypass),
 
             ["key.toggle"] = (source, () => ToggleKeyframe_Click(this, new RoutedEventArgs())),
             ["key.prev"] = (source, () => StepKeyframe(-1)),
@@ -282,7 +285,7 @@ public partial class MainWindow
         if (action.Has(KeyActionFlags.Hold))
         {
             if (!e.IsRepeat)
-                BeginHold(chord.Key);
+                BeginHold(chord.Key, id);
             return true;
         }
 
@@ -359,6 +362,25 @@ public partial class MainWindow
 
     // ----- Keys before the shortcuts: Caps Lock's echo, and Esc for the dial, the tour and Interactive Crop -----
 
+    /// <summary>What an Esc is for (5.4.4), first come first served: the Lightning Dial, the tour, a 3D drag under way, the Fullscreen Preview, Interactive Crop, the 3D view.</summary>
+    internal enum EscapeTaker { None, Dial, Tour, ExplodedDrag, Fullscreen, Crop, Exploded }
+
+    /// <summary>
+    /// The one an Esc goes to (TakeOverlayKey): an open dial, then the tour, whatever has the keyboard; past them nothing while a text box, a
+    /// drop-down or a flyout has it (<paramref name="focusKeepsIt"/>); then a 3D drag (let go), the Fullscreen Preview (left), Interactive
+    /// Crop (ended) and the 3D view (left). The last two are answered later, after the text box's keys (EndCropOnEscape,
+    /// ExplodedWindow_PreviewKeyDown), in that order.
+    /// </summary>
+    internal static EscapeTaker EscapeTakerFor(bool dialOpen, bool tourRunning, bool focusKeepsIt, bool explodedDrag, bool fullscreen, bool crop, bool exploded) =>
+        dialOpen ? EscapeTaker.Dial
+        : tourRunning ? EscapeTaker.Tour
+        : focusKeepsIt ? EscapeTaker.None
+        : explodedDrag ? EscapeTaker.ExplodedDrag
+        : fullscreen ? EscapeTaker.Fullscreen
+        : crop ? EscapeTaker.Crop
+        : exploded ? EscapeTaker.Exploded
+        : EscapeTaker.None;
+
     // Caps Lock ran a shortcut and is to be switched back as it is let go; the press HandPeg sends for that, still to come
     // back as a key of its own (and until when it is waited for).
     private bool _capsToRestore;
@@ -388,13 +410,21 @@ public partial class MainWindow
 
         if (key == Key.Escape)
         {
+            // 5.6A review: a Color Match Reference drag takes Esc first (cancelled), before the 3D view or Interactive Crop can.
+            if (Mouse.Captured is ScreenEyedropper { IsDragging: true } dropper)
+            {
+                dropper.Cancel();
+                e.Handled = true;
+                return true;
+            }
+
             // 5.4.4: the dial, the tour, then (unless a text box, a drop-down or a flyout has the keyboard) a 3D drag under way and the
             // Fullscreen Preview; Interactive Crop and the 3D view after the text box's keys (EndCropOnEscape, ExplodedWindow_PreviewKeyDown).
             var focused = Keyboard.FocusedElement;
             var focusKeepsIt = focused is TextBoxBase or PasswordBox or ComboBox or ComboBoxItem
                 || (focused is DependencyObject element && PresentationSource.FromDependencyObject(element)?.RootVisual is { } root && root is not Window);
             switch (EscapeTakerFor(_dialPopup is { IsOpen: true }, _tour is { IsRunning: true }, focusKeepsIt, _explodedDrag != ExplodedDragKind.None,
-                        _fullscreen is not null, _viewModel.IsInteractiveCropActive, _explodedUi))
+                        _fullscreen.IsOpen, _viewModel.IsInteractiveCropActive, _explodedUi))
             {
                 case EscapeTaker.Dial:
                     CloseLightningDial();
@@ -406,7 +436,7 @@ public partial class MainWindow
                     EndExplodedDrag(cancelled: true);
                     break;
                 case EscapeTaker.Fullscreen:
-                    ExitFullscreen();
+                    _fullscreen.Exit();
                     break;
                 default:
                     return false;
@@ -613,14 +643,33 @@ public partial class MainWindow
     // ----- Held keys: X-Ray on Tab -----
 
     private Key _holdKey;
+    private string? _holdAction;
     private DispatcherTimer? _holdTimer;
 
     /// <summary>How long Tab is held before X-Ray shows; let go sooner, it moves the keyboard on as Tab always did.</summary>
     private static readonly TimeSpan HoldDelay = TimeSpan.FromMilliseconds(250);
 
-    private void BeginHold(Key key)
+    private void BeginHold(Key key, string id)
     {
-        _holdKey = key;
+        // Another key held for the other hold (X-Ray under the Before/After, or the other way round): that one ends first, so neither is left on.
+        if (_holdKey != Key.None && _holdKey != key)
+        {
+            if (_holdAction == "view.compareGrade")
+                EndGradeHold();
+            else
+                HideXRay();
+        }
+
+        (_holdKey, _holdAction) = (key, id);
+
+        // The grade's Before/After (Pass 5.6A) shows at once and goes as the key is let go (no tap to tell apart).
+        if (id == "view.compareGrade")
+        {
+            _holdTimer?.Stop();
+            BeginGradeHold();
+            return;
+        }
+
         if (_holdTimer is not { } timer)
         {
             timer = _holdTimer = new DispatcherTimer(DispatcherPriority.Input) { Interval = HoldDelay };
@@ -651,6 +700,14 @@ public partial class MainWindow
 
         if (_holdKey == Key.None || key != _holdKey)
             return;
+
+        if (_holdAction == "view.compareGrade")
+        {
+            (_holdKey, _holdAction) = (Key.None, null);
+            e.Handled = true;
+            EndGradeHold();
+            return;
+        }
 
         var tapped = _holdTimer is { IsEnabled: true };
         _holdTimer?.Stop();
@@ -1010,7 +1067,8 @@ public partial class MainWindow
         matrix.ScaleAt(scale, scale, PlayerOverlay.ActualWidth / 2, PlayerOverlay.ActualHeight / 2);
         matrix.Translate(_playerPanX * _navPicture.Width * scale, _playerPanY * _navPicture.Height * scale);
         PlayerView.Matrix = matrix;
-        PlaceLoopbackWipe();
+        _loopback.PlaceLoopbackWipe();
+        PlaceGradeWipe();
     }
 
     // The picture as the engine fits it into the player: the output frame (the source's size without one), letterboxed.
@@ -1033,7 +1091,8 @@ public partial class MainWindow
         if (_playerView is { } player)
             player.Matrix = Matrix.Identity;
         _gpu?.SetView(0, 0, 0);
-        PlaceLoopbackWipe();
+        _loopback.PlaceLoopbackWipe();
+        PlaceGradeWipe();
         if (_canvasView is { } canvas)
             canvas.Matrix = Matrix.Identity;
     }
@@ -1382,15 +1441,7 @@ public partial class MainWindow
         if (AppSettings.Current.QuickStartTourDone)
             return;
 
-        AppSettings.Current.QuickStartTourDone = true;
-        try
-        {
-            AppSettings.Current.SaveAsCurrent();
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            AppLog.Write("Quick-Start Tour: the settings could not be saved", ex);
-        }
+        AppSettings.Update(settings => settings.QuickStartTourDone = true);
     }
 
     private List<QuickStartTour.Step> TourSteps()

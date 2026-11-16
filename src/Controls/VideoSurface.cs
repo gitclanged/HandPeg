@@ -3,6 +3,10 @@ using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Markup;
 using System.Windows.Media;
+using HandPegApp.Native;
+using static HandPegApp.Native.User32;
+using static HandPegApp.Native.Gdi32;
+using static HandPegApp.Native.Kernel32;
 
 namespace HandPegApp;
 
@@ -23,62 +27,6 @@ public sealed partial class VideoSurface : HwndHost
     private const int GwlExStyle = -20, WsExNoActivate = 0x08000000, WsExToolWindow = 0x80;
     private const uint SwpNoSize = 0x1, SwpNoMove = 0x2, SwpNoZOrder = 0x4, SwpNoActivate = 0x10;
 
-    [LibraryImport("user32.dll", EntryPoint = "CreateWindowExW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
-    private static partial IntPtr CreateWindowEx(
-        int exStyle, string className, string windowName, int style, int x, int y, int width, int height,
-        IntPtr parent, IntPtr menu, IntPtr instance, IntPtr parameter);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool DestroyWindow(IntPtr window);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct WindowClass
-    {
-        public int Size, Style;
-        public IntPtr Procedure;
-        public int ClassExtra, WindowExtra;
-        public IntPtr Instance, Icon, Cursor, Background, MenuName, ClassName, SmallIcon;
-    }
-
-    [LibraryImport("user32.dll", EntryPoint = "RegisterClassExW", SetLastError = true)]
-    private static partial ushort RegisterClassEx(in WindowClass windowClass);
-
-    [LibraryImport("kernel32.dll", EntryPoint = "GetModuleHandleW", StringMarshalling = StringMarshalling.Utf16)]
-    private static partial IntPtr GetModuleHandle(string? module);
-
-    [LibraryImport("kernel32.dll", StringMarshalling = StringMarshalling.Utf8)]
-    private static partial IntPtr GetProcAddress(IntPtr module, string name);
-
-    [LibraryImport("gdi32.dll")]
-    private static partial IntPtr GetStockObject(int kind);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
-
-    [LibraryImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
-    private static partial IntPtr GetWindowLongPtr(IntPtr window, int index);
-
-    [LibraryImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
-    private static partial IntPtr SetWindowLongPtr(IntPtr window, int index, IntPtr value);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct NativeRect
-    {
-        public int Left, Top, Right, Bottom;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct NativePoint
-    {
-        public int X, Y;
-    }
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GetClientRect(IntPtr window, out NativeRect rect);
-
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool ClientToScreen(IntPtr window, ref NativePoint point);
@@ -89,15 +37,8 @@ public sealed partial class VideoSurface : HwndHost
     [LibraryImport("gdi32.dll")]
     private static partial IntPtr CreateRectRgn(int left, int top, int right, int bottom);
 
-    [LibraryImport("gdi32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool DeleteObject(IntPtr handle);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GetWindowRect(IntPtr window, out NativeRect rect);
-
-    private const int WmNcHitTest = 0x0084, HtTransparent = -1, WmMouseMove = 0x0200, WmMouseLeave = 0x02A3, TmeLeave = 0x2, WmSize = 0x0005;
+    private const int WmNcHitTest = 0x0084, HtTransparent = -1, WmMouseMove = 0x0200, WmMouseLeave = 0x02A3, TmeLeave = 0x2, WmSize = 0x0005,
+        WmWindowPosChanged = 0x0047;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct TrackMouse
@@ -111,13 +52,6 @@ public sealed partial class VideoSurface : HwndHost
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool TrackMouseEvent(ref TrackMouse track);
 
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GetCursorPos(out NativePoint point);
-
-    [LibraryImport("user32.dll")]
-    private static partial IntPtr WindowFromPoint(NativePoint point);
-
     // Whether a leave is asked for on the surface's window, until it comes (TrackMouseEvent: once per entry).
     private bool _trackingLeave;
 
@@ -127,6 +61,9 @@ public sealed partial class VideoSurface : HwndHost
 
     // The part of the second window that is shown (its own pixels), when it is cut to the window it lies on; empty: all of it.
     private Int32Rect _clip;
+
+    // A placement queued by a move of the native window (one per dispatcher turn, however many moves a resize drag makes).
+    private bool _placeQueued;
 
     public VideoSurface()
     {
@@ -210,7 +147,7 @@ public sealed partial class VideoSurface : HwndHost
     /// <summary>
     /// The window drawn edge to edge (5.3-Stage2): over a restored window's resize band the pointer is its frame's, the player at
     /// its edge or not. There the native window lets the pointer through (HTTRANSPARENT), so the window under it answers as its
-    /// frame (MainWindow.FrameHitTest: HTLEFT and the rest) and is resized from there.
+    /// frame (WindowFrame.FrameHitTest: HTLEFT and the rest) and is resized from there.
     /// </summary>
     protected override IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
@@ -239,6 +176,11 @@ public sealed partial class VideoSurface : HwndHost
             TellPointer(hwnd, msg, lParam);
         if (msg == WmSize && hwnd == SurfaceHandle)
             SurfaceResized?.Invoke();
+
+        // The host has moved, sized, shown or hidden the native window (after its own layout pass): the overlay follows the window's
+        // real rectangle, read after the move.
+        if (msg == WmWindowPosChanged && hwnd == SurfaceHandle)
+            QueuePlaceOverlay();
 
         return base.WndProc(hwnd, msg, wParam, lParam, ref handled);
     }
@@ -284,7 +226,7 @@ public sealed partial class VideoSurface : HwndHost
     /// <summary>
     /// The part of a window that draws its own frame (WindowChrome) inside its resize band, on the screen in real pixels: while it is
     /// restored and can be resized, the whole window (its client area: it has no frame outside it) less the band Windows sizes it from,
-    /// its ResizeBorderThickness at its monitor's scale, counted as MainWindow.FrameHitTest counts it. Null when it has no such band
+    /// its ResizeBorderThickness at its monitor's scale, counted as WindowFrame.FrameHitTest counts it. Null when it has no such band
     /// (maximized or minimized, not to be resized, no WindowChrome, or no handle yet; 5.4C: the side windows draw their own frame too).
     /// </summary>
     private static Int32Rect? InsideResizeBand(Window? owner)
@@ -340,7 +282,7 @@ public sealed partial class VideoSurface : HwndHost
             };
             var made = _overlayWindow;
 
-            // Laid over the video at its size: its content takes HandPeg's UI scale (5.1-Polish), its size never. A new window is cut to nothing yet.
+            // Laid over the video at its size: its content takes HandPeg's UI scale, its size never. A new window is cut to nothing yet.
             Services.UiScale.SetKeepsItsSize(made, true);
             _clip = Int32Rect.Empty;
             made.SourceInitialized += (_, _) =>
@@ -348,6 +290,14 @@ public sealed partial class VideoSurface : HwndHost
                 var handle = new WindowInteropHelper(made).Handle;
                 SetWindowLongPtr(handle, GwlExStyle, new IntPtr(GetWindowLongPtr(handle, GwlExStyle).ToInt64() | WsExNoActivate | WsExToolWindow));
                 HwndSource.FromHwnd(handle)?.AddHook(OverlayMessage);
+            };
+
+            // A DPI change resizes a WPF window to Windows' suggested rectangle (the old size times the DPI ratio): the overlay's
+            // rectangle is the video's alone, so it is placed again once WPF has applied the new DPI.
+            made.DpiChanged += (_, _) =>
+            {
+                _placed = default;
+                QueuePlaceOverlay();
             };
 
             // Closed some other way than by this layer (with a window that owned it): the next one is made afresh.
@@ -359,8 +309,11 @@ public sealed partial class VideoSurface : HwndHost
             };
         }
 
-        // Owned by the window the player is in, so it stays above that one (and goes when the app goes).
+        // Owned by the window the player is in, so it stays above that one (and goes when the app goes); drawn at that window's pixels
+        // per DIP, whatever monitor Windows first reports the overlay on.
         _overlayWindow.Owner = owner;
+        Services.UiScale.SetScaleSource(_overlayWindow, owner);
+        Services.UiScale.Apply(_overlayWindow);
         owner.LocationChanged += Owner_Moved;
         owner.SizeChanged += Owner_Moved;
         owner.StateChanged += Owner_Moved;
@@ -433,29 +386,38 @@ public sealed partial class VideoSurface : HwndHost
             SetWindowPos(new WindowInteropHelper(overlay).Handle, lowest, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate);
     }
 
+    private void QueuePlaceOverlay()
+    {
+        if (_placeQueued)
+            return;
+        _placeQueued = true;
+        Dispatcher.BeginInvoke(() =>
+        {
+            _placeQueued = false;
+            PlaceOverlay();
+        }, System.Windows.Threading.DispatcherPriority.Send);
+    }
+
     /// <summary>
-    /// Puts the second window exactly over the native one, or hides it when that one cannot be seen. It is cut to the client
-    /// area of the window it lies on (5.2-AuditB): a pane laid out larger than its window never has it reach out past that
+    /// Puts the second window exactly over the native one, or hides it when that one cannot be seen. Its rectangle is the native
+    /// window's own client rectangle on the screen, in physical pixels (GetClientRect + ClientToScreen), never one computed from WPF
+    /// layout: an element's size times a DPI goes wrong wherever the element's DPI and its window's root scale disagree (a high-DPI
+    /// panel under HandPeg's UI scale, where the overlay then overhung the transport row and the pane beside the player). It is cut
+    /// to the client area of the window it lies on: a pane laid out larger than its window never has it reach out past that
     /// window's edge, nor (maximized) over the strip kept clear of a taskbar that hides itself (MainWindow.TitleBar.cs), where
     /// the pointer brings the taskbar up and the Show Desktop corner is.
     /// </summary>
-    private void PlaceOverlay()
+    internal void PlaceOverlay()
     {
         if (_overlayWindow is not { } overlay || _owner is not { } owner)
             return;
 
         if (!IsVisible || owner.WindowState == WindowState.Minimized || !owner.IsVisible || PresentationSource.FromVisual(this) is null
-            || ActualWidth < 1 || ActualHeight < 1)
+            || SurfaceRectangle() is not { } place)
         {
             HideOverlay(overlay);
             return;
         }
-
-        // In real pixels, which is what the screen and SetWindowPos count in whatever the scaling.
-        var corner = PointToScreen(new Point(0, 0));
-        var dpi = VisualTreeHelper.GetDpi(this);
-        var place = new Int32Rect((int)Math.Round(corner.X), (int)Math.Round(corner.Y),
-            (int)Math.Round(ActualWidth * dpi.DpiScaleX), (int)Math.Round(ActualHeight * dpi.DpiScaleY));
 
         // The part of it inside the owner's client area; none of it there, it is not shown. Restored, not over the owner's resize band
         // either (5.3-Stage2: the window is drawn edge to edge), where the pointer is the frame's (WndProc).
@@ -500,6 +462,16 @@ public sealed partial class VideoSurface : HwndHost
         if (overlay.IsVisible)
             overlay.Hide();
         _placed = default;
+    }
+
+    /// <summary>The native window's client rectangle on the screen, in physical pixels; null while it is not created, hidden or empty.</summary>
+    internal Int32Rect? SurfaceRectangle()
+    {
+        var corner = new NativePoint();
+        if (SurfaceHandle == IntPtr.Zero || !IsWindowVisible(SurfaceHandle) || !GetClientRect(SurfaceHandle, out var area) || !ClientToScreen(SurfaceHandle, ref corner))
+            return null;
+        var (width, height) = (area.Right - area.Left, area.Bottom - area.Top);
+        return width > 0 && height > 0 ? new Int32Rect(corner.X, corner.Y, width, height) : null;
     }
 
     /// <summary>A window's client area on the screen, in real pixels; null when it has no handle yet.</summary>

@@ -51,29 +51,6 @@ public static class FirstRunStudioTests
         yield return Case("first-run-studio-layout", "# The studio welcome (5.5A): two screens in 940 x 600, the live miniature under the pointer, five swatches, the role cards from Estimated to their figures.", StudioLayout);
     }
 
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
-    }
-
     // ----- The machines -----
 
     private static readonly string[] AllCodecs = ["H.264", "HEVC", "AV1"];
@@ -272,22 +249,22 @@ public static class FirstRunStudioTests
                && HardwareBenchmarkService.QuickMayReplace(new HardwareBenchmarkResult { Kind = HardwareBenchmarkResult.KindQuick, Fingerprint = quick.Fingerprint }, quick),
             "it is kept when there is none, when the full one was measured on other cards or drivers, and over an earlier quick one");
 
-        var service = Read("Services", "HardwareBenchmarkService.cs");
-        var runQuick = Method(service, "public static async Task<HardwareBenchmarkResult?> RunQuickAsync(");
-        var measureQuick = Method(service, "private static async Task<HardwareBenchmarkResult?> MeasureQuickOffThreadAsync(");
+        var service = SourceProbe.Src("Services", "HardwareBenchmarkService.cs");
+        var runQuick = SourceProbe.Member(service, "public static async Task<HardwareBenchmarkResult?> RunQuickAsync(");
+        var measureQuick = SourceProbe.Member(service, "private static async Task<HardwareBenchmarkResult?> MeasureQuickOffThreadAsync(");
         expect(runQuick.Contains("Interlocked.Exchange(ref _running, 1)", StringComparison.Ordinal) && runQuick.Contains("Volatile.Write(ref _running, 0)", StringComparison.Ordinal)
-               && Method(service, "public static async Task<HardwareBenchmarkResult?> RunAsync(").Contains("Interlocked.Exchange(ref _running, 1)", StringComparison.Ordinal),
+               && SourceProbe.Member(service, "public static async Task<HardwareBenchmarkResult?> RunAsync(").Contains("Interlocked.Exchange(ref _running, 1)", StringComparison.Ordinal),
             "the quick check takes Test & Auto-Tune Hardware's own gate: one benchmark at a time");
         expect(runQuick.Contains("WorkLane.Background", StringComparison.Ordinal) && measureQuick.Contains("ProcessClass.Background", StringComparison.Ordinal)
-               && Method(Read("Services", "WorkerProcess.cs"), "public static async Task<int> RunLinesAsync(").Contains("Start(arguments, readOutput: true, jobClass)", StringComparison.Ordinal),
+               && SourceProbe.Member(SourceProbe.Src("Services", "WorkerProcess.cs"), "public static async Task<int> RunLinesAsync(").Contains("Start(arguments, readOutput: true, jobClass)", StringComparison.Ordinal),
             "in the Background lane and the background job (WorkerProcess.RunLinesAsync passes the job class on)");
         expect(service.Contains("Task.Run(() => MeasureQuickOffThreadAsync(work, cards, progress), CancellationToken.None)", StringComparison.Ordinal),
             "its worker started from a pool thread: the window's thread never waits on its CreateProcess, its clip or its saving");
-        expect(Method(service, "private static void SaveQuick(").Contains("QuickMayReplace(LoadSaved(), quick)", StringComparison.Ordinal),
+        expect(SourceProbe.Member(service, "private static void SaveQuick(").Contains("QuickMayReplace(LoadSaved(), quick)", StringComparison.Ordinal),
             "saved only where QuickMayReplace allows");
 
-        var worker = Read("Compositor", "HardwareBenchmark.Profile.cs");
-        var quickBody = Method(worker, "private static int MeasureQuick(");
+        var worker = SourceProbe.Src("Compositor", "HardwareBenchmark.Profile.cs");
+        var quickBody = SourceProbe.Member(worker, "private static int MeasureQuick(");
         expect(quickBody.Contains("quick: true", StringComparison.Ordinal) && quickBody.Contains("only.Contains(a.Index)", StringComparison.Ordinal)
                && !quickBody.Contains("CrossAdapter", StringComparison.Ordinal) && !quickBody.Contains("Compare(", StringComparison.Ordinal) && !quickBody.Contains("hardware: false", StringComparison.Ordinal),
             "the worker's quick mode decodes on the cards named only (frames per second, no seeks or accuracy frames), with no processor decode and no two-card test");
@@ -301,44 +278,47 @@ public static class FirstRunStudioTests
                && quickBody.Contains("failed.Add(adapter.Index);", StringComparison.Ordinal),
             "5.5A review (B1): the roles listed before measuring, then QuickRoles over the cards that failed after each card measured, each failure and at the end: never Recommend over cards it did not measure");
 
-        var profile = Read("Dialogs", "FirstRunWindow.Profile.cs");
-        var loaded = Method(profile, "private async void Profile_Loaded(");
-        expect(loaded.Contains("if (Owner is null)", StringComparison.Ordinal) && loaded.Contains("MeasureQuickly();", StringComparison.Ordinal)
-               && !Method(profile, "private void StartProfile()").Contains("RunQuickAsync", StringComparison.Ordinal),
-            "the window runs the quick check only on the first start (no owner), never opened from Settings");
+        // 5.6A: the first-run window runs the full test on every open (first-run-full-test), never the quick check.
+        var profile = SourceProbe.Src("Dialogs", "FirstRunWindow.Profile.cs");
+        var loaded = SourceProbe.Member(profile, "private void Profile_Loaded(");
+        expect(loaded.Contains("MeasureFully();", StringComparison.Ordinal) && !profile.Contains("RunQuickAsync", StringComparison.Ordinal),
+            "(5.6A) the window runs the full test on every open, the quick check nowhere in it");
     }
 
     // ----- first-run-profile-off-ui-thread -----
 
     private static void OffUiThread(Action<bool, string> expect)
     {
-        var window = string.Join("\n", new[] { "FirstRunWindow.xaml.cs", "FirstRunWindow.Screens.cs", "FirstRunWindow.Profile.cs" }.Select(f => Read("Dialogs", f)));
+        var window = string.Join("\n", new[] { "FirstRunWindow.xaml.cs", "FirstRunWindow.Screens.cs", "FirstRunWindow.Profile.cs" }.Select(f => SourceProbe.Src("Dialogs", f)));
         string[] forbidden = ["GpuAdapters.", "NpuAdapters.Enumerate", "DxCore", "HardwareBenchmark.EnumerateAdapters", "MediaFoundation.", "EncoderOption.FromHardwareName)"];
         expect(!forbidden.Any(f => window.Contains(f, StringComparison.Ordinal)) && !Regex.IsMatch(window, @"FromHardwareName\(\s*\w+\s*\)"),
             "the first-run window lists no card, NPU or encoder in its own process (no GpuAdapters, NpuAdapters.Enumerate, DxCore, Media Foundation, one-argument FromHardwareName)");
 
-        var profile = Read("Dialogs", "FirstRunWindow.Profile.cs");
-        expect(Method(profile, "private void StartProfile()").Contains("Task.Run(() => HardwareBenchmarkService.EstimateAsync(progress, token)", StringComparison.Ordinal),
+        var profile = SourceProbe.Src("Dialogs", "FirstRunWindow.Profile.cs");
+        expect(SourceProbe.Member(profile, "private void StartProfile()").Contains("Task.Run(() => HardwareBenchmarkService.EstimateAsync(progress, token)", StringComparison.Ordinal),
             "the estimate is started from a pool thread (Task.Run): CreateProcess never waits on the window's thread");
 
-        var code = Read("Dialogs", "FirstRunWindow.xaml.cs");
-        var finish = Method(code, "private void Finish()");
+        var code = SourceProbe.Src("Dialogs", "FirstRunWindow.xaml.cs");
+        var finish = SourceProbe.Member(code, "private void Finish()");
         var cancel = finish.IndexOf("_profileCancellation.Cancel();", StringComparison.Ordinal);
         expect(cancel >= 0 && cancel < finish.IndexOf("DialogResult = true;", StringComparison.Ordinal) && cancel < finish.IndexOf("settings.SaveAsCurrent();", StringComparison.Ordinal)
                && Regex.Matches(code, @"_profileCancellation\.Cancel\(\);").Count >= 2,
             "Start Editing kills the profile's workers before the settings are saved and the main window is made, and closing the window kills them too");
         expect(finish.Contains("HardwareBenchmarkService.WriteRoles(HardwareBenchmarkService.DecodeAndBackgroundAuto(roles), settings, [.. profile.Adapters.Select(a => a.Index)]);", StringComparison.Ordinal)
                && finish.Contains("if (firstStart && _benchmarkRoles is { } roles", StringComparison.Ordinal),
-            "the roles are written on a first start only, against the profile's own cards (the three-argument WriteRoles), Decode and Background Auto (5.5A review)");
+            "the recommended roles are written on a first start only, against the profile's own cards (the three-argument WriteRoles), Decode and Background Auto (5.5A review)");
+        expect(finish.Contains("WritePicks(_picks, settings, [.. listed.Adapters.Where(a => a.SameCardAs < 0).Select(a => a.Index)]);", StringComparison.Ordinal)
+               && SourceProbe.Member(profile, "private async Task MeasureFullyAsync()").Contains("Task.Run(() => HardwareBenchmarkService.RunAsync(progress, token), CancellationToken.None)", StringComparison.Ordinal),
+            "(5.6A) the roles picked on the cards are written whatever the start, against the profile's own first listings; the full test starts from a pool thread");
         expect(!code.Contains("MaxHeight = SystemParameters", StringComparison.Ordinal)
-               && Read("Dialogs", "FirstRunWindow.Screens.cs").Contains("Loaded += (_, _) => FitToWorkArea(center: true);", StringComparison.Ordinal),
+               && SourceProbe.Src("Dialogs", "FirstRunWindow.Screens.cs").Contains("Loaded += (_, _) => FitToWorkArea(center: true);", StringComparison.Ordinal),
             "no work-area height set in the constructor (UiScale would scale it again): FitToWorkArea runs as an instance Loaded handler, after UiScale's");
-        var app = Read("App.xaml.cs");
+        var app = SourceProbe.Src("App.xaml.cs");
         expect(!app.Contains("HardwareBenchmark", StringComparison.Ordinal) && !app.Contains("EstimateAsync", StringComparison.Ordinal),
             "App's start-up path has no profiling of its own (only the first-run window, shown before the main window exists)");
 
-        var worker = Read("Compositor", "HardwareBenchmark.Profile.cs");
-        var estimate = Method(worker, "private static int Estimate()");
+        var worker = SourceProbe.Src("Compositor", "HardwareBenchmark.Profile.cs");
+        var estimate = SourceProbe.Member(worker, "private static int Estimate()");
         expect(estimate.Contains("EnumerateAdapters(decoderProfiles: false)", StringComparison.Ordinal) && !estimate.Contains("GpuDevice.Create", StringComparison.Ordinal)
                && !estimate.Contains("Fingerprint", StringComparison.Ordinal) && !estimate.Contains("DecodeRun", StringComparison.Ordinal) && !estimate.Contains("_ffmpeg", StringComparison.Ordinal),
             "the estimate makes no Direct3D 11 device, decodes nothing, asks for no fingerprint and runs no FFmpeg");
@@ -394,7 +374,7 @@ public static class FirstRunStudioTests
             expect((small.Width, small.Height) == (910, 485) && (roomy.Width, roomy.Height) == (940, 600) && (unknown.Width, unknown.Height) == (940, 600)
                    && FirstRunWindow.DesignSizeAt(1.5) == new Size(1410, 900),
                 "a 1366 x 768 laptop at 150 % (910 x 485 DIPs of work area) fits 910 x 485; on a 1920 x 1080 monitor the same window is 940 x 600 again (the design size, not the fitted one); a UI scale not known: 940 x 600");
-            var fit = Method(Read("Dialogs", "FirstRunWindow.Screens.cs"), "private void FitToWorkArea(bool center)");
+            var fit = SourceProbe.Member(SourceProbe.Src("Dialogs", "FirstRunWindow.Screens.cs"), "private void FitToWorkArea(bool center)");
             expect(fit.Contains("var placed = FitTo(work, DesignSizeAt(scale));", StringComparison.Ordinal) && fit.Contains("LayoutTransform is ScaleTransform transform ? transform.ScaleX : 1", StringComparison.Ordinal)
                    && !fit.Contains("ActualWidth", StringComparison.Ordinal) && !fit.Contains("Math.Clamp", StringComparison.Ordinal)
                    && fit.IndexOf("(MaxWidth, MaxHeight) = (work.Width, work.Height);", StringComparison.Ordinal) < fit.IndexOf("(Width, Height) = (placed.Width, placed.Height);", StringComparison.Ordinal),
@@ -531,7 +511,7 @@ public static class FirstRunStudioTests
             expect(window.StagePreview.Kind == StageKind.Workspace && window.StagePreview.WorkspaceName == "Standard Editing" && window.StagePreview.ActualHeight > 100,
                 "the live miniature draws the chosen layout, Standard Editing");
 
-            var layouts = MainWindow.BuiltInLayoutStates(["Tab:Filters", "Tab:Audio", "Tab:Export", "Tab:Command Preview"]).ToDictionary(l => l.Name, l => l.Layout.Main);
+            var layouts = MainWindow.BuiltInLayoutStates(["Tab:Color", "Tab:Audio", "Tab:Export", "Tab:Command Preview"]).ToDictionary(l => l.Name, l => l.Layout.Main);
             var cards = new[] { window.StandardLayoutCard, window.ColorLayoutCard, window.AssemblyLayoutCard, window.ShortsLayoutCard, window.VerticalCreatorLayoutCard };
             foreach (var card in cards)
             {
@@ -576,8 +556,9 @@ public static class FirstRunStudioTests
             expect(window.StartButton.IsVisible && window.StartButton.IsDefault && (string)window.StartButton.Content == "Start Editing" && !window.NextButton.IsVisible
                    && window.BackButton.IsVisible && Inside(window.StartButton, root),
                 "Start Editing is the default button, inside the window; Back beside it");
-            expect(window.EncoderBox.IsVisible && window.AudioEncoderBox.IsVisible && window.PromptBox.IsVisible && window.FallbackBox.IsVisible && window.CrashReportsBox.IsVisible,
-                "the encoder and audio boxes, Prompt to save, the software fallback and crash reports are on it");
+            expect(window.EncoderBox.IsVisible && window.AudioEncoderBox.IsVisible && window.PromptBox.IsVisible && window.CrashReportsBox.IsVisible
+                   && window.FindName("FallbackBox") is null && window.FindName("ProfileStatusText") is null,
+                "the encoder and audio boxes, Prompt to save and crash reports are on it; (5.6A) no software-fallback box, no status line over the roles");
 
             window.ShowProfile(Desktop(HardwareBenchmarkResult.KindEstimate));
             Idle();
@@ -590,10 +571,12 @@ public static class FirstRunStudioTests
                 "the Desktop: the RX 7900 XTX composites; Decode, Background and Export read Auto · the RX 7900 XTX; no NPU");
             expect(new[] { "CompositorRole", "DecodeRole", "BackgroundRole", "ExportRole", "NpuRole" }.All(id => Descendants(window.RoleCards).Any(e => AutomationProperties.GetAutomationId(e) == id)),
                 "each card is an inspector card with its automation id (CompositorRole ... NpuRole)");
+            expect(estimated.All(c => c.Tier is null) && window.SystemTierBadge.Visibility == Visibility.Collapsed,
+                "(5.6A) the estimate measures nothing: no tier pill, no System tier beside the title");
 
             var measuring = FirstRunWindow.RoleCardsOf(Desktop(HardwareBenchmarkResult.KindEstimate), measuring: true);
             expect(measuring.Take(4).All(c => c.Badge == "Measuring...") && measuring[4].Badge == "",
-                "while the quick check runs, the GPU badges read Measuring...");
+                "while the hardware test runs, the GPU badges read Measuring...");
 
             window.ShowProfile(Desktop(HardwareBenchmarkResult.KindQuick));
             Idle();
@@ -601,6 +584,9 @@ public static class FirstRunStudioTests
             window.ShowProfile(Desktop(HardwareBenchmarkResult.KindEstimate));
             expect(quick.Take(4).All(c => c is { Badge: "870 fps · 9,870 MB/s", Measured: true }) && Cards(window).SequenceEqual(quick),
                 "the quick check's figures: 870 fps · 9,870 MB/s on the compositor's card, for Decode and Background too; a late estimate changes nothing");
+            expect(quick[1] is { Tier.Grade: HandPegApp.Services.TierGrade.A, TierTip: "Decode 870 fps · A (69)" } && quick[0].Tier is null && quick[4].Tier is null
+                   && window.SystemTierBadge.Visibility == Visibility.Visible,
+                $"(5.6A) its tier pills: Decode \"{quick[1].TierTip}\"; none on the Compositor (its frame not timed) nor the NPU; the System tier beside the title");
 
             var xps = FirstRunWindow.RoleCardsOf(Xps13(HardwareBenchmarkResult.KindEstimate), measuring: false);
             var bus = Desktop(HardwareBenchmarkResult.KindQuick);
@@ -623,12 +609,9 @@ public static class FirstRunStudioTests
             clipFailed.Adapters[0].HardwareDecodeFps = 0;
             var noFfmpeg = Desktop(HardwareBenchmarkResult.KindQuick);
             (noFfmpeg.Adapters[0].HardwareDecodeFps, noFfmpeg.Clip) = (0, "");
+            // (5.6A: the first run's own status line is gone; Settings still says what a quick check it keeps measured.)
             (string What, string Said, string Expected)[] lines =
             [
-                ("decoded", FirstRunWindow.QuickStatus(Desktop(HardwareBenchmarkResult.KindQuick)), "Measured in the background in 1.4 s: decoding and the bus on the cards that hold a role."),
-                ("the clip did not decode", FirstRunWindow.QuickStatus(clipFailed), "The bus measured in the background in 1.4 s; the test clip did not decode in hardware."),
-                ("no FFmpeg yet", FirstRunWindow.QuickStatus(noFfmpeg), "The bus measured in the background; the decoding is measured once FFmpeg is downloaded."),
-                ("nothing measured", FirstRunWindow.QuickStatus(failedQuick), "Estimated from the cards: the quick check could not measure them, and a card it could not measure holds no role."),
                 ("Settings, decoded", SettingsWindow.QuickResultStatus(Desktop(HardwareBenchmarkResult.KindQuick)), "A quick check at the first start (decoding and the bus on the cards that hold a role): run the test for the full measurements."),
                 ("Settings, no FFmpeg yet", SettingsWindow.QuickResultStatus(noFfmpeg), "A quick check at the first start (the bus on the cards that hold a role): run the test for the full measurements."),
                 ("Settings, nothing measured", SettingsWindow.QuickResultStatus(failedQuick), "A quick check at the first start could not measure the cards: run the test for the full measurements."),
@@ -638,13 +621,13 @@ public static class FirstRunStudioTests
 
             // 5.5.0 (the user's Q10 b): a failed quick check says so in a warning line, and Settings sets the recommended roles in one click.
             expect(window.ProfileWarningText.Visibility == Visibility.Collapsed
-                   && FirstRunWindow.ProfileWarning("Device removed.") == "Warning: the quick hardware check failed (Device removed). The roles below are estimates: run Test & Auto-Tune Hardware in Settings > Export & Hardware > GPU & NPU Roles, then Apply Recommended Roles.",
-                $"(5.5.0, Q10 b) the warning line: hidden while nothing failed; a failed quick check: \"{FirstRunWindow.ProfileWarning("Device removed.")}\"");
-            var profileSource = Read("Dialogs", "FirstRunWindow.Profile.cs");
+                   && FirstRunWindow.ProfileWarning("Device removed.") == "Warning: the hardware test stopped (Device removed); the roles shown are estimates.",
+                $"(5.5.0, Q10 b; 5.6A the full test's) the warning line: hidden while nothing failed; a failed test: \"{FirstRunWindow.ProfileWarning("Device removed.")}\"");
+            var profileSource = SourceProbe.Src("Dialogs", "FirstRunWindow.Profile.cs");
             expect(profileSource.Contains("ShowProfileWarning(why);", StringComparison.Ordinal) && profileSource.Contains("ShowProfileWarning(null);", StringComparison.Ordinal)
-                   && Read("Dialogs", "FirstRunWindow.xaml").Contains("x:Name=\"ProfileWarningText\" Visibility=\"Collapsed\" Foreground=\"{DynamicResource WarningTextBrush}\"", StringComparison.Ordinal),
-                "(5.5.0, Q10 b) shown in the warning colour when the quick check fails (or the cards could not be looked at), hidden again when a later one measures");
-            var rolesXaml = Read("Dialogs", "SettingsWindow.xaml");
+                   && SourceProbe.Src("Dialogs", "FirstRunWindow.xaml").Contains("x:Name=\"ProfileWarningText\" Visibility=\"Collapsed\" Foreground=\"{DynamicResource WarningTextBrush}\"", StringComparison.Ordinal),
+                "(5.5.0, Q10 b) shown in the warning colour when the hardware test fails (or the cards could not be looked at), hidden again when a later one measures");
+            var rolesXaml = SourceProbe.Src("Dialogs", "SettingsWindow.xaml");
             expect(SettingsWindow.CanApplyRoles(Desktop(HardwareBenchmarkResult.KindQuick)) == HardwareBenchmarkService.IsCurrent(Desktop(HardwareBenchmarkResult.KindQuick))
                    && !SettingsWindow.CanApplyRoles(null) && !SettingsWindow.CanApplyRoles(new HardwareBenchmarkResult { Error = "Stopped." })
                    && rolesXaml.Contains("x:Name=\"ApplyRolesButton\" Content=\"Apply Recommended Roles\"", StringComparison.Ordinal)
@@ -654,7 +637,7 @@ public static class FirstRunStudioTests
 
             // 5.5A review (C-8): Prompt to save says when it is asked (only with Keep open project tabs off, the Settings box it names).
             var tip = window.PromptBox.ToolTip as string ?? "";
-            var settingsXaml = Read("Dialogs", "SettingsWindow.xaml");
+            var settingsXaml = SourceProbe.Src("Dialogs", "SettingsWindow.xaml");
             expect(tip.Contains("Asked only when Keep open project tabs suspended between sessions is off (Settings > General > Projects and saving)", StringComparison.Ordinal)
                    && tip.Contains("closing keeps every tab, saved or not, for the next start", StringComparison.Ordinal)
                    && settingsXaml.Contains("<CheckBox Content=\"Keep open project tabs suspended between sessions", StringComparison.Ordinal)
@@ -674,17 +657,17 @@ public static class FirstRunStudioTests
                        || w.Contains("local folder", StringComparison.OrdinalIgnoreCase)),
                 "(addenda) none of the words the panel shows mentions one");
             Console.WriteLine($"        the component panel shows: {string.Join(" | ", shownWords)}");
-            var panelCode = Read("Controls", "DependencyPanel.xaml.cs").Split('\n').Where(l => l.Contains("already have", StringComparison.Ordinal)).ToList();
+            var panelCode = SourceProbe.Src("Controls", "DependencyPanel.xaml.cs").Split('\n').Where(l => l.Contains("already have", StringComparison.Ordinal)).ToList();
             expect(panelCode.Count == 2 && panelCode.All(l => l.Contains("(OffersExistingFfmpeg ? ", StringComparison.Ordinal)),
                 "(addenda) and its messages (a failed look online, a failed download) speak of one only while OffersExistingFfmpeg is on");
-            var firstRunCode = Read("Dialogs", "FirstRunWindow.xaml.cs") + Read("Dialogs", "FirstRunWindow.Screens.cs") + Read("Dialogs", "FirstRunWindow.Profile.cs");
-            expect(!Read("Dialogs", "FirstRunWindow.xaml").Contains("OffersExistingFfmpeg=\"True\"", StringComparison.Ordinal)
+            var firstRunCode = SourceProbe.Src("Dialogs", "FirstRunWindow.xaml.cs") + SourceProbe.Src("Dialogs", "FirstRunWindow.Screens.cs") + SourceProbe.Src("Dialogs", "FirstRunWindow.Profile.cs");
+            expect(!SourceProbe.Src("Dialogs", "FirstRunWindow.xaml").Contains("OffersExistingFfmpeg=\"True\"", StringComparison.Ordinal)
                    && !firstRunCode.Contains("UseExisting", StringComparison.Ordinal) && !firstRunCode.Contains("Use Existing Local Folder", StringComparison.Ordinal)
                    && !firstRunCode.Contains("OpenFolderDialog", StringComparison.Ordinal),
                 "(addenda) the label, the hook and the folder picker are gone from the first run");
-            expect(Method(firstRunCode, "private void StartLiveWork(") is var live && live.Contains("DependencyUpdater.Installed += installed;", StringComparison.Ordinal)
+            expect(SourceProbe.Member(firstRunCode, "private void StartLiveWork(") is var live && live.Contains("DependencyUpdater.Installed += installed;", StringComparison.Ordinal)
                    && live.Contains("MeasureAgainWithDecoding();", StringComparison.Ordinal) && firstRunCode.Split("MeasureAgainWithDecoding();").Length == 2,
-                "(addenda) the quick check measures again with decoding only once FFmpeg is installed (DependencyUpdater.Installed), its one call");
+                "(addenda; 5.6A the full test) the hardware test runs again with decoding once FFmpeg is installed (DependencyUpdater.Installed), its one call");
             expect(settingsXaml.Contains("AutomationProperties.Name=\"ffmpeg.exe Path\"", StringComparison.Ordinal) && settingsXaml.Contains("Tag=\"{Binding ElementName=FfmpegPathBox}\" Click=\"Browse_Click\"", StringComparison.Ordinal),
                 "(addenda) Settings keeps its way to use a local FFmpeg: the ffmpeg.exe Path box with Browse...");
 
@@ -701,7 +684,7 @@ public static class FirstRunStudioTests
         expect(settings.Theme == keptTheme, "closed without Start Editing, the theme in effect before comes back");
     }
 
-    private static List<FirstRunRoleCard> Cards(FirstRunWindow window) => [.. ((IEnumerable<FirstRunRoleCard>)window.RoleCards.ItemsSource)];
+    private static List<FirstRunRoleCard> Cards(FirstRunWindow window) => [.. window.RoleCards.ItemsSource ?? []];
 
     // The words an element shows (its text, its content, its tooltip), and those of everything in it not collapsed or hidden (the logical
     // tree: the component panel is out of the goldens' window, so never laid out).
@@ -760,26 +743,4 @@ public static class FirstRunStudioTests
         Dispatcher.PushFrame(frame);
     }
 
-    private static string RepositoryRoot()
-    {
-        for (var folder = new DirectoryInfo(AppContext.BaseDirectory); folder is not null; folder = folder.Parent)
-        {
-            if (File.Exists(Path.Combine(folder.FullName, "HandPegApp.csproj")))
-                return folder.FullName;
-        }
-
-        throw new DirectoryNotFoundException("HandPegApp.csproj was not found above the golden tests' program.");
-    }
-
-    private static string Read(params string[] parts) => File.ReadAllText(Path.Combine([RepositoryRoot(), "src", .. parts]));
-
-    /// <summary>A method's text in a source file: from its signature to the first line that closes it at its own indent.</summary>
-    private static string Method(string source, string signature)
-    {
-        var start = source.IndexOf(signature, StringComparison.Ordinal);
-        if (start < 0)
-            return "";
-        var end = source.IndexOf("\n    }", start, StringComparison.Ordinal);
-        return end < 0 ? source[start..] : source[start..end];
-    }
 }

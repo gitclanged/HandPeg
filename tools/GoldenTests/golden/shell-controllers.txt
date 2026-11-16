@@ -1,0 +1,10 @@
+# MainWindow's feature state in controllers under src/Shell: the frame, the heat lamp, the Live Encoded Preview, the Fullscreen Preview, the drop router; each owns its timers.
+ok: the five live in src/Shell
+ok: and the partial files they came from are gone
+ok: each controller makes its timers through its own TimerScope (Pacing.cs), never a raw DispatcherTimer
+ok: the title bar keeps only its own buttons and hook; the frame's messages, taskbar and hit test are WindowFrame's
+ok: WindowFrame is a static class: no window's state, one hook for every window that draws its frame
+ok: the heat lamp is made at idle after Frame 1 (Law 1)
+ok: the Fullscreen Preview hooks only the first frame when made; its HUD hooks follow at idle
+ok: the router reads a drag's first file, a link's first line, and refuses plain words
+ok: and its routing policy is the one the drops follow (clips on the Sequence: at the playhead)

@@ -83,7 +83,7 @@ public sealed partial class AppSettings
     /// for its instant-replay hotkey before HandPeg sees it, a Windows key chord, Alt+F4...) is dropped and logged, and an
     /// action that is no longer HandPeg's is forgotten. Costs nothing while the user has changed no key.
     /// </summary>
-    private void CleanUpInput()
+    internal void CleanUpInput()
     {
         if (!FirstRunComplete)
             FirstRunThisSession = true;

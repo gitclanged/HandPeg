@@ -75,7 +75,7 @@ internal static class MatroskaTiming
         if (!Element(data, 0, out var id, out var body, out var size, out _) || id != EbmlId)
             return null;
         var at = (int)(body + size);
-        if (!Element(data, at, out id, out body, out size, out var unknown) || id != SegmentId)
+        if (!Element(data, at, out id, out body, out size, out var unknown, oversizeOk: true) || id != SegmentId)
             return null;
 
         var end = unknown ? data.Length : (int)Math.Min(body + size, data.Length);
@@ -86,9 +86,12 @@ internal static class MatroskaTiming
                 return null;
             if (id == TracksId)
                 return Tracks(data.Slice(body, (int)Math.Min(size, data.Length - body)));
-            at = body + (int)size;
-            if (at >= end)
+
+            // Every step moves forward in 64-bit arithmetic: a crafted size can neither wrap back onto the same element nor past the end.
+            var next = (long)body + size;
+            if (next <= at || next >= end)
                 break;
+            at = (int)next;
         }
 
         return null;
@@ -111,20 +114,27 @@ internal static class MatroskaTiming
                         type = (int)Unsigned(entry.Slice(value, (int)length));
                     else if (child == CodecDelayId)
                         delay = (long)Math.Min(Unsigned(entry.Slice(value, (int)length)), long.MaxValue);
-                    inner = value + (int)length;
+                    var step = (long)value + length;
+                    if (step <= inner || step > entry.Length)
+                        break;
+                    inner = (int)step;
                 }
 
                 found.Add(new Track(type, delay / 1e9));
             }
 
-            at = body + (int)size;
+            var next = (long)body + size;
+            if (next <= at || next > tracks.Length)
+                break;
+            at = (int)next;
         }
 
         return [.. found];
     }
 
-    // An element at an offset: its ID (with its length marker, as Matroska writes IDs), where its body starts, its size.
-    private static bool Element(ReadOnlySpan<byte> data, int at, out uint id, out int body, out long size, out bool unknown)
+    // An element at an offset: its ID (with its length marker, as Matroska writes IDs), where its body starts, its size. An element
+    // larger than the data is refused, except where the caller allows it (the Segment, whose known size normally runs past the head read).
+    private static bool Element(ReadOnlySpan<byte> data, int at, out uint id, out int body, out long size, out bool unknown, bool oversizeOk = false)
     {
         (id, body, size, unknown) = (0, 0, 0, false);
         if (at < 0 || at >= data.Length || !Number(data, at, keepMarker: true, out var rawId, out var idLength, out _) || idLength > 4)
@@ -132,7 +142,7 @@ internal static class MatroskaTiming
         if (!Number(data, at + idLength, keepMarker: false, out var length, out var sizeLength, out unknown))
             return false;
         (id, body, size) = ((uint)rawId, at + idLength + sizeLength, unknown ? long.MaxValue : (long)length);
-        return body <= data.Length && (unknown || size <= data.Length - body || id is SegmentId or ClusterId);
+        return body <= data.Length && (unknown || size <= data.Length - body || oversizeOk);
     }
 
     // EBML's variable-length number: its length from the first byte's leading zeros; all ones is an unknown size.

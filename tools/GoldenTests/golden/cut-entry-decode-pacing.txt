@@ -1,0 +1,23 @@
+# Background decode while playing: one shared budget of frames a second, a cut's own rate only when the budget cannot make it, cuts read earlier on a card of its own (5.6A).
+ok: the budget is 100 frames a second and a chase keeps 0.25 s in hand
+ok: with no HANDPEG_DECODE_BUDGET_FPS the budget in effect is the default
+ok: work with no cut to make (a pre-roll, the pointer's) takes the budget's interval: 10 ms
+ok: a cut 30 frames from its first, 2.75 s away, needs 12 fps: the budget's interval (10 ms)
+ok: a cut 226 frames away at 2.75 s needs 90.4 fps: x1.25 is over the budget, so its own rate (8.85 ms, ~113 fps)
+ok: the same cut 1.25 s away needs 226 fps (under 80 % of full speed): its own rate, 3.54 ms
+ok: one that needs 80 % of the full speed or more runs at the full speed (no wait)
+ok: one whose margin is gone runs at the full speed
+ok: the seconds left are what the caller gives (sequence seconds over the play rate): twice the time, half the rate
+ok: a cut with no moment known takes the budget's interval
+ok: 20 slots taken at once (two lanes in turn) are one interval apart: the lanes share the budget, not double it
+ok: a slot asked for after a pause is now: an idle budget is not owed
+ok: on unified memory a cut into a file the playback reads is read within CutSoon (1.5 s), at every rate (5.4.3's decoder-lock rule kept)
+ok: on a card of its own it is read as far as the hints reach: 3 s at 1x, 6 s at 2x, never less than 3 s
+ok: nothing is paced but work ahead while playing: never a frame shown or read ahead of it, nor a read one waits on, never an exact-frame scene (exports, captures)
+ok: 5.6A review: a read a frame shown or played ahead waits on (one no lane reads, which this lane's read delivers: a pre-roll on a lane when play began) runs unpaced, before the budget and the 5.0 slices alike
+ok: HANDPEG_DECODE_BUDGET_FPS=0 brings back the 5.0 slices (the A/B runs' control)
+ok: a cut paced faster than the budget keeps its own clock; the rest take the shared budget's slots; a wait is at most 100 ms before the lane looks again
+ok: a lane waits on a high-resolution waitable timer (not the 15.6 ms tick) and wakes when the pool stops
+ok: each frame a lane decodes is followed by Pace (the slice rule no longer called directly)
+ok: MostUrgent's same-file gate reads as far ahead as CutReadAhead says
+ok: the lanes' timers are closed with the pool, once its lanes stopped

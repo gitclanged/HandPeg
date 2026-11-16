@@ -1,0 +1,16 @@
+# Crafted Matroska and MP4 files through HandPeg's own parsers: each ends in time with nothing or a bounded answer.
+ok: Matroska: a Cluster whose size wraps 32 bits, inside Tracks after a real audio TrackEntry, ends the walk; the entry before it is kept
+ok: Matroska: a nested Segment whose size wraps 32 bits at the top level ends the walk (no tracks)
+ok: Matroska: a TrackEntry larger than its Tracks is refused, and the walk ends
+ok: Matroska: a truncated EBML header reads as no tracks
+ok: Matroska: a Segment of size 0 reads as no tracks
+ok: Matroska: the key-frame reader ends on the same wrapping element (no key frames)
+ok: MP4: a box header with no body reads as no tracks
+ok: MP4: a moov of 64-bit size near 2^63 is refused
+ok: MP4: a moov that claims more than the file holds is refused without allocating its claimed size
+ok: MP4: a trak larger than its moov ends the walk (no tracks)
+ok: MP4: a version-0 ctts whose first offset has its top bit set is read signed (-3000 at 90 kHz: the first frame at -0.0333 s), as FFmpeg reads it
+ok: MP4: the key-frame reader puts the first key frame at the same moment
+ok: MP4: stts and stss counts far beyond their payload give at most the entries present
+ok: MP4: a 1 MB file of padding boxes and no moov is walked in under 8 MB of allocations
+14 crafted files

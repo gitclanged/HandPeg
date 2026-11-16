@@ -129,7 +129,7 @@ public partial class MainWindow
 
         surface.IsSelected = IsSelected;
         surface.SnapTimes = SnapTimes;
-        surface.FrameRate = () => _viewModel.SourceFrameRate;
+        surface.FrameRate = () => _viewModel.SequenceFps;
         surface.BlockPressed += Timeline_BlockPressed;
         surface.EmptyPressed += Timeline_EmptyPressed;
         surface.DragRefused += Timeline_DragRefused;
@@ -203,6 +203,10 @@ public partial class MainWindow
         _viewModel.PropertyChanged += UnifiedTimeline_ViewModelChanged;
         _viewModel.LayerRows.CollectionChanged += (_, _) => ScheduleClipRedraw();
         _viewModel.AudioRows.CollectionChanged += (_, _) => ScheduleClipRedraw();
+
+        // A clip picture stored or released (a strip of frames, a waveform): the blocks are drawn again, coalesced.
+        _viewModel.ClipPictures.Changed += ScheduleClipRedraw;
+        _viewModel.ClipPictures.OtherFilesInUse = () => _hydrated.Values.SelectMany(FilesOf);
 
         // Play / Pause in the pane's corner while neither the playback bar's nor the Sequence Overview Scrubber's is on screen.
         TimelinePane.IsVisibleChanged += (_, _) => ShowTimelinePlayButton();
@@ -750,7 +754,7 @@ public partial class MainWindow
     {
         switch (e.PropertyName)
         {
-            case nameof(Layer.Filmstrip) or nameof(Layer.Waveform) or nameof(Layer.IsLoading) or nameof(Layer.MediaDuration) or nameof(Layer.Name)
+            case nameof(Layer.IsLoading) or nameof(Layer.MediaDuration) or nameof(Layer.Name)
                 or nameof(Layer.IsHidden) or nameof(Layer.IsMuted) or nameof(Layer.IsVoice) or nameof(Layer.GainDb) or "AudioGainDb":
                 ScheduleClipRedraw();
                 break;
@@ -1096,11 +1100,14 @@ public partial class MainWindow
     /// Every button of the timeline pane: what it does, by its Tag (the pane's title row, corners, inspector, bin and Add
     /// Layer kinds). A fault in it is a status line and a note in the log (4.4 BugHunt), never an exception that ends the app.
     /// </summary>
+    /// <summary>The clip the Cutout Studio would open for from the Timeline: the selected video clip, else (null) the video at the playhead.</summary>
+    private Layer? CutoutTarget() => _selectedClip is Layer { IsVideoFile: true } clip ? clip : null;
+
     /// <summary>The Cutout Studio on the video, for Cutouts and Game Presets.</summary>
     private void OpenCutoutStudio()
     {
         if (_viewModel.HasSource)
-            new MaskDrawWindow(_viewModel, null, TakeWarmCutoutStill()) { Owner = this }.ShowDialog();
+            new MaskDrawWindow(_viewModel, null, _heatLamp?.TakeWarmCutoutStill()) { Owner = this }.ShowDialog();
     }
 
     /// <summary>
@@ -1113,7 +1120,7 @@ public partial class MainWindow
     {
         _viewModel.Checkpoint($"change the mask of {clip.Name}");
         var visit = _viewModel.UndoMark;
-        var window = new MaskDrawWindow(_viewModel, clip, TakeWarmCutoutStill()) { Owner = this };
+        var window = new MaskDrawWindow(_viewModel, clip, _heatLamp?.TakeWarmCutoutStill()) { Owner = this };
         if (window.ShowDialog() == true && MaskStore.DrawnKey(window.Shapes).Length > 0)
         {
             (clip.CustomMask, clip.MaskPath, clip.MaskFrame, clip.MaskShapes) = (true, "", true, window.Shapes);

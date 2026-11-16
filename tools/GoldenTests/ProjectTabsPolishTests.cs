@@ -10,6 +10,7 @@ using System.Windows.Shell;
 using System.Windows.Threading;
 using System.Xml.Linq;
 using HandPegApp;
+using HandPegApp.Shell;
 using HandPegApp.Models;
 using HandPegApp.Models.Timeline;
 using HandPegApp.Services;
@@ -37,7 +38,6 @@ namespace HandPegGoldenTests;
 /// </summary>
 public static class ProjectTabsPolishTests
 {
-    private const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
     private static readonly XNamespace X = "http://schemas.microsoft.com/winfx/2006/xaml";
 
     public static IEnumerable<GraphResult> All()
@@ -51,46 +51,12 @@ public static class ProjectTabsPolishTests
         yield return Case("project-tabs-tabperf-review", "# The 5.4D-TabPerf review, the window's side: a tab's cache file written by one writer at a time and kept listed until written, nothing written after a clean close, a still or sheet kept only when current, the pictures counted once.", TabPerfReview);
     }
 
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
-    }
-
     private static string Fresh(string name)
     {
         var folder = Path.Combine(AppPaths.Temp, name);
         if (Directory.Exists(folder))
             Directory.Delete(folder, recursive: true);
         return folder;
-    }
-
-    private static string RepositoryRoot()
-    {
-        for (var folder = new DirectoryInfo(AppContext.BaseDirectory); folder is not null; folder = folder.Parent)
-        {
-            if (File.Exists(Path.Combine(folder.FullName, "HandPegApp.csproj")))
-                return folder.FullName;
-        }
-
-        throw new DirectoryNotFoundException("HandPegApp.csproj was not found above the golden tests' program.");
     }
 
     private static XElement? Named(XContainer xaml, string name) => xaml.Descendants().FirstOrDefault(e => Attr(e, X + "Name") == name);
@@ -128,7 +94,7 @@ public static class ProjectTabsPolishTests
         var track = new TimelineTrackModel { Kind = TimelineTrackKind.Video, TrackNumber = 1 };
         track.Clips.Add(DogfoodTests.FileClip("D:/media/first.mkv", 0, 4));
         document.Tracks.Add(track);
-        typeof(MainViewModel).GetMethod("InstallDocument", Hidden)!.Invoke(vm, [document]);
+        vm.InstallDocument(document);
         return vm;
     }
 
@@ -136,7 +102,7 @@ public static class ProjectTabsPolishTests
 
     private static void LazyStrip(Action<bool, string> expect)
     {
-        var src = Path.Combine(RepositoryRoot(), "src");
+        var src = Path.Combine(SourceProbe.Root, "src");
         var main = XDocument.Load(Path.Combine(src, "MainWindow.xaml"));
         var strip = XDocument.Load(Path.Combine(src, "Controls", "ProjectTabStrip.xaml"));
         expect(Attr(Named(main, "ProjectTabStrip"), "Visibility") == "Collapsed",
@@ -354,7 +320,7 @@ public static class ProjectTabsPolishTests
 
         // The hover card: in the strip's XAML, an inspector card placed against its tab. 5.4.4: it takes the pointer (scrubbed across, clicked
         // to bring its tab to the front: tab-hover-scrub).
-        var src = Path.Combine(RepositoryRoot(), "src");
+        var src = Path.Combine(SourceProbe.Root, "src");
         var strip = XDocument.Load(Path.Combine(src, "Controls", "ProjectTabStrip.xaml"));
         var card = Named(strip, "HoverCard");
         var surface = card?.Descendants().FirstOrDefault(e => e.Name.LocalName == "Border" && Attr(e, "Background") == "{DynamicResource InspectorCardBrush}");
@@ -466,7 +432,7 @@ public static class ProjectTabsPolishTests
             {
                 var screen = element.PointToScreen(at);
                 var handled = false;
-                var answer = MainWindow.FrameHook(hwnd, WmNcHitTest, IntPtr.Zero, (IntPtr)(((int)Math.Floor(screen.Y) << 16) | ((int)Math.Floor(screen.X) & 0xFFFF)), ref handled);
+                var answer = WindowFrame.FrameHook(hwnd, WmNcHitTest, IntPtr.Zero, (IntPtr)(((int)Math.Floor(screen.Y) << 16) | ((int)Math.Floor(screen.X) & 0xFFFF)), ref handled);
                 return handled ? (int)answer : -1;
             }
 
@@ -485,34 +451,6 @@ public static class ProjectTabsPolishTests
     }
 
     // ----- project-tabs-tabperf-review -----
-
-    /// <summary>A source file under src, its line endings made \n.</summary>
-    private static string Source(params string[] parts) => File.ReadAllText(Path.Combine([RepositoryRoot(), "src", .. parts])).ReplaceLineEndings("\n");
-
-    /// <summary>A member's text: from its signature to the end of its body (the next line that closes at its indent).</summary>
-    private static string MemberOf(string source, string signature)
-    {
-        var start = source.IndexOf(signature, StringComparison.Ordinal);
-        if (start < 0)
-            return "";
-        var end = source.IndexOf("\n    }\n", start, StringComparison.Ordinal);
-        return end < 0 ? source[start..] : source[start..(end + 6)];
-    }
-
-    /// <summary>Whether every one of <paramref name="parts"/> is in <paramref name="text"/>, each after the one before.</summary>
-    private static bool Ordered(string text, params string[] parts)
-    {
-        var at = 0;
-        foreach (var part in parts)
-        {
-            var found = text.IndexOf(part, at, StringComparison.Ordinal);
-            if (found < 0)
-                return false;
-            at = found + part.Length;
-        }
-
-        return true;
-    }
 
     private static bool Refused(Action write)
     {
@@ -613,60 +551,62 @@ public static class ProjectTabsPolishTests
             "the pictures a tab keeps count width x height x 4 bytes each, one file's filmstrip on many clips once; nulls and drawings count nothing");
 
         // The wiring (the window's side).
-        var window = (Source("MainWindow.ProjectTabs.cs") + Source("MainWindow.TabCache.cs") + Source("MainWindow.TabMenu.cs"));
-        expect(Ordered(MemberOf(window, "private void WriteTabNow("), "if (!write.TryStart())", "frozen = frozen.ShallowCopy();", "frozen.ThumbnailJpeg = write.Jpeg;",
+        var window = (SourceProbe.Src("MainWindow.ProjectTabs.cs") + SourceProbe.Src("MainWindow.TabCache.cs") + SourceProbe.Src("MainWindow.TabMenu.cs"));
+        expect(SourceProbe.InOrder(SourceProbe.Member(window, "private void WriteTabNow("), "if (!write.TryStart())", "frozen = frozen.ShallowCopy();", "frozen.ThumbnailJpeg = write.Jpeg;",
                    "_tabs.WriteTab(write.Id, frozen,", "catch (Exception ex) when (ex is not OutOfMemoryException)", "write.Fail();", "if (!write.IsWanted)", "_unwritten.Remove(write);")
                && !window.Contains("frozen.ThumbnailJpeg = write.Jpeg = ", StringComparison.Ordinal),
             "the pool's write is claimed first, makes its thumbnail on a copy (the frozen state is never written to), and stays listed unless written or cancelled, whatever it threw");
-        expect(Ordered(MemberOf(window, "private void WriteUnwrittenTabs("), "var until = Environment.TickCount64 + CrashIoWaitMs;", "if (!write.IsWanted)", "if (_tabs.IsBusyWith(write.Id))",
+        expect(SourceProbe.InOrder(SourceProbe.Member(window, "private void WriteUnwrittenTabs("), "var until = Environment.TickCount64 + CrashIoWaitMs;", "if (!write.IsWanted)", "if (_tabs.IsBusyWith(write.Id))",
                    "WaitForTabIo(write.Id, until);", "if (!write.TryStart())", "_tabs.WriteTab(write.Id, project.Frozen,")
                && window.Contains("private const int CrashIoWaitMs = 3000;", StringComparison.Ordinal),
             "falling over: a write under way is waited for (3 s at most in all) and only a write it can claim is written, never a second copy beside one");
-        expect(Ordered(MemberOf(window, "private void TabWritten("), "if (write.Failed)", "live.MustStay = true;", "has no recovery copy yet", "return;", "live.MustStay = false;")
-               && Ordered(MemberOf(window, "private void KeptTabsChanged("), "RetryFailedTabWrites();", "LetGoForMemory();")
-               && Ordered(MemberOf(window, "private ProjectTabHeader PutActiveBehind("), "_stillAsked++;", "CaptureWindowStateForTab(tab);", "var live = DetachActive(tab, out write);", "RetryFailedTabWrites();"),
+        expect(SourceProbe.InOrder(SourceProbe.Member(window, "private void TabWritten("), "if (write.Failed)", "live.MustStay = true;", "has no recovery copy yet", "return;", "live.MustStay = false;")
+               && SourceProbe.InOrder(SourceProbe.Member(window, "private void KeptTabsChanged("), "RetryFailedTabWrites();", "LetGoForMemory();")
+               && SourceProbe.InOrder(SourceProbe.Member(window, "private ProjectTabHeader PutActiveBehind("), "_stillAsked++;", "CaptureWindowStateForTab(tab);", "var live = DetachActive(tab, out write);", "RetryFailedTabWrites();"),
             "a failed write says the tab has no recovery copy yet, and is tried again on the valve's tick and as the next tab goes behind");
-        expect(Ordered(MemberOf(window, "private bool AttachHydrated("), "live.Write?.Cancel();", "ForgetUnwritten(live.Write);", "DeleteTabFiles(tab.Id);")
-               && Ordered(MemberOf(window, "private void ForgetKeptTab("), "live.Write?.Cancel();", "ForgetUnwritten(live.Write);"),
+        expect(SourceProbe.InOrder(SourceProbe.Member(window, "private bool AttachHydrated("), "live.Write?.Cancel();", "ForgetUnwritten(live.Write);", "DeleteTabFiles(tab.Id);")
+               && SourceProbe.InOrder(SourceProbe.Member(window, "private void ForgetKeptTab("), "live.Write?.Cancel();", "ForgetUnwritten(live.Write);"),
             "a write let go as its tab comes back or closes is taken off the list (a failed one would hold the tab's frozen copy otherwise)");
-        expect(Ordered(MemberOf(window, "private void ForgetProjectTabs("), "FinishTabWrites();", "CancelTabWrites(_ => false);", "_tabs.ForgetSession();", "WaitForKeptTabWrites();",
+        expect(SourceProbe.InOrder(SourceProbe.Member(window, "private void ForgetProjectTabs("), "FinishTabWrites();", "CancelTabWrites(_ => false);", "_tabs.ForgetSession();", "WaitForKeptTabWrites();",
                    "WriteKeptTabsNow(keep);", "CancelTabWrites(keep);", "_tabs.ForgetSession(keep);")
-               && Ordered(MemberOf(window, "private void WaitForKeptTabWrites("), "\"Saving tabs...\"", "_tabs.WaitFor(tab.Id, Timeout.Infinite);", "TakeWrittenDots();")
-               && MemberOf(window, "private void WriteKeptTabsNow(").Contains("!claimed.TryStart()", StringComparison.Ordinal),
+               && SourceProbe.InOrder(SourceProbe.Member(window, "private void WaitForKeptTabWrites("), "\"Saving tabs...\"", "_tabs.WaitFor(tab.Id, Timeout.Infinite);", "TakeWrittenDots();")
+               && SourceProbe.Member(window, "private void WriteKeptTabsNow(").Contains("!claimed.TryStart()", StringComparison.Ordinal),
             "a clean close waits for a kept tab's write to its end (Saving tabs...), writes only what it can claim, and lets every other write go before the session's files");
-        expect(Ordered(MemberOf(window, "private string SaveTabInPlace("), "if (live is not null && !_tabs.WaitFor(tab.Id, IoWaitMs))", "Still writing this tab's recovery copy: try again in a moment.",
+        expect(SourceProbe.InOrder(SourceProbe.Member(window, "private SaveOutcome SaveTabInPlace("), "if (live is not null && !_tabs.WaitFor(tab.Id, IoWaitMs))", "Still writing this tab's recovery copy: try again in a moment.",
                    "live.Project.Frozen.ShallowCopy()", "(state.Name, state.SavedAt) =")
                && !window.Contains("live?.Project.Frozen ??", StringComparison.Ordinal),
             "a save from memory waits for the tab's write (refused, said so, after 5 s) and writes a copy with its name and time: the frozen state is never changed");
-        expect(MemberOf(window, "private bool MayChangeTabs(").Contains("_viewModel.HasPendingAdds ? \"Adding clips: switch tabs when they are in.\"", StringComparison.Ordinal),
+        expect(SourceProbe.Member(window, "private bool MayChangeTabs(").Contains("_viewModel.HasPendingAdds ? \"Adding clips: switch tabs when they are in.\"", StringComparison.Ordinal),
             "the tabs never change while clips are still being added");
-        var close = MemberOf(window, "private async Task CloseProjectTabAsync(");
+        var close = SourceProbe.Member(window, "private async Task CloseProjectTabAsync(");
         expect(close.Split("ForgetLiveStill();").Length == 3 && !close.Contains("(_liveStill, _liveStillMark) = (null, default);", StringComparison.Ordinal),
             "closing the tab in front drops a still being taken, as putting it behind does (a switch generation)");
-        expect(Ordered(MemberOf(window, "private bool AttachHydrated("), "StillFits(live.StillMark.PositionMs, live.StillMark.Shown3D, tab.PlayheadMs, tab.ExplodedOpen, tab.FrameRate)",
+        expect(SourceProbe.InOrder(SourceProbe.Member(window, "private bool AttachHydrated("), "StillFits(live.StillMark.PositionMs, live.StillMark.Shown3D, tab.PlayheadMs, tab.ExplodedOpen, tab.FrameRate)",
                    "ShowTabStill(live.Still);", "ShowTabStill(tab.ExplodedOpen ? null : FallbackStill(live, tab.PlayheadMs));", "_viewModel.AttachTab(project)",
                    "(_liveStill, _liveStillMark) = stillFits ? (live.Still, live.StillMark) : (null, default);"),
             "a tab kept live shows its still when it fits, else (flat, 5.4.3) its overview picture at its playhead, and keeps a still only when it fits");
-        expect(Ordered(MemberOf(window, "private static long ApproxBytesOf("), "view.Filmstrip, view.Waveform", "project.TrackWaveforms.Values", "project.TimelineWaveform", "live.Still", "live.ProgramSheet?.Picture"),
+        expect(SourceProbe.InOrder(SourceProbe.Member(window, "private static long ApproxBytesOf("), "FilesOf(live)", "clipPictures.OfFile", "project.TrackWaveforms", "project.TimelineWaveform", "live.Still", "live.ProgramSheet?.Picture"),
             "the valve counts a kept tab's views' filmstrips and waveforms, its tracks' and the timeline's waveforms, its still and sheet");
 
-        var still = Source("MainWindow.TabStill.cs");
-        var exploded = Source("MainWindow.Exploded.cs");
-        expect(Ordered(MemberOf(still, "private void KeepTabStillFresh("), "nameof(MainViewModel.IsPlaying) && _viewModel.IsPlaying", "ForgetLiveStill();")
-               && Ordered(MemberOf(exploded, "private void SetExplodedView("), "_explodedUi = true;", "NoteStillStale();", "_explodedUi = false;", "NoteStillStale();")
+        var still = SourceProbe.Src("MainWindow.TabStill.cs");
+        var exploded = SourceProbe.Src("MainWindow.Exploded.cs");
+        expect(SourceProbe.InOrder(SourceProbe.Member(still, "private void KeepTabStillFresh("), "nameof(MainViewModel.IsPlaying) && _viewModel.IsPlaying", "ForgetLiveStill();")
+               && SourceProbe.InOrder(SourceProbe.Member(exploded, "private void SetExplodedView("), "_explodedUi = true;", "NoteStillStale();", "_explodedUi = false;", "NoteStillStale();")
                && exploded.Split("NoteStillStale();").Length - 1 == 8,
             "playback forgets the still; entering or leaving the 3D view and moving its camera take it again");
-        var strip = Source("MainWindow.ProgramStrip.cs");
-        var drawer = Source("Services", "GpuProgramStrip.cs");
+        var strip = SourceProbe.Src("MainWindow.ProgramStrip.cs");
+        var drawer = SourceProbe.Src("Services", "GpuProgramStrip.cs");
         expect(strip.Contains("ProgramStrip().Request(state, _viewModel.UndoMark);", StringComparison.Ordinal)
                && strip.Contains("_programSheetDrawnAt = sheet.IsPartial ? null : new ProgramSheetKept(_programStrip?.SheetMark);", StringComparison.Ordinal)
-               && Ordered(MemberOf(strip, "private ThumbnailSheet? SheetToKeep("), "SheetIsCurrent(", "_programStale, _programStrip is { IsPending: true }")
-               && Ordered(MemberOf(drawer, "private async void Draw("), "SheetMark = mark;", "SheetReady?.Invoke(sheet);"),
+               && SourceProbe.InOrder(SourceProbe.Member(strip, "private ThumbnailSheet? SheetToKeep("), "SheetIsCurrent(", "_programStale, _programStrip is { IsPending: true }")
+               && SourceProbe.InOrder(SourceProbe.Member(drawer, "private async Task DrawAsync("), "SheetMark = mark;", "SheetReady?.Invoke(sheet);"),
             "a sheet carries the undo mark its request was made at, and a tab keeps it only when current");
-        var store = Source("Services", "ProjectStore.cs");
-        expect(store.Split("var partial = PartialPath(path);").Length == 3 && !store.Contains("path + \".tmp\"", StringComparison.Ordinal),
+        var store = SourceProbe.Src("Services", "ProjectStore.cs");
+        var atomic = SourceProbe.Src("Services", "AtomicFile.cs");
+        expect(atomic.Split("var partial = PartialPath(path);").Length == 2 && store.Contains("=> AtomicFile.WriteAllText(path, content, durable);", StringComparison.Ordinal)
+               && store.Contains("=> AtomicFile.Write(path, write, durable);", StringComparison.Ordinal) && !store.Contains("path + \".tmp\"", StringComparison.Ordinal),
             "both whole writes write beside under a name of their own");
-        expect(Ordered(MemberOf(Source("Services", "ProjectTabs.cs"), "public void WriteTab("), "ClaimSession();", "ProjectStore.SaveTo(state, StateFile(id));", "if (IsForgotten)", "TryDelete(StateFile(id));"),
+        expect(SourceProbe.InOrder(SourceProbe.Member(SourceProbe.Src("Services", "ProjectTabs.cs"), "public void WriteTab("), "ClaimSession();", "ProjectStore.SaveTo(state, StateFile(id), durable: false);", "if (IsForgotten)", "TryDelete(StateFile(id));"),
             "a write that was under way as the session was let go takes its project file out again");
     }
 }

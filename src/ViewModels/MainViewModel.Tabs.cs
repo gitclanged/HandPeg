@@ -99,13 +99,13 @@ public partial class MainViewModel
     /// Whether the project may have unsaved changes, cheaply: something was opened, touched since the last save or open, and has a
     /// saved state to differ from. False means <see cref="HasUnsavedChanges"/> is false without making the fingerprint; true asks it.
     /// </summary>
-    public bool MayHaveUnsavedChanges => HasSource && _touchedSinceSaved && _savedFingerprint.Length > 0;
+    public bool MayHaveUnsavedChanges => _touchedSinceSaved && _savedFingerprint.Length > 0;
 
     /// <summary>
-    /// Whether the project holds nothing worth keeping as a tab goes behind (5.4A review): no file or clip, no undo or redo history (a
+    /// Whether the project holds nothing worth keeping as a tab goes behind (5.4.0): no file or clip, no undo or redo history (a
     /// project whose clips were all deleted can still have them back), no frame or rate chosen on purpose (the New Project studio,
-    /// Project Settings), no name from the studio, no Game Preset waiting for a first file and nothing in Project Media (5.4C: the New
-    /// Project studio's picks go there with no step of Undo). Only such a tab is let go as empty; every other one is written to the cache.
+    /// Project Settings), no name from the studio, no Game Preset waiting for a first file and nothing in Project Media (5.4.0: the New
+    /// Project studio's picks go there with no step of Undo). Only such a tab is released as empty; every other one is written to the cache.
     /// </summary>
     public bool HoldsNothingForTab => !HasSource && _undo.Count == 0 && _redo.Count == 0 && !Document.ExplicitFrame && !Document.ExplicitFrameRate
         && NewProjectName.Length == 0 && _templateToCome is null && Document.MediaPool.Count == 0;
@@ -245,7 +245,7 @@ public partial class MainViewModel
         internal string? SpriteSource { get; init; }
         internal double SpriteIntervalSeconds { get; init; }
         internal bool SpritePending { get; init; }
-        internal Dictionary<int, ImageSource> TrackWaveforms { get; init; } = [];
+        internal IReadOnlyList<ImageSource> TrackWaveforms { get; init; } = [];
         internal ImageSource? TimelineWaveform { get; init; }
         internal bool WaveformsPending { get; init; }
         internal bool UnpackPending { get; init; }
@@ -299,7 +299,7 @@ public partial class MainViewModel
             SpriteSource = _spriteSource,
             SpriteIntervalSeconds = SpriteIntervalSeconds,
             SpritePending = _spriteCancellation is not null,
-            TrackWaveforms = AudioTracks.Where(t => t.Waveform is not null).GroupBy(t => t.Index).ToDictionary(g => g.Key, g => g.First().Waveform!),
+            TrackWaveforms = [.. SourceWaveforms],
             TimelineWaveform = TimelineWaveform,
             WaveformsPending = _waveformCancellation is not null || _timelineWaveformCancellation is not null,
             UnpackPending = _unpacking > 0,
@@ -365,7 +365,7 @@ public partial class MainViewModel
     /// </summary>
     public bool AttachTab(TabProjectContext tab)
     {
-        if (IsBusy || IsRecording)
+        if (IsBusy || HoldsRecording)
             return false;
 
         // Whatever was still under way for the project held now (one closed in front: AttachTab follows it) never lands in this one.
@@ -435,11 +435,9 @@ public partial class MainViewModel
         SetSourceIFrames(tab.IFrames);
         IFrameStatusText = tab.IFrameStatus;
         (SpriteSheetPath, _spriteSource, SpriteIntervalSeconds) = (tab.SpriteSheetPath, tab.SpriteSource, tab.SpriteIntervalSeconds);
-        foreach (var track in AudioTracks)
-        {
-            if (tab.TrackWaveforms.TryGetValue(track.Index, out var waveform))
-                track.Waveform = waveform;
-        }
+        SourceWaveforms.Clear();
+        foreach (var waveform in tab.TrackWaveforms)
+            SourceWaveforms.Add(waveform);
 
         if (tab.TimelineWaveform is not null && !tab.WaveformsPending)
         {

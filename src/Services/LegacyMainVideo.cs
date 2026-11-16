@@ -529,7 +529,7 @@ public static class LegacyMainVideo
         if (source.Width <= 0 || source.Height <= 0)
             return state;
 
-        var box = cut.GetOutputRect(frameWidth, frameHeight, sourceWidth, sourceHeight);
+        var box = cut.ComputeOutputRect(frameWidth, frameHeight, sourceWidth, sourceHeight);
         var (perX, perY) = ((double)box.Width / frameWidth / source.Width, (double)box.Height / frameHeight / source.Height);
         var least = 1 - Layer.LargestCropTotal + 1e-6;
         static (double From, double Length) Held(double from, double length, double least)

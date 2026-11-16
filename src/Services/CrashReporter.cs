@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Windows.Threading;
+using HandPegApp.Native;
+using static HandPegApp.Native.Kernel32;
 
 namespace HandPegApp.Services;
 
@@ -79,8 +81,7 @@ public static partial class CrashReporter
     {
         if (_creationTime == 0)
         {
-            long creation, exit, kernel, user;
-            _creationTime = GetProcessTimes(GetCurrentProcess(), &creation, &exit, &kernel, &user) != 0 ? creation : 0;
+            _creationTime = GetProcessTimes(GetCurrentProcess(), out var creation, out _, out _, out _) != 0 ? creation : 0;
         }
 
         return _creationTime;
@@ -99,7 +100,8 @@ public static partial class CrashReporter
         var slot = (int)((sequence - 1) % Ring);
         var at = Now;
 
-        Volatile.Write(ref Sequences[slot], 0);
+        // A full fence (not a release store), so the plain stores below never become visible before the slot reads as being written.
+        Interlocked.Exchange(ref Sequences[slot], 0);
         Ats[slot] = at;
         Categories[slot] = category;
         Details[slot] = detail;
@@ -386,18 +388,4 @@ public static partial class CrashReporter
     [LibraryImport("ntdll.dll")]
     private static unsafe partial nint RtlPcToFileHeader(nint pc, nint* baseOfImage);
 
-    [LibraryImport("kernel32.dll")]
-    private static partial int SetEvent(nint handle);
-
-    [LibraryImport("kernel32.dll")]
-    private static unsafe partial uint WaitForMultipleObjects(uint count, nint* handles, int waitAll, uint milliseconds);
-
-    [LibraryImport("kernel32.dll")]
-    private static partial uint WaitForSingleObject(nint handle, uint milliseconds);
-
-    [LibraryImport("kernel32.dll")]
-    private static partial nint GetCurrentProcess();
-
-    [LibraryImport("kernel32.dll")]
-    private static unsafe partial int GetProcessTimes(nint process, long* creation, long* exit, long* kernel, long* user);
 }

@@ -14,6 +14,7 @@ using HandPegApp.Models;
 using HandPegApp.Services;
 using HandPegApp.ViewModels;
 using Microsoft.Win32;
+using static HandPegApp.UiBrushes;
 
 namespace HandPegApp;
 
@@ -23,6 +24,18 @@ namespace HandPegApp;
 public partial class MainWindow : Window
 {
     private readonly MainViewModel _viewModel = new();
+
+    // The heat lamp: made at idle after Frame 1 (null until then).
+    private Shell.HeatLampController? _heatLamp;
+
+    // The Live Encoded Preview on the player (its toggle is made with the bar's first layout).
+    private readonly Shell.LoopbackPreviewController _loopback;
+
+    // The player's HUD and the Fullscreen Preview (made at first use, after the first frame).
+    private readonly Shell.FullscreenController _fullscreen;
+
+    // What a drag carries, where its drop goes, and the drop overlay of an empty window.
+    private readonly Shell.DropRouter _drops;
     private bool _isScrubbing;
     private bool _applyingMagnet;
     private bool _updatingFromPlayer;
@@ -56,7 +69,9 @@ public partial class MainWindow : Window
         UpdateNotice.Visibility = Visibility.Visible;
     }
 
-    private async void UpdateAction_Click(object sender, RoutedEventArgs e)
+    private void UpdateAction_Click(object sender, RoutedEventArgs e) => Faults.Forget(UpdateAction_ClickAsync(sender, e), nameof(UpdateAction_Click));
+
+    private async Task UpdateAction_ClickAsync(object sender, RoutedEventArgs e)
     {
         if (_updateOffered is not { } offered)
             return;
@@ -112,15 +127,13 @@ public partial class MainWindow : Window
     // Left for later: the update goes in when the application closes.
     private void DismissUpdateNotice_Click(object sender, RoutedEventArgs e) => UpdateNotice.Visibility = Visibility.Collapsed;
 
-    // The player's HUD (5.4.4, MainWindow.Fullscreen.cs): the hover Fullscreen button and the fullscreen preview. Called by the constructor;
-    // everything of it is made at first use, after the first frame.
-    partial void InitializePlayerHud();
-
     public MainWindow()
     {
         StartupTrace.Mark("MainWindow: view model made, InitializeComponent");
         var building = System.Diagnostics.Stopwatch.StartNew();
         InitializeComponent();
+        _drops = new Shell.DropRouter(_viewModel, this, new Shell.DropOverlayParts(DropOverlay, DropPresetList, DropSquishList, DropPresetTitle,
+            DropPresetSection, DropSquishSection, VideoView, ClearDropMark), () => _gpu);
 
         // HandPeg's own UI scale before the first layout (5.1-Polish): the monitor's own pixels, unless Windows' scaling is
         // followed. The window keeps the size Windows gives it; its content is laid out at the scale.
@@ -139,17 +152,16 @@ public partial class MainWindow : Window
         {
             // Something is about to be dropped: the player starts now, before the drop, so that it is ready for it.
             WarmUpPlayer();
-            ShowDropOverlay(e);
+            _drops.ShowDropOverlay(e);
         }), handledEventsToo: true);
-        AddHandler(PreviewDragOverEvent, new DragEventHandler((_, e) => ShowDropOverlay(e)), handledEventsToo: true);
+        AddHandler(PreviewDragOverEvent, new DragEventHandler((_, e) => _drops.ShowDropOverlay(e)), handledEventsToo: true);
 
         // A path or a link being typed is about to be loaded too.
         SourcePaneBox.GotKeyboardFocus += (_, _) => WarmUpPlayer();
 
-        AddHandler(PreviewDragLeaveEvent, new DragEventHandler((_, e) => LeaveDropOverlay(e)), handledEventsToo: true);
-        AddHandler(PreviewDropEvent, new DragEventHandler((_, _) => Dispatcher.BeginInvoke(HideDropOverlay)), handledEventsToo: true);
+        AddHandler(PreviewDragLeaveEvent, new DragEventHandler((_, _) => _drops.LeaveDropOverlay()), handledEventsToo: true);
+        AddHandler(PreviewDropEvent, new DragEventHandler((_, _) => Dispatcher.BeginInvoke(_drops.HideDropOverlay)), handledEventsToo: true);
 
-        _dropLeave.Tick += (_, _) => HideDropOverlay();
         TransportRow.Fitting = FitTransport;
         _addMediaHover = new HoverFlyout(AddMediaHost, AddMediaFlyout, AddMediaFlyoutPanel) { HoldsWhileFocused = true, Opening = () => PlaceHeaderFlyout(AddMediaFlyout, AddMediaHost) };
         _settingsHover = new HoverFlyout(SettingsHost, SettingsFlyout, SettingsFlyoutPanel)
@@ -209,10 +221,18 @@ public partial class MainWindow : Window
 
         _viewModel.MarkersChanged += OnMarkersChanged;
         InitializePlaybackBar();
-        InitializePlayerHud();
+        _fullscreen = new Shell.FullscreenController(new Shell.FullscreenHost(this, _viewModel, VideoView, VideoBorder, PlayerHud, ExplodedToggle,
+            () => CanToggleExplodedView, () => IsScrubHeld, () => _switchingTab, HookSideKeys, UnhookSideKeys, PlayPause_Click, ScrubPlayheadTo,
+            ms =>
+            {
+                EndScrub();
+                if (!PlayerAt((long)ms))
+                    PlayerSeek((long)ms);
+            }, RunGuarded));
         InitializePlayerLayout();
         HookLoupe();
-        HookLoopback();
+        _loopback = new Shell.LoopbackPreviewController(_viewModel, this, ExportQualityPreviewBarSlot, TransportRow, TransportCenter, ExplodedToggle,
+            PlayerOverlay, VideoView, () => _gpu, () => _explodedUi);
         _viewModel.SessionCleared += OnSessionCleared;
         InitializeProjectWorkspace();
         _viewModel.PropertyChanged += ViewModel_PropertyChanged;
@@ -277,12 +297,19 @@ public partial class MainWindow : Window
         // The player's picture is made again after every change it is made from (the preview state, MainViewModel.InvalidatePreviewState).
         _viewModel.PreviewStateInvalidated += ScheduleGpuState;
         _viewModel.IsTimelineDragHeld = () => TimelineDragHeld;
+
+        // What the view model's undo grouping asks of the input (it reads no WPF input itself): the left button held, a text box typed in.
+        _viewModel.IsPointerHeld = () => Dispatcher.CheckAccess() && System.Windows.Input.Mouse.LeftButton == System.Windows.Input.MouseButtonState.Pressed;
+        _viewModel.IsTypingInTextBox = () => Dispatcher.CheckAccess() && System.Windows.Input.Keyboard.FocusedElement is System.Windows.Controls.Primitives.TextBoxBase;
+        _viewModel.IsAltHeld = () => Dispatcher.CheckAccess() && System.Windows.Input.Keyboard.Modifiers.HasFlag(System.Windows.Input.ModifierKeys.Alt);
+        _viewModel.TaskbarProgress = new Shell.WindowTaskbarProgress(this);
         _viewModel.TimelineSelection = SelectedGroup;
 
-        // The timeline's rows follow the clip views (Layers), and anything about one that changes.
-        _viewModel.PreviewStateInvalidated += ScheduleClipRedraw;
+        // The timeline's rows follow the clip views (Layers), and anything about one that changes, but not a look-only change (an
+        // effect value dragged at 30 Hz: nothing a row shows).
+        _viewModel.PreviewStateInvalidated += ScheduleClipRedrawUnlessLook;
         _viewModel.Layers.CollectionChanged += (_, _) => ScheduleClipRedraw();
-        _viewModel.TimelineChanged += ScheduleClipRedraw;
+        _viewModel.TimelineChanged += ScheduleClipRedrawUnlessLook;
         _viewModel.TimelineChanged += DrawKeyTimeline;
 
         // The Keyframes pane's rows: each property keyed, moved and deleted on its own.
@@ -342,8 +369,13 @@ public partial class MainWindow : Window
             // And one double-clicked from now on, while this copy is open, is handed to it (5.2.0's re-cut, the user's answer).
             SingleInstance.Listen(path => Dispatcher.InvokeAsync(() => _ = OpenHandedProjectAsync(path)), _windowClosing.Token);
 
+            // Settings or presets that existed but could not be opened run on defaults and are never written this session.
+            if (AppSettings.ReadFailed || PresetStore.ReadFailed)
+                _viewModel.StatusText = "Settings file unreadable: changes are not saved this session.";
+
             // How long the launch took, for the log: from the process starting to the window being on screen.
-            var sinceStart = (DateTime.Now - System.Diagnostics.Process.GetCurrentProcess().StartTime).TotalMilliseconds;
+            using var self = System.Diagnostics.Process.GetCurrentProcess();
+            var sinceStart = (DateTime.Now - self.StartTime).TotalMilliseconds;
             AppLog.Write(FormattableString.Invariant($"Startup: window drawn {sinceStart:0} ms after the process started (window built in {built} ms)."));
 
             _shellDrawn = true;
@@ -355,13 +387,14 @@ public partial class MainWindow : Window
             Dispatcher.BeginInvoke(UnifiedTimeline.RealizeTools, System.Windows.Threading.DispatcherPriority.ContextIdle);
 
             // The heat lamp (5.4.3): what the pointer is about to open made ready while it rests near it, hooked once everything is up.
-            Dispatcher.BeginInvoke(InitializeHeatLamp, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-
+            Dispatcher.BeginInvoke(() => _heatLamp ??= new Shell.HeatLampController(_viewModel, EditorHeader, UnifiedTimelinePanel, WarmLayoutCards,
+                () => IsScrubHeld || TimelineDragHeld, UnifiedTimeline.RealizeTools, CutoutTarget), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
 
             // No window opens over the program at launch any more: it starts straight into its workspace. What
             // the launch window offered is offered while a file is dragged in instead, and its targets are made
             // now, once everything else is up and idle.
-            Dispatcher.BeginInvoke(PrepareDropTargets, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            Dispatcher.BeginInvoke(_drops.PrepareDropTargets, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            HookMediaMemory();
             Dispatcher.BeginInvoke(RealizeTabsWhenIdle, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
 
             // A minute in, when nothing else is starting: the caches let go of what was made from files deleted since.
@@ -504,8 +537,8 @@ public partial class MainWindow : Window
         try
         {
             var handle = new WindowInteropHelper(this).Handle;
-            if (handle != 0 && IsIconic(handle))
-                _ = ShowWindow(handle, ShowWindowRestore);
+            if (handle != 0 && Native.User32.IsIconic(handle))
+                _ = Native.User32.ShowWindow(handle, Native.User32.SwRestore);
             Activate();
 
             // A dialog of this window's up (Settings, a save prompt): the project waits for it to be closed.
@@ -524,16 +557,6 @@ public partial class MainWindow : Window
             _viewModel.StatusText = $"{Path.GetFileName(path)} could not be opened: {ex.Message}";
         }
     }
-
-    private const int ShowWindowRestore = 9;
-
-    [System.Runtime.InteropServices.LibraryImport("user32.dll")]
-    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
-    private static partial bool IsIconic(nint window);
-
-    [System.Runtime.InteropServices.LibraryImport("user32.dll")]
-    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
-    private static partial bool ShowWindow(nint window, int command);
 
     /// <summary>
     /// Opens what was chosen in the launch window, once nothing else is running: an operation asked for while
@@ -571,7 +594,7 @@ public partial class MainWindow : Window
 
         // The working area of the monitor the window is really on (SystemParameters.WorkArea is the main one's, at
         // the system's DPI): the window is kept inside it before it is first shown.
-        KeepInside(WorkAreaOf(new WindowInteropHelper(this).Handle));
+        KeepInside(Shell.WindowFrame.WorkAreaOf(this, new WindowInteropHelper(this).Handle));
 
         // Before the first layout: the encoders an earlier launch found, so the tabs are drawn with the one they keep.
         _viewModel.TakeEarlyHardwareEncoders();
@@ -720,8 +743,8 @@ public partial class MainWindow : Window
                 // A project that could not be saved must not be followed by losing what it was meant to keep without a word:
                 // what went wrong is said, and closing all the same is the user's call (never a window that silently stays).
                 var saved = projectPath.Length > 0 ? _viewModel.SaveProjectTo(projectPath) : _viewModel.SaveProject(dialog.ProjectName);
-                return saved.StartsWith("Project saved", StringComparison.Ordinal)
-                    || new ConfirmDialog("Project Not Saved", $"{saved}\n\nClose HandPeg anyway? The changes that were not saved are lost.", "Close Without Saving")
+                return saved.IsSaved
+                    || new ConfirmDialog("Project Not Saved", $"{saved.Line}\n\nClose HandPeg anyway? The changes that were not saved are lost.", "Close Without Saving")
                     {
                         Owner = this, DefaultsToCancel = true, CancelText = "Keep HandPeg Open",
                     }.ShowDialog() == true;
@@ -934,7 +957,9 @@ public partial class MainWindow : Window
             _viewModel.DestinationPath = dialog.FileName;
     }
 
-    private async void OpenProjects_Click(object sender, RoutedEventArgs e)
+    private void OpenProjects_Click(object sender, RoutedEventArgs e) => Faults.Forget(OpenProjects_ClickAsync(sender, e), nameof(OpenProjects_Click));
+
+    private async Task OpenProjects_ClickAsync(object sender, RoutedEventArgs e)
     {
         var dialog = new ProjectManagerWindow(_viewModel) { Owner = this };
         if (dialog.ShowDialog() != true)
@@ -988,7 +1013,7 @@ public partial class MainWindow : Window
 
         // The box starts at the playhead when it is on the clip, else at the clip's nearer end (Pass 4.2C).
         var at = Math.Clamp(_viewModel.PositionMs / 1000, start, Math.Max(start, end));
-        var dialog = new ManualCutWindow(clip.Name, start, end, _viewModel.SourceFrameRate, iFrames, at) { Owner = this };
+        var dialog = new ManualCutWindow(clip.Name, start, end, _viewModel.SequenceFps, iFrames, at) { Owner = this };
         if (dialog.ShowDialog() != true)
             return;
 
@@ -1083,14 +1108,17 @@ public partial class MainWindow : Window
     /// </summary>
     private void RememberWindowSize()
     {
-        var settings = AppSettings.Current;
         var bounds = WindowState == WindowState.Normal ? new Rect(Left, Top, ActualWidth, ActualHeight) : RestoreBounds;
-        if (!bounds.IsEmpty && bounds.Width >= MinWidth && bounds.Height >= MinHeight)
-            (settings.LastWindowWidth, settings.LastWindowHeight, settings.LastWindowMaximized) = (Math.Round(bounds.Width), Math.Round(bounds.Height), WindowState == WindowState.Maximized);
+        var keep = !bounds.IsEmpty && bounds.Width >= MinWidth && bounds.Height >= MinHeight;
+        var maximized = WindowState == WindowState.Maximized;
 
         try
         {
-            settings.SaveAsCurrent();
+            AppSettings.Update(settings =>
+            {
+                if (keep)
+                    (settings.LastWindowWidth, settings.LastWindowHeight, settings.LastWindowMaximized) = (Math.Round(bounds.Width), Math.Round(bounds.Height), maximized);
+            }, saveNow: true);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -1124,13 +1152,13 @@ public partial class MainWindow : Window
         _addMediaHover.Close();
         WarmUpPlayer();
         static string Patterns(IEnumerable<string> extensions) => string.Join(";", extensions.Select(x => "*" + x));
-        var all = MediaBrowserItem.VideoExtensions.Concat(MediaBrowserItem.AudioExtensions).Concat(MediaBrowserItem.ImageExtensions);
+        var all = MediaFiles.VideoExtensions.Concat(MediaFiles.AudioExtensions).Concat(MediaFiles.ImageExtensions);
         var dialog = new OpenFileDialog
         {
             Title = _viewModel.HasSource ? "Add media to the timeline" : "Open a video",
             Multiselect = _viewModel.HasSource,
-            Filter = $"Media files|{Patterns(all)}|Videos|{Patterns(MediaBrowserItem.VideoExtensions)}|Sounds|{Patterns(MediaBrowserItem.AudioExtensions)}"
-                + $"|Pictures|{Patterns(MediaBrowserItem.ImageExtensions)}|HandPeg projects and bundles|*{ProjectStore.Extension};*{ProjectBundle.Extension}|All files|*.*",
+            Filter = $"Media files|{Patterns(all)}|Videos|{Patterns(MediaFiles.VideoExtensions)}|Sounds|{Patterns(MediaFiles.AudioExtensions)}"
+                + $"|Pictures|{Patterns(MediaFiles.ImageExtensions)}|HandPeg projects and bundles|*{ProjectStore.Extension};*{ProjectBundle.Extension}|All files|*.*",
         };
         if (dialog.ShowDialog(this) != true || dialog.FileNames is not { Length: > 0 } files)
             return;
@@ -1147,7 +1175,7 @@ public partial class MainWindow : Window
     /// <summary>Files put onto the timeline at a moment: sounds as audio clips, videos and pictures as layers (placed by PlaceClip).</summary>
     private void AddFilesToTimeline(string[] files, double at)
     {
-        var sounds = files.Where(f => MediaBrowserItem.KindOf(f) == MediaBrowserKind.Audio).ToArray();
+        var sounds = files.Where(f => MediaFiles.KindOf(f) == MediaBrowserKind.Audio).ToArray();
         var pictures = files.Except(sounds).ToArray();
         if (pictures.Length > 0)
             DropLater("adding clips", () => AddDroppedLayersAsync(pictures, at, null));
@@ -1521,13 +1549,6 @@ public partial class MainWindow : Window
     // The layout pane's stage: the output frame.
     private static readonly Brush StageBrush = Frozen(Color.FromRgb(0x2A, 0x2A, 0x2A));
 
-    private static Brush Frozen(Color color)
-    {
-        var brush = new SolidColorBrush(color);
-        brush.Freeze();
-        return brush;
-    }
-
     /// <summary>The time, in milliseconds, at a horizontal position on the timeline.</summary>
     private double TimelineMsAt(double x)
     {
@@ -1569,7 +1590,9 @@ public partial class MainWindow : Window
         _viewModel.StepFrames(frames);
     }
 
-    private async void PositionText_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    private void PositionText_MouseLeftButtonUp(object sender, MouseButtonEventArgs e) => Faults.Forget(PositionText_MouseLeftButtonUpAsync(sender, e), nameof(PositionText_MouseLeftButtonUp));
+
+    private async Task PositionText_MouseLeftButtonUpAsync(object sender, MouseButtonEventArgs e)
     {
         try
         {

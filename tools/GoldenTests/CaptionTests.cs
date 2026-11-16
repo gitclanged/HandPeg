@@ -32,21 +32,6 @@ public static class CaptionTests
             "# The player draws the subtitle track's words whenever Burn Captions is on (5.4.1A): made while busy, after a file is opened, a tab brought back; none with it off; told of a style change.", ShownInPlayer);
     }
 
-    private static GraphResult Case(string golden, string header, Action<StringBuilder, List<string>> body)
-    {
-        var text = new StringBuilder(header).Append('\n');
-        var problems = new List<string>();
-        try
-        {
-            body(text, problems);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-        return new GraphResult(golden, text.ToString(), problems, 0);
-    }
-
     private static void Expect(List<string> problems, bool held, string what)
     {
         if (!held)
@@ -290,8 +275,6 @@ public static class CaptionTests
 
     // ----- Captions over the video (5.4.1A) -----
 
-    private const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
-
     /// <summary>
     /// The player's captions (MainViewModel.GpuCaptions) on a view model with an empty Sequence: gated on Burn Captions into Export
     /// (AutoCaptions), never on the hidden Preview Subtitles latch a file load, a tab attach or a busy operation cleared; and
@@ -306,7 +289,7 @@ public static class CaptionTests
         }
 
         var vm = new MainViewModel();
-        typeof(MainViewModel).GetMethod("InstallDocument", Hidden)!.Invoke(vm, [new TimelineDocument()]);
+        vm.InstallDocument(new TimelineDocument());
         var told = 0;
         vm.CaptionsChanged += () => told++;
         int Lines() => vm.GpuCaptions().Lines?.Count ?? 0;

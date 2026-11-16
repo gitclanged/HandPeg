@@ -17,6 +17,12 @@ public partial class MainViewModel
     /// <summary>Frame rate of the file last opened (the rate an empty Sequence takes from it). 30 when it is not known.</summary>
     public double SourceFrameRate => _mediaInfo?.Video?.FrameRate is > 0 and var rate ? rate : 30;
 
+    /// <summary>
+    /// The Sequence's frame rate, the one every edit snaps to (<see cref="TimelineDocument.FrameRate"/>), or the last file's while the
+    /// Sequence has none: what frame stepping, the timecode readouts, the Timeline's precision step and typed timecodes count in.
+    /// </summary>
+    public double SequenceFps => Document.FrameRate.IsValid ? Document.FrameRate.Fps : SourceFrameRate;
+
         /// <summary>The encode settings as they are now, as a preset (for Settings: "Use the Current Video and Audio Settings").</summary>
     public EncodingPreset CurrentEncodingSettings() => CaptureSettings("");
 
@@ -163,7 +169,7 @@ public partial class MainViewModel
 
     /// <summary>What is set track by track: action, codec, bitrate and title (5.2-AuditB: the mixing is the Sub-Lanes', neutral here).</summary>
     private List<AudioTrackState> CaptureAudioTracks() =>
-        AudioTracks.Select(t => new AudioTrackState(t.Index, t.Action, t.Codec, t.Bitrate, t.Title, t.GainDb, t.Filters.IsActive ? t.Filters.Clone() : null,
+        AudioTracks.Select(t => new AudioTrackState(t.Index, t.Action, t.Codec, t.Bitrate, t.Title, t.GainDb, t.Filters.IsDefault ? null : t.Filters.Clone(),
             t.OffsetSeconds, t.Pieces.Count > 0 ? [.. t.Pieces] : null, t.AutoDuck, t.IsVoice)).ToList();
 
     /// <summary>
@@ -173,10 +179,11 @@ public partial class MainViewModel
     public ProjectState CaptureState(string name = "") => CaptureState(name, liveTimeline: false);
 
     /// <summary>
-    /// <see cref="CaptureState(string)"/>; with <paramref name="liveTimeline"/> (Pass 5.4D-TabPerf: a project tab kept in memory as it goes
-    /// behind, DetachForTab), its Timeline is the live Sequence itself, not a copy: the tab's own, never touched again until it is back.
+    /// <see cref="CaptureState(string)"/>; with <paramref name="liveTimeline"/> (a project tab kept in memory as it goes behind,
+    /// DetachForTab; a fingerprint, which only serializes), its Timeline is the live Sequence itself, not a copy. Without
+    /// <paramref name="copyBin"/> the Recycle Bin's clips are the live ones too (a fingerprint only reads them).
     /// </summary>
-    private ProjectState CaptureState(string name, bool liveTimeline)
+    private ProjectState CaptureState(string name, bool liveTimeline, bool copyBin = true)
     {
         FlushLooks();
         return new ProjectState
@@ -204,7 +211,7 @@ public partial class MainViewModel
             CaptionAudioPath = CaptionAudioPath,
             CaptionUseExternalAudio = CaptionUseExternalAudio,
             CaptionAudioTrackIndex = ResolveCaptionSource() is { Kind: CaptionSourceKind.Clip, Stream: >= 0 } listened && SameFile(listened.Path, OpenedFile) ? listened.Stream : 0,
-            Deleted = RecycleBin.Select(i => i.Clip with { Clip = CopyOfClip(i.Clip.Clip) }).ToList(),
+            Deleted = copyBin ? RecycleBin.Select(i => i.Clip with { Clip = CopyOfClip(i.Clip.Clip) }).ToList() : RecycleBin.Select(i => i.Clip).ToList(),
             ManualCommand = IsCommandManuallyEdited ? CommandPreview : null,
         };
     }
@@ -340,11 +347,26 @@ public partial class MainViewModel
 
     /// <summary>
     /// Loads the state's source and puts every setting back. Runs as a normal busy operation. A state of the shape before
-    /// 5.2-AuditB (a 5.1 project) is converted on the way (<see cref="ConvertLegacy"/>, <see cref="ConvertedFrom"/>); a queued job or
+    /// 5.2.0 (a 5.1 project) is converted on the way (<see cref="ConvertLegacy"/>, <see cref="ConvertedFrom"/>); a queued job or
     /// an undo step is of this version's own making.
     /// </summary>
-    public Task RestoreStateAsync(ProjectState state, string doneMessage) => RunOperationAsync("Opening a project", WorkLane.Interactive, loadsDocument: true, operation: async cancellationToken =>
+    /// <param name="fromFile">
+    /// The state was read from a file (a project, a tab's cache, a bundle): its saved command and Extra options run only once confirmed
+    /// (<see cref="CommandTrust"/>). False for this session's own queued job being edited again.
+    /// </param>
+    public Task RestoreStateAsync(ProjectState state, string doneMessage, bool fromFile = true) => RunOperationAsync("Opening a project", WorkLane.Interactive, loadsDocument: true, operation: async cancellationToken =>
     {
+        if (fromFile)
+        {
+            // Extra options a built-in Export Preset has (ProRes and DNxHR profiles, an all-intra GOP) are HandPeg's own, not the file's.
+            var extras = state.Settings?.ExtraVideoArguments;
+            if (extras is not null && ExportPresetCatalog.BuiltIns.Any(p => string.Equals(p.ExtraVideoArguments, extras, StringComparison.Ordinal)))
+                extras = null;
+            _commandTrust.TookFromFile(state.ManualCommand, extras);
+        }
+        else
+            _commandTrust.Clear();
+
         // What makes it a project of 5.1's shape, read before anything of it changes (null for one of this version's).
         var oldShape = ProjectStore.OldShapeOf(state.Timeline, state.Deleted, state.Subtitles);
         ConvertedFrom = null;
@@ -468,7 +490,7 @@ public partial class MainViewModel
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            StatusText = $"Could not write {path}: {ex.Message}";
+            Fail($"Could not write {path}: {ex.Message}", $"Export the encoding preset to {path}", ex);
         }
     }
 
@@ -502,7 +524,7 @@ public partial class MainViewModel
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
         {
-            StatusText = $"Could not read the preset: {ex.Message}";
+            Fail($"Could not read the preset: {ex.Message}", "Read an encoding preset", ex);
         }
     }
 
@@ -687,16 +709,16 @@ public partial class MainViewModel
         (VoiceoverGainDb, MixVoiceover, VoiceoverStatus) = (0, true, "");
 
         SetMarkers(null);
-        Document.Markers = [];
+        ClearDocumentMarkers();
         AudioLinked = true;
     }
 
     /// <summary>
     /// Saves the project to a file of the user's choosing (Save As), which is from then on where Save puts it.
     /// Like every save, it leaves the undo history alone: what was done before the save can still be undone after it, and
-    /// (4.4-BugHunt) after the project is opened again, the history going into the file with it.
+    /// (4.4.0) after the project is opened again, the history going into the file with it.
     /// </summary>
-    public string SaveProjectTo(string path)
+    public SaveOutcome SaveProjectTo(string path)
     {
         // Ctrl+S on the open project, with fully portable saves on (5.2A): a folder that holds its media. Save As to a file chosen by hand
         // writes that file as it is.
@@ -715,11 +737,11 @@ public partial class MainViewModel
             ProjectSaved?.Invoke();
             RefreshRecentProjects(Path.GetFileNameWithoutExtension(path));
             _ = OfferToKeepDownloadsAsync();
-            return StatusText = $"Project saved: {path}";
+            return SaveSucceeded($"Project saved: {path}");
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
         {
-            return StatusText = $"Could not save the project: {ex.Message}";
+            return SaveFailed(path, ex);
         }
     }
 
@@ -745,7 +767,7 @@ public partial class MainViewModel
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
         {
-            StatusText = $"Could not save the bundle: {ex.Message}";
+            Fail($"Could not save the bundle: {ex.Message}", "Save a project bundle", ex);
             return;
         }
 
@@ -771,7 +793,7 @@ public partial class MainViewModel
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or InvalidDataException or ArgumentException)
         {
-            StatusText = $"Could not save the bundle: {ex.Message}";
+            Fail($"Could not save the bundle: {ex.Message}", "Save a project bundle", ex);
         }
     }
 
@@ -802,7 +824,7 @@ public partial class MainViewModel
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or InvalidDataException or System.Text.Json.JsonException
                                        or ArgumentException)
         {
-            StatusText = $"Could not open the bundle: {ex.Message}";
+            Fail($"Could not open the bundle: {ex.Message}", "Open a project bundle", ex);
             return;
         }
 
@@ -827,22 +849,26 @@ public partial class MainViewModel
             return;
 
         var fingerprint = Fingerprint();
-        if (fingerprint == _autosavedFingerprint || !HasUnsavedChanges)
+        if (fingerprint == _autosavedFingerprint || !(_touchedSinceSaved && _savedFingerprint.Length > 0 && fingerprint != _savedFingerprint))
             return;
 
         var name = CurrentProjectPath.Length > 0 ? Path.GetFileNameWithoutExtension(CurrentProjectPath) : Path.GetFileNameWithoutExtension(SourcePath.Trim().Trim('"'));
         var path = ProjectStore.AutosavePath(CurrentProjectPath, name);
 
-        // With the undo history (4.4-BugHunt): its steps are never changed once packed, so the file is written from them away
-        // from the interface's thread as they are.
-        var state = CaptureStateForSave(Path.GetFileNameWithoutExtension(path));
+        // With the undo history: its steps are never changed once packed, so the file is written from them away from the interface's
+        // thread as they are. The thumbnail is never waited for here: a fresh capture is started (on this thread: the engine plans it
+        // here) and waited for on the pool, within the same cap a save waits, before the file is written.
+        var state = CaptureStateForSave(Path.GetFileNameWithoutExtension(path), moved: null, waitForThumbnail: false);
+        var thumbnail = ThumbnailRequest();
         var lag = TakeRecoveryLag();
         _autosaving = true;
         try
         {
-            // Made two actions back away from this thread (Pass 5.5A), from the packed steps and the state's own copy.
-            await Task.Run(() =>
+            // Made two actions back away from this thread, from the packed steps and the state's own copy.
+            await Task.Run(async () =>
             {
+                if (thumbnail is not null)
+                    state.ThumbnailJpeg = await FinishThumbnailAsync(thumbnail).ConfigureAwait(false) ?? state.ThumbnailJpeg;
                 var written = lag is not null && Lagged(state, lag) is { } lagged ? lagged : state;
                 ProjectStore.SaveTo(written, path);
                 if (!ReferenceEquals(written, state))
@@ -861,15 +887,16 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// A manual save as a fully portable project (5.2A, Settings: Fully portable project saves): Projects\Name\Name.hproj with every file it
+    /// A manual save as a fully portable project (5.2.0, Settings: Fully portable project saves): Projects\Name\Name.hproj with every file it
     /// reads in media\ beside it (hard-linked on the same drive, copied in the background from another), named there by relative paths; or,
     /// when the open project is a portable folder already (carried to a USB drive, say), there. A line for the status bar.
     /// </summary>
-    private string SavePortable(string name, string currentPath)
+    private SaveOutcome SavePortable(string name, string currentPath)
     {
+        var path = currentPath;
         try
         {
-            var path = PortableProject.IsPortableFolder(currentPath) && File.Exists(currentPath) ? currentPath : PortableProject.PathFor(name.Trim());
+            path = PortableProject.IsPortableFolder(currentPath) && File.Exists(currentPath) ? currentPath : PortableProject.PathFor(name.Trim());
             var state = CaptureStateForSave(Path.GetFileNameWithoutExtension(path));
             var outcome = PortableProject.Save(state, path);
             CrashReporter.KeepOut(CrashSummaries.FilesIn(state).Append(path));
@@ -883,13 +910,13 @@ public partial class MainViewModel
                 _ = TellCopiedAsync(outcome);
 
             var missing = outcome.Missing > 0 ? $"; {outcome.Missing} named file{(outcome.Missing == 1 ? " is" : "s are")} not on this PC" : "";
-            return StatusText = outcome.Copying > 0
+            return SaveSucceeded(outcome.Copying > 0
                 ? $"Project saved: {Path.GetFileNameWithoutExtension(path)}, a portable folder: {outcome.InPlace} file{(outcome.InPlace == 1 ? "" : "s")} in its media folder, {outcome.Copying} being copied there from another drive{missing}."
-                : $"Project saved: {Path.GetFileNameWithoutExtension(path)}, a portable folder with all {outcome.InPlace} of its files in its media folder{missing}.";
+                : $"Project saved: {Path.GetFileNameWithoutExtension(path)}, a portable folder with all {outcome.InPlace} of its files in its media folder{missing}.");
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
         {
-            return StatusText = $"Could not save the project: {ex.Message}";
+            return SaveFailed(path.Length > 0 ? path : name, ex);
         }
     }
 
@@ -909,16 +936,16 @@ public partial class MainViewModel
 
     /// <summary>
     /// Saves the current state as a project and returns a line for the status bar. A save by name never writes over another project
-    /// without asking (5.4A: every studio project starts as "New Project"): a file already there that is not the open project's own is
+    /// without asking (5.4.0: every studio project starts as "New Project"): a file already there that is not the open project's own is
     /// replaced only once the user says so, and otherwise nothing is written.
     /// </summary>
-    public string SaveProject(string name)
+    public SaveOutcome SaveProject(string name)
     {
         var target = SavedProjectPathFor(name);
         if (File.Exists(target) && !SamePath(target, CurrentProjectPath)
             && Confirm?.Invoke("Replace Project", $"A project named \"{Path.GetFileNameWithoutExtension(target)}\" is already saved there:\n{target}\n\nSaving replaces it with this one.", "Replace") != true)
         {
-            return StatusText = $"Not saved: a project named \"{Path.GetFileNameWithoutExtension(target)}\" is already saved there. Choose another name.";
+            return SaveDeclined($"Not saved: a project named \"{Path.GetFileNameWithoutExtension(target)}\" is already saved there. Choose another name.");
         }
 
         // Fully portable saves (5.2A): a folder of its own, its media with it.
@@ -941,11 +968,11 @@ public partial class MainViewModel
             ProjectSaved?.Invoke();
             RefreshRecentProjects(Path.GetFileNameWithoutExtension(path));
             _ = OfferToKeepDownloadsAsync();
-            return StatusText = $"Project saved: {Path.GetFileNameWithoutExtension(path)}";
+            return SaveSucceeded($"Project saved: {Path.GetFileNameWithoutExtension(path)}");
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return StatusText = $"Could not save the project: {ex.Message}";
+            return SaveFailed(target, ex);
         }
     }
 
@@ -978,13 +1005,34 @@ public partial class MainViewModel
     /// </summary>
     private byte[]? ThumbnailForSave()
     {
+        if (ThumbnailRequest() is not { } running)
+            return Volatile.Read(ref _thumbnail);
+
+        try
+        {
+            if (running.Wait(ThumbnailWaitMs) && running.Result is { Length: > 0 } fresh)
+                return fresh;
+        }
+        catch (AggregateException ex)
+        {
+            AppLog.Write("Project thumbnail: the capture failed", ex.InnerException ?? ex);
+        }
+
+        return Volatile.Read(ref _thumbnail);
+    }
+
+    /// <summary>
+    /// A capture for a save (window's thread: the engine plans the frame here): null when the last thumbnail is fresh enough (or there is
+    /// no window), else the capture running or a new one.
+    /// </summary>
+    private Task<byte[]?>? ThumbnailRequest()
+    {
         if (CaptureThumbnail is not { } capture || _isBackgroundWorker)
             return null;
 
-        var last = Volatile.Read(ref _thumbnail);
         var now = Environment.TickCount64;
-        if (last is not null && now - Volatile.Read(ref _thumbnailTakenAt) < ThumbnailFreshMs)
-            return last;
+        if (Volatile.Read(ref _thumbnail) is not null && now - Volatile.Read(ref _thumbnailTakenAt) < ThumbnailFreshMs)
+            return null;
 
         if (_thumbnailCapture is not { IsCompleted: false } running || now - _thumbnailAskedAt > ThumbnailStaleMs)
         {
@@ -992,9 +1040,15 @@ public partial class MainViewModel
             _thumbnailAskedAt = now;
         }
 
+        return running;
+    }
+
+    /// <summary>A capture waited for off the window's thread, within <see cref="ThumbnailWaitMs"/>; null when it was not done in time or failed.</summary>
+    private async Task<byte[]?> FinishThumbnailAsync(Task<byte[]?> running)
+    {
         try
         {
-            if (running.Wait(ThumbnailWaitMs) && running.Result is { Length: > 0 } fresh)
+            if (await Task.WhenAny(running, Task.Delay(ThumbnailWaitMs)).ConfigureAwait(false) == running && running.Result is { Length: > 0 } fresh)
                 return fresh;
         }
         catch (AggregateException ex)
@@ -1078,7 +1132,7 @@ public partial class MainViewModel
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException or InvalidDataException)
         {
-            StatusText = $"Could not open the project: {ex.Message}";
+            Fail($"Could not open the project: {ex.Message}", $"Open the project {filePath}", ex);
             return Task.CompletedTask;
         }
 

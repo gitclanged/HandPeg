@@ -1,0 +1,44 @@
+# A speed that ripples (5.6A): what follows moves by as much as the clip grew or shrank, on every track or its own, in one undo step with its family.
+   2x, every track: 0-2, 2-6, 3-5, 0-2
+ok: faster: it ends sooner and everything after its old end moves up as far, on every track; its stream lane runs at its speed
+ok: one undo step for the speed, its family and the ripple
+ok: Undo puts every clip back at once
+ok: the document holds together
+   0.5x, every track: 0-8, 8-12, 9-11, 0-8
+ok: slower: it ends later and everything after its old end moves on as far, on every track, nothing moved twice
+ok: the document holds together
+ok: with Ripple All Tracks off only its own track (and its Sub-Lanes) ripples
+ok: and grown, the same
+ok: not rippling, a faster clip leaves a gap (as before 5.6A)
+ok: and a slower one pushes only what it runs into on its track
+ok: every speed's way in ripples as Ripple Timeline says (on)
+ok: and (off) leaves the gap
+   2x, crossfades after it: 2-6 x2, 2-6 x1
+ok: faster: the crossfade into the next clip stays (3 s held to its 2 s), and its stream lane's (1 s) too
+ok: the document holds together
+ok: Undo puts the clips and their crossfades back
+   0.5x, crossfades after it: 8-12 x3, 8-12 x1, its stream lane 0-8
+ok: slower: the crossfade into the next clip stays, and its stream lane's clip grows up to the one after it and keeps its crossfade (1 s)
+ok: one undo step for the speed, its family, the ripple and the crossfades
+ok: the document holds together
+ok: Undo puts the clips and their crossfades back
+   2x, a title on it and on the next: 0-2, 2-6, 0-2, 2-6, 3-5
+ok: faster: its own title is cut back to its new end, and the next clip's title moves up with the rest (it holds nothing back)
+ok: one undo step for the speed, its title and the ripple
+ok: the document holds together
+ok: Undo puts them all back
+   0.5x, a title on it and on the next: 0-8, 8-12, 0-8, 8-12, 9-11
+ok: slower: its own title grows with its end, and the rest moves on as far
+ok: the document holds together
+   2x, held back by meeting clips: 0-2, 4-8, 3-4, 4-8, 0-5, 5-10
+ok: held back: nothing moves, and its outro title left too short stays where it was, unlinked (nothing comes back into its place)
+ok: one undo step for the speed and its title
+ok: the document holds together
+ok: Undo puts the clip back and its title is its own again
+   2x, held back part of the way, a title after its own: 0-2, 4-8, 3-4, 4-8, 0-3, 4-10
+ok: held back part of the way: its outro title stays where it was, unlinked, and the next clip's title does not slide into it (nor the rest)
+ok: one undo step
+ok: the document holds together
+   2x, held back part of the way, nothing after its title: 0-2, 3-7, 3-4, 0-3, 3-9
+ok: with nothing after its title, the rest moves up as far as the music lets it (1 s), and the title stays where it was, unlinked
+ok: the document holds together

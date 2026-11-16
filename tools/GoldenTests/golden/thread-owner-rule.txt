@@ -1,0 +1,4 @@
+# ThreadOwner: the first caller owns; a call from another thread is logged once and counted, never thrown.
+ok: a call from another thread is counted (and logged once, with its stack), not thrown
+ok: the owner's own calls cost a compare and count nothing
+ok: applied: the broker's five mutating members and the engine's four UI-thread members

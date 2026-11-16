@@ -1,0 +1,8 @@
+# The breadcrumb flusher sleeps when no hot line comes (no timer wake-ups while paused) and wakes for the next one; none at all with breadcrumbs off.
+ok: the breadcrumb file opens
+ok: no flusher before the first hot line (a process with only set-up calls never starts one)
+ok: after 4 quiet periods the flusher stops its timer and sleeps
+ok: asleep, it wakes for nothing: no flush period passes in 300 ms with no hot line
+ok: the next hot line wakes it, and its slot is on disk within a period or two
+ok: and it goes back to sleep once the lines stop
+ok: with breadcrumbs off there is no file and so no flusher; with them on, the flusher starts at the first hot line

@@ -78,3 +78,20 @@ float4 PSMotionBlur(VsOut i) : SV_Target
         sum += Sample(i.Uv + v * ((k + 0.5) / n - 0.5));
     return sum / n;
 }
+
+// Smooth Slow-Mo: the picture phi (Params3.z) of the way from a frame (Input) to the next (Aux), along the flow of the next from the first
+// (t5, in flow texels: next(x) = first(x - f)). Params2 the part of the flow's frame this picture is (u0, v0, u1, v1); Params3.xy what a texel of flow
+// comes to in this picture's uv between the two frames. Each frame is read where the motion puts the point at phi, the first at x - phi f and the next at
+// x + (1 - phi) f, and the two blended by phi. Where they disagree (something comes out from behind another, or the flow missed) the nearer frame alone
+// is taken, so nothing is seen twice. Premultiplied in, premultiplied out.
+float4 PSFlowInterpolate(VsOut i) : SV_Target
+{
+    float2 at = lerp(Params2.xy, Params2.zw, i.Uv);
+    float2 f = Coarser.SampleLevel(LinearClamp, at, 0).xy * Params3.xy;
+    float phi = Params3.z;
+    float4 first = Input.SampleLevel(LinearClamp, i.Uv - phi * f, 0);
+    float4 next = Aux.SampleLevel(LinearClamp, i.Uv + (1 - phi) * f, 0);
+    float4 d = abs(first - next);
+    float disagree = smoothstep(0.08, 0.25, max(max(d.r, d.g), max(d.b, d.a)));
+    return lerp(lerp(first, next, phi), phi < 0.5 ? first : next, disagree);
+}

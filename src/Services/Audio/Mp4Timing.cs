@@ -94,7 +94,9 @@ internal static class Mp4Timing
 
             if (type == "moov")
             {
-                if (size > 256L << 20)
+                // Bounded by the file itself as well as by 256 MB: a moov that claims more than the file holds is refused before
+                // anything is allocated for it.
+                if (size > 256L << 20 || at + size > file.Length)
                     return null;
                 var moov = new byte[size - body];
                 file.Position = at + body;
@@ -193,7 +195,7 @@ internal static class Mp4Timing
             foreach (var (inner, table) in Children(box))
             {
                 if (inner == "ctts" && table.Length >= 16 && BinaryPrimitives.ReadUInt32BigEndian(table[4..]) > 0)
-                    return table[0] == 1 ? BinaryPrimitives.ReadInt32BigEndian(table[12..]) : BinaryPrimitives.ReadUInt32BigEndian(table[12..]);
+                    return BinaryPrimitives.ReadInt32BigEndian(table[12..]);
             }
         }
 
@@ -206,34 +208,59 @@ internal static class Mp4Timing
             chars[i] = (char)bytes[i];
     });
 
-    /// <summary>The boxes inside a box's body (each: its type and its body).</summary>
-    private static List<(string Type, byte[] Body)> ChildrenList(ReadOnlySpan<byte> data)
+    /// <summary>The boxes inside a box's body (each: its type and its body), as slices of the parent: nothing is copied.</summary>
+    private static Boxes Children(ReadOnlySpan<byte> data) => new(data);
+
+    private readonly ref struct Boxes(ReadOnlySpan<byte> data)
     {
-        var list = new List<(string, byte[])>();
-        var at = 0;
-        while (at + 8 <= data.Length)
+        private readonly ReadOnlySpan<byte> _data = data;
+
+        public BoxWalk GetEnumerator() => new(_data);
+    }
+
+    private ref struct BoxWalk(ReadOnlySpan<byte> data)
+    {
+        private readonly ReadOnlySpan<byte> _data = data;
+        private int _at;
+
+        public Box Current { get; private set; }
+
+        public bool MoveNext()
         {
-            long size = BinaryPrimitives.ReadUInt32BigEndian(data[at..]);
-            var type = Type(data[(at + 4)..(at + 8)]);
+            if (_at + 8 > _data.Length)
+                return false;
+            long size = BinaryPrimitives.ReadUInt32BigEndian(_data[_at..]);
+            var type = Type(_data[(_at + 4)..(_at + 8)]);
             var body = 8;
-            if (size == 1 && at + 16 <= data.Length)
+            if (size == 1 && _at + 16 <= _data.Length)
             {
-                size = (long)BinaryPrimitives.ReadUInt64BigEndian(data[(at + 8)..]);
+                size = (long)BinaryPrimitives.ReadUInt64BigEndian(_data[(_at + 8)..]);
                 body = 16;
             }
             else if (size == 0)
             {
-                size = data.Length - at;
+                size = _data.Length - _at;
             }
 
-            if (size < body || at + size > data.Length)
-                break;
-            list.Add((type, data[(at + body)..(int)(at + size)].ToArray()));
-            at += (int)size;
+            // A child larger than its parent (or smaller than its own header) ends the walk; sizes are compared in 64 bits.
+            if (size < body || size > _data.Length - _at)
+                return false;
+            Current = new Box(type, _data[(_at + body)..(int)(_at + size)]);
+            _at += (int)size;
+            return true;
         }
-
-        return list;
     }
 
-    private static List<(string Type, byte[] Body)> Children(ReadOnlySpan<byte> data) => ChildrenList(data);
+    private readonly ref struct Box(string type, ReadOnlySpan<byte> body)
+    {
+        public string Type { get; } = type;
+
+        public ReadOnlySpan<byte> Body { get; } = body;
+
+        public void Deconstruct(out string type, out ReadOnlySpan<byte> body)
+        {
+            type = Type;
+            body = Body;
+        }
+    }
 }

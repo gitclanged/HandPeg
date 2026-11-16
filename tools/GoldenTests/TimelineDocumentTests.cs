@@ -45,21 +45,6 @@ public static class TimelineDocumentTests
             "# Children (4.4): a talk's HUD cut-out on the track under it and a key on another track go with its splits, trims, moves, ripples, deletes and folds; refusals and rollbacks change nothing.", Children);
     }
 
-    private static GraphResult Case(string golden, string header, Action<StringBuilder, List<string>> body)
-    {
-        var text = new StringBuilder(header).Append('\n');
-        var problems = new List<string>();
-        try
-        {
-            body(text, problems);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-        return new GraphResult(golden, text.ToString(), problems, 0);
-    }
-
     private static void Expect(List<string> problems, bool held, string what)
     {
         if (!held)
@@ -520,7 +505,7 @@ public static class TimelineDocumentTests
 
     private static void Folds(StringBuilder text, List<string> problems)
     {
-        var options = (JsonSerializerOptions)typeof(ProjectStore).GetField("JsonOptions", BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
+        var options = ProjectStore.JsonOptions;
         var doc = new TimelineDocument { FrameRate = FrameRate.Fps25 };
         var names = new Dictionary<Guid, string>();
         TimelineTrackModel v1, v2, a1;
@@ -807,7 +792,7 @@ public static class TimelineDocumentTests
 
     private static void TrackHeightsAndCaptions(StringBuilder text, List<string> problems)
     {
-        var options = (JsonSerializerOptions)typeof(ProjectStore).GetField("JsonOptions", BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
+        var options = ProjectStore.JsonOptions;
         var doc = new TimelineDocument { FrameRate = FrameRate.Fps25 };
         TimelineTrackModel v1, v2, a1, v3;
         using (var tx = doc.BeginTransaction("Set up"))
@@ -861,7 +846,7 @@ public static class TimelineDocumentTests
 
     private static void Children(StringBuilder text, List<string> problems)
     {
-        var options = (JsonSerializerOptions)typeof(ProjectStore).GetField("JsonOptions", BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
+        var options = ProjectStore.JsonOptions;
         var doc = new TimelineDocument { FrameRate = FrameRate.Fps25 };
         var names = new Dictionary<Guid, string>();
         void Step(string step)
@@ -1153,7 +1138,7 @@ public static class TimelineDocumentTests
 
     /// <summary>The options project files are written with (camelCase, enums by name, nothing written that is at its default).</summary>
     private static JsonSerializerOptions ProjectOptions() =>
-        (JsonSerializerOptions)typeof(ProjectStore).GetField("JsonOptions", BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
+        ProjectStore.JsonOptions;
 
     // ----- Fold-aware edge trims (4.4-BugHunt, Q11) -----
 
@@ -2024,7 +2009,7 @@ public static class TimelineDocumentTests
     private static void JsonRoundTrip(StringBuilder text, List<string> problems)
     {
         // The options project files are written with (camelCase, enums by name, nothing written that is at its default).
-        var options = typeof(ProjectStore).GetField("JsonOptions", BindingFlags.NonPublic | BindingFlags.Static)?.GetValue(null) as JsonSerializerOptions;
+        var options = ProjectStore.JsonOptions;
         Expect(problems, options is not null, "ProjectStore's JSON options are found (ProjectStore.JsonOptions)");
         options ??= new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, Converters = { new JsonStringEnumConverter() } };
         var pretty = new JsonSerializerOptions(options) { WriteIndented = true };

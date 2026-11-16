@@ -1,0 +1,11 @@
+# CommandTrust: a project's own command or Extra options run only once confirmed; the user's own edits never ask; confirmed or saved text is trusted on this PC.
+ok: a command the opened file carried needs confirming before it runs
+ok: a command the user has changed since is theirs: no question
+ok: once confirmed, it is not asked again
+ok: a project's own Extra options (appended to every generated command) need confirming too
+ok: this session's own queued job edited again asks nothing
+ok: a command and Extra options trusted on this PC run without asking (the same file on another PC asks)
+ok: a foreign command never seen here still asks
+ok: fingerprints: the kind and the SHA-256 of the text (the text itself is never kept)
+ok: a confirmation and a save (of text that is not a file's unconfirmed) remember it in AppSettings.TrustedProjectCommands
+ok: wired: an open marks the file's command, Export and Add to Queue confirm it, and a background job (no one to ask) drops it

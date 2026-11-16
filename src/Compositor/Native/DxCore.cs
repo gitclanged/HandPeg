@@ -105,14 +105,14 @@ internal static unsafe class DxCore
 
             // IDXCoreAdapterFactory::CreateAdapterList (3), IDXCoreAdapterList::GetAdapterCount (4) and GetAdapter (3).
             var listId = AdapterListId;
-            if (((delegate* unmanaged<nint, uint, Guid*, Guid*, nint*, int>)Com.Table(factory)[3])(factory, 1, &attribute, &listId, &list) < 0 || list == 0)
+            if (((delegate* unmanaged<nint, uint, Guid*, Guid*, nint*, int>)Com.Table(factory)[IDXCoreAdapterFactorySlot.CreateAdapterList])(factory, 1, &attribute, &listId, &list) < 0 || list == 0)
                 return adapters;
-            var count = ((delegate* unmanaged<nint, uint>)Com.Table(list)[4])(list);
+            var count = ((delegate* unmanaged<nint, uint>)Com.Table(list)[IDXCoreAdapterListSlot.GetAdapterCount])(list);
             for (uint i = 0; i < count && i < 64; i++)
             {
                 nint adapter = 0;
                 var adapterId = AdapterId;
-                if (((delegate* unmanaged<nint, uint, Guid*, nint*, int>)Com.Table(list)[3])(list, i, &adapterId, &adapter) < 0 || adapter == 0)
+                if (((delegate* unmanaged<nint, uint, Guid*, nint*, int>)Com.Table(list)[IDXCoreAdapterListSlot.GetAdapter])(list, i, &adapterId, &adapter) < 0 || adapter == 0)
                     continue;
                 try
                 {
@@ -155,7 +155,7 @@ internal static unsafe class DxCore
 
             // IDXCoreAdapterFactory::GetAdapterByLuid (4): the LUID by reference, as DXGI's.
             var adapterId = AdapterId;
-            if (((delegate* unmanaged<nint, long*, Guid*, nint*, int>)Com.Table(factory)[4])(factory, &luid, &adapterId, &adapter) < 0 || adapter == 0)
+            if (((delegate* unmanaged<nint, long*, Guid*, nint*, int>)Com.Table(factory)[IDXCoreAdapterFactorySlot.GetAdapterByLuid])(factory, &luid, &adapterId, &adapter) < 0 || adapter == 0)
                 return null;
             return Flag(adapter, IsIntegrated);
         }
@@ -190,21 +190,21 @@ internal static unsafe class DxCore
 
     // IDXCoreAdapter::IsAttributeSupported (4): a C++ bool, one byte.
     private static bool Has(nint adapter, Guid attribute) =>
-        ((delegate* unmanaged<nint, Guid*, byte>)Com.Table(adapter)[4])(adapter, &attribute) != 0;
+        ((delegate* unmanaged<nint, Guid*, byte>)Com.Table(adapter)[IDXCoreAdapterSlot.IsAttributeSupported])(adapter, &attribute) != 0;
 
     // IDXCoreAdapter::IsPropertySupported (5).
     private static bool Supported(nint adapter, uint property) =>
-        ((delegate* unmanaged<nint, uint, byte>)Com.Table(adapter)[5])(adapter, property) != 0;
+        ((delegate* unmanaged<nint, uint, byte>)Com.Table(adapter)[IDXCoreAdapterSlot.IsPropertySupported])(adapter, property) != 0;
 
     // IDXCoreAdapter::GetProperty (6): the property's bytes into a buffer of the size given.
     private static bool Get(nint adapter, uint property, void* buffer, nuint size) =>
-        ((delegate* unmanaged<nint, uint, nuint, void*, int>)Com.Table(adapter)[6])(adapter, property, size, buffer) >= 0;
+        ((delegate* unmanaged<nint, uint, nuint, void*, int>)Com.Table(adapter)[IDXCoreAdapterSlot.GetProperty])(adapter, property, size, buffer) >= 0;
 
     // IDXCoreAdapter::GetPropertySize (7).
     private static nuint Size(nint adapter, uint property)
     {
         nuint size = 0;
-        return ((delegate* unmanaged<nint, uint, nuint*, int>)Com.Table(adapter)[7])(adapter, property, &size) >= 0 ? size : 0;
+        return ((delegate* unmanaged<nint, uint, nuint*, int>)Com.Table(adapter)[IDXCoreAdapterSlot.GetPropertySize])(adapter, property, &size) >= 0 ? size : 0;
     }
 
     private static long Number(nint adapter, uint property)

@@ -17,7 +17,7 @@ internal sealed unsafe partial class PlaybackSyncSampler : IDisposable
     private const int Capacity = 200_000, FrameCapacity = 12_000;
 
     private readonly GpuPreviewEngine _engine;
-    private readonly GpuViewportControl _viewport;
+    private readonly GpuViewport _viewport;
     private readonly Thread _thread;
     private volatile bool _stop;
 
@@ -59,10 +59,12 @@ internal sealed unsafe partial class PlaybackSyncSampler : IDisposable
     /// <summary>The frames whose showing the swap chain reported itself (GetFrameStatistics).</summary>
     public int ReportedFrames => Enumerable.Range(0, _frames).Count(i => _shownTicks[i] != 0);
 
-    public void Stop()
+    /// <summary>Stops the sampler thread.</summary>
+    /// <returns>Whether it stopped within 2 s (a DXGI or DWM call can hang with the driver); logged when not.</returns>
+    public bool Stop()
     {
         _stop = true;
-        _thread.Join(2000);
+        return ThreadStop.Join(_thread, 2000, "Playback sync sampler");
     }
 
     public void Dispose() => Stop();

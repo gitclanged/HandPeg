@@ -143,16 +143,23 @@ public sealed class CompositorClient : IDisposable
         return sequence;
     }
 
-    /// <summary>Waits until the frame of <paramref name="sequence"/> (or a later one) has been presented.</summary>
-    public bool WaitForFrame(long sequence, int milliseconds)
+    /// <summary>
+    /// Waits until the frame of <paramref name="sequence"/> (or a later one) has been presented; false when the time ran out or
+    /// <paramref name="abort"/> was signalled (an export cancelled or failed: its render thread then stops in milliseconds).
+    /// </summary>
+    public bool WaitForFrame(long sequence, int milliseconds, WaitHandle? abort = null)
     {
         var deadline = Stopwatch.GetTimestamp() + (long)(milliseconds * (Stopwatch.Frequency / 1000.0));
+        WaitHandle[]? both = abort is null ? null : [_presented, abort];
         while (Volatile.Read(ref _shared.Control.PresentedSequence) < sequence)
         {
             var left = (int)((deadline - Stopwatch.GetTimestamp()) * 1000 / Stopwatch.Frequency);
             if (left <= 0)
                 return false;
-            _presented.WaitOne(Math.Min(left, 50));
+            if (both is null)
+                _presented.WaitOne(Math.Min(left, 50));
+            else if (WaitHandle.WaitAny(both, Math.Min(left, 50)) == 1)
+                return false;
         }
 
         return true;
@@ -415,6 +422,8 @@ public sealed class CompositorClient : IDisposable
     {
         ArgumentOutOfRangeException.ThrowIfNegative(id);
         ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(id, CompositorProtocol.MaxSources);
+        if (path.Length >= CompositorProtocol.MaxPathChars)
+            throw new System.IO.PathTooLongException(string.Create(CultureInfo.InvariantCulture, $"The GPU engine's source table holds paths of up to {CompositorProtocol.MaxPathChars - 1} characters, not {path.Length}."));
         ref var entry = ref _shared.Source(id);
 
         // Generations only ever grow, also across ClearSource: the worker can never mistake a new file for the old one.
@@ -429,6 +438,10 @@ public sealed class CompositorClient : IDisposable
             view.WriteArray(0, iFrames as double[] ?? [.. iFrames], 0, count);
         }
 
+        // A seqlock write: the generation is 0 while the fields change (Interlocked.Exchange is a full fence, so no field write is seen
+        // before it, also on ARM64), then the new generation is published after them (a release write). The worker reads the
+        // generation, the fields, a full fence, then the generation again, and takes the entry only when both reads agree.
+        Interlocked.Exchange(ref entry.Generation, 0);
         entry.Kind = (int)GpuSourceKind.Media;
         entry.StreamIndex = streamIndex;
         entry.IFrameCount = count;
@@ -479,8 +492,8 @@ public sealed class CompositorClient : IDisposable
             }
         }
 
-        // The entry is written before its generation, which the worker reads first (and again after the pixels).
-        Volatile.Write(ref entry.Generation, 0);
+        // The same seqlock write as SetSource: the generation 0 (a full fence) while the fields change, then the new one.
+        Interlocked.Exchange(ref entry.Generation, 0);
         (entry.Kind, entry.Width, entry.Height, entry.Depth, entry.Bytes) = ((int)kind, width, height, depth, (int)needed);
         entry.ContentHash = 0;
         Volatile.Write(ref entry.Generation, generation);
@@ -602,6 +615,10 @@ public sealed class CompositorClient : IDisposable
                     }
                 }
 
+                // Closed while the worker was starting (Close waited on the gate): nothing more to do, and the control plane may be gone.
+                if (_disposed)
+                    return;
+
                 // The newest scene again: the new worker draws it as it starts (and is told to, should it be ready already).
                 var framesBefore = Volatile.Read(ref _shared.Control.FramesRendered);
                 Send(CompositorCommand.Redraw);
@@ -627,6 +644,8 @@ public sealed class CompositorClient : IDisposable
             {
                 // Never out of this thread (it would end HandPeg): the engine is tried again after a moment.
                 AppLog.Write("Compositor supervisor", ex);
+                if (_disposed)
+                    return;
                 if (++failuresInARow > 8)
                 {
                     GiveUp();
@@ -680,7 +699,11 @@ public sealed class CompositorClient : IDisposable
         Volatile.Write(ref _shared.Control.Command, (int)CompositorCommand.Shutdown);
         _wake.Set();
         _stopping.Set();
-        _supervisor.Join(2000);
+
+        // A supervisor that has not stopped (inside a slow CreateProcess) still reads the control plane and waits on the events after
+        // it: the processes and sections are ended below as always, but those are kept, as DisposeKeepingMemory keeps them.
+        var supervisorStopped = ThreadStop.Join(_supervisor, 2000, "Compositor supervisor");
+        keepMemory |= !supervisorStopped;
         lock (_gate)
         {
             // The standby holds nothing: ended at once. The worker lets go of its device and textures first.

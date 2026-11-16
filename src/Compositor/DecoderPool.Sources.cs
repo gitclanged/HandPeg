@@ -53,13 +53,18 @@ internal sealed partial class DecoderPool
 
                 ref var entry = ref _shared.Source(id);
                 var path = CompositorSharedMemory.ReadString(entry.Path);
+                var (streamIndex, pathHash, iFrameCount) = (entry.StreamIndex, entry.PathHash, entry.IFrameCount);
+                Interlocked.MemoryBarrier();
+                if (Volatile.Read(ref entry.Generation) != generation)
+                    continue;
+
                 var source = new SourceState
                 {
                     Generation = generation,
                     Path = path,
-                    StreamIndex = entry.StreamIndex,
-                    PathHash = entry.PathHash,
-                    IFrames = entry.IFrameCount > 0 ? ReadIFrames(id, generation, entry.IFrameCount) : null,
+                    StreamIndex = streamIndex,
+                    PathHash = pathHash,
+                    IFrames = iFrameCount > 0 ? ReadIFrames(id, generation, iFrameCount) : null,
                     Registered = Stopwatch.GetTimestamp(),
                 };
 
@@ -68,7 +73,7 @@ internal sealed partial class DecoderPool
                 // unchanged: until then it waits outside the table. A file on a network share is never stamped, so never parked.
                 // 5.4.4: also whenever the client asks for lean parking at all (the charger pulled later makes its parks lean).
                 var stamped = (_cache.BigCard || Lean || Volatile.Read(ref _shared.Control.TabParkingRequest) != 0) && _cache.Enabled && !IsNetworkPath(path);
-                if (stamped && TakeParked(path, entry.StreamIndex) is { } candidate)
+                if (stamped && TakeParked(path, streamIndex) is { } candidate)
                 {
                     source.Candidate = candidate;
                     _deciding[id] = source;
@@ -584,10 +589,17 @@ internal sealed partial class DecoderPool
 internal sealed unsafe class ResourceCache(GpuDevice gpu, CompositorSharedMemory shared) : IDisposable
 {
     private readonly Dictionary<int, (int Generation, GpuTexture? Texture, nint Lut3D, nint LutSrv, int Size)> _loaded = [];
+
+    // Generations whose upload failed on the GPU (a LUT above the device's maximum resource size, say): not tried again every frame
+    // until the client hands over a new generation.
+    private readonly Dictionary<int, int> _failed = [];
     private int _version = -1;
 
     /// <summary>The client's resource table's version: a 3D plane kept from an earlier frame is drawn again once it changes (5.4.1-M2).</summary>
     public int Version => Volatile.Read(ref shared.Control.ResourcesVersion);
+
+    /// <summary>Takes up the client's changes to the resource table: called once at the start of each frame, before any lookup.</summary>
+    public void BeginFrame() => Sync();
 
     private void Sync()
     {
@@ -600,13 +612,18 @@ internal sealed unsafe class ResourceCache(GpuDevice gpu, CompositorSharedMemory
             if (Volatile.Read(ref shared.Resource(id).Generation) != _loaded[id].Generation)
                 Release(id);
         }
+
+        foreach (var id in _failed.Keys.ToList())
+        {
+            if (Volatile.Read(ref shared.Resource(id).Generation) != _failed[id])
+                _failed.Remove(id);
+        }
     }
 
     public GpuTexture? Texture2D(int id)
     {
         if (id is < 0 or >= CompositorProtocol.MaxResources)
             return null;
-        Sync();
         if (_loaded.TryGetValue(id, out var known))
             return known.Texture;
         Load(id);
@@ -617,7 +634,6 @@ internal sealed unsafe class ResourceCache(GpuDevice gpu, CompositorSharedMemory
     {
         if (id is < 0 or >= CompositorProtocol.MaxResources)
             return null;
-        Sync();
         if (!_loaded.ContainsKey(id))
             Load(id);
         return _loaded.TryGetValue(id, out var known) && known.LutSrv != 0 ? (known.LutSrv, known.Size) : null;
@@ -629,9 +645,11 @@ internal sealed unsafe class ResourceCache(GpuDevice gpu, CompositorSharedMemory
         var generation = Volatile.Read(ref entry.Generation);
         var (kind0, width0, height0, depth0, bytes0) = ((GpuResourceKind)entry.Kind, entry.Width, entry.Height, entry.Depth, entry.Bytes);
 
-        // Read whole or not at all: the generation again after the fields (the client clears it while it writes them),
-        // and the section must hold every byte the texture will read.
-        if (generation == 0 || Volatile.Read(ref entry.Generation) != generation)
+        // A seqlock read: the copy above is this generation's only if the generation is unchanged after it (the client sets it to 0
+        // while it writes the fields). The full fence keeps the field reads before the second read on ARM64. The section must hold
+        // every byte the texture will read.
+        Interlocked.MemoryBarrier();
+        if (generation == 0 || Volatile.Read(ref entry.Generation) != generation || (_failed.TryGetValue(id, out var failed) && failed == generation))
             return;
         var needed = CompositorClient.ResourceBytes(kind0, width0, height0, depth0);
         if (needed <= 0 || bytes0 < needed)
@@ -656,7 +674,17 @@ internal sealed unsafe class ResourceCache(GpuDevice gpu, CompositorSharedMemory
                         Width = (uint)size, Height = (uint)size, Depth = (uint)size, MipLevels = 1, Format = DxgiFormat.R32G32B32A32Float,
                         Usage = D3D11.UsageImmutable, BindFlags = D3D11.BindShaderResource,
                     }, &initial);
-                    var srv = gpu.Device.CreateShaderResourceView(texture);
+                    nint srv;
+                    try
+                    {
+                        srv = gpu.Device.CreateShaderResourceView(texture);
+                    }
+                    catch
+                    {
+                        Com.Release(ref texture);
+                        throw;
+                    }
+
                     _loaded[id] = (generation, null, texture, srv, size);
                 }
                 else
@@ -673,9 +701,14 @@ internal sealed unsafe class ResourceCache(GpuDevice gpu, CompositorSharedMemory
                 view.SafeMemoryMappedViewHandle.ReleasePointer();
             }
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or GpuException { IsDeviceLost: false })
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
         {
-            // Not there (yet): asked again next frame.
+            // The section is not there (yet): asked again next frame.
+        }
+        catch (GpuException ex) when (!ex.IsDeviceLost)
+        {
+            // The device refused this generation (too large, an unsupported format): not tried again until the client hands over another.
+            _failed[id] = generation;
         }
     }
 

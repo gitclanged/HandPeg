@@ -147,14 +147,16 @@ public sealed partial class GpuScenePlan
     /// place, <see cref="GpuLayerDescriptor.ClipKey"/> their clip's), and their count in <see cref="FrameSceneHeader.ActiveLayerCount"/>.
     /// Never more than <see cref="CompositorProtocol.MaxLayers"/> (the topmost beyond are left out, said once in the log).
     /// A layer whose texture is still being made is left out of that frame; nothing waits.
+    /// <para>: <paramref name="compare"/> is the player's Before/After of the grade (GpuPreviewEngine.SetGradeCompare), passed by
+    /// the player's frames and the Color Studio's input still alone: the export, the strips and every other still leave it off.</para>
     /// </summary>
-    public int Evaluate(double sequenceSeconds, ref FrameSceneHeader header, Span<GpuLayerDescriptor> layers)
+    public int Evaluate(double sequenceSeconds, ref FrameSceneHeader header, Span<GpuLayerDescriptor> layers, GradeCompare compare = default)
     {
         header.CanvasWidth = CanvasWidth;
         header.CanvasHeight = CanvasHeight;
         header.PlayheadSeconds = sequenceSeconds;
         (header.BackgroundR, header.BackgroundG, header.BackgroundB) = (0, 0, 0);
-        var count = Walk(sequenceSeconds, layers, []);
+        var count = Walk(sequenceSeconds, layers, [], compare);
         header.ActiveLayerCount = count;
         return count;
     }
@@ -346,7 +348,7 @@ public sealed partial class GpuScenePlan
         CaptionEntry is not { Captions: { } captions } || captions.PrepareFor(fromSeconds, toSeconds);
 
     /// <summary>Every entry that is on at the moment, written bottom first; their descriptions too when asked.</summary>
-    private int Walk(double t, Span<GpuLayerDescriptor> layers, Span<GpuLayerInfo> infos)
+    private int Walk(double t, Span<GpuLayerDescriptor> layers, Span<GpuLayerInfo> infos, GradeCompare compare = default)
     {
         var room = Math.Min(layers.Length, CompositorProtocol.MaxLayers);
         var n = 0;
@@ -356,7 +358,8 @@ public sealed partial class GpuScenePlan
             if (!IsOn(entry, t))
                 continue;
 
-            var wrote = Write(entry, t, layers, n, room);
+            var wrote = compare.Mode == GradeCompareMode.Split && Graded(entry) ? WriteSplit(entry, t, layers, n, room, compare.Wipe)
+                : Write(entry, t, layers, n, room, compare.Mode == GradeCompareMode.Bypass ? compare.Card : null);
             if (wrote < 0)
             {
                 Warn(1, "More than 64 layers are on at once (CompositorProtocol.MaxLayers): the topmost are not drawn by the GPU engine.");
@@ -454,8 +457,12 @@ public sealed partial class GpuScenePlan
 
     // ----- Writing -----
 
-    /// <summary>Writes an entry's layers (a karaoke line's sung part is a second one) at <paramref name="n"/>; how many, or -1 for no room.</summary>
-    private int Write(Entry e, double t, Span<GpuLayerDescriptor> layers, int n, int room)
+    /// <summary>
+    /// Writes an entry's layers (a karaoke line's sung part is a second one) at <paramref name="n"/>; how many, or -1 for no room.:
+    /// <paramref name="bypass"/> leaves out a grade: null none, <see cref="Guid.Empty"/> every Color Grade card and the colour sliders' grade,
+    /// else the Color Grade card of that id alone.
+    /// </summary>
+    private int Write(Entry e, double t, Span<GpuLayerDescriptor> layers, int n, int room, Guid? bypass = null)
     {
         if (n >= room)
             return -1;
@@ -474,20 +481,20 @@ public sealed partial class GpuScenePlan
                 if (!MediaOf(e, t, out var source, out var media) || !UsableMask(e, ref d))
                     return 0;
                 Media(ref d, e, source, media);
-                WritePicture(e, t, ref d);
+                WritePicture(e, t, ref d, bypass);
                 return d.Opacity > 0.0005f ? 1 : 0;
 
             case EntryKind.Still or EntryKind.Text:
                 if (_resources is null || _resources.StateOf(e.Still) != GpuResourceState.Ready || !UsableMask(e, ref d))
                     return 0;
                 (d.SourceKind, d.StillResourceId) = ((int)GpuSourceKind.Still, e.Still.Id);
-                WritePicture(e, t, ref d);
+                WritePicture(e, t, ref d, bypass);
                 return d.Opacity > 0.0005f ? 1 : 0;
 
             case EntryKind.Adjustment:
                 (d.X, d.Y, d.Width, d.Height) = (e.X, e.Y, e.W, e.H);
                 d.Flags |= GpuLayerDescriptor.FlagAdjustment;
-                AddLook(e, t - e.KeyStart, ref d);
+                AddLook(e, t - e.KeyStart, ref d, bypass);
                 AddFades(e.Fades, t, ref d);
                 SequenceShutter(e, t, ref d);
                 return d.EffectCount > 0 ? 1 : 0;
@@ -507,7 +514,7 @@ public sealed partial class GpuScenePlan
                 // The blur fill's own Look cards, after its blur (keys and ranges in seconds of the sequence); its video's
                 // opacity, and its fades as dissolves (Create's Twin).
                 for (var k = 0; k < e.Look.Length; k++)
-                    AddCard(e, e.Look[k], t, null, ref d);
+                    AddCard(e, e.Look[k], t, null, ref d, bypass);
                 d.Opacity = OpacityAt(e, t);
                 AddFades(e.Fades, t, ref d);
                 return d.Opacity > 0.0005f ? 1 : 0;
@@ -518,6 +525,9 @@ public sealed partial class GpuScenePlan
                 d.Flags |= GpuLayerDescriptor.FlagAdjustment;
                 foreach (var packet in e.Packets)
                 {
+                    // The Before/After's bypass: the colour sliders' LUT, balance and hue turn are their grade.
+                    if (bypass == Guid.Empty && LegacyGrade(packet.Slot))
+                        continue;
                     if (packet.Slot == GpuShaderSlot.Lut3D)
                     {
                         if (_resources?.StateOf(e.Lut) != GpuResourceState.Ready)
@@ -530,7 +540,7 @@ public sealed partial class GpuScenePlan
 
                 // The Sequence Output's own effects: their keys and ranges are in seconds of the sequence.
                 for (var k = 0; k < e.Look.Length; k++)
-                    AddCard(e, e.Look[k], t, null, ref d);
+                    AddCard(e, e.Look[k], t, null, ref d, bypass);
                 SequenceShutter(e, t, ref d);
                 return d.EffectCount > 0 ? 1 : 0;
 
@@ -552,11 +562,102 @@ public sealed partial class GpuScenePlan
         }
     }
 
+    // ----- The grade's Before/After -----
+
+    /// <summary>The colour sliders' grade among the whole picture's packets (the Before/After leaves these out): its LUT, balance and hue turn.</summary>
+    private static bool LegacyGrade(GpuShaderSlot slot) => slot is GpuShaderSlot.Lut3D or GpuShaderSlot.ColorGrade or GpuShaderSlot.HueSaturation;
+
+    /// <summary>Whether an entry is graded: a Color Grade card switched on among its Look cards, or the colour sliders' grade. Walked by index.</summary>
+    private static bool Graded(Entry e)
+    {
+        for (var k = 0; k < e.Look.Length; k++)
+        {
+            if (e.Look[k] is { Enabled: true, Definition.GpuSlot: GpuShaderSlot.ColorStudio })
+                return true;
+        }
+
+        for (var k = 0; e.Kind == EntryKind.Whole && k < e.Packets.Length; k++)
+        {
+            if (LegacyGrade(e.Packets[k].Slot))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// A graded entry split at the divider (<paramref name="wipe"/>, 0..1 of the canvas's width): left of it as it is without its grade,
+    /// right of it graded. Each half is the entry written once more with a hard-edged wipe (SceneRenderer.SetWipe's compare edge): one
+    /// extra layer at most, and none for a layer wholly on one side. A layer the wipe cannot follow (turned, tilted, in its own
+    /// transition, its box grown or moved as it is laid on, a blur fill drawn over the whole frame, no room for another pass) is shown
+    /// without its grade, as the plain Before is.
+    /// </summary>
+    private int WriteSplit(Entry e, double t, Span<GpuLayerDescriptor> layers, int n, int room, double wipe)
+    {
+        var wrote = Write(e, t, layers, n, room);
+        if (wrote != 1)
+            return wrote;
+
+        ref var graded = ref layers[n];
+        if (!Splittable(graded))
+            return Write(e, t, layers, n, room, Guid.Empty);
+
+        var share = (Math.Max(0, Math.Min(double.IsFinite(wipe) ? wipe : 0.5, 1)) * CanvasWidth - graded.X) / graded.Width;
+        if (share <= 0)
+            return 1;
+        if (share >= 1 || n + 1 >= room)
+            return Write(e, t, layers, n, room, Guid.Empty);
+
+        layers[n + 1] = graded;
+        var before = Write(e, t, layers, n, room, Guid.Empty);
+        if (before != 1)
+        {
+            // Nothing to draw without the grade (an adjustment whose only effects are its grade): the graded half alone.
+            layers[n] = layers[n + 1];
+            Add(ref layers[n], CompareWipe((float)share, keepLeft: false));
+            return 1;
+        }
+
+        if (layers[n].EffectCount >= CompositorProtocol.MaxEffectsPerLayer)
+        {
+            layers[n] = layers[n + 1];
+            return Write(e, t, layers, n, room, Guid.Empty);
+        }
+
+        Add(ref layers[n], CompareWipe((float)share, keepLeft: true));
+        Add(ref layers[n + 1], CompareWipe((float)share, keepLeft: false));
+        return 2;
+    }
+
+    /// <summary>The compare's wipe across a layer: its left (or right) side of the divider, <paramref name="share"/> of the box from its left.</summary>
+    internal static GpuEffectPacket CompareWipe(float share, bool keepLeft) =>
+        new(GpuShaderSlot.TransitionWipe, share, 1, 0, 0, keepLeft ? 1 : 0, CompareEdgePixels, 0, 0);
+
+    /// <summary>The compare divider's edge in output pixels (SceneRenderer.SetWipe: a lane 5 above 0 is a compare's hard edge).</summary>
+    internal const float CompareEdgePixels = 1;
+
+    /// <summary>Whether a written layer can be split by a wipe across its box: square to the frame, laid where its box is, room for one more packet.</summary>
+    private static bool Splittable(in GpuLayerDescriptor d)
+    {
+        if (d.Rotation != 0 || d.TiltX != 0 || d.TiltY != 0 || !(d.Width > 0) || !(d.Height > 0) || d.EffectCount >= CompositorProtocol.MaxEffectsPerLayer
+            || (d.Flags & (FlagBlurFillOnly | GpuLayerDescriptor.FlagShutterPlace)) != 0)
+            return false;
+
+        for (var k = 0; k < d.EffectCount; k++)
+        {
+            var slot = d.Effects[k].Slot;
+            if (slot >= GpuShaderSlot.TransitionDissolve && slot != GpuShaderSlot.TransitionDissolve || slot == GpuShaderSlot.RimGlass)
+                return false;
+        }
+
+        return true;
+    }
+
     private void Media(ref GpuLayerDescriptor d, Entry e, int source, double media)
     {
         d.SourceKind = (int)GpuSourceKind.Media;
         (d.SourceId, d.MediaSeconds, d.SourcePathHash) = (source, media, e.PathHash);
-        d.Flags |= MediaFlags;
+        d.Flags |= MediaFlags | (e.Interpolate ? GpuLayerDescriptor.FlagInterpolate : 0);
     }
 
     /// <summary>A layer's packets but those of a slot: a copy laid over its original (a sung caption) casts no second shadow.</summary>
@@ -619,11 +720,11 @@ public sealed partial class GpuScenePlan
     }
 
     /// <summary>Everything of a picture but its source: its place at the moment, its blend, its effects in their zones, its fades.</summary>
-    private void WritePicture(Entry e, double t, ref GpuLayerDescriptor d)
+    private void WritePicture(Entry e, double t, ref GpuLayerDescriptor d, Guid? bypass = null)
     {
         Place(e, t, ref d);
         d.BlendMode = e.BlendMode;
-        AddEffects(e, t - e.KeyStart, ref d);
+        AddEffects(e, t - e.KeyStart, ref d, bypass);
         AddFades(e.Fades, t, ref d);
         Shutter(e, t, ref d);
     }
@@ -666,7 +767,8 @@ public sealed partial class GpuScenePlan
         if (packet.P3 < 0.5f || e.KeysX is null && e.KeysY is null && e.KeysScale is null && e.KeysRotation is null)
             return;
 
-        var half = Math.Clamp(packet.P0, 0, 720) / 360 * FrameSeconds / 2;
+        // The Amount's top half reaches further (MotionBoost.Span: 1 up to 50 %).
+        var half = Math.Clamp(packet.P0, 0, 720) / 360 * FrameSeconds / 2 * MotionBoost.Span(packet.P4);
         var (from, to) = (BoxAt(e, t - half), BoxAt(e, t + half));
         if (from == to)
             return;
@@ -776,9 +878,9 @@ public sealed partial class GpuScenePlan
     // ----- Effects -----
 
     /// <summary>A layer's effects as the graph applies them: the Look cards (zone 2) in their order, then the key and matte (zone 3), then the shadow.</summary>
-    private void AddEffects(Entry e, double clipTime, ref GpuLayerDescriptor d)
+    private void AddEffects(Entry e, double clipTime, ref GpuLayerDescriptor d, Guid? bypass = null)
     {
-        AddLook(e, clipTime, ref d);
+        AddLook(e, clipTime, ref d, bypass);
         for (var k = 0; k < e.Matte.Length; k++)
         {
             var step = e.Matte[k];
@@ -801,16 +903,22 @@ public sealed partial class GpuScenePlan
             AddCard(e, e.LaidOn[k], clipTime, e.Layer, ref d);
     }
 
-    private void AddLook(Entry e, double clipTime, ref GpuLayerDescriptor d)
+    private void AddLook(Entry e, double clipTime, ref GpuLayerDescriptor d, Guid? bypass = null)
     {
         for (var k = 0; k < e.Look.Length; k++)
-            AddCard(e, e.Look[k], clipTime, e.Layer, ref d);
+            AddCard(e, e.Look[k], clipTime, e.Layer, ref d, bypass);
     }
 
-    /// <summary>A card's packets at a moment of its clip; one that needs a texture is left out until the texture is there.</summary>
-    private void AddCard(Entry e, EffectInstance card, double clipTime, Layer? layer, ref GpuLayerDescriptor d)
+    /// <summary>
+    /// A card's packets at a moment of its clip; one that needs a texture is left out until the texture is there. A Color Grade
+    /// card is drawn with or without its tables (its last lane says which it holds: GpuColorTables.StudioTablesLane), and left out by a
+    /// Before/After's <paramref name="bypass"/> (see <see cref="Write"/>).
+    /// </summary>
+    private void AddCard(Entry e, EffectInstance card, double clipTime, Layer? layer, ref GpuLayerDescriptor d, Guid? bypass = null)
     {
         if (card.Definition is not { } definition)
+            return;
+        if (definition.GpuSlot == GpuShaderSlot.ColorStudio && bypass is { } leftOut && (leftOut == Guid.Empty || leftOut == card.Id))
             return;
 
         var count = definition.GpuPacketCount;
@@ -831,6 +939,17 @@ public sealed partial class GpuScenePlan
                 if (_resources?.StateOf(e.Curve) != GpuResourceState.Ready)
                     return;
                 d.CurveResourceId = e.Curve.Id;
+            }
+            else if (packet.Slot == GpuShaderSlot.ColorStudio && k == 1)
+            {
+                // The Color Grade's LUT and curves, when they are this card's (one of each a layer: Create's TakeTable) and made.
+                var lut = e.LutCard == card && _resources?.StateOf(e.Lut) == GpuResourceState.Ready;
+                var curves = e.CurveCard == card && _resources?.StateOf(e.Curve) == GpuResourceState.Ready;
+                if (lut)
+                    d.LutResourceId = e.Lut.Id;
+                if (curves)
+                    d.CurveResourceId = e.Curve.Id;
+                packet = packet with { P7 = GpuColorTables.StudioTablesLane(packet.P7, curves, lut) };
             }
 
             Add(ref d, packet);

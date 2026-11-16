@@ -75,7 +75,7 @@ public partial class MainViewModel
             case EffectKeyRef value:
             {
                 var keys = value.Effect.GetKeys(value.Param.Key).ToList();
-                var at = keys.FindIndex(k => Math.Abs(k.Time - time) <= Layer.KeyTolerance);
+                var at = KeyEdit.IndexAt(keys, time);
                 var now = EffectValueAt(layer, value, time);
                 Checkpoint($"key {value.Label} of {layer.Name}");
                 if (at >= 0)
@@ -83,7 +83,7 @@ public partial class MainViewModel
                 else
                     keys.Add(new Keyframe(Math.Round(time, 3), now));
 
-                using (Layer.Echo())
+                using (OwnLookScope())
                 {
                     // The last keyframe gone, the value stays what it was here.
                     if (keys.Count == 0)
@@ -119,7 +119,7 @@ public partial class MainViewModel
     }
 
     /// <summary>Moves one keyframe of a row from one moment of the clip to another; false when there was none there.</summary>
-    private static bool MoveOneLaneKey(Layer layer, object? lane, double start, double end)
+    private bool MoveOneLaneKey(Layer layer, object? lane, double start, double end)
     {
         bool moved;
         switch (lane)
@@ -139,7 +139,7 @@ public partial class MainViewModel
                     keys.RemoveAt(at);
                     keys.RemoveAll(k => Math.Abs(k.Time - end) <= Layer.KeyTolerance);
                     keys.Add(key);
-                    using (Layer.Echo())
+                    using (OwnLookScope())
                         value.Effect.SetKeys(value.Param.Key, keys);
                 }
 
@@ -210,7 +210,7 @@ public partial class MainViewModel
                     if (list.RemoveAll(k => Math.Abs(k.Time - at) <= Layer.KeyTolerance) == 0)
                         break;
 
-                    using (Layer.Echo())
+                    using (OwnLookScope())
                     {
                         // The last keyframe gone, the value stays what it was there.
                         if (list.Count == 0)
@@ -302,7 +302,7 @@ public partial class MainViewModel
                 case EffectKeyRef value when (layer.Effects.Contains(value.Effect) ? value.Effect : layer.Effects.FirstOrDefault(e => e.Type == value.Effect.Type)) is { } effect:
                 {
                     var list = effect.GetKeys(value.Param.Key).Where(k => Math.Abs(k.Time - at) > Layer.KeyTolerance).Append(key with { Time = at }).OrderBy(k => k.Time).ToList();
-                    using (Layer.Echo())
+                    using (OwnLookScope())
                         effect.SetKeys(value.Param.Key, list);
                     pasted++;
                     break;
@@ -336,7 +336,7 @@ public partial class MainViewModel
                     continue;
 
                 keys[index] = eased;
-                using (Layer.Echo())
+                using (OwnLookScope())
                     value.Effect.SetKeys(value.Param.Key, keys);
                 changed = true;
             }
@@ -458,13 +458,13 @@ public partial class MainViewModel
         if (SelectedKeyLane is EffectKeyRef value)
         {
             var keys = value.Effect.GetKeys(value.Param.Key).ToList();
-            var at = keys.FindIndex(k => Math.Abs(k.Time - time) <= Layer.KeyTolerance);
+            var at = KeyEdit.IndexAt(keys, time);
             var eased = at >= 0 ? keys[at].WithEasing(easing, easing == EasingType.CubicBezier ? handles ?? EasingCurves.Handles(keys[at]) : null) : default;
             changed = at >= 0 && eased != keys[at];
             if (changed)
             {
                 keys[at] = eased;
-                using (Layer.Echo())
+                using (OwnLookScope())
                     value.Effect.SetKeys(value.Param.Key, keys);
             }
         }

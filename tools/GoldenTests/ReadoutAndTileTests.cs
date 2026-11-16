@@ -37,29 +37,6 @@ public static class ReadoutAndTileTests
         yield return Case("media-browser-autofill-columns", "# The Media Browser's tiles: two or more abreast from 190 DIPs, stretched to fill the pane edge to edge, pictures 16:9.", Tiles);
     }
 
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>, StringBuilder> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "FAILED: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect, text);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
-    }
-
     // ----- time-display-tabular -----
 
     private static void Readouts(Action<bool, string> expect, StringBuilder text)
@@ -146,7 +123,7 @@ public static class ReadoutAndTileTests
         expect(longer > widths[0] && Math.Abs(Held("00:00:01:05") - longer) < 0.01, "a thirteen-character time widens it once, and it stays that wide");
 
         // Where it is used.
-        var src = Path.Combine(RepositoryRoot(), "src");
+        var src = Path.Combine(SourceProbe.Root, "src");
         var main = XDocument.Load(Path.Combine(src, "MainWindow.xaml"));
         var readouts = main.Descendants().Where(e => e.Name.LocalName == "TimeReadout").ToList();
         var position = Named(main, "PositionTextBlock")?.Parent;
@@ -252,15 +229,4 @@ public static class ReadoutAndTileTests
 
     private static string? Attr(XElement? element, XName name) => (string?)element?.Attribute(name);
 
-    /// <summary>The repository's folder (where HandPegApp.csproj is), found upwards from the built program.</summary>
-    private static string RepositoryRoot()
-    {
-        for (var folder = new DirectoryInfo(AppContext.BaseDirectory); folder is not null; folder = folder.Parent)
-        {
-            if (File.Exists(Path.Combine(folder.FullName, "HandPegApp.csproj")))
-                return folder.FullName;
-        }
-
-        throw new DirectoryNotFoundException("HandPegApp.csproj was not found above the golden tests' program.");
-    }
 }

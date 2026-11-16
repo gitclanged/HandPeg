@@ -196,7 +196,7 @@ public partial class MainWindow
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
         {
-            _viewModel.StatusText = $"Could not rename the project: {ex.Message}";
+            _viewModel.Fail($"Could not rename the project: {ex.Message}", $"Rename the project {path}", ex);
             return;
         }
 
@@ -360,11 +360,11 @@ public partial class MainWindow
             {
                 if (File.Exists(path))
                 {
-                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true });
+                    ShellOpen.Reveal(path);
                 }
                 else if (Path.GetDirectoryName(path) is { Length: > 0 } folder && Directory.Exists(folder))
                 {
-                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"\"{folder}\"") { UseShellExecute = true });
+                    ShellOpen.OpenFolder(folder);
                 }
                 else
                 {
@@ -443,7 +443,7 @@ public partial class MainWindow
                     if (_tabs.Find(row.Id) is not { } tab || ReferenceEquals(tab, _tabs.Active))
                         continue;
                     var saved = SaveTabInPlace(tab, row.Name.Trim().Length > 0 ? row.Name.Trim() : tab.Title);
-                    if (!saved.StartsWith("Project saved", StringComparison.Ordinal))
+                    if (!saved.IsSaved)
                     {
                         staying.Add(tab.Id);
                         failed.Add(tab.Title);
@@ -483,7 +483,9 @@ public partial class MainWindow
     /// never copied), else the thumbnail its cache file or its project file carries, read and decoded small on the thread pool, and given
     /// only if its card is still open. The card lets it go as it closes.
     /// </summary>
-    private async void FillTabPreview(ProjectTabItem item)
+    private void FillTabPreview(ProjectTabItem item) => Faults.Forget(FillTabPreviewAsync(item), nameof(FillTabPreview));
+
+    private async Task FillTabPreviewAsync(ProjectTabItem item)
     {
         try
         {

@@ -40,7 +40,7 @@ public partial class MainWindow
     /// <summary>A sub-clip of a file (5.4C: seconds of its MediaOffset clock; null: the whole file) put on the timeline at a moment: as a
     /// clip, or a sound clip of its own.</summary>
     private void AddSubClip(string file, double at, (double In, double Out)? range, bool sound) =>
-        DropLater("adding a sub-clip", () => sound || MediaBrowserItem.KindOf(file) == MediaBrowserKind.Audio
+        DropLater("adding a sub-clip", () => sound || MediaFiles.KindOf(file) == MediaBrowserKind.Audio
             ? AddDroppedAudioAsync([file], at, range)
             : AddDroppedLayersAsync([file], at, null, range: range));
 }

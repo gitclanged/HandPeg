@@ -1,0 +1,7 @@
+# KeyTips in two stages: the name and keys at once, the description after 1.0 s of hover, twelve words at most.
+ok: the description opens after 1.0 s of hover
+ok: split at the first ": " after a name (it ends with its keys, or is short with no parenthesis); a sentence stays whole
+ok: first stage: the name and its keys, the description closed
+ok: second stage: the description open under them
+ok: a name alone is one stage
+ok: every KeyTip's description is twelve words at most

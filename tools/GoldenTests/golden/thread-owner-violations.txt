@@ -1,0 +1,2 @@
+# At the end of the run: no thread rule was broken outside the cases that break one on purpose.
+ok: no thread rule was broken outside the deliberate case

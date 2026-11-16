@@ -1,5 +1,8 @@
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Threading;
 using HandPegApp.Services;
 
 namespace HandPegApp;
@@ -14,13 +17,28 @@ namespace HandPegApp;
 /// frame, for every KeyTip of the window and the timeline); the map is made at the first key or tooltip. Text never starts
 /// with "{" (XAML would read it as a markup extension). OverflowStrip's "..." menu reads it too (<see cref="Render"/>).
 /// </summary>
+/// <remarks>
+/// Two stages: a text of the form "Name{keys}: what it does" (or a short name before ": ") first shows only the name and its keys;
+/// after <see cref="DetailDwellMs"/> of hover the description (twelve words at most) opens under them. Any other text shows whole at once.
+/// </remarks>
 public static class KeyTip
 {
+    /// <summary>How long the pointer rests on a control before its tooltip's description opens under its name and keys, ms.</summary>
+    public const int DetailDwellMs = 1000;
+
     public static readonly DependencyProperty ActionProperty = DependencyProperty.RegisterAttached(
         "Action", typeof(string), typeof(KeyTip), new PropertyMetadata(null, OnChanged));
 
     public static readonly DependencyProperty TextProperty = DependencyProperty.RegisterAttached(
         "Text", typeof(string), typeof(KeyTip), new PropertyMetadata(null, OnChanged));
+
+    // The element's two-stage tooltip, made the first time it opens.
+    private static readonly DependencyProperty CardProperty = DependencyProperty.RegisterAttached(
+        "Card", typeof(ToolTip), typeof(KeyTip));
+
+    // The one dwell timer (one tooltip is open at a time) and the card it opens: made at the first two-stage tooltip, after Frame 1.
+    private static DispatcherTimer? _dwell;
+    private static ToolTip? _dwelling;
 
     public static string? GetAction(DependencyObject element) => (string?)element.GetValue(ActionProperty);
 
@@ -42,11 +60,104 @@ public static class KeyTip
     }
 
     // WPF reads the tooltip after raising ToolTipOpening, so what is set here is what shows.
-    private static void Opening(object sender, System.Windows.Controls.ToolTipEventArgs e)
+    private static void Opening(object sender, ToolTipEventArgs e)
     {
-        if (sender is FrameworkElement element && Render(element) is { } text)
-            element.ToolTip = text;
+        if (sender is FrameworkElement element && Prepare(element) is { } tip)
+            element.ToolTip = tip;
     }
+
+    /// <summary>
+    /// What the element's tooltip shows now: its words whole (one stage), or its card with the name and keys and the description
+    /// still closed (two stages); null when it has no KeyTip.
+    /// </summary>
+    internal static object? Prepare(FrameworkElement element)
+    {
+        if (Render(element) is not { } text)
+            return null;
+        var (name, detail) = Split(text);
+        if (detail.Length == 0)
+            return text;
+
+        var card = CardFor(element);
+        var (title, more) = Parts(card);
+        title.Text = name;
+        more.Text = detail;
+        more.Visibility = Visibility.Collapsed;
+        return card;
+    }
+
+    /// <summary>
+    /// The two stages of a KeyTip's words: the name with its keys, and what it does ("" when the words are one stage). A text splits at
+    /// its first ": " when what comes before is a name: it ends with the keys, or is five words or fewer with no parenthesis.
+    /// </summary>
+    internal static (string Name, string Detail) Split(string text)
+    {
+        var colon = text.IndexOf(": ", StringComparison.Ordinal);
+        if (colon <= 0)
+            return (text.TrimEnd('.'), "");
+
+        var name = text[..colon];
+        var isName = name.EndsWith(')') && name.Contains(" (", StringComparison.Ordinal) && !name[..name.LastIndexOf(" (", StringComparison.Ordinal)].Contains('(')
+            || name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length <= 5 && !name.Contains('(');
+        if (!isName)
+            return (text, "");
+
+        var detail = text[(colon + 2)..].Trim();
+        return (name, detail.Length == 0 ? "" : char.ToUpperInvariant(detail[0]) + detail[1..]);
+    }
+
+    /// <summary>Words in a description, the keys' tokens counted as one: the microcopy law allows twelve.</summary>
+    internal static int Words(string detail) => Regex.Replace(detail, @"\{[^}]*\}", "X").Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+
+    private static ToolTip CardFor(FrameworkElement element)
+    {
+        if (element.GetValue(CardProperty) is ToolTip made)
+            return made;
+
+        var title = new TextBlock();
+        var more = new TextBlock { TextWrapping = TextWrapping.Wrap, MaxWidth = 280, Margin = new Thickness(0, 3, 0, 0), Opacity = 0.85, Visibility = Visibility.Collapsed };
+        var card = new ToolTip { Content = new StackPanel { Children = { title, more } } };
+        card.Opened += (_, _) => StartDwell(element, card);
+        card.Closed += (_, _) =>
+        {
+            if (ReferenceEquals(_dwelling, card))
+            {
+                _dwelling = null;
+                _dwell?.Stop();
+            }
+
+            Parts(card).More.Visibility = Visibility.Collapsed;
+        };
+        element.SetValue(CardProperty, card);
+        return card;
+    }
+
+    private static (TextBlock Title, TextBlock More) Parts(ToolTip card) =>
+        card.Content is StackPanel { Children: [TextBlock title, TextBlock more] } ? (title, more) : throw new InvalidOperationException("Not a KeyTip card.");
+
+    // The description opens DetailDwellMs after the pointer came to rest on the element: the tooltip itself opened its initial delay in.
+    private static void StartDwell(FrameworkElement element, ToolTip card)
+    {
+        _dwelling = card;
+        var wait = Math.Max(0, DetailDwellMs - ToolTipService.GetInitialShowDelay(element));
+        if (_dwell is null)
+        {
+            _dwell = new DispatcherTimer(DispatcherPriority.Input);
+            _dwell.Tick += (_, _) =>
+            {
+                _dwell.Stop();
+                if (_dwelling is { IsOpen: true } open)
+                    Expand(open);
+            };
+        }
+
+        _dwell.Stop();
+        _dwell.Interval = TimeSpan.FromMilliseconds(Math.Max(wait, 1));
+        _dwell.Start();
+    }
+
+    /// <summary>Opens a card's description (the dwell ran out; tests call it directly).</summary>
+    internal static void Expand(ToolTip card) => Parts(card).More.Visibility = Visibility.Visible;
 
     /// <summary>The element's KeyTip words with the keys as bound now; null when it has none.</summary>
     public static string? Render(DependencyObject element) =>

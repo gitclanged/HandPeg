@@ -119,6 +119,12 @@ public enum GpuShaderSlot
     /// <summary>A variant in the last lane of the second packet: 0 the Energy Shield, 1 the Saber Glow (two packets).</summary>
     EnergyField = 29,
 
+    /// <summary>
+    /// 5.6.0: the Color Grade card of the Color Studio (EffectRegistry.ColorStudio): white balance and exposure in linear light, lift / gamma /
+    /// gain, contrast, saturation and vibrance (ColorGradeMath.Apply is its reference), then its curves (Aux) and its LUT (lerped by its mix); two packets.
+    /// </summary>
+    ColorStudio = 30,
+
     // Transitions (TransitionStyles.GpuSlot): a block of their own.
     TransitionDissolve = 64,
     TransitionWipe = 65,
@@ -210,7 +216,13 @@ public sealed record EffectParam(
     public bool IsAdvanced { get; init; }
 
     /// <summary>
-    /// What a number's lane in a <see cref="GpuEffectPacket"/> is multiplied by (5.1-Polish): the card shows one unit, the
+    /// Edited only in the Color Studio (5.6.0: the Color Grade card's wheels and curves): the Effects pane's card leaves it out and shows that it
+    /// is in use instead.
+    /// </summary>
+    public bool StudioOnly { get; init; }
+
+    /// <summary>
+    /// What a number's lane in a <see cref="GpuEffectPacket"/> is multiplied by (5.1.0): the card shows one unit, the
     /// shader takes another (the Vignette's degrees as radians). 1 for the most, whose shader takes the card's own value.
     /// </summary>
     public double GpuScale { get; init; } = 1;
@@ -222,6 +234,13 @@ public sealed record EffectParam(
     public bool GpuProgress { get; init; }
 
     public int Decimals => Step >= 1 ? 0 : Step >= 0.1 ? 1 : Step >= 0.01 ? 2 : 3;
+
+    /// <summary>
+    /// A value as every editor stores it: rounded to the step (whole steps of 1 and more; otherwise one decimal finer than the box shows)
+    /// and held to the range. The Effects pane and the Color Studio both write through this, so a value is the same from either.
+    /// </summary>
+    public double Quantize(double value) =>
+        Math.Clamp(Step >= 1 ? Math.Round(value / Step) * Step : Math.Round(value, Decimals + 1), Min, Max);
 
     /// <summary>
     /// How many lanes of a <see cref="GpuEffectPacket"/> it takes: a number, a switch or a choice (its index in
@@ -353,6 +372,9 @@ public static partial class EffectRegistry
         Opacity = "builtin.composite.opacity", Shadow = "builtin.composite.shadow", BlendMode = "builtin.composite.blend",
         BackgroundBlur = "builtin.background.blur";
 
+    /// <summary>The Brightness &amp; Contrast card's channel balance (5.6.0: the colour sliders' converted, PSColorGrade's P4 and).</summary>
+    public const string GradeBalanceBlue = "balance_cb", GradeBalanceRed = "balance_cr";
+
     private static readonly Dictionary<string, EffectDefinition> Definitions = new(StringComparer.Ordinal);
 
     /// <summary>In the order the Add Effect menu lists them.</summary>
@@ -389,12 +411,17 @@ public static partial class EffectRegistry
             GpuSlot = GpuShaderSlot.Denoise, Description = "Smooths grain and compression noise, between frames as well as within them.",
         });
 
-        Register(new(Grade, "Color Grade", "Color", EffectZone.Look,
+        // 5.6.0: "Brightness & Contrast" (the Color Studio's card is the Color Grade now; the type is unchanged, so projects keep it). Its last
+        // two lanes are the colour sliders' channel balance as PSColorGrade takes it (P4, P5: the Cb and Cr planes' gammas, 0 for none), written only
+        // by the Color tab's Convert so a converted grade draws exactly as it did; not shown on the card (StudioOnly), 0 on every other card.
+        Register(new(Grade, "Brightness & Contrast", "Color", EffectZone.Look,
             [
                 new("contrast", "Contrast", Min: 0, Max: 2, Default: 1, Animation: ParamAnimation.Expression) { Starting = 1.1 },
                 new("brightness", "Brightness", Min: -1, Max: 1, Default: 0, Animation: ParamAnimation.Expression),
                 new("saturation", "Saturation", Min: 0, Max: 3, Default: 1, Animation: ParamAnimation.Expression) { Starting = 1.2 },
                 new("gamma", "Gamma", Min: 0.1, Max: 3, Default: 1, Animation: ParamAnimation.Expression) { IsAdvanced = true },
+                new(GradeBalanceBlue, "Blue Balance", Min: 0, Max: 2, Default: 0, Step: 0.001) { StudioOnly = true },
+                new(GradeBalanceRed, "Red Balance", Min: 0, Max: 2, Default: 0, Step: 0.001) { StudioOnly = true },
             ], EffectCost.Green)
         {
             GpuSlot = GpuShaderSlot.ColorGrade, Description = "Contrast, brightness, saturation and gamma.",
@@ -596,6 +623,7 @@ public static partial class EffectRegistry
         });
 
         RegisterGpuFx();
+        RegisterColorStudio();
     }
 
     // ----- Blur (5.0-Release: its Advanced values) -----

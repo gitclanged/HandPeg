@@ -1,0 +1,5 @@
+# Autosave never waits for its thumbnail on the window's thread; an edit flushes the looks once; a mask's alpha is known from its header first.
+ok: autosave: one fingerprint, the state without waiting, the fresh thumbnail awaited on the pool before the write
+ok: an edit flushes the looks once (CaptureSnapshot does it for an undoable edit)
+ok: a mask with transparency is read by its alpha; an opaque 32-bit PNG, a 24-bit PNG and a JPEG by their brightness
+ok: the pixel format is read from the header before any decode: a picture without alpha is never decoded

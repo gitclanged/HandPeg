@@ -1,0 +1,11 @@
+# The Color Grade card (slot 30): its lanes in the contract's order, neutral is the picture exactly, always two packets side by side.
+ok: builtin.color.studio is the Color Grade: Look, once a clip, slot 30, two packets of sixteen lanes, Amber, drawn by FFmpeg's export too (not GPU-only)
+ok: the old Grade (builtin.color.eq, unchanged) is Brightness & Contrast, one packet
+ok: the wheels and the curves are edited in the Color Studio only (StudioOnly); the basics and the LUT show on the Effects pane's card
+ok: P0..P7 temperature, tint, exposure, lift r g b, gamma r, contrast; Q0..Q7 gamma g b, gain r g b, saturation, vibrance, LUT Mix (% x 0.01)
+ok: a new card is neutral (contrast and saturation 1, LUT Mix 100 %, no curve): the renderer draws no pass for it
+ok: neutral is the picture exactly: ColorGradeMath.Apply gives each colour back as it came, and so does the CPU mirror of PSColorStudio
+ok: a full grade: PSColorStudio's float steps (the CPU mirror) within half a level of ColorGradeMath.Apply on eight colours
+ok: on the Sequence Output: one descriptor with the card's two packets in order, the last lane its mix alone (no LUT, no curve of its own)
+ok: two cards side by side: four packets, each card's pair together (the renderer pairs 0 with 1 and 2 with 3)
+ok: the last lane: mix (held to 0..1) + 2 for its curves + 4 for its LUT, read back exactly, never negative

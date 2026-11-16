@@ -96,6 +96,7 @@ public partial class MainViewModel : ObservableObject
     public MainViewModel()
     {
         StartupTrace.Mark("MainViewModel: start");
+        ClipPictures = new ClipPictures(PicturesKept, FilesInUse);
         _videoEncoder = EncoderOption.Copy;
         Presets = [.. ExportPresetCatalog.BuiltIns, .. PresetStore.TakeEarly()];
         Initialize();
@@ -120,6 +121,7 @@ public partial class MainViewModel : ObservableObject
     private MainViewModel(MainViewModel owner)
     {
         _isBackgroundWorker = true;
+        ClipPictures = new ClipPictures(PicturesKept, FilesInUse);
 
         // Its own folder for the cuts and chapters lists, which are rewritten whenever a setting changes.
         _workFolder = Path.Combine(SessionPaths.Queue, $"worker_{Guid.NewGuid():N}");
@@ -168,7 +170,11 @@ public partial class MainViewModel : ObservableObject
 
         InitializeQueue();
         ApplyDisplaySettings();
-        Layers.CollectionChanged += (_, _) => RefreshLayerRows();
+        Layers.CollectionChanged += (_, _) =>
+        {
+            if (!Layers.Syncing)
+                RefreshLayerRows();
+        };
         RefreshLayerRows();
         LoadAutomation();
         Presets.CollectionChanged += (_, _) => RefreshPresetNames();
@@ -339,7 +345,7 @@ public partial class MainViewModel : ObservableObject
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            StatusText = $"Could not write {PresetStore.FilePath}: {ex.Message}";
+            Fail($"Could not write {PresetStore.FilePath}: {ex.Message}", $"Save presets to {PresetStore.FilePath}", ex);
             return;
         }
 
@@ -1252,7 +1258,7 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
-    private void GenerateCommand()
+    private void GenerateCommand(PreviewChange change = PreviewChange.Output)
     {
         // A layer following its keyframes as the playhead moves changes nothing about the command.
         if (_applyingKeys)
@@ -1267,23 +1273,32 @@ public partial class MainViewModel : ObservableObject
         // The timeline is as long as its clips reach (what the builder reads from it is gathered afresh for this state), and
         // every picture keeps its middle on a frame of another shape.
         _previewState = null;
-        KeepPlacesOnReshape();
-        RefreshSequence();
+
+        // A look-only change (an effect value, PreviewChange.Look) cannot move a clip, change the output's size, rate, length or audio
+        // tracks, or bring in a file: the sequence, the Projected Output and the proxies stay as they are.
+        if (change != PreviewChange.Look)
+        {
+            // The timeline is as long as its clips reach (what the builder reads from it is gathered afresh for this state), and
+            // every picture keeps its middle on a frame of another shape.
+            KeepPlacesOnReshape();
+            RefreshSequence();
 
         // The Properties tab follows the settings even while the command itself is frozen by a manual edit.
-        UpdateProjectedOutput();
+            UpdateProjectedOutput();
+
+            // The proxies follow the files now on it.
+            RefreshProxies();
+            WarmLayerFiles();
+        }
+
         OnPropertyChanged(nameof(CaptionHint));
         OnPropertyChanged(nameof(CopyBypassWarning));
         OnPropertyChanged(nameof(ProjectColorNote));
         OnPropertyChanged(nameof(HdrStatusText));
 
-        // The proxies follow the files now on it.
-        RefreshProxies();
-        WarmLayerFiles();
-
-        // So does the player (and the Timeline's rows), which shows the settings, not the command.
+        // So does the player (and the Timeline's rows, unless the change is look-only), which shows the settings, not the command.
         if (!_isBackgroundWorker)
-            InvalidatePreviewState();
+            InvalidatePreviewState(change);
 
         if (IsCommandManuallyEdited)
             return;
@@ -1334,7 +1349,7 @@ public partial class MainViewModel : ObservableObject
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            StatusText = $"Could not write {CutsFilePath}: {ex.Message}";
+            Fail($"Could not write {CutsFilePath}: {ex.Message}", $"Write the cuts file {CutsFilePath}", ex);
         }
     }
 

@@ -38,7 +38,6 @@ namespace HandPegGoldenTests;
 /// </summary>
 public static class LayoutSelectorTests
 {
-    private const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
     private static readonly XNamespace X = "http://schemas.microsoft.com/winfx/2006/xaml";
 
     // The settings tabs' pane ids after 5.4B, as the other suites have them.
@@ -56,52 +55,6 @@ public static class LayoutSelectorTests
     public static IEnumerable<GraphResult> Live()
     {
         yield return Case("dock-splitter-range", "# The dock's borders at 1280 x 760 DIPs: each drags both ways, cascading past a part at its least; a double-click evens it; the Filmstrip view's least width set in place.", SplitterRange);
-    }
-
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
-    }
-
-    private static string RepositoryRoot()
-    {
-        for (var folder = new DirectoryInfo(AppContext.BaseDirectory); folder is not null; folder = folder.Parent)
-        {
-            if (File.Exists(Path.Combine(folder.FullName, "HandPegApp.csproj")))
-                return folder.FullName;
-        }
-
-        throw new DirectoryNotFoundException("HandPegApp.csproj was not found above the golden tests' program.");
-    }
-
-    private static string Read(params string[] parts) => File.ReadAllText(Path.Combine([RepositoryRoot(), "src", .. parts]));
-
-    /// <summary>A method's text in a source file: from its signature to the first line that closes it at its own indent.</summary>
-    private static string Method(string source, string signature)
-    {
-        var start = source.IndexOf(signature, StringComparison.Ordinal);
-        if (start < 0)
-            return "";
-        var end = source.IndexOf("\n    }", start, StringComparison.Ordinal);
-        return end < 0 ? source[start..] : source[start..end];
     }
 
     private static string Num(double value) => Math.Round(value).ToString(CultureInfo.InvariantCulture);
@@ -138,15 +91,15 @@ public static class LayoutSelectorTests
                && DockManager.Shape(states[^1].Layout.Main) == shape && states.Select(s => DockManager.Shape(s.Layout.Main)).Distinct().Count() == 5,
             "the fifth of five built-in layouts, named Vertical Creator Split, each of a shape of its own: " + string.Join(", ", states.Select(s => s.Name)));
 
-        var layouts = Read("MainWindow.Layouts.cs");
+        var layouts = SourceProbe.Src("MainWindow.Layouts.cs");
         expect(Regex.IsMatch(layouts, @"new\(VerticalCreatorName, ""[^""]*Subtitle Studio[^""]*"", VerticalCreatorLayout\(TabIds\), null, ShowShortsMedia\)"),
             "its choice in BuiltInLayouts tells of the Subtitle Studio and sets the Media Browser to Filmstrip when taken up (ShowShortsMedia, its Then)");
 
-        var firstRun = XDocument.Load(Path.Combine(RepositoryRoot(), "src", "Dialogs", "FirstRunWindow.xaml"));
+        var firstRun = XDocument.Load(Path.Combine(SourceProbe.Root, "src", "Dialogs", "FirstRunWindow.xaml"));
         var card = firstRun.Descendants().FirstOrDefault(e => e.Attribute(X + "Name")?.Value == "VerticalCreatorLayoutCard");
-        var firstRunCode = Read("Dialogs", "FirstRunWindow.xaml.cs");
+        var firstRunCode = SourceProbe.Src("Dialogs", "FirstRunWindow.xaml.cs");
         expect(card?.Attribute("Tag")?.Value == "Vertical Creator Split" && card.Attribute("Checked")?.Value == "Workspace_Checked"
-               && Method(firstRunCode, "private string ChosenWorkspace()").Contains("VerticalCreatorLayoutCard", StringComparison.Ordinal),
+               && SourceProbe.Member(firstRunCode, "private string ChosenWorkspace()").Contains("VerticalCreatorLayoutCard", StringComparison.Ordinal),
             "the first-run window offers it as a fifth card (its Tag the layout's name), and ChosenWorkspace knows it");
     }
 
@@ -262,7 +215,7 @@ public static class LayoutSelectorTests
             // Place 2 written over (Save Current Layout): the place is the key, so the layout now there is the Default, and the status says so.
             var inspector = MainWindow.InspectorLayout(TabIds);
             settings.SavedLayouts = [new SavedDockLayout { Slot = 2, Name = "Temp", Layout = Json(inspector) }];
-            var save = Method(Read("MainWindow.Layouts.cs"), "private void SaveCurrentLayout_Click(");
+            var save = SourceProbe.Member(SourceProbe.Src("MainWindow.Layouts.cs"), "private void SaveCurrentLayout_Click(");
             expect(Shaped(Startup(), inspector) && settings.DefaultStartupLayout == "saved:2"
                    && save.Contains("AppSettings.Current.DefaultStartupLayout == $\"saved:{dialog.Slot}\"", StringComparison.Ordinal)
                    && save.Contains("$\"Layout saved as \\\"{dialog.LayoutName}\\\": your Default layout", StringComparison.Ordinal),
@@ -308,31 +261,33 @@ public static class LayoutSelectorTests
                 "DockManager.LoadsAlike: Standard's arrangement loads alike Standard Editing, not the Shorts Studio; nothing saved, or another shape, is not alike");
 
             // The one dock build before the first frame (Law 1), and the first-run choice.
-            var docking = Read("MainWindow.Docking.cs");
-            var layouts = Read("MainWindow.Layouts.cs");
+            var docking = SourceProbe.Src("MainWindow.Docking.cs");
+            var layouts = SourceProbe.Src("MainWindow.Layouts.cs");
             expect(Regex.Matches(docking, @"_dock\.Load\(").Count == 1
                    && docking.Contains("_dock.Load(sideWindows: AppSettings.Current.SideWindows, saved: TakeFirstRunLayout() ?? StartupLayoutJson(), showFirst: TimelinePaneId);", StringComparison.Ordinal),
                 "InitializeDocking has one Load: the first-run choice, else StartupLayoutJson, opening on the Timeline");
-            var startup = Method(layouts, "private string? StartupLayoutJson()");
+            var startup = SourceProbe.Member(layouts, "private string? StartupLayoutJson()");
             expect(startup.Contains("AppSettingsJsonContext.Default.DockLayoutState", StringComparison.Ordinal) && !startup.Contains("_dock.Load(", StringComparison.Ordinal)
                    && !startup.Contains("_dock.Apply", StringComparison.Ordinal),
                 "StartupLayoutJson serialises through the generated metadata and builds nothing (no Load, no Apply)");
-            var firstRun = Method(layouts, "private string? TakeFirstRunLayout()");
+            var firstRun = SourceProbe.Member(layouts, "private string? TakeFirstRunLayout()");
             expect(firstRun.Contains("AppSettingsJsonContext.Default.DockLayoutState", StringComparison.Ordinal) && firstRun.Contains("s.DefaultStartupLayout", StringComparison.Ordinal),
                 "TakeFirstRunLayout serialises through the generated metadata and makes the first-run choice the Default layout too");
-            var reset = Method(layouts, "private void ResetToDefaultLayout()");
-            var main = Read("MainWindow.xaml.cs") + Read("MainWindow.PresetsAndKeyframes.cs") + Read("MainWindow.ViewsMenu.cs");
-            expect(reset.Contains("_dock.Reset(choice?.Layout);", StringComparison.Ordinal) && Method(main, "private void ResetPanesLayout_Click(").Contains("ResetToDefaultLayout();", StringComparison.Ordinal)
+            var reset = SourceProbe.Member(layouts, "private void ResetToDefaultLayout()");
+            var main = SourceProbe.Src("MainWindow.xaml.cs") + SourceProbe.Src("MainWindow.PresetsAndKeyframes.cs") + SourceProbe.Src("MainWindow.ViewsMenu.cs");
+            expect(reset.Contains("_dock.Reset(choice?.Layout);", StringComparison.Ordinal) && SourceProbe.Member(main, "private void ResetPanesLayout_Click(").Contains("ResetToDefaultLayout();", StringComparison.Ordinal)
                    && docking.Contains("ResetLayout = () => ResetPanesLayout_Click(", StringComparison.Ordinal),
                 "Reset Layout (the Views menu, and a tab's menu) puts back the Default layout, not always Standard Editing");
         }
         finally
         {
-            // The adopted Default's save, still waiting (MainViewModel.SaveSettingsSoon), is let go: the test's settings never reach the file.
-            (typeof(MainViewModel).GetField("_settingsSave", Hidden)?.GetValue(viewModel) as CancellationTokenSource)?.Cancel();
             media?.Release();
             PaneTitleSlot.Restore("Media", slot);
             (settings.DefaultStartupLayout, settings.DockLayout, settings.SavedLayouts, settings.SideWindows, settings.BrowserView, settings.FirstRunLayout) = kept;
+
+            // The adopted Default's debounced save (AppSettings.Update) may already have written the test's settings: the restored ones are
+            // written now, so the file holds what it held before.
+            AppSettings.Update(_ => { }, saveNow: true);
         }
     }
 
@@ -345,7 +300,6 @@ public static class LayoutSelectorTests
     {
         var file = AppSettings.FilePath;
         var original = File.Exists(file) ? File.ReadAllBytes(file) : null;
-        var load = typeof(AppSettings).GetMethod("Load", BindingFlags.NonPublic | BindingFlags.Static, Type.EmptyTypes)!;
         var arrangement = Json(MainWindow.InspectorLayout(TabIds));
         AppSettings Loaded(int version, string? dockLayout, string? defaultLayout)
         {
@@ -354,7 +308,7 @@ public static class LayoutSelectorTests
             if (defaultLayout is null)
                 node.Remove(nameof(AppSettings.DefaultStartupLayout));
             File.WriteAllText(file, node.ToJsonString());
-            return (AppSettings)load.Invoke(null, null)!;
+            return AppSettings.Load();
         }
 
         try
@@ -374,7 +328,7 @@ public static class LayoutSelectorTests
             AppSettings WithStatusBar(int version)
             {
                 File.WriteAllText(file, System.Text.Json.JsonSerializer.Serialize(new AppSettings { ViewDefaultsVersion = version, FirstRunComplete = true, ShowStatusBar = true }, AppSettingsJsonContext.Default.AppSettings));
-                return (AppSettings)load.Invoke(null, null)!;
+                return AppSettings.Load();
             }
             expect(!WithStatusBar(9).ShowStatusBar && WithStatusBar(10).ShowStatusBar && !new AppSettings().ShowStatusBar,
                 "the status bar: hidden once for a file from before step 10 (the title bar carries the work), kept shown when turned on since, off for a fresh install");
@@ -394,26 +348,26 @@ public static class LayoutSelectorTests
 
     private static void SelectorSource(Action<bool, string> expect)
     {
-        var xaml = XDocument.Load(Path.Combine(RepositoryRoot(), "src", "MainWindow.xaml"));
+        var xaml = XDocument.Load(Path.Combine(SourceProbe.Root, "src", "MainWindow.xaml"));
         string[] retired = ["LayoutFlyout", "LayoutFlyoutPanel", "SideWindowCheck", "BuiltInLayoutRows", "SavedLayoutRows", "SavedLayoutsTitle"];
         expect(retired.All(n => Named(xaml, n) is null), "the click's menu is retired from MainWindow.xaml: " + string.Join(", ", retired));
 
-        var layouts = Read("MainWindow.Layouts.cs");
-        var main = Read("MainWindow.xaml.cs") + Read("MainWindow.PresetsAndKeyframes.cs") + Read("MainWindow.ViewsMenu.cs");
-        var docking = Read("MainWindow.Docking.cs");
+        var layouts = SourceProbe.Src("MainWindow.Layouts.cs");
+        var main = SourceProbe.Src("MainWindow.xaml.cs") + SourceProbe.Src("MainWindow.PresetsAndKeyframes.cs") + SourceProbe.Src("MainWindow.ViewsMenu.cs");
+        var docking = SourceProbe.Src("MainWindow.Docking.cs");
         string[] gone = ["OpenLayoutMenu", "CloseLayoutMenu", "FillLayoutRows", "LayoutFlyout_KeyDown", "_layoutMenuFrom", "TakeUpLayout", "LayoutFlyout"];
         expect(gone.All(g => !layouts.Contains(g, StringComparison.Ordinal) && !main.Contains(g, StringComparison.Ordinal) && !docking.Contains(g, StringComparison.Ordinal)),
             "and from the code: " + string.Join(", ", gone));
         expect(main.Contains("CanOpen = () => !_switchingTab,", StringComparison.Ordinal) && !main.Contains("PreviewMouseDown += CloseLayout", StringComparison.Ordinal),
             "resting on the Layout button opens nothing while a project tab is being switched (CanOpen); no press in the window closes it");
-        var deactivated = Method(layouts, "private void CloseLayoutSelectorOnDeactivated()");
+        var deactivated = SourceProbe.Member(layouts, "private void CloseLayoutSelectorOnDeactivated()");
         expect(main.Contains("Deactivated += (_, _) => CloseLayoutSelectorOnDeactivated();", StringComparison.Ordinal)
                && deactivated.IndexOf("RestoreLayoutBeforePreview();", StringComparison.Ordinal) is var putBack and >= 0 && putBack < deactivated.IndexOf("_layoutHover.Close();", StringComparison.Ordinal),
             "the window deactivated (Alt+Tab): a preview put back, then the selector closed (it is topmost)");
 
-        var click = Method(layouts, "private void LayoutButton_Click(");
-        var keys = Method(layouts, "private void LayoutButton_PreviewKeyDown(");
-        var onFirst = Method(layouts, "private void OpenLayoutSelectorOnFirstCard(");
+        var click = SourceProbe.Member(layouts, "private void LayoutButton_Click(");
+        var keys = SourceProbe.Member(layouts, "private void LayoutButton_PreviewKeyDown(");
+        var onFirst = SourceProbe.Member(layouts, "private void OpenLayoutSelectorOnFirstCard(");
         expect(click.Contains("if (!LayoutSelector.IsOpen", StringComparison.Ordinal) && click.Contains("_layoutHover.Open(button);", StringComparison.Ordinal) && !click.Contains("Close", StringComparison.Ordinal),
             "a click on the Layout button opens the Layout Selector when it is not open, and never closes it");
         expect(keys.Contains("Key.Down or Key.Apps", StringComparison.Ordinal) && keys.Contains("OpenLayoutSelectorOnFirstCard(button);", StringComparison.Ordinal)
@@ -427,11 +381,11 @@ public static class LayoutSelectorTests
 
         // A click with the pointer on a pill, a "×" or the footer's CheckBox lets the keyboard go (HoverFlyout holds the selector open while it
         // has it): back where it was before the selector opened, the selector let go, so the pointer leaving it closes it.
-        var remake = Method(layouts, "private void RemakeLayoutCards()");
-        var leave = Method(layouts, "private void LeaveSelectorToPointer()");
-        expect(Regex.IsMatch(remake, @"if \(!FromKeyboard\)\s*LeaveSelectorToPointer\(\);\s*else if \(focused >= 0") && Method(layouts, "private void PerTabLayoutsBox_Click(").Contains("LeaveSelectorToPointer();", StringComparison.Ordinal)
+        var remake = SourceProbe.Member(layouts, "private void RemakeLayoutCards()");
+        var leave = SourceProbe.Member(layouts, "private void LeaveSelectorToPointer()");
+        expect(Regex.IsMatch(remake, @"if \(!FromKeyboard\)\s*LeaveSelectorToPointer\(\);\s*else if \(focused >= 0") && SourceProbe.Member(layouts, "private void PerTabLayoutsBox_Click(").Contains("LeaveSelectorToPointer();", StringComparison.Ordinal)
                && leave.Contains("_focusBeforeSelector is UIElement", StringComparison.Ordinal) && leave.Contains("Keyboard.ClearFocus();", StringComparison.Ordinal) && leave.Contains("_layoutHover.Release();", StringComparison.Ordinal)
-               && Method(layouts, "private void OpeningLayoutSelector()").Contains("_focusBeforeSelector = Keyboard.FocusedElement;", StringComparison.Ordinal),
+               && SourceProbe.Member(layouts, "private void OpeningLayoutSelector()").Contains("_focusBeforeSelector = Keyboard.FocusedElement;", StringComparison.Ordinal),
             "a pill, a × or the CheckBox clicked with the pointer: the keyboard back where it was as the selector opened, the selector released; from the keyboard, the card keeps it");
         var button = Named(xaml, "LayoutButton");
         expect(button?.Attribute("ToolTip")?.Value is { } tip && tip.Contains("or click", StringComparison.Ordinal) && tip.Contains("Save Current Layout", StringComparison.Ordinal)
@@ -464,18 +418,18 @@ public static class LayoutSelectorTests
         expect(resets.Count == 1 && resets[0].Ancestors().Any(a => a.Attribute(X + "Name")?.Value == "ViewsPopup"),
             "Reset Layout has one home, the Views menu (CLAUDE.md 10.1)");
 
-        var perTab = Method(layouts, "private void PerTabLayoutsBox_Click(");
-        var opening = Method(layouts, "private void OpeningLayoutSelector()");
+        var perTab = SourceProbe.Member(layouts, "private void PerTabLayoutsBox_Click(");
+        var opening = SourceProbe.Member(layouts, "private void OpeningLayoutSelector()");
         expect(perTab.Contains("_viewModel.SavePaneLayout(s => s.PerTabWindowLayouts = on);", StringComparison.Ordinal)
                && opening.Contains("PerTabLayoutsBox.IsChecked = AppSettings.Current.PerTabWindowLayouts;", StringComparison.Ordinal) && opening.Contains("UpdateSideWindowCheck();", StringComparison.Ordinal),
             "the CheckBox saves AppSettings.PerTabWindowLayouts at once and shows it as it is each time the selector opens (Settings sets it too)");
-        var save = Method(layouts, "private void SaveCurrentLayout_Click(");
+        var save = SourceProbe.Member(layouts, "private void SaveCurrentLayout_Click(");
         var dialogAt = save.IndexOf("ShowDialog", StringComparison.Ordinal);
         expect(save.IndexOf("RestoreLayoutBeforePreview();", StringComparison.Ordinal) is var restore and >= 0 && restore < dialogAt
                && save.IndexOf("_layoutHover.Close();", StringComparison.Ordinal) is var close and >= 0 && close < dialogAt && save.Contains("_dock.Save()", StringComparison.Ordinal),
             "Save Current Layout puts a preview back and closes the selector before its modal window, then saves the arrangement through the dock");
-        var newSide = Method(docking, "private void SideWindowRow_Click(");
-        var sideRows = Method(docking, "private void UpdateSideWindowCheck()");
+        var newSide = SourceProbe.Member(docking, "private void SideWindowRow_Click(");
+        var sideRows = SourceProbe.Member(docking, "private void UpdateSideWindowCheck()");
         expect(newSide.IndexOf("RestoreLayoutBeforePreview();", StringComparison.Ordinal) is var restored and >= 0 && restored < newSide.IndexOf("_layoutHover.Close();", StringComparison.Ordinal)
                && newSide.IndexOf("_layoutHover.Close();", StringComparison.Ordinal) < newSide.IndexOf("_dock.OpenSideWindow", StringComparison.Ordinal),
             "+ New Side Window puts a preview back, then closes the selector, before the window opens (and saves the arrangement)");
@@ -483,28 +437,28 @@ public static class LayoutSelectorTests
             "a side window's row and its close button put a preview back first too");
         var cardsElement = Named(xaml, "LayoutCards");
         expect(cardsElement?.Attribute("IsKeyboardFocusWithinChanged")?.Value == "LayoutCards_IsKeyboardFocusWithinChanged"
-               && Regex.IsMatch(Method(layouts, "private void LayoutCards_IsKeyboardFocusWithinChanged("), @"e\.NewValue is false && LayoutSelector\.IsOpen && !_remakingCards && !LayoutCards\.IsMouseOver\)\s*RestoreLayoutBeforePreview\(\);"),
+               && Regex.IsMatch(SourceProbe.Member(layouts, "private void LayoutCards_IsKeyboardFocusWithinChanged("), @"e\.NewValue is false && LayoutSelector\.IsOpen && !_remakingCards && !LayoutCards\.IsMouseOver\)\s*RestoreLayoutBeforePreview\(\);"),
             "the keyboard leaving the cards (Tab to the footer) with the selector open puts a preview back, as the pointer leaving them does");
 
         // The cards' pills.
-        var make = Method(layouts, "private void MakeLayoutCards()");
+        var make = SourceProbe.Member(layouts, "private void MakeLayoutCards()");
         expect(make.Contains("\"★ Default\"", StringComparison.Ordinal) && make.Contains("\"☆ Set Default\"", StringComparison.Ordinal) && make.Contains("\"×\"", StringComparison.Ordinal)
                && Regex.Matches(make, @"e\.Handled = true;").Count == 2 && make.Contains("SetDefaultLayout(choice)", StringComparison.Ordinal) && make.Contains("DeleteSavedLayout(place)", StringComparison.Ordinal),
             "each card has its pill (★ Default, else ☆ Set Default) and a saved card its ×, their clicks handled so the card's own (KeepLayout) never fires");
         expect(make.Contains("pill.Visibility = isDefault || pointed", StringComparison.Ordinal) && make.Contains("card.IsMouseOver || card.IsKeyboardFocusWithin", StringComparison.Ordinal),
             "★ Default always shown; ☆ Set Default and × while the card is pointed at or has the keyboard");
         expect(make.Contains("+ \"|\" + defaultKey", StringComparison.Ordinal), "the Default layout is part of what the cards are drawn from (_cardsKey)");
-        var set = Method(layouts, "private void SetDefaultLayout(");
+        var set = SourceProbe.Member(layouts, "private void SetDefaultLayout(");
         expect(set.Contains("s.DefaultStartupLayout = LayoutKey(choice)", StringComparison.Ordinal) && set.Contains("RemakeLayoutCards();", StringComparison.Ordinal) && set.Contains("StatusText", StringComparison.Ordinal),
             "setting the Default saves it at once (a built-in layout by name, the user's own as saved:N), draws the cards again and says so");
-        var delete = Method(layouts, "private void DeleteSavedLayout(");
+        var delete = SourceProbe.Member(layouts, "private void DeleteSavedLayout(");
         expect(delete.IndexOf("RestoreLayoutBeforePreview();", StringComparison.Ordinal) is 0 or > 0 && delete.Contains("s.DefaultStartupLayout = DefaultLayoutName;", StringComparison.Ordinal)
                && delete.Contains("RemakeLayoutCards();", StringComparison.Ordinal) && !delete.Contains("_layoutHover.Close", StringComparison.Ordinal),
             "deleting one of the user's own puts the preview back first, leaves the selector open, and when it was the Default makes Standard Editing the Default again");
-        expect(Method(layouts, "private static string LayoutKey(").Contains("$\"saved:{slot}\"", StringComparison.Ordinal),
+        expect(SourceProbe.Member(layouts, "private static string LayoutKey(").Contains("$\"saved:{slot}\"", StringComparison.Ordinal),
             "AppSettings.DefaultStartupLayout keys: a built-in layout's name, saved:N for the user's own in place N");
         expect(Named(xaml, "LayoutSelector")?.Attributes().All(a => a.Name.LocalName is not ("Placement" or "PlacementTarget" or "HorizontalOffset" or "VerticalOffset")) == true
-               && Method(layouts, "private void PlaceLayoutSelector(").Contains("PlaceHeaderFlyout(LayoutSelector", StringComparison.Ordinal),
+               && SourceProbe.Member(layouts, "private void PlaceLayoutSelector(").Contains("PlaceHeaderFlyout(LayoutSelector", StringComparison.Ordinal),
             "the selector is still placed by PlaceLayoutSelector (UiScale.PlaceAgainst, CLAUDE.md 9)");
     }
 

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using HandPegApp.Compositor.Native;
 using HandPegApp.Services;
 using HandPegApp.Services.Audio;
+using HandPegApp.Native;
 
 namespace HandPegApp.Compositor;
 
@@ -50,7 +51,7 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
     }
 
     // The wait's millisecond step (CREATE_WAITABLE_TIMER_HIGH_RESOLUTION; 0 on a Windows without it).
-    private nint _tick = AudioNative.CreateWaitableTimerExW(0, 0, AudioNative.HighResolutionTimer, AudioNative.TimerAllAccess);
+    private nint _tick = Kernel32.CreateWaitableTimerExW(0, 0, Kernel32.HighResolutionTimer, Kernel32.TimerAllAccess);
 
     private const int Sources = 4;
     private readonly Source?[] _sources = new Source?[Sources];
@@ -316,8 +317,8 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
                 else if (_tick != 0)
                 {
                     var due = -(long)(Math.Clamp(budget - waited, 0.1, 1.0) * 10_000);
-                    _ = AudioNative.SetWaitableTimer(_tick, &due, 0, 0, 0, 0);
-                    _ = AudioNative.WaitForSingleObject(_tick, 2);
+                    _ = Kernel32.SetWaitableTimer(_tick, &due, 0, 0, 0, 0);
+                    _ = Kernel32.WaitForSingleObject(_tick, 2);
                 }
                 else if (_playing)
                 {
@@ -536,6 +537,9 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
         ReadOnlySpan<byte> field = control.LoopbackSoftwareArguments;
         var end = field.IndexOf((byte)0);
         var text = System.Text.Encoding.UTF8.GetString(end < 0 ? field : field[..end]);
+
+        // The data loads must complete before the re-check (ARM64 can let them finish after a plain acquire read).
+        Interlocked.MemoryBarrier();
         if (Volatile.Read(ref control.LoopbackArgumentsVersion) != version)
             return _softwareArguments;
         (_softwareArguments, _argumentsVersion) = (text, version);
@@ -795,7 +799,7 @@ internal sealed unsafe class ExportLoopbackPreview(GpuDevice gpu, SceneRenderer 
         _configured = false;
         if (_tick != 0)
         {
-            _ = AudioNative.CloseHandle(_tick);
+            _ = Kernel32.CloseHandle(_tick);
             _tick = 0;
         }
     }

@@ -19,9 +19,7 @@ public partial class EffectsPane
     // The copy being edited and the sound it is put on; whether a write is owed (a drag's), and when the last one was made.
     private TrackAudioFilters? _audio;
     private Layer? _audioLayer;
-    private bool _audioOwed, _writingAudio, _buildingAudio;
-    private DateTime _lastAudioWrite;
-    private DispatcherTimer? _audioWrite;
+    private bool _writingAudio, _buildingAudio;
 
     /// <summary>The sound's cards' "All Audio Filters..." button: the window opens the sound's Audio Filters dialog.</summary>
     public event Action<Layer>? AudioFiltersRequested;
@@ -29,7 +27,7 @@ public partial class EffectsPane
     /// <summary>The cards of a sound's filters, after its effects (in the pinned panel: they are in the chain's own order, never reordered).</summary>
     private void AddAudioCards(Layer sound)
     {
-        FlushAudioWrite();
+        _writes.Flush();
         var filters = sound.AudioFilters.Clone();
         (_audioLayer, _audio) = (sound, filters);
         _buildingAudio = true;
@@ -62,11 +60,7 @@ public partial class EffectsPane
 
             addKey.Click += (_, _) =>
             {
-                var at = Math.Max(ClipTime, 0);
-                var keys = filters.StudioVoiceMixKeys ??= [];
-                keys.RemoveAll(k => Math.Abs(k.Time - at) < 0.001);
-                keys.Add(new Keyframe(at, Math.Clamp(filters.StudioVoiceMix, 0, 100), EasingType.Linear));
-                keys.Sort((a, b) => a.Time.CompareTo(b.Time));
+                filters.PutMixKey(Math.Max(ClipTime, 0));
                 ShowKeys();
                 AudioChanged(newStep: true);
             };
@@ -98,7 +92,7 @@ public partial class EffectsPane
                 filters.Equalizer = on;
                 curve.Refresh();
             }, "Ten bands: drag a node across for its frequency, up or down for its gain (-12 to +12 dB); the wheel over it widens or narrows it; a double-click puts it back.", out var equalizerBody, out var equalizerSwitch);
-            curve.EditStarted += () => _lastAudioWrite = DateTime.MinValue;
+            curve.EditStarted += _writes.Begin;
             curve.BandChanged += _ =>
             {
                 // A band moved is meant to be heard: the equalizer switched on with it.
@@ -110,7 +104,7 @@ public partial class EffectsPane
 
                 AudioChanged(newStep: false);
             };
-            curve.EditEnded += FlushAudioWrite;
+            curve.EditEnded += _writes.End;
             equalizerBody.Children.Add(curve);
             PinnedPanel.Children.Add(equalizer);
 
@@ -134,7 +128,7 @@ public partial class EffectsPane
                 ToolTip = "Every filter of this sound in one window: the high-pass, de-noise, bass and treble, the limiter, pitch and tempo, the stereo width, and these." };
             all.Click += (_, _) =>
             {
-                FlushAudioWrite();
+                _writes.Flush();
                 AudioFiltersRequested?.Invoke(sound);
             };
             PinnedPanel.Children.Add(all);
@@ -208,8 +202,8 @@ public partial class EffectsPane
     }
 
     /// <summary>
-    /// A value of the sound's changed here: written now, or (written less than a thirtieth of a second ago: a drag) when that time is up.
-    /// <paramref name="newStep"/>: a step of its own (a switch, a key), never the end of a run of changes.
+    /// A value of the sound's changed here: paced with the pane's other writes (<see cref="GestureWriter{TKey}"/>; a slider drag is one
+    /// undo step). <paramref name="newStep"/>: a step of its own (a switch, a key), written at once, never the end of a run of changes.
     /// </summary>
     private void AudioChanged(bool newStep)
     {
@@ -218,53 +212,23 @@ public partial class EffectsPane
 
         if (newStep)
         {
-            _lastAudioWrite = DateTime.MinValue;
-            WriteAudio();
+            _writes.Flush();
+            using (OwnLooks())
+                WriteAudio(startRun: true);
             return;
         }
 
-        if (_audioWrite is { IsEnabled: true })
-        {
-            _audioOwed = true;
-            return;
-        }
-
-        WriteAudio();
-        if (_audioWrite is null)
-        {
-            _audioWrite = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1 / DragWritesPerSecond) };
-            _audioWrite.Tick += (_, _) =>
-            {
-                if (_audioOwed)
-                    WriteAudio();
-                else
-                    _audioWrite?.Stop();
-            };
-        }
-
-        _audioWrite.Start();
+        _drag.Follow();
+        _writes.Queue(AudioWriteKey, () => WriteAudio(startRun: false));
     }
 
-    /// <summary>A write owed (a drag's last value) made now.</summary>
-    private void FlushAudioWrite()
+    // The copy put on the sound, as the Audio Filters dialog's OK puts it: its undo step (one per drag or run), then the filters.
+    private void WriteAudio(bool startRun)
     {
-        _audioWrite?.Stop();
-        if (_audioOwed)
-            WriteAudio();
-    }
-
-    // The copy put on the sound, as the Audio Filters dialog's OK puts it: a checkpoint for the first change of a run, then the filters.
-    private void WriteAudio()
-    {
-        _audioOwed = false;
         if (_vm is null || _audio is null || _audioLayer is not { } sound)
             return;
 
-        var now = DateTime.UtcNow;
-        if ((now - _lastAudioWrite).TotalMilliseconds > 1000)
-            _vm.Checkpoint($"change the audio filters of {sound.Name}");
-        _lastAudioWrite = now;
-
+        Step(sound, nameof(Layer.AudioFilters), $"change the audio filters of {sound.Name}", startRun);
         _writingAudio = true;
         try
         {
@@ -279,14 +243,7 @@ public partial class EffectsPane
     /// <summary>The sound's filters changed elsewhere (its dialog, Undo): its cards are made again from them.</summary>
     private void AudioFiltersChangedElsewhere()
     {
-        if (_writingAudio || _rebuildQueued)
-            return;
-
-        _rebuildQueued = true;
-        Dispatcher.BeginInvoke(() =>
-        {
-            _rebuildQueued = false;
-            Rebuild();
-        }, DispatcherPriority.Background);
+        if (!_writingAudio)
+            _rebuild.Request();
     }
 }

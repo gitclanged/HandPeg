@@ -9,6 +9,8 @@ using System.Windows.Threading;
 using HandPegApp.ViewModels;
 using Microsoft.Win32;
 
+using HandPegApp.Services;
+
 namespace HandPegApp.Views;
 
 /// <summary>
@@ -166,7 +168,9 @@ public partial class VoiceoverStudioPane : UserControl
             : string.Create(CultureInfo.InvariantCulture, $"{elapsed:0.0} s recorded, {total - elapsed:0.0} s left");
     }
 
-    private async void DoOver_Click(object sender, RoutedEventArgs e)
+    private void DoOver_Click(object sender, RoutedEventArgs e) => Faults.Forget(DoOver_ClickAsync(sender, e), nameof(DoOver_Click));
+
+    private async Task DoOver_ClickAsync(object sender, RoutedEventArgs e)
     {
         await _viewModel.DiscardVoiceoverCommand.ExecuteAsync(null);
         _resuming = false;
@@ -174,7 +178,9 @@ public partial class VoiceoverStudioPane : UserControl
         SyncRecordClock();
     }
 
-    private async void Import_Click(object sender, RoutedEventArgs e)
+    private void Import_Click(object sender, RoutedEventArgs e) => Faults.Forget(Import_ClickAsync(sender, e), nameof(Import_Click));
+
+    private async Task Import_ClickAsync(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFileDialog
         {

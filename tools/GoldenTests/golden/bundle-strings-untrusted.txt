@@ -1,0 +1,6 @@
+# A bundle's strings: free text and effect text never mapped as paths; unpack drops the command and maps only manifest entries.
+ok: an effect with both a text and a file parameter exists to test with (builtin.color.studio)
+ok: a title card's text, a name and a marker's name that read like paths are left as they are (never shipped as files)
+ok: a real path field is still mapped
+ok: an effect's text parameter is left as it is; its file parameter (a LUT) is still mapped
+ok: unpacking drops a hand-edited command and points only the manifest's own entries at the unpacked files (not every string starting with media/)

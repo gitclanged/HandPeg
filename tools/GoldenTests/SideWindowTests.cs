@@ -30,8 +30,6 @@ namespace HandPegGoldenTests;
 /// </summary>
 public static partial class SideWindowTests
 {
-    private const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
-
     // The settings tabs' pane ids after 5.4B (as ProjectSettingsTests has them), and the other panes MainWindow registers.
     private static readonly IReadOnlyList<string> TabIds = ["Tab:Filters", "Tab:Audio", "Tab:Export", "Tab:Command Preview"];
     private static readonly string[] PaneIds = ["Player", "Playback", "Timeline", "UnifiedTimeline", "Layout", "Header", "Media", "Keyframes", "Effects", "Meter", "Presets"];
@@ -41,40 +39,6 @@ public static partial class SideWindowTests
         yield return Case("dock-side-windows", "# Any number of side windows, the model alone: the old side window migrated, each pane in one place across every window, moves, modes, closes, layouts and the JSON.", Model);
         yield return Case("side-window-chrome", "# A real side window: HandPeg's 26 DIP title bar and frame, its mode box, its place; side windows restored after the first frame without laying the main window out again.", Chrome);
         yield return Case("side-window-mirror", "# The Live Video Preview's mirror: the canvas's part of the player's output, fitted at its shape, presented without ever waiting, attached wherever the engine is.", Mirror);
-    }
-
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
-    }
-
-    private static string RepositoryRoot()
-    {
-        for (var folder = new DirectoryInfo(AppContext.BaseDirectory); folder is not null; folder = folder.Parent)
-        {
-            if (File.Exists(Path.Combine(folder.FullName, "HandPegApp.csproj")))
-                return folder.FullName;
-        }
-
-        throw new DirectoryNotFoundException("HandPegApp.csproj was not found above the golden tests' program.");
     }
 
     private static void Idle()
@@ -251,8 +215,8 @@ public static partial class SideWindowTests
             "Reset Panes Layout closes every Pane Docker and keeps the Live Video Preview; the main window is Standard Editing again");
 
         // The window asks for it all: the side windows with the one load before the first frame, both saved together.
-        var docking = File.ReadAllText(Path.Combine(RepositoryRoot(), "src", "MainWindow.Docking.cs"));
-        var manager = File.ReadAllText(Path.Combine(RepositoryRoot(), "src", "Docking", "DockManager.cs")) + File.ReadAllText(Path.Combine(RepositoryRoot(), "src", "Docking", "DockManager.DragAndSides.cs"));
+        var docking = File.ReadAllText(Path.Combine(SourceProbe.Root, "src", "MainWindow.Docking.cs"));
+        var manager = File.ReadAllText(Path.Combine(SourceProbe.Root, "src", "Docking", "DockManager.cs")) + File.ReadAllText(Path.Combine(SourceProbe.Root, "src", "Docking", "DockManager.DragAndSides.cs"));
         expect(docking.Contains("_dock.Load(sideWindows: AppSettings.Current.SideWindows,", StringComparison.Ordinal)
                && docking.Contains("settings.SideWindows = _dock.SaveSideWindows();", StringComparison.Ordinal),
             "InitializeDocking loads AppSettings.SideWindows with the arrangement; SaveDockInto saves both");
@@ -417,7 +381,7 @@ public static partial class SideWindowTests
         };
         foreach (var (w, h, cw, ch, want, what) in cases)
         {
-            var got = GpuViewportControl.MirrorRegion(w, h, cw, ch);
+            var got = GpuViewport.MirrorRegion(w, h, cw, ch);
             expect(got == want, $"MirrorRegion {w}x{h} output, {cw}x{ch} canvas = {Region(got)}: {what}");
         }
 
@@ -435,8 +399,8 @@ public static partial class SideWindowTests
             expect(same, $"AspectPanel.Fit: {what}");
         }
 
-        var src = Path.Combine(RepositoryRoot(), "src");
-        var viewport = File.ReadAllText(Path.Combine(src, "Controls", "GpuViewportControl.cs"));
+        var src = Path.Combine(SourceProbe.Root, "src");
+        var viewport = File.ReadAllText(Path.Combine(src, "Services", "GpuViewport.cs"));
         var present = viewport[viewport.IndexOf("public bool PresentMirror(", StringComparison.Ordinal)..viewport.IndexOf("private void MakeSwapChain(", StringComparison.Ordinal)];
         expect(present.Contains("_reader.CopyPresentedRegionTo(back, left, top, right, bottom, 0)", StringComparison.Ordinal)
                && present.Contains("WaitForSingleObject(_waitable, 0) != 0", StringComparison.Ordinal) && present.Contains("Dxgi.Present(_swapChain, 0, 0)", StringComparison.Ordinal)
@@ -445,18 +409,18 @@ public static partial class SideWindowTests
         expect(viewport.Contains("_reader = player._reader;", StringComparison.Ordinal) && viewport.Contains("if (_ownsReader)", StringComparison.Ordinal),
             "a mirror shares the player's reader (and so its device), and never disposes it");
 
-        var engine = File.ReadAllText(Path.Combine(src, "Services", "GpuPreviewEngine.cs"));
+        var engine = File.ReadAllText(Path.Combine(src, "Services", "GpuPreviewEngine.cs")).ReplaceLineEndings("\n");
         var pump = engine[engine.IndexOf("private void Pump()", StringComparison.Ordinal)..engine.IndexOf("private long CanvasFrameOf(", StringComparison.Ordinal)];
         expect(pump.Split("PresentMirrors();").Length - 1 == 4 && pump.Contains("TakeMirrorRequests();", StringComparison.Ordinal),
             "the pump takes the attach and detach requests, and gives the mirrors their turn after each of the player's presents (four places)");
         expect(engine.Contains("_mirrorRequests.Enqueue((true, window));", StringComparison.Ordinal) && engine.Contains("_mirrorRequests.Enqueue((false, window));", StringComparison.Ordinal)
-               && engine.Contains("foreach (var mirror in _mirrors)\r\n            mirror.Dispose();", StringComparison.Ordinal),
+               && engine.Contains("foreach (var mirror in _mirrors)\n            mirror.Dispose();", StringComparison.Ordinal),
             "AttachMirror and DetachMirror are queued to the pump's thread; the engine disposes its mirrors as it goes");
 
         var preview = File.ReadAllText(Path.Combine(src, "MainWindow.GpuPreview.cs"));
         expect(preview.Contains("_gpu = engine;", StringComparison.Ordinal) && preview.IndexOf("ReattachMirrors();", StringComparison.Ordinal) > preview.IndexOf("_gpu = engine;", StringComparison.Ordinal)
-               && preview.Split("ForgetMirrors();").Length - 1 == 2,
-            "a new engine has every preview attached afresh; an engine stopped or closed forgets them (its mirrors went with it)");
+               && preview.Split("ForgetMirrors();").Length - 1 == 3,
+            "a new engine has every preview attached afresh; an engine stopped, closed or released forgets them (its mirrors went with it)");
         var surface = File.ReadAllText(Path.Combine(src, "Controls", "VideoSurface.cs"));
         expect(surface.Contains("Docking.WindowOrder.Lowest(sides)", StringComparison.Ordinal) && surface.Contains("if (msg == WmNcHitTest && PassesPointer)", StringComparison.Ordinal),
             "the player's overlay goes under the lowest side window; a mirror's surface lets the pointer through (double-click: full screen)");

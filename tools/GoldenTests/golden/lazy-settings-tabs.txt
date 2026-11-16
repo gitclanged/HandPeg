@@ -1,14 +1,14 @@
 # Every settings tab's body is a template (Export too); every part declared by hand is named in one.
 ok: MainWindow.xaml has its SettingsTabs
-   Filters: a template, made when first shown or at idle
-ok: the Filters tab's body is its Tag's DataTemplate, nothing built with the window
+   Color: a template, made when first shown or at idle
+ok: the Color tab's body is its Tag's DataTemplate, nothing built with the window
    Audio: a template, made when first shown or at idle
 ok: the Audio tab's body is its Tag's DataTemplate, nothing built with the window
    Export: a template, made when first shown or at idle
 ok: the Export tab's body is its Tag's DataTemplate, nothing built with the window
    Command Preview: a template, made when first shown or at idle
 ok: the Command Preview tab's body is its Tag's DataTemplate, nothing built with the window
-ok: the tabs are Filters, Audio, Export and Command Preview, in that order (no Summary, no Video)
+ok: the tabs are Color, Audio, Export and Command Preview, in that order (Pass 5.6A: Color was Filters)
 ok: the Export tab itself keeps its name (ExportTab): only its body is a template
 ok: the Export template's root is ExportPanel (RealizeTabContent finds it there)
    ExportPanel: DockPanel

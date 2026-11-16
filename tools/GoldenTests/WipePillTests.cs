@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using HandPegApp;
+using HandPegApp.Shell;
 using HandPegApp.Services;
 
 namespace HandPegGoldenTests;
@@ -30,37 +31,14 @@ public static class WipePillTests
         yield break;
     }
 
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>, StringBuilder> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect, text);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
-    }
-
     private static string F(FormattableString text) => text.ToString(CultureInfo.InvariantCulture);
 
     // The plan for the wipe at 0..1 over a picture (GpuPreviewEngine.PictureRectOf) in a player, as PlaceLoopbackWipe makes it.
-    private static (double X, MainWindow.WipePillPlan Plan) PlanAt(double wipe, (double Left, double Top, double Width, double Height) picture, double viewWidth,
+    private static (double X, LoopbackPreviewController.WipePillPlan Plan) PlanAt(double wipe, (double Left, double Top, double Width, double Height) picture, double viewWidth,
         double viewHeight, double rawWidth, double fullWidth, double scale)
     {
         var x = GpuPreviewEngine.WipeLineX(wipe, (picture.Left, picture.Width));
-        return (x, MainWindow.PlanWipePills(x, picture, viewWidth, viewHeight, rawWidth, fullWidth, scale));
+        return (x, LoopbackPreviewController.PlanWipePills(x, picture, viewWidth, viewHeight, rawWidth, fullWidth, scale));
     }
 
     private static void Pills(Action<bool, string> expect, StringBuilder text)
@@ -157,9 +135,9 @@ public static class WipePillTests
         }
 
         expect(snapped, "at 100, 125, 150 and 200 %, over a fitted, a pillarboxed, a zoomed and an odd-sized picture: every pill's left, their top and the clip's edges lie on device pixels");
-        var off = MainWindow.PlanWipePills(500, (1200, 0, 300, 200), 1024, 576, rawWidth, fullWidth, 1.25);
+        var off = LoopbackPreviewController.PlanWipePills(500, (1200, 0, 300, 200), 1024, 576, rawWidth, fullWidth, 1.25);
         expect(off.Clip == new Rect(0, 0, 0, 0), "a picture panned wholly off the player: an empty clip (never a rectangle of negative size), nothing of the pills shown");
-        var bad = MainWindow.PlanWipePills(500, (0, 0, 1024, 576), 1024, 576, rawWidth, fullWidth, double.NaN);
+        var bad = LoopbackPreviewController.PlanWipePills(500, (0, 0, 1024, 576), 1024, 576, rawWidth, fullWidth, double.NaN);
         expect(Near(bad.RawLeft, 456) && Near(bad.EncodedLeft, 510) && Near(bad.Top, 14), "a display scale not known (NaN): placed as at 100 %");
     }
 
@@ -183,25 +161,25 @@ public static class WipePillTests
         ];
         foreach (var (whole, shortWords) in words)
         {
-            var made = MainWindow.ShortEncodedPillText(whole);
+            var made = LoopbackPreviewController.ShortEncodedPillText(whole);
             expect(made == shortWords, F($"\"{whole}\" short: \"{made}\""));
         }
 
         var qsv = ExportLoopbackSettings.From("hevc_qsv", false, false, 12000, 22, "veryslow", 60, out _)!;
-        expect(MainWindow.ShortEncodedPillText(qsv.PillText) == "ENCODED", F($"the settings' own pill words (\"{qsv.PillText}\") shorten to ENCODED"));
+        expect(LoopbackPreviewController.ShortEncodedPillText(qsv.PillText) == "ENCODED", F($"the settings' own pill words (\"{qsv.PillText}\") shorten to ENCODED"));
 
         // 5.5A review (A2-1): the words a starting encoder gets (EncodedPillText) shorten to STARTING, never ENCODED over the plain picture;
         // a stand-in that runs still shortens to ENCODED (it is encoding: the flyout says which card).
-        var starting = MainWindow.EncodedPillText(qsv, new ExportLoopbackStatus(ExportLoopbackState.Starting, "", 0, 0, 0, 0), false);
-        var standIn = MainWindow.EncodedPillText(qsv, new ExportLoopbackStatus(ExportLoopbackState.Running, "HEVC QSV", 8, 30, 0, 0, OnAskedCard: false), false);
-        expect(MainWindow.ShortEncodedPillText(starting) == "STARTING" && MainWindow.ShortEncodedPillText(standIn) == "ENCODED",
+        var starting = LoopbackPreviewController.EncodedPillText(qsv, new ExportLoopbackStatus(ExportLoopbackState.Starting, "", 0, 0, 0, 0), false);
+        var standIn = LoopbackPreviewController.EncodedPillText(qsv, new ExportLoopbackStatus(ExportLoopbackState.Running, "HEVC QSV", 8, 30, 0, 0, OnAskedCard: false), false);
+        expect(LoopbackPreviewController.ShortEncodedPillText(starting) == "STARTING" && LoopbackPreviewController.ShortEncodedPillText(standIn) == "ENCODED",
             F($"a starting encoder's words (\"{starting}\") shorten to STARTING; a running stand-in's (\"{standIn}\") to ENCODED"));
 
         // 5.5A review (A2-2): the words follow play and pause (a paused-only software encoder), which the view model's IsPlaying now
         // applies at once (Sources checks the handler).
         var x264 = ExportLoopbackSettings.From("libx264", true, false, 12000, 22, "veryslow", 60, out _)!;
         var pausedOnly = new ExportLoopbackStatus(ExportLoopbackState.Running, "x264", 40, 1, 0, 0, PausedOnly: true);
-        var (whilePlaying, whilePaused) = (MainWindow.EncodedPillText(x264, pausedOnly, true), MainWindow.EncodedPillText(x264, pausedOnly, false));
+        var (whilePlaying, whilePaused) = (LoopbackPreviewController.EncodedPillText(x264, pausedOnly, true), LoopbackPreviewController.EncodedPillText(x264, pausedOnly, false));
         expect(whilePlaying.StartsWith("RAW WHILE PLAYING · ", StringComparison.Ordinal) && whilePaused == x264.PillText,
             F($"a paused-only encoder: \"{whilePlaying}\" while playing, \"{whilePaused}\" when paused"));
     }
@@ -211,15 +189,15 @@ public static class WipePillTests
     private static void Elements(Action<bool, string> expect)
     {
         const string whole = "ENCODED \u00B7 HEVC QSV \u00B7 12 Mbps";
-        var raw = MainWindow.WipePill("RAW");
-        var encoded = MainWindow.WipePill(whole);
+        var raw = LoopbackPreviewController.WipePill("RAW");
+        var encoded = LoopbackPreviewController.WipePill(whole);
         var pills = new Canvas { IsHitTestVisible = false };
         pills.Children.Add(raw);
         pills.Children.Add(encoded);
         var label = (TextBlock)encoded.Child;
         raw.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         const double scale = 1.25;
-        var full = MainWindow.PillWidth(label, whole, scale);
+        var full = LoopbackPreviewController.PillWidth(label, whole, scale);
         var picture = GpuPreviewEngine.PictureRectOf(1920, 1080, 1, 0, 0, 1024, 576);
 
         var (placed, wordsRight, clipRight, frozen, shortSeen, wholeSeen) = (true, true, true, true, false, false);
@@ -228,7 +206,7 @@ public static class WipePillTests
         foreach (var wipe in new[] { 0, 0.02, 0.5, 0.9, 1.0 })
         {
             var (_, plan) = PlanAt(wipe, picture, 1024, 576, raw.DesiredSize.Width, full, scale);
-            MainWindow.ApplyWipePills(pills, raw, encoded, plan, whole);
+            LoopbackPreviewController.ApplyWipePills(pills, raw, encoded, plan, whole);
             placed &= raw.Visibility == Visibility.Visible && encoded.Visibility == Visibility.Visible && Canvas.GetLeft(raw) == plan.RawLeft && Canvas.GetLeft(encoded) == plan.EncodedLeft
                       && Canvas.GetTop(raw) == plan.Top && Canvas.GetTop(encoded) == plan.Top;
             wordsRight &= label.Text == (plan.EncodedShort ? "ENCODED" : whole);
@@ -244,20 +222,20 @@ public static class WipePillTests
         expect(clipRight && frozen && clipKept, "the pills' layer is clipped by a frozen RectangleGeometry equal to the plan's rectangle, made once while the picture stays where it is");
         var zoomed = GpuPreviewEngine.PictureRectOf(1920, 1080, 2, 0.25, 0, 1024, 576);
         var tall = GpuPreviewEngine.PictureRectOf(1080, 1920, 1, 0, 0, 1024, 576);
-        MainWindow.ApplyWipePills(pills, raw, encoded, PlanAt(0.5, tall, 1024, 576, raw.DesiredSize.Width, full, scale).Plan, whole);
+        LoopbackPreviewController.ApplyWipePills(pills, raw, encoded, PlanAt(0.5, tall, 1024, 576, raw.DesiredSize.Width, full, scale).Plan, whole);
         expect(!ReferenceEquals(lastClip, pills.Clip) && pills.Clip.IsFrozen && ((RectangleGeometry)pills.Clip).Rect.Left > 300,
             "a picture that moved (a portrait canvas): a new frozen clip, the picture's own rectangle");
-        MainWindow.ApplyWipePills(pills, raw, encoded, PlanAt(0.3, zoomed, 1024, 576, raw.DesiredSize.Width, full, scale).Plan, "NO ENCODER");
+        LoopbackPreviewController.ApplyWipePills(pills, raw, encoded, PlanAt(0.3, zoomed, 1024, 576, raw.DesiredSize.Width, full, scale).Plan, "NO ENCODER");
         expect(label.Text == "NO ENCODER" && raw.Visibility == Visibility.Visible && encoded.Visibility == Visibility.Visible, "other words (NO ENCODER) shown as they are, the pills still visible");
 
         // A pill's width from its words, as its own layout measures it (padding 7 + 7, border 1 + 1), at 100 % and 150 %.
         var agrees = true;
         foreach (var words in new[] { "RAW", "ENCODED", whole, "RAW WHILE PLAYING \u00B7 x264 veryslow" })
         {
-            var pill = MainWindow.WipePill(words);
+            var pill = LoopbackPreviewController.WipePill(words);
             pill.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
             foreach (var pixelsPerDip in new[] { 1.0, 1.5 })
-                agrees &= Math.Abs(MainWindow.PillWidth((TextBlock)pill.Child, words, pixelsPerDip) - pill.DesiredSize.Width) <= 1;
+                agrees &= Math.Abs(LoopbackPreviewController.PillWidth((TextBlock)pill.Child, words, pixelsPerDip) - pill.DesiredSize.Width) <= 1;
         }
 
         expect(agrees, "PillWidth (the words' FormattedText in the label's own font, plus 16) agrees with the pill's own measured width within 1 DIP, for four texts at 100 % and 150 %");
@@ -267,16 +245,16 @@ public static class WipePillTests
 
     private static void Sources(Action<bool, string> expect)
     {
-        var window = Read("MainWindow.LoopbackPreview.cs");
-        var place = Method(window, "private void PlaceLoopbackWipe()");
-        var ensure = Method(window, "private void EnsureLoopbackWipe()");
-        var set = Method(window, "private void SetEncodedPill(string text)");
+        var window = SourceProbe.Src("Shell", "LoopbackPreviewController.cs");
+        var place = SourceProbe.Member(window, "public void PlaceLoopbackWipe()");
+        var ensure = SourceProbe.Member(window, "private void EnsureLoopbackWipe()");
+        var set = SourceProbe.Member(window, "private void SetEncodedPill(string text)");
         expect(place.Contains("PlanWipePills(", StringComparison.Ordinal) && place.Contains("ApplyWipePills(", StringComparison.Ordinal)
                && CountOf(place, "Visibility.Collapsed") == 1 && place.Contains("_loopbackWipeLayer.Visibility = shown ? Visibility.Visible : Visibility.Collapsed;", StringComparison.Ordinal),
             "PlaceLoopbackWipe plans and applies the pills; the only Collapsed left is the wipe layer's own (the preview off, or not the wipe)");
         expect(place.Contains("PillWidth(words, _loopbackEncodedText, scale)", StringComparison.Ordinal) && !place.Contains("encoded.Child as UIElement", StringComparison.Ordinal),
             "the whole words' width is measured from the words kept, never the label's current (maybe short) text");
-        expect(InOrder(ensure, "_loopbackPillLayer = new Canvas { IsHitTestVisible = false };", "_loopbackPillLayer.Children.Add(_loopbackRawPill);", "_loopbackPillLayer.Children.Add(_loopbackEncodedPill);",
+        expect(SourceProbe.InOrder(ensure, "_loopbackPillLayer = new Canvas { IsHitTestVisible = false };", "_loopbackPillLayer.Children.Add(_loopbackRawPill);", "_loopbackPillLayer.Children.Add(_loopbackEncodedPill);",
                    "_loopbackWipeLayer.Children.Add(_loopbackDivider);", "_loopbackWipeLayer.Children.Add(_loopbackPillLayer);", "_loopbackWipeLayer.Children.Add(_loopbackWipeHandle);")
                && !ensure.Contains("_loopbackPillLayer = new Canvas { ClipToBounds", StringComparison.Ordinal) && ensure.Contains("WipePill(_loopbackEncodedText)", StringComparison.Ordinal),
             "the pills live in a layer of their own (no ClipToBounds: its clip is the picture), between the divider and the handle, which it never clips; ENCODED made with the words kept");
@@ -284,8 +262,8 @@ public static class WipePillTests
             "SetEncodedPill compares with the whole words kept (no full/short flicker each second) and places the pills again at once");
         expect(!window.Contains("RawPillRoom", StringComparison.Ordinal) && !window.Contains("EncodedPillRoom", StringComparison.Ordinal),
             "no pill hides for want of room any more (RawPillRoom and EncodedPillRoom gone)");
-        var changed = Method(window, "private void LoopbackViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)");
-        var playing = changed.IndexOf("case nameof(ViewModels.MainViewModel.IsPlaying):", StringComparison.Ordinal);
+        var changed = SourceProbe.Member(window, "private void LoopbackViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)");
+        var playing = changed.IndexOf("case nameof(MainViewModel.IsPlaying):", StringComparison.Ordinal);
         var playCase = playing < 0 ? "" : changed[playing..changed.IndexOf("break;", playing, StringComparison.Ordinal)];
         expect(playCase.Contains("_viewModel.IsExportQualityPreview", StringComparison.Ordinal)
                && playCase.Contains("SetEncodedPill(EncodedPillText(", StringComparison.Ordinal) && playCase.Contains(".LoopbackStatus, _viewModel.IsPlaying))", StringComparison.Ordinal),
@@ -302,41 +280,4 @@ public static class WipePillTests
 
     // ----- Source text -----
 
-    private static string Read(params string[] parts) => File.ReadAllText(Path.Combine([RepositoryRoot(), "src", .. parts])).ReplaceLineEndings("\n");
-
-    private static string RepositoryRoot()
-    {
-        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-        {
-            if (File.Exists(Path.Combine(dir.FullName, "HandPegApp.csproj")))
-                return dir.FullName;
-        }
-
-        throw new DirectoryNotFoundException("the repository (HandPegApp.csproj) above " + AppContext.BaseDirectory);
-    }
-
-    /// <summary>A member's text: from its signature to the end of its body (the next line that closes at its indent).</summary>
-    private static string Method(string source, string signature)
-    {
-        var start = source.IndexOf(signature, StringComparison.Ordinal);
-        if (start < 0)
-            return "";
-        var end = source.IndexOf("\n    }\n", start, StringComparison.Ordinal);
-        return end < 0 ? source[start..] : source[start..(end + 6)];
-    }
-
-    /// <summary>Whether every one of <paramref name="parts"/> is in <paramref name="text"/>, each after the one before.</summary>
-    private static bool InOrder(string text, params string[] parts)
-    {
-        var at = 0;
-        foreach (var part in parts)
-        {
-            var found = text.IndexOf(part, at, StringComparison.Ordinal);
-            if (found < 0)
-                return false;
-            at = found + part.Length;
-        }
-
-        return true;
-    }
 }

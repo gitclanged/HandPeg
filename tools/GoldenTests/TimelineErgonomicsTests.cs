@@ -35,29 +35,6 @@ public static class TimelineErgonomicsTests
         yield return Case("track-preset-frame-shape", "# A Track Preset turns the frame to its shape only where the Sequence is its to shape: alone, or at the default 16:9 with no other preset (5.2B, Q2).", PresetFrameShape);
     }
 
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
-    }
-
     private static List<TimelineClip> Cutouts(MainViewModel vm, TimelineClip parent) =>
         vm.Document.ChildrenOf(parent).Where(c => c.Track.Kind == TimelineTrackKind.Video).Select(c => c.Clip).ToList();
 
@@ -177,7 +154,7 @@ public static class TimelineErgonomicsTests
             settings.FullyPortableProjectSave = true;
             var said = vm.SaveProject("Carry Me");
             var path = Path.Combine(AppPaths.Projects, "Carry Me", "Carry Me" + ProjectStore.Extension);
-            expect(said.StartsWith("Project saved", StringComparison.Ordinal) && File.Exists(path), "Save writes Projects\\Carry Me\\Carry Me.hproj");
+            expect(said.IsSaved && File.Exists(path), "Save writes Projects\\Carry Me\\Carry Me.hproj");
             expect(vm.CurrentProjectPath == path, "and that is where the next Ctrl+S goes");
             var copy = Path.Combine(AppPaths.Projects, "Carry Me", "media", "match.mkv");
             expect(File.Exists(copy) && new FileInfo(copy).Length == 4096, "its media is in media\\ beside it (hard-linked on the same drive)");

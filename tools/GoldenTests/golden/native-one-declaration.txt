@@ -1,0 +1,5 @@
+# One declaration per Win32 function (src/Native, overloads beside each other); every COM call names its vtable slot.
+ok: no Win32 function is declared in two files (overloads sit together in src/Native)
+ok: every COM call names its slot (ComSlots.cs), none by a bare number
+ok: the named slots are the SDK's: Map 14, Present 8, GetService 14, Trim 17, EnumAdapterByGpuPreference 29
+ok: kernel handles opened by a process or a path are owned by SafeHandles, released by using

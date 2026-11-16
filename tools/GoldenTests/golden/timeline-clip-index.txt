@@ -1,0 +1,6 @@
+# The clip id index: the same answers as a walk over every track (present, absent, moved, re-split, undone, changed directly), and O(1).
+ok: 300 random edits (split, delete, move, rollback, undo-style replacement, direct list changes): index and walk agree for every id, present or not
+ok: looking up every clip between two edits builds the index at most once
+ok: the outermost commit dropped it: the next lookup built it once
+ok: 5,000 clips x 8 lookups: every one found with its track
+ok: in under 250 ms (a walk would take about 100 million comparisons)

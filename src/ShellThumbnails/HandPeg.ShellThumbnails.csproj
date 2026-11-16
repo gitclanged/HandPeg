@@ -15,12 +15,8 @@
   <PropertyGroup>
     <OutputType>Library</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
-    <LangVersion>14.0</LangVersion>
-    <Nullable>enable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>HandPeg.ShellThumbnails</AssemblyName>
     <RootNamespace>HandPegApp.ShellThumbnails</RootNamespace>
-    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
 
     <!-- The COM tables and the stream's methods through function pointers; GDI, GDI+ and shlwapi through generated [LibraryImport] code. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -38,6 +34,8 @@
     <DebugType>none</DebugType>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
+
+  <Import Project="..\..\build\HandPeg.Common.props" />
 
   <!--
       NativeAOT finds the C++ linker through Visual Studio's vcvarsall.bat, which calls vswhere.exe by name: the Visual Studio Installer

@@ -352,10 +352,12 @@ internal sealed unsafe partial class SceneRenderer
 
     /// <summary>
     /// Whether a layer's picture changes with the moment or the music though nothing else about it does: a shutter (Motion Blur), or a
-    /// card whose shader reads the clock or the audio's bands or keeps a history (Film Grain, Matte Smooth over time, the 5.1-GpuFx cards,
-    /// the particle and social-cut transitions, a slot unknown here). Such a plane is kept only while the moment holds still.
+    /// card whose shader reads the clock or the audio's bands or keeps a history (Film Grain, Matte Smooth over time, the GPU effect cards,
+    /// the particle and social-cut transitions, a slot unknown here). Such a plane is kept only while the moment holds still. The Color
+    /// Grade (slot 30) is static: its shader reads only its packets and tables (their ids in the descriptor, their contents in
+    /// the stamp's resource version), so a graded plane is kept as an ungraded one is. Pure, for the golden tests.
     /// </summary>
-    private static bool VariesWithClock(in GpuLayerDescriptor layer)
+    internal static bool VariesWithClock(in GpuLayerDescriptor layer)
     {
         if ((layer.Flags & (GpuLayerDescriptor.FlagShutterPlace | GpuLayerDescriptor.FlagPreviousMoment)) != 0)
             return true;
@@ -364,6 +366,7 @@ internal sealed unsafe partial class SceneRenderer
         {
             if (layer.Effects[k].Slot is not (GpuShaderSlot.None or (>= GpuShaderSlot.TransformComposite and <= GpuShaderSlot.Vignette)
                 or (>= GpuShaderSlot.ChromaKey and <= GpuShaderSlot.MatteChoke) or (>= GpuShaderSlot.LayerMask and <= GpuShaderSlot.Sharpen)
+                or GpuShaderSlot.ColorStudio
                 or (>= GpuShaderSlot.TransitionDissolve and <= GpuShaderSlot.TransitionBlurDissolve)))
                 return true;
         }

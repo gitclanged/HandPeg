@@ -84,7 +84,7 @@ public static partial class SingleInstance
         }
         catch (Exception ex) when (ex is IOException or TimeoutException or UnauthorizedAccessException or OperationCanceledException or WaitHandleCannotBeOpenedException)
         {
-            AppLog.Write($"The project could not be handed to the HandPeg already open ({ex.GetType().Name}: {ex.Message}); this copy opens it.");
+            AppLog.Write("The project could not be handed to the HandPeg already open; this copy opens it", ex);
             return false;
         }
     }

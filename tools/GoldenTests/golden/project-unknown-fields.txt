@@ -1,0 +1,4 @@
+# A newer version's fields at every level of a project survive a load, a look edit, a tab round trip and a save.
+ok: opened and saved again: the unknown field kept at every level (lost at: )
+ok: a look edit (the layer's ToState) keeps the look's unknown field
+ok: a timeline copy (an undo step, a tab) and a tab round trip keep them too

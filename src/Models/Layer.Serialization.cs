@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using CommunityToolkit.Mvvm.ComponentModel;
 using HandPegApp.Models.Effects;
 
@@ -6,6 +7,12 @@ namespace HandPegApp.Models;
 // A layer to and from the state that presets and projects keep (ToState, FromState), and that state (LayerState).
 public sealed partial class Layer
 {
+    /// <summary>
+    /// The look's fields this version does not know (<see cref="LayerState.Extra"/>, a newer HandPeg's), taken by <see cref="FromState"/>
+    /// and written back by <see cref="ToState"/>, so a look edit does not drop them. Never changed after it is read.
+    /// </summary>
+    internal Dictionary<string, System.Text.Json.JsonElement>? UnknownState { get; init; }
+
     public LayerState ToState() => new()
     {
         AudioStream = AudioStream,
@@ -60,6 +67,10 @@ public sealed partial class Layer
         Duration = Duration,
         MediaOffset = MediaOffset,
         Speed = Speed,
+        SmoothSlowMo = SmoothSlowMo ? true : null,
+        KeepPitch = KeepPitch ? null : false,
+        SpectralAudio = SpectralAudio ? true : null,
+        Extra = UnknownState,
         IsHidden = IsHidden,
         ProxyChoice = ProxyChoice,
         IsEmptyTrack = IsEmptyTrack,
@@ -86,7 +97,7 @@ public sealed partial class Layer
         IsSoundMuted = IsSoundMuted,
         AudioCodec = AudioCodec,
         AudioChannels = AudioChannels,
-        AudioFilters = AudioFilters.IsActive ? AudioFilters.Clone() : null,
+        AudioFilters = AudioFilters.IsDefault ? null : AudioFilters.Clone(),
         KeysX = KeysOrNull(_keys[(int)KeyProperty.X]),
         KeysY = KeysOrNull(_keys[(int)KeyProperty.Y]),
         KeysScale = KeysOrNull(_keys[(int)KeyProperty.Scale]),
@@ -123,13 +134,14 @@ public sealed partial class Layer
         TakeShadow(state);
         (ChromaKey, ChromaColor) = (state.ChromaKey, string.IsNullOrWhiteSpace(state.ChromaColor) ? "#00FF00" : state.ChromaColor);
         (ChromaSimilarity, ChromaBlend) = (Math.Clamp(state.ChromaSimilarity, 0.01, 1), Math.Clamp(state.ChromaBlend, 0, 1));
-        (CustomMask, MaskPath, IsHidden) = (state.CustomMask, state.MaskPath ?? "", state.IsHidden);
+        (CustomMask, MaskPath) = (state.CustomMask, state.MaskPath ?? "");
         (MaskFrame, MaskGrow, MaskInvert, MaskShapes) = (state.MaskFrame, Math.Clamp(state.MaskGrow, -MaskGrowLimit, MaskGrowLimit), state.MaskInvert, state.MaskShapes ?? "");
         (MaskOffsetX, MaskOffsetY) = (MaskOffset(state.MaskOffsetX), MaskOffset(state.MaskOffsetY));
         (CropLeft, CropRight, CropTop, CropBottom) = (Crop(state.CropLeft), Crop(state.CropRight), Crop(state.CropTop), Crop(state.CropBottom));
         Rotation = Math.Clamp(state.Rotation, -360, 360);
         (TiltX, TiltY) = (Tilt(state.TiltX), Tilt(state.TiltY));
         (AnchorX, AnchorY) = (Anchor(state.AnchorX), Anchor(state.AnchorY));
+        TakeSpeedOptions(state);
         LoadEffects(state);
     }
 
@@ -171,13 +183,13 @@ public sealed partial class Layer
             ImageWidth = state.ImageWidth,
             ImageHeight = state.ImageHeight,
             TextContent = state.TextContent ?? "",
-            FontFamily = string.IsNullOrWhiteSpace(state.FontFamily) ? HandPegApp.Services.TextLayout.DefaultFont : state.FontFamily,
+            FontFamily = string.IsNullOrWhiteSpace(state.FontFamily) ? TextDefaults.Font : state.FontFamily,
             FontSize = double.IsFinite(state.FontSize) && state.FontSize > 0
-                ? Math.Clamp(state.FontSize, HandPegApp.Services.TextLayout.SmallestSize, HandPegApp.Services.TextLayout.LargestSize)
-                : HandPegApp.Services.TextLayout.DefaultSize,
+                ? Math.Clamp(state.FontSize, TextDefaults.SmallestSize, TextDefaults.LargestSize)
+                : TextDefaults.Size,
             FontColor = string.IsNullOrWhiteSpace(state.FontColor) ? "#FFFFFF" : state.FontColor,
             OutlineColor = string.IsNullOrWhiteSpace(state.OutlineColor) ? "#000000" : state.OutlineColor,
-            OutlineThickness = Math.Clamp(state.OutlineThickness, 0, HandPegApp.Services.TextLayout.LargestOutline),
+            OutlineThickness = Math.Clamp(state.OutlineThickness, 0, TextDefaults.LargestOutline),
             CornerRadius = Math.Clamp(state.CornerRadius, 0, 50),
             Opacity = Math.Clamp(state.Opacity, 0, 100),
             LockAspectRatio = state.LockAspectRatio,
@@ -211,6 +223,10 @@ public sealed partial class Layer
             MediaOffset = Math.Max(state.MediaOffset, 0),
             AudioStream = state.AudioStream,
             Speed = ReadSpeed(state.Speed),
+            SmoothSlowMo = state.SmoothSlowMo == true,
+            KeepPitch = state.KeepPitch != false,
+            SpectralAudio = state.SpectralAudio == true,
+            UnknownState = state.Extra,
             IsHidden = state.IsHidden,
             ProxyChoice = state.ProxyChoice,
             IsEmptyTrack = state.IsEmptyTrack,
@@ -277,6 +293,10 @@ public sealed class LayerState
     /// </summary>
     internal LayerState ShallowCopy() => (LayerState)MemberwiseClone();
 
+    /// <summary>Fields this version does not know (a newer HandPeg's), kept so that saving does not drop them.</summary>
+    [JsonExtensionData]
+    public Dictionary<string, System.Text.Json.JsonElement>? Extra { get; set; }
+
     public string Name { get; set; } = "Layer";
 
     public LayerKind Kind { get; set; }
@@ -286,8 +306,8 @@ public sealed class LayerState
 
     // A text layer's words and font. Files from before there were text layers have none of these, and get the defaults.
     public string TextContent { get; set; } = "";
-    public string FontFamily { get; set; } = HandPegApp.Services.TextLayout.DefaultFont;
-    public double FontSize { get; set; } = HandPegApp.Services.TextLayout.DefaultSize;
+    public string FontFamily { get; set; } = TextDefaults.Font;
+    public double FontSize { get; set; } = TextDefaults.Size;
     public string FontColor { get; set; } = "#FFFFFF";
     public string OutlineColor { get; set; } = "#000000";
     public int OutlineThickness { get; set; } = 2;
@@ -381,6 +401,18 @@ public sealed class LayerState
     public double Duration { get; set; }
     public double MediaOffset { get; set; }
     public double Speed { get; set; } = 1;
+
+    // The Speed & Time card's options (5.6.0, Layer.Speed.cs): null is the default (Smooth Slow-Mo off, Keep Pitch on, Spectral
+    // Audio off) and is left out of the file, so older projects read the same and a clip that keeps the defaults writes nothing.
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public bool? SmoothSlowMo { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public bool? KeepPitch { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public bool? SpectralAudio { get; set; }
+
     public bool IsHidden { get; set; }
     public ProxyChoice ProxyChoice { get; set; }
     public bool IsEmptyTrack { get; set; }
@@ -460,6 +492,25 @@ public sealed class LayerState
 
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public List<Keyframe>? KeysTiltY { get; set; }
+
+    /// <summary>
+    /// Every keyframed motion channel of a look, in one list. The timeline's timing transforms (a split, a join, a trim's shift, a
+    /// speed change: TimelineTransaction.Looks) walk this list, so a channel listed here moves with its clip; the motion-channels
+    /// golden fails when a <see cref="List{Keyframe}"/> property of the look is missing from it.
+    /// </summary>
+    internal static readonly MotionChannel[] MotionChannels =
+    [
+        new(nameof(KeysX), s => s.KeysX, (s, k) => s.KeysX = k),
+        new(nameof(KeysY), s => s.KeysY, (s, k) => s.KeysY = k),
+        new(nameof(KeysScale), s => s.KeysScale, (s, k) => s.KeysScale = k),
+        new(nameof(KeysRotation), s => s.KeysRotation, (s, k) => s.KeysRotation = k),
+        new(nameof(KeysOpacity), s => s.KeysOpacity, (s, k) => s.KeysOpacity = k),
+        new(nameof(KeysTiltX), s => s.KeysTiltX, (s, k) => s.KeysTiltX = k),
+        new(nameof(KeysTiltY), s => s.KeysTiltY, (s, k) => s.KeysTiltY = k),
+    ];
+
+    /// <summary>One keyframed channel of a look: its property name, and how to read and write its keys.</summary>
+    internal sealed record MotionChannel(string Name, Func<LayerState, List<Keyframe>?> Get, Action<LayerState, List<Keyframe>?> Set);
 
     // Pixel values from presets saved by earlier versions. Read for conversion, never written.
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]

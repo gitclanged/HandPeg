@@ -9,7 +9,7 @@
         5.5A: the studio welcome, two screens in a window of 940 x 600 (HandPeg's DIPs, as UiScale sizes every dialog; kept inside the
         work area by FitToWorkArea, each screen's body scrolling only where the room runs short): 1. the workspace, its theme and the core
         engines, beside a live miniature of the layout and theme under the pointer; 2. the GPU and NPU roles from the hardware profile
-        (estimated at once, measured in the background) and the defaults exports start with.
+        (estimated at once, then the full test, 5.6A) and the defaults exports start with.
     -->
     <Window.Resources>
         <!-- A choice as a card: outlined in the accent colour while it is the one chosen. -->
@@ -96,42 +96,6 @@
             <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
         </Style>
 
-        <!-- A GPU or NPU role (5.5A): an inspector card, the role, the card that holds it, why, and the badge of its measurement. -->
-        <DataTemplate x:Key="RoleCardTemplate" DataType="{x:Type local:FirstRunRoleCard}">
-            <Border Background="{DynamicResource InspectorCardBrush}" BorderBrush="{DynamicResource InspectorCardBorderBrush}" BorderThickness="1"
-                    CornerRadius="6" Padding="12,7" Margin="0,0,0,6"
-                    AutomationProperties.AutomationId="{Binding AutomationId}" AutomationProperties.Name="{Binding Role}">
-                <Grid>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="92" />
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                    </Grid.RowDefinitions>
-                    <TextBlock Text="{Binding Role}" Foreground="{DynamicResource MutedTextBrush}" FontSize="11.5" VerticalAlignment="Center" />
-                    <TextBlock Grid.Column="1" Text="{Binding Card}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
-                               ToolTip="{Binding Card}" />
-                    <Border Grid.Column="2" x:Name="badge" Margin="8,0,0,0" Padding="8,1" CornerRadius="8" VerticalAlignment="Center"
-                            Background="{DynamicResource ControlBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1">
-                        <TextBlock x:Name="badgeText" Text="{Binding Badge}" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" />
-                    </Border>
-                    <TextBlock Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Text="{Binding Detail}" Foreground="{DynamicResource MutedTextBrush}"
-                               FontSize="11.5" TextTrimming="CharacterEllipsis" Margin="0,2,0,0" ToolTip="{Binding Detail}" />
-                </Grid>
-            </Border>
-            <DataTemplate.Triggers>
-                <DataTrigger Binding="{Binding Measured}" Value="True">
-                    <Setter TargetName="badgeText" Property="Foreground" Value="{DynamicResource AccentBrush}" />
-                    <Setter TargetName="badgeText" Property="FontWeight" Value="SemiBold" />
-                </DataTrigger>
-                <DataTrigger Binding="{Binding Badge}" Value="">
-                    <Setter TargetName="badge" Property="Visibility" Value="Collapsed" />
-                </DataTrigger>
-            </DataTemplate.Triggers>
-        </DataTemplate>
     </Window.Resources>
 
     <Grid>
@@ -296,18 +260,20 @@
                         <ColumnDefinition Width="9*" />
                     </Grid.ColumnDefinitions>
 
-                    <!-- The GPU and NPU roles: estimated at once (out of process), then measured in the background on the first start. -->
+                    <!--
+                        The GPU and NPU roles: estimated at once (out of process), then the full test (5.6A, on every open), each card a click
+                        to pick its role (RoleCardsPanel, shared with Settings); the System tier beside the title once a result is in.
+                    -->
                     <StackPanel>
-                        <TextBlock Text="GPU &amp; NPU Roles" Style="{StaticResource SectionTitle}" Margin="0,4,0,2" />
-                        <TextBlock x:Name="ProfileStatusText" Style="{StaticResource MutedText}" FontSize="11.5" Margin="0,0,0,8"
-                                   Text="Looking at the graphics cards..." AutomationProperties.AutomationId="ProfileStatus" />
-                        <!-- 5.5.0 (the user's Q10 b): said plainly when the quick hardware check fails (collapsed otherwise) -->
+                        <DockPanel Margin="0,4,0,8" LastChildFill="False">
+                            <TextBlock Text="GPU &amp; NPU Roles" Style="{StaticResource SectionTitle}" Margin="0" VerticalAlignment="Center" />
+                            <Border x:Name="SystemTierBadge" Visibility="Collapsed" Margin="10,0,0,0" VerticalAlignment="Center"
+                                    AutomationProperties.AutomationId="SystemTier" />
+                        </DockPanel>
+                        <!-- 5.5.0 (the user's Q10 b): said plainly when the hardware test stops (collapsed otherwise) -->
                         <TextBlock x:Name="ProfileWarningText" Visibility="Collapsed" Foreground="{DynamicResource WarningTextBrush}" TextWrapping="Wrap" FontSize="11.5"
                                    Margin="0,-4,0,8" AutomationProperties.AutomationId="ProfileWarning" />
-                        <ItemsControl x:Name="RoleCards" Focusable="False" ItemTemplate="{StaticResource RoleCardTemplate}"
-                                      AutomationProperties.Name="GPU and NPU Roles" />
-                        <TextBlock Style="{StaticResource MutedText}" FontSize="11.5" Margin="0,4,0,0"
-                                   Text="The full test (seeking, accuracy, every card and the bus between two) is Test &amp; Auto-Tune Hardware in Settings › Export &amp; Hardware." />
+                        <local:RoleCardsPanel x:Name="RoleCards" AutomationProperties.Name="GPU and NPU Roles" />
 
                         <!-- 5.5.2 (the user's Q2): the optional Playback & A/V Sync Test, kept by Start Editing (Finish) -->
                         <TextBlock Text="Playback &amp; A/V Sync" Style="{StaticResource SectionTitle}" Margin="0,14,0,6" />
@@ -338,8 +304,6 @@
                         <TextBlock Text="Behaviour" Style="{StaticResource SectionTitle}" />
                         <CheckBox x:Name="PromptBox" Content="Prompt to save before closing"
                                   ToolTip="Asks, as HandPeg closes, whether to save the projects open in its tabs that hold work not saved as a project; with two tabs or more, one dialog lists them all and can keep every tab for the next start instead. Every tab saved: no question. Asked only when Keep open project tabs suspended between sessions is off (Settings &gt; General &gt; Projects and saving), as it is at first: while that is on, closing keeps every tab, saved or not, for the next start." />
-                        <CheckBox x:Name="FallbackBox" Content="Allow software encoding fallback" Margin="0,6,0,0"
-                                  ToolTip="If an encode fails on a hardware encoder (NVENC, QuickSync, AMF), try once more with the matching software encoder." />
 
                         <!-- Crash reports (written here, kept on this PC), what they cost and what is in them. -->
                         <StackPanel Orientation="Horizontal" Margin="0,12,0,0">

@@ -22,29 +22,6 @@ public static class TimelineInputTests
         yield return Case("audio-beats-on-sequence", "# A clip's beats, found in its file's own seconds, where they fall on the Sequence: trimmed, at another speed, slipped, with a J cut.", BeatsOnSequence);
     }
 
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
-    }
-
     private static void PressSeeks(Action<bool, string> expect)
     {
         // A control 1000 DIPs wide (its headers 168 of it), ten seconds across: a second is 83.2 DIPs. One row, two clips: 1 to 3 s and 6 to 8 s.

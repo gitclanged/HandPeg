@@ -18,9 +18,9 @@ namespace HandPegApp.Services;
 /// <param name="FontFile">The font's file, for drawtext's fontfile; empty when it is not a file drawtext can open by itself.</param>
 public sealed record TextLayout(int Width, int Height, double LineHeight, double Baseline, string FontFile, string FontName, IReadOnlyList<string> Lines)
 {
-    public const string DefaultFont = "Segoe UI";
-    public const double SmallestSize = 8, LargestSize = 400, DefaultSize = 48;
-    public const int LargestOutline = 20;
+    public const string DefaultFont = Models.TextDefaults.Font;
+    public const double SmallestSize = Models.TextDefaults.SmallestSize, LargestSize = Models.TextDefaults.LargestSize, DefaultSize = Models.TextDefaults.Size;
+    public const int LargestOutline = Models.TextDefaults.LargestOutline;
 
     /// <summary>The fonts installed on this computer, by name, for the list a text layer's font is chosen from.</summary>
     public static IReadOnlyList<string> SystemFonts => _systemFonts.Value;

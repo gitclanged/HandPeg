@@ -107,22 +107,6 @@ public static class PeMachineTests
         DateTime.TryParseExact(tag.AsSpan("autobuild-".Length, 10), "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var day)
         && day.AddDays(1).Month != day.Month;
 
-    private static GraphResult Case(string golden, string header, Action<StringBuilder, List<string>> body)
-    {
-        var text = new StringBuilder(header).Append('\n');
-        var problems = new List<string>();
-        try
-        {
-            body(text, problems);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(golden, text.ToString(), problems, 0);
-    }
-
     private static void Line(StringBuilder text, FormattableString line) =>
         text.Append(line.ToString(CultureInfo.InvariantCulture)).Append('\n');
 

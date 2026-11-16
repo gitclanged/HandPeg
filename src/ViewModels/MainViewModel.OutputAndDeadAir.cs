@@ -213,8 +213,14 @@ public partial class MainViewModel
     /// <summary>Moves the playhead by whole frames: one frame is 1000 / frame rate milliseconds.</summary>
     public void StepFrames(int frames)
     {
-        if (DurationMs > 0)
-            PositionMs = Math.Clamp(PositionMs + frames * 1000 / SourceFrameRate, 0, DurationMs);
+        if (DurationMs <= 0)
+            return;
+
+        var rate = Document.FrameRate;
+        var seconds = rate.IsValid
+            ? rate.SecondsFromFrame(Math.Max(0, rate.FrameFromSeconds(PositionMs / 1000) + frames))
+            : PositionMs / 1000 + frames / SequenceFps;
+        PositionMs = Math.Clamp(seconds * 1000, 0, DurationMs);
     }
 
     /// <summary>Where the I-frames fall along the timeline, each as a fraction (0 to 1) of its length.</summary>
@@ -255,9 +261,12 @@ public partial class MainViewModel
     /// <summary>Applies the display settings: time format, and which playback controls are shown.</summary>
     private void ApplyDisplaySettings()
     {
-        TimeDisplay.UseFrames = AppSettings.Current.ShowTimesAsFrames;
-        TimeDisplay.FrameRate = SourceFrameRate;
+        // A background view model (the export queue's) never sets the window's global time format.
+        if (_isBackgroundWorker)
+            return;
 
+        TimeDisplay.UseFrames = AppSettings.Current.ShowTimesAsFrames;
+        ApplySequenceRate();
         OnPropertyChanged(nameof(PositionText));
         OnPropertyChanged(nameof(DurationText));
         OnPropertyChanged(nameof(ShowAdvancedPlayback));
@@ -273,6 +282,17 @@ public partial class MainViewModel
         OnPropertyChanged(nameof(ShowWaveforms));
         OnPropertyChanged(nameof(ShowTimelineThumbnails));
         OnPropertyChanged(nameof(CaptionHint));
+    }
+
+    /// <summary>The timecode readouts count in the Sequence's rate: after the display settings, and whenever the Sequence's rate may have changed.</summary>
+    private void ApplySequenceRate()
+    {
+        if (_isBackgroundWorker || TimeDisplay.FrameRate == SequenceFps)
+            return;
+
+        TimeDisplay.FrameRate = SequenceFps;
+        OnPropertyChanged(nameof(PositionText));
+        OnPropertyChanged(nameof(DurationText));
     }
 
     // ----- Dead air -----
@@ -457,7 +477,7 @@ public partial class MainViewModel
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            StatusText = $"Could not write {ChaptersFilePath}: {ex.Message}";
+            Fail($"Could not write {ChaptersFilePath}: {ex.Message}", $"Write the chapters file {ChaptersFilePath}", ex);
         }
     }
 }

@@ -37,6 +37,10 @@ public sealed class TimelineTrackModel
 {
     public Guid Id { get; set; } = Guid.NewGuid();
 
+    /// <summary>Fields this version does not know (a newer HandPeg's), kept so that saving does not drop them.</summary>
+    [JsonExtensionData]
+    public Dictionary<string, System.Text.Json.JsonElement>? Extra { get; set; }
+
     /// <summary>Its number among the tracks of its kind, from 1 at the bottom ("Video 1" is the lowest video track).</summary>
     public int TrackNumber { get; set; }
 
@@ -221,6 +225,13 @@ public sealed class TimelineClip
 {
     public Guid Id { get; set; } = Guid.NewGuid();
 
+    /// <summary>
+    /// Fields this version does not know (a newer HandPeg's), kept so that saving does not drop them. Read-only after loading:
+    /// copies (<see cref="Snapshot"/>, <see cref="Restore"/>) share the dictionary.
+    /// </summary>
+    [JsonExtensionData]
+    public Dictionary<string, System.Text.Json.JsonElement>? Extra { get; set; }
+
     /// <summary>What it shows: a video file, an image, text, an adjustment, a sound...</summary>
     public LayerKind ContentKind { get; set; } = LayerKind.VideoFile;
 
@@ -376,12 +387,13 @@ public sealed class TimelineClip
         && FadeInSeconds == other.FadeInSeconds && FadeOutSeconds == other.FadeOutSeconds && FadeInStyle == other.FadeInStyle
         && FadeOutStyle == other.FadeOutStyle && TransitionIn == other.TransitionIn && GainDb == other.GainDb && IsHidden == other.IsHidden
         && IsMuted == other.IsMuted && ProxyChoice == other.ProxyChoice && ParentClipId == other.ParentClipId && Tethered == other.Tethered
-        && ReferenceEquals(BeatTimes, other.BeatTimes) && ReferenceEquals(State, other.State);
+        && ReferenceEquals(BeatTimes, other.BeatTimes) && ReferenceEquals(State, other.State) && ReferenceEquals(Extra, other.Extra);
 
     /// <summary>Takes every value of another clip (its id too): a rollback, in place, so whoever holds this clip keeps it.</summary>
     internal void Restore(TimelineClip from)
     {
         Id = from.Id;
+        Extra = from.Extra;
         ContentKind = from.ContentKind;
         SourcePath = from.SourcePath;
         VideoStreamIndex = from.VideoStreamIndex;
@@ -480,7 +492,8 @@ public sealed record RestoredFold(Guid Id, Guid TrackId, FoldEdge? From, FoldEdg
     /// track, or else its length from its start. A look through the clips; <see cref="TimelineDocument.RestoredSpans"/> finds
     /// them all in one.
     /// </summary>
-    public (double From, double To)? SpanIn(TimelineDocument document) => Span(document.Locate);
+    public (double From, double To)? SpanIn(TimelineDocument document) =>
+        Span(id => document.Locate(id) is { } hit ? (hit.Clip, hit.Track.Id) : null);
 
     internal (double From, double To)? Span(Func<Guid, (TimelineClip Clip, Guid TrackId)?> find)
     {
@@ -507,8 +520,18 @@ public sealed record RestoredFold(Guid Id, Guid TrackId, FoldEdge? From, FoldEdg
 }
 
 /// <summary>The whole sequence: its frame, its rate, its tracks (bottom first) and what lies over all of them.</summary>
-public sealed class TimelineDocument : IJsonOnDeserialized
+public sealed partial class TimelineDocument : IJsonOnDeserialized
 {
+    /// <summary>Fields this version does not know (a newer HandPeg's), kept so that saving does not drop them.</summary>
+    [JsonExtensionData]
+    public Dictionary<string, System.Text.Json.JsonElement>? Extra { get; set; }
+
+    /// <summary>
+    /// The unknown fields of the project file this timeline was opened from, outside the timeline itself (<see cref="ProjectExtras"/>):
+    /// carried with the timeline through copies, tabs and undo, and written back with the project. Not part of the timeline's JSON.
+    /// </summary>
+    [JsonIgnore]
+    public ProjectExtras? CarriedProjectFields { get; set; }
     /// <summary>The shortest a clip is made by an edit (as 4.2.0's layer edits keep it), in whole frames while quantizing.</summary>
     public const double MinimumClipSeconds = 0.05;
 
@@ -711,22 +734,6 @@ public sealed class TimelineDocument : IJsonOnDeserialized
         }
     }
 
-    /// <summary>The track a clip is on, or null when it is on none of them (a binary search on each track, then the long way).</summary>
-    public TimelineTrackModel? TrackOf(TimelineClip clip)
-    {
-        foreach (var track in Tracks)
-        {
-            if (track.Find(clip) >= 0)
-                return track;
-        }
-        foreach (var track in Tracks)
-        {
-            if (track.Clips.Contains(clip))
-                return track;
-        }
-        return null;
-    }
-
     /// <summary>
     /// A copy that nothing done to this one reaches: its own tracks, clips, markers and sequence effects, the same ids.
     /// The clips' looks (<see cref="TimelineClip.State"/>) and the tracks' are shared, which is safe because no edit
@@ -760,6 +767,8 @@ public sealed class TimelineDocument : IJsonOnDeserialized
             RestoredFolds = RestoredFolds is null ? null : [.. RestoredFolds],
             MediaPool = [.. MediaPool],
             PoolsPlacedFiles = PoolsPlacedFiles,
+            Extra = Extra,
+            CarriedProjectFields = CarriedProjectFields,
         };
         foreach (var track in Tracks)
         {
@@ -778,33 +787,6 @@ public sealed class TimelineDocument : IJsonOnDeserialized
             copy.Tracks.Add(made);
         }
         return copy;
-    }
-
-    public TimelineClip? FindClip(Guid id)
-    {
-        foreach (var track in Tracks)
-        {
-            foreach (var clip in track.Clips)
-            {
-                if (clip.Id == id)
-                    return clip;
-            }
-        }
-        return null;
-    }
-
-    /// <summary>A clip by its id with its track's id, or null when no track holds it (the first, as <see cref="FindClip"/> finds it).</summary>
-    internal (TimelineClip Clip, Guid TrackId)? Locate(Guid id)
-    {
-        foreach (var track in Tracks)
-        {
-            foreach (var clip in track.Clips)
-            {
-                if (clip.Id == id)
-                    return (clip, track.Id);
-            }
-        }
-        return null;
     }
 
     /// <summary>
@@ -909,7 +891,7 @@ public sealed class TimelineDocument : IJsonOnDeserialized
     {
         // A Track Preset Node naming a Game Preset by its name before 5.5.0 takes the new one (Pass 5.5.1, the user's Q2(b)).
         foreach (var track in Tracks)
-            track.PresetNodeName = HandPegApp.Services.LegacyPresetNames.Map(track.PresetNodeName);
+            track.PresetNodeName = LegacyPresetNames.Map(track.PresetNodeName);
 
         if (_tethersMarkedRead)
             return;

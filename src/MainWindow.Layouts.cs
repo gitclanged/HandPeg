@@ -535,6 +535,19 @@ public partial class MainWindow
     }
 
     /// <summary>
+    /// The pointer rests on the editor's header (the heat lamp): the Layout Selector's cards made ahead, with the arrangement now the one
+    /// they mark as in use, as the selector takes them when it opens; nothing while it is open.
+    /// </summary>
+    private void WarmLayoutCards()
+    {
+        if (LayoutSelector.IsOpen)
+            return;
+        _layoutBeforePreview = _dock.Save();
+        MakeLayoutCards();
+        MakeThemeCards();
+    }
+
+    /// <summary>
     /// The cards: each layout made ready to be laid out (as it would be taken up now), and its picture drawn once
     /// (DockManager.Miniature, frozen). When nothing they are drawn from has changed since the last time, the cards
     /// made then are kept as they are, so opening the selector again costs nothing.
@@ -657,7 +670,7 @@ public partial class MainWindow
     /// <summary>The mark on the card of the layout in use (Pass 4.1C): a tick and "In use", in the chosen edge's colour.</summary>
     private static FrameworkElement InUseBadge()
     {
-        var tick = new TextBlock { Text = "", FontFamily = new FontFamily("Segoe MDL2 Assets"), FontSize = 9, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 1, 4, 0) };
+        var tick = new TextBlock { Text = Glyphs.CheckMark, FontFamily = new FontFamily("Segoe MDL2 Assets"), FontSize = 9, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 1, 4, 0) };
         var words = new TextBlock { Text = "In use", FontSize = 11, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center };
         tick.SetResourceReference(TextBlock.ForegroundProperty, "SelectedBorderBrush");
         words.SetResourceReference(TextBlock.ForegroundProperty, "SelectedBorderBrush");
@@ -706,7 +719,7 @@ public partial class MainWindow
             Grid.SetRow(band, 1);
             band.Children.Add(new Border { Background = Frozen(accent), Width = 18, Height = 3, CornerRadius = new CornerRadius(1.5), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0) });
             if (theme == saved)
-                band.Children.Add(new TextBlock { Text = "", FontFamily = new FontFamily("Segoe MDL2 Assets"), FontSize = 8, Foreground = Frozen(accent), HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 5, 0) });
+                band.Children.Add(new TextBlock { Text = Glyphs.CheckMark, FontFamily = new FontFamily("Segoe MDL2 Assets"), FontSize = 8, Foreground = Frozen(accent), HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 5, 0) });
             swatch.Children.Add(name);
             swatch.Children.Add(band);
 

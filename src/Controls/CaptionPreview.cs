@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Media;
 using HandPegApp.Models;
+using static HandPegApp.UiBrushes;
 
 namespace HandPegApp;
 
@@ -81,13 +82,6 @@ public sealed class CaptionPreview : FrameworkElement
     private static readonly SolidColorBrush Backdrop = Frozen(Color.FromRgb(0x3A, 0x4A, 0x5A));
 
     private static SolidColorBrush Brush(string color, Color fallback) => Frozen(TryParse(color, out var parsed) ? parsed : fallback);
-
-    private static SolidColorBrush Frozen(Color color)
-    {
-        var brush = new SolidColorBrush(color);
-        brush.Freeze();
-        return brush;
-    }
 
     /// <summary>Reads #RRGGBB.</summary>
     public static bool TryParse(string? text, out Color color)

@@ -35,36 +35,13 @@ public static class LayoutTests
 
     // The settings tabs' pane ids, in their order (MainWindow.xaml's SettingsTabs: "Tab:" and the header).
     // (5.4A: no Tab:Summary, the retired tab; 5.4B: no Tab:Video, its controls the Export tab's three cards.)
-    private static readonly IReadOnlyList<string> TabIds = ["Tab:Filters", "Tab:Audio", "Tab:Export", "Tab:Command Preview"];
+    private static readonly IReadOnlyList<string> TabIds = ["Tab:Color", "Tab:Audio", "Tab:Export", "Tab:Command Preview"];
 
     public static IEnumerable<GraphResult> All()
     {
         yield return Case("dock-standard-layout", "# Standard Editing's Canvas is a tab beside the effects and keyframes; version 3 is brought up to it, anything the user made is left alone.", StandardLayout);
         yield return Case("layout-edge-to-edge", "# Edge to edge: a 26 px title bar, no bands round the panes, the transport and Timeline de-cluttered; the live Timeline pane flush.", EdgeToEdge);
         yield return Case("lazy-settings-tabs", "# Every settings tab's body is a template (Export too); every part declared by hand is named in one.", LazyTabs);
-    }
-
-    private static GraphResult Case(string name, string title, Action<Action<bool, string>, StringBuilder> run)
-    {
-        var text = new StringBuilder(title).Append('\n');
-        var problems = new List<string>();
-        void Expect(bool holds, string what)
-        {
-            text.Append(holds ? "ok: " : "FAILED: ").Append(what).Append('\n');
-            if (!holds)
-                problems.Add(what);
-        }
-
-        try
-        {
-            run(Expect, text);
-        }
-        catch (Exception ex)
-        {
-            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-        }
-
-        return new GraphResult(name, text.ToString(), problems, 0);
     }
 
     // ----- dock-standard-layout -----
@@ -182,7 +159,7 @@ public static class LayoutTests
 
     private static void EdgeToEdge(Action<bool, string> expect, StringBuilder text)
     {
-        var src = Path.Combine(RepositoryRoot(), "src");
+        var src = Path.Combine(SourceProbe.Root, "src");
         var app = XDocument.Load(Path.Combine(src, "App.xaml"));
         var main = XDocument.Load(Path.Combine(src, "MainWindow.xaml"));
         var settings = XDocument.Load(Path.Combine(src, "Dialogs", "SettingsWindow.xaml"));
@@ -350,7 +327,7 @@ public static class LayoutTests
 
     private static void LazyTabs(Action<bool, string> expect, StringBuilder text)
     {
-        var main = XDocument.Load(Path.Combine(RepositoryRoot(), "src", "MainWindow.xaml"));
+        var main = XDocument.Load(Path.Combine(SourceProbe.Root, "src", "MainWindow.xaml"));
         var tabsControl = Named(main, "SettingsTabs");
         expect(tabsControl is not null, "MainWindow.xaml has its SettingsTabs");
         if (tabsControl is null)
@@ -370,7 +347,7 @@ public static class LayoutTests
                 templates.Add(template);
         }
 
-        expect(tabs.Select(t => Attr(t, "Header")).SequenceEqual(TabIds.Select(id => id["Tab:".Length..])), "the tabs are Filters, Audio, Export and Command Preview, in that order (no Summary, no Video)");
+        expect(tabs.Select(t => Attr(t, "Header")).SequenceEqual(TabIds.Select(id => id["Tab:".Length..])), "the tabs are Color, Audio, Export and Command Preview, in that order (Pass 5.6A: Color was Filters)");
         var export = tabs.FirstOrDefault(t => Attr(t, "Header") == "Export");
         expect(export is not null && Attr(export, X + "Name") == "ExportTab", "the Export tab itself keeps its name (ExportTab): only its body is a template");
         var exportRoot = export?.Descendants().FirstOrDefault(e => e.Name.LocalName == "DataTemplate")?.Elements().FirstOrDefault();
@@ -398,18 +375,6 @@ public static class LayoutTests
     }
 
     // ----- XAML read as XML -----
-
-    /// <summary>The repository's folder (where HandPegApp.csproj is), found upwards from the built program.</summary>
-    private static string RepositoryRoot()
-    {
-        for (var folder = new DirectoryInfo(AppContext.BaseDirectory); folder is not null; folder = folder.Parent)
-        {
-            if (File.Exists(Path.Combine(folder.FullName, "HandPegApp.csproj")))
-                return folder.FullName;
-        }
-
-        throw new DirectoryNotFoundException("HandPegApp.csproj was not found above the golden tests' program.");
-    }
 
     private static XElement? Named(XContainer xaml, string name) => xaml.Descendants().FirstOrDefault(e => Attr(e, X + "Name") == name);
 

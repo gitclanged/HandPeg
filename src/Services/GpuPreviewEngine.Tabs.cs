@@ -78,14 +78,17 @@ public sealed partial class GpuPreviewEngine
         return late;
     }
 
-    /// <summary>Paused: what the play session cost the worker, in one line (no per-frame logging).</summary>
-    private void EndPlaySession()
+    /// <summary>
+    /// Paused: what the play session cost the worker, as one log line (no per-frame logging), or null when no session was open. Returned,
+    /// not written: the pause runs under the transport lock and the line is written after it (no file I/O under the lock).
+    /// </summary>
+    private string? EndPlaySession()
     {
         if (Interlocked.Exchange(ref _session, null) is not { } start)
-            return;
+            return null;
         ref var control = ref _client.Memory.Control;
         var seconds = Stopwatch.GetElapsedTime(start.Started).TotalSeconds;
-        AppLog.Write(string.Create(CultureInfo.InvariantCulture,
-            $"Play session: {seconds:0.0} s, {Volatile.Read(ref control.FramesRendered) - start.Presents} frames presented by the worker ({Volatile.Read(ref _sessionLate)} of {Volatile.Read(ref _sessionFrames)} played late, {Volatile.Read(ref control.ApproximatePresents) - start.Approximate} with a stand-in); decoders: {Volatile.Read(ref control.DecoderOpens) - start.Opens} opened, {Volatile.Read(ref control.DecoderSeeks) - start.Seeks} seeks, {Volatile.Read(ref control.DecodedFrames) - start.Decoded} frames decoded, {Volatile.Read(ref control.Evictions) - start.Evictions} evicted; frame cache budget {Volatile.Read(ref control.CacheBudgetBytes) >> 20} MB."));
+        return string.Create(CultureInfo.InvariantCulture,
+            $"Play session: {seconds:0.0} s, {Volatile.Read(ref control.FramesRendered) - start.Presents} frames presented by the worker ({Volatile.Read(ref _sessionLate)} of {Volatile.Read(ref _sessionFrames)} played late, {Volatile.Read(ref control.ApproximatePresents) - start.Approximate} with a stand-in); decoders: {Volatile.Read(ref control.DecoderOpens) - start.Opens} opened, {Volatile.Read(ref control.DecoderSeeks) - start.Seeks} seeks, {Volatile.Read(ref control.DecodedFrames) - start.Decoded} frames decoded, {Volatile.Read(ref control.Evictions) - start.Evictions} evicted; frame cache budget {Volatile.Read(ref control.CacheBudgetBytes) >> 20} MB.");
     }
 }

@@ -18,7 +18,7 @@
                        ToolTip="What the effects are on: the clip last selected on the timeline (or the video clip at the playhead), or the Sequence Output." />
             <ToggleButton x:Name="SequenceToggle" Content="Sequence Output" Padding="8,3" Margin="0,0,4,0" Click="SequenceToggle_Click"
                           AutomationProperties.Name="Sequence Output"
-                          ToolTip="Sequence Output: the effects on the finished picture, after the Filters tab's colour, over the whole sequence. Off: the selected clip's effects." />
+                          ToolTip="Effects on the finished picture, over the whole sequence." />
             <Grid x:Name="AddHost" Background="Transparent" Margin="0,0,4,0" MouseEnter="AddHost_MouseEnter" MouseLeave="AddFlyout_MouseLeave">
                 <Button x:Name="AddButton" Padding="8,3" Click="AddButton_Click" AutomationProperties.Name="Add Effect" PreviewKeyDown="AddButton_PreviewKeyDown"
                         ToolTip="Add Effect: rest the pointer here (or press Down) for the effects by category, with a search box. A click opens the list too.">
@@ -54,6 +54,7 @@
         <TextBlock x:Name="EmptyHint" DockPanel.Dock="Top" TextWrapping="Wrap" Margin="2,2,2,8" Foreground="{DynamicResource MutedTextBrush}" />
         <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
             <StackPanel>
+                <StackPanel x:Name="SpeedPanel" />
                 <StackPanel x:Name="CardsPanel" local:ReorderBehavior.IsEnabled="True" />
                 <StackPanel x:Name="PinnedPanel" />
             </StackPanel>

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO;
 using System.IO.MemoryMappedFiles;
 using System.Runtime.CompilerServices;
@@ -25,12 +26,12 @@ public static class CompositorProtocol
     public const uint Magic = 0x43475048;
 
     /// <summary>
-    /// Raised only by an incompatible change; a worker of another version refuses the mapping (2: Instant Seek's hints and
-    /// counters, 5.0-AudioAnd3D; 3: hints of 32 bytes with a stretch and a moment, at 3584, 5.0-Release; 4: NV12 readbacks, 5.1; 6: a layer's shutter, 5.1-GpuFx;
-    /// 7: a layer's 3D tilt, 784 bytes a layer, 5.2A; 8: an output ring that can be larger than its frames, each slot's content size
-    /// at 3176, 5.4.1A).
+    /// Raised only by an incompatible change; a worker of another version refuses the mapping. History: 2 seek hints and counters;
+    /// 3 hints of 32 bytes with a stretch and a moment, at 3584; 4 NV12 readbacks; 6 a layer's shutter; 7 a layer's 3D tilt, 784 bytes
+    /// a layer; 8 an output ring that can be larger than its frames, each slot's content size at 3176; 9 a source entry exactly
+    /// <see cref="SourceEntryBytes"/> (paths of up to <see cref="MaxPathChars"/> - 1 characters).
     /// </summary>
-    public const int Version = 8;
+    public const int Version = 9;
 
     /// <summary>The bytes of a frame in NV12: its Y plane, then its interleaved UV plane, half the size each way (rounded up), rows packed.</summary>
     public static long Nv12Bytes(int width, int height) => (long)width * height + 2L * ((width + 1) / 2) * ((height + 1) / 2);
@@ -45,7 +46,13 @@ public static class CompositorProtocol
     public const int MaxSources = 64;
     public const int MaxResources = 64;
     public const int OutputRing = 3;
-    public const int MaxPathChars = 500;
+
+    /// <summary>
+    /// The UTF-16 characters of a source entry's path field, its terminator included: 32 bytes of header + 496 x 2 = 1024 =
+    /// <see cref="SourceEntryBytes"/>, so the entry is exactly its stride. A longer path is refused (CompositorClient.SetSource),
+    /// never truncated into another file's name.
+    /// </summary>
+    public const int MaxPathChars = 496;
 
     /// <summary>How many seek hints the client can leave in the control block (<see cref="ControlBlock.Hints"/>).</summary>
     public const int MaxHints = 16;
@@ -890,6 +897,12 @@ public struct GpuLayerDescriptor
     /// brought down to BT.709 with the Hable curve, as FFmpeg's zscale and tonemap did (PSYuvSource). An SDR video is left alone.
     /// </summary>
     public const int FlagToneMapSdr = 256;
+
+    /// <summary>
+    /// Smooth Slow-Mo (5.6.0): a clip slower than 1x is drawn as an in-between of the frame at its moment and the next, by optical flow
+    /// (SceneRenderer.Interpolate.cs), instead of the frame repeated.
+    /// </summary>
+    public const int FlagInterpolate = 512;
 }
 
 /// <summary>The 16 packets of a layer, 36 bytes each (<see cref="GpuEffectPacket.SizeInBytes"/>), back to back.</summary>
@@ -950,6 +963,39 @@ public struct ResourceEntry
 }
 
 /// <summary>
+/// The sizes the control plane's layout depends on, checked against the structs that are laid over it: a struct larger than its
+/// stride or slot (an inline array grown past an explicit Size, which is only a minimum) would write into its neighbour.
+/// </summary>
+public static class SharedLayout
+{
+    private static bool _verified;
+
+    /// <summary>Throws <see cref="InvalidOperationException"/> when a shared struct does not fit the layout's constants.</summary>
+    public static void Verify()
+    {
+        if (_verified)
+            return;
+
+        var problems = new List<string>();
+        void Fits(string name, int size, int room, bool exact)
+        {
+            if (exact ? size != room : size > room)
+                problems.Add(string.Create(CultureInfo.InvariantCulture, $"{name} is {size} bytes, its room {room}{(exact ? " (must match)" : "")}"));
+        }
+
+        Fits(nameof(ControlBlock), Unsafe.SizeOf<ControlBlock>(), CompositorProtocol.ControlBytes, exact: false);
+        Fits(nameof(FrameSceneHeader), Unsafe.SizeOf<FrameSceneHeader>(), FrameScene.HeaderBytes, exact: false);
+        Fits(nameof(GpuLayerDescriptor), Unsafe.SizeOf<GpuLayerDescriptor>(), FrameScene.LayerBytes, exact: true);
+        Fits("a scene slot's layers", FrameScene.LayersOffset + CompositorProtocol.MaxLayers * FrameScene.LayerBytes, CompositorProtocol.SceneBytes, exact: false);
+        Fits(nameof(SourceEntry), Unsafe.SizeOf<SourceEntry>(), CompositorProtocol.SourceEntryBytes, exact: true);
+        Fits(nameof(ResourceEntry), Unsafe.SizeOf<ResourceEntry>(), CompositorProtocol.ResourceEntryBytes, exact: true);
+        if (problems.Count > 0)
+            throw new InvalidOperationException("The compositor's shared layout does not fit its structs: " + string.Join("; ", problems));
+        _verified = true;
+    }
+}
+
+/// <summary>
 /// The mapping itself, as either side holds it: typed references into the shared memory, and the triple buffer the
 /// scenes go through. The client owns the writer's slot, the worker the reader's; neither ever waits for the other.
 /// </summary>
@@ -964,6 +1010,7 @@ public sealed unsafe class CompositorSharedMemory : IDisposable
 
     private CompositorSharedMemory(string baseName, MemoryMappedFile file)
     {
+        SharedLayout.Verify();
         BaseName = baseName;
         _file = file;
         _view = file.CreateViewAccessor(0, CompositorProtocol.TotalBytes, MemoryMappedFileAccess.ReadWrite);

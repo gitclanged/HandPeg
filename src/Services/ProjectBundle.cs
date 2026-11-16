@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using HandPegApp.Models;
+using HandPegApp.Models.Effects;
 
 namespace HandPegApp.Services;
 
@@ -39,9 +40,6 @@ public static class ProjectBundle
     // (FAT32 keeps 2 s, exFAT 10 ms: a bundle carried on a USB stick unpacks there).
     private static readonly DateTimeOffset ZipEarliest = new(1980, 1, 1, 0, 0, 0, TimeSpan.Zero), ZipLatest = new(2107, 12, 31, 0, 0, 0, TimeSpan.Zero);
     private static readonly long SameTimeTicks = TimeSpan.FromSeconds(2.5).Ticks;
-
-    /// <summary>Whether a file is one to open as a bundle (typed in, dropped, chosen): a .hpb that is there.</summary>
-    public static bool IsBundleFile(string path) => path.EndsWith(Extension, StringComparison.OrdinalIgnoreCase) && File.Exists(path);
 
     private sealed class Manifest
     {
@@ -358,11 +356,17 @@ public static class ProjectBundle
         {
             using var reader = new StreamReader(projectEntry.Open(), Encoding.UTF8);
             var project = JsonNode.Parse(reader.ReadToEnd()) ?? throw new InvalidDataException("The bundle's project is empty.");
-            Rewrite(project, value => value.StartsWith(MediaFolder, StringComparison.Ordinal) ? InsideOf(folder, value) : null);
+
+            // A bundle is made to be shared: what it carries is untrusted. A hand-edited command never comes out of one (Pack leaves it out
+            // too; one put back by hand would run on Export), and only the bundle's own files are pointed at: a string is rewritten only
+            // when it is exactly one of the manifest's entries, never because it starts with "media/".
+            (project["output"] as JsonObject)?.Remove("manualCommand");
+            var entries = manifest.Media.Select(m => m.Entry).ToHashSet(StringComparer.Ordinal);
+            Rewrite(project, value => entries.Contains(value) ? InsideOf(folder, value) : null);
             if (project["output"] is JsonObject output && output["path"] is JsonValue destination && destination.TryGetValue<string>(out var to)
                 && to.Length > 0 && !Path.IsPathRooted(to) && InsideOf(folder, to) is { } beside)
                 output["path"] = beside;
-            ProjectStore.WriteWhole(projectPath, project.ToJsonString());
+            ProjectStore.WriteWhole(projectPath, project.ToJsonString(), durable: true);
         }
 
         File.WriteAllText(Path.Combine(folder, MarkerName), stamp);
@@ -434,18 +438,52 @@ public static class ProjectBundle
 
     // ----- The project's paths -----
 
-    /// <summary>Replaces every string of the JSON that <paramref name="map"/> has another value for (null: kept), at any depth.</summary>
+    /// <summary>
+    /// Properties that hold the user's own words, never a file: a title card's text, names of tracks, layers and markers, captions,
+    /// the speech prompt, Extra options. <see cref="Rewrite"/> never maps them, so a title that happens to read like a path
+    /// ("C:\Users\me\notes.txt") is not shipped as a file in a bundle and does not change on screen.
+    /// </summary>
+    internal static readonly IReadOnlySet<string> FreeTextKeys = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "textContent", "name", "text", "title", "words", "whisperPrompt", "extraVideoArguments", "fontFamily", "fontName", "label", "writtenBy",
+    };
+
+    /// <summary>
+    /// Replaces every string of the JSON that <paramref name="map"/> has another value for (null: kept), at any depth, except the
+    /// <see cref="FreeTextKeys"/> and an effect's text parameters (<see cref="ParamKind.Text"/> in its registry definition).
+    /// </summary>
     internal static void Rewrite(JsonNode node, Func<string, string?> map)
     {
         switch (node)
         {
             case JsonObject json:
+                // An effect card ({ "type":..., "values": {... } }): its text parameters are words, never paths.
+                var textParams = json["type"] is JsonValue type && type.TryGetValue<string>(out var typeName) && json["values"] is JsonObject
+                    ? EffectRegistry.Find(typeName)?.Params.Where(p => p.Kind == ParamKind.Text).Select(p => p.Key).ToHashSet(StringComparer.Ordinal)
+                    : null;
                 foreach (var (key, child) in json.ToList())
                 {
+                    if (FreeTextKeys.Contains(key))
+                        continue;
                     if (child is JsonValue value && value.TryGetValue<string>(out var text))
                     {
                         if (map(text) is { } changed)
                             json[key] = changed;
+                    }
+                    else if (key == "values" && child is JsonObject values && textParams is { Count: > 0 })
+                    {
+                        foreach (var (param, setting) in values.ToList())
+                        {
+                            if (textParams.Contains(param))
+                                continue;
+                            if (setting is JsonValue v && v.TryGetValue<string>(out var s))
+                            {
+                                if (map(s) is { } changed)
+                                    values[param] = changed;
+                            }
+                            else if (setting is not null)
+                                Rewrite(setting, map);
+                        }
                     }
                     else if (child is not null)
                         Rewrite(child, map);

@@ -742,7 +742,8 @@ public static partial class Notifier
                 var adding = _owner == IntPtr.Zero;
                 if (adding)
                 {
-                    _owner = Process.GetCurrentProcess().MainWindowHandle;
+                    using (var self = Process.GetCurrentProcess())
+                        _owner = self.MainWindowHandle;
                     if (_owner == IntPtr.Zero)
                         return;
                     _icon = System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath ?? "") ?? System.Drawing.SystemIcons.Application;

@@ -85,7 +85,7 @@ public partial class MainViewModel
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            AppLog.Write($"The recovery copy was written as the project is: one of the last two undo steps could not be read ({ex.GetType().Name}: {ex.Message})");
+            AppLog.Write("The recovery copy was written as the project is: one of the last two undo steps could not be read", ex);
             return null;
         }
 
@@ -111,6 +111,9 @@ public partial class MainViewModel
             (settings.SharpenStrength, settings.BlurRadius, settings.BlurPasses, settings.BackgroundDim, settings.BackgroundZoom) =
                 (look.Sharpen, look.BlurRadius, look.BlurPasses, look.BackgroundDim, look.BackgroundZoom);
             (settings.BackgroundEffects, settings.BackgroundEffectsBypassed) = (look.BackgroundEffects, look.BackgroundEffectsBypassed);
+            // The legacy LUT is part of the look's step since 5.6.0 (a Convert moves it into the Sequence Output's cards): an older step has none.
+            if (look.LutPath is { } lutPath)
+                settings.LutPath = lutPath;
         }
 
         (settings.UseVerticalResolution, settings.OutputWidth, settings.OutputHeight) = (frame.Vertical, frame.OutputWidth ?? "", frame.OutputHeight ?? "");

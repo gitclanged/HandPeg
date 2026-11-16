@@ -1,0 +1,10 @@
+# A Legacy Grade Convert among the last two actions: the copy keeps the legacy LUT path from before it, and Redo moves it into the card again.
+ok: action N-1: Convert, the legacy LUT moved into a Color Grade card (the legacy path empty)
+ok: action N: a trim
+ok: two steps since the save: the copy lags
+ok: the copy is before the Convert: the legacy LUT path kept, no Color Grade card
+ok: written and opened at N-2: the legacy LUT back (the Color tab's fold shows it), no card
+ok: exactly the project two Undos leave
+ok: (the view model's two Undos redone)
+ok: Ctrl+Y gives N-1: the Convert back, the LUT in its card again
+ok: Ctrl+Y again gives N: exactly as it was live

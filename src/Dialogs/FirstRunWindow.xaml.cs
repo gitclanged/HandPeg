@@ -10,9 +10,9 @@ namespace HandPegApp;
 /// Shown before the main window on a first start (and again from Settings), in two screens (5.5A, FirstRunWindow.Screens.cs):
 /// 1. the workspace the window starts laid out as, its theme (both shown at once in a live miniature) and the core engines with
 /// their one-click downloads; 2. the GPU and NPU roles from the two-phase hardware profile (FirstRunWindow.Profile.cs: an estimate at
-/// once, out of process, then a quick measurement in the background on the first start), the encoders HandPeg starts with (the
-/// hardware ones estimated from the cards, then always confirmed by FFmpeg before it closes), what happens on closing and after a
-/// failed hardware encode, and whether crash reports are written (with the Privacy Policy beside it). Closing it without pressing
+/// once, out of process, then the full test, 5.6A, each role a click to pick on its card), the encoders HandPeg starts with (the
+/// hardware ones estimated from the cards, then always confirmed by FFmpeg before it closes), what happens on closing, and whether
+/// crash reports are written (with the Privacy Policy beside it). Closing it without pressing
 /// Start Editing leaves the settings alone, and it is shown again next time.
 /// </summary>
 public partial class FirstRunWindow : Window
@@ -49,7 +49,6 @@ public partial class FirstRunWindow : Window
         InitializeComponent();
 
         _chosenTheme = ThemeManager.Normalize(_originalTheme);
-        FallbackBox.IsChecked = AppSettings.Current.AutoFallbackToSoftware;
         PromptBox.IsChecked = AppSettings.Current.PromptToSaveOnExit;
         CrashReportsBox.IsChecked = AppSettings.Current.SendCrashReports;
 
@@ -78,7 +77,7 @@ public partial class FirstRunWindow : Window
             _closed = true;
             _probeCancellation.Cancel();
 
-            // 5.5A: the hardware profile's workers end with the window (killed, not waited for).
+            // 5.5A: the hardware profile's workers end with the window (killed, not waited for; 5.6A: the full test's too).
             _profileCancellation.Cancel();
         };
 
@@ -105,6 +104,9 @@ public partial class FirstRunWindow : Window
         SyncTestCard.Completed += result => _syncResult = result;
         SyncTestCard.ShowKept(AppSettings.Current.LastPlaybackSyncTest);
 
+        // 5.6A: a role picked on its card (its menu), kept for Start Editing (FirstRunWindow.Profile.cs).
+        RoleCards.RoleChosen += RoleCards_RoleChosen;
+
         if (live)
             StartLiveWork();
         else if (Dependencies.Parent is Panel holder)
@@ -130,8 +132,8 @@ public partial class FirstRunWindow : Window
         };
 
         // An FFmpeg installed from anywhere while this window is open (this panel, Settings, a feature's prompt, the
-        // background update): its encoders are asked for the moment it is in place (5.2), on this window's thread; and (5.5A) the
-        // quick hardware check that could only measure the bus measures the decoding too, with the test clip FFmpeg makes.
+        // background update): its encoders are asked for the moment it is in place (5.2), on this window's thread; and (5.6A) the
+        // full hardware test that could not decode (no test clip without FFmpeg) runs once more, with the test clip FFmpeg makes.
         Action<string> installed = tool =>
         {
             if (tool == DependencyUpdater.Ffmpeg)
@@ -146,7 +148,7 @@ public partial class FirstRunWindow : Window
         DependencyUpdater.Installed += installed;
         Closed += (_, _) => DependencyUpdater.Installed -= installed;
 
-        // The hardware profile (5.5A): the estimate now, off this thread; the quick check once the window is up.
+        // The hardware profile (5.5A): the estimate now, off this thread; the full test once the window is up (5.6A, every open).
         StartProfile();
         Loaded += Profile_Loaded;
     }
@@ -368,7 +370,9 @@ public partial class FirstRunWindow : Window
     /// for, and an FFmpeg not asked yet is asked now, so that the probe's answer is saved and the best encoder chosen
     /// (unless one was chosen by hand) before the settings are.
     /// </summary>
-    private async void Start_Click(object sender, RoutedEventArgs e)
+    private void Start_Click(object sender, RoutedEventArgs e) => Faults.Forget(Start_ClickAsync(sender, e), nameof(Start_Click));
+
+    private async Task Start_ClickAsync(object sender, RoutedEventArgs e)
     {
         if (_finishing)
             return;
@@ -401,7 +405,7 @@ public partial class FirstRunWindow : Window
 
     private void Finish()
     {
-        // 5.5A: the hardware profile's workers (a quick check still measuring, an estimate not back yet) are killed first, before the
+        // 5.5A: the hardware profile's workers (the full test still measuring, an estimate not back yet) are killed first, before the
         // main window and its compositor start.
         _profileCancellation.Cancel();
         SyncTestCard.Cancel();
@@ -411,7 +415,6 @@ public partial class FirstRunWindow : Window
             settings.LastPlaybackSyncTest = sync;
         var firstStart = !settings.FirstRunComplete;
         settings.Theme = _chosenTheme;
-        settings.AutoFallbackToSoftware = FallbackBox.IsChecked == true;
 
         // The interface as HandPeg starts it, on a first start only: opened again (from the settings, or because the
         // engines are missing on this PC), the user's own view settings and arrangement stay.
@@ -437,6 +440,11 @@ public partial class FirstRunWindow : Window
         if (firstStart && _benchmarkRoles is { } roles && _profile is { } profile)
             HardwareBenchmarkService.WriteRoles(HardwareBenchmarkService.DecodeAndBackgroundAuto(roles), settings, [.. profile.Adapters.Select(a => a.Index)]);
 
+        // 5.6A: the roles picked by hand on the cards, whatever the start (a card is given a role only by the user's own pick: CLAUDE.md 8),
+        // against the cards the profile found (its first listings).
+        if (_rolesChosen && (_profile ?? _figures) is { } listed)
+            WritePicks(_picks, settings, [.. listed.Adapters.Where(a => a.SameCardAs < 0).Select(a => a.Index)]);
+
         // The captions package's larger model is the one captions use, once it is there.
         if (EditorTier.IsChecked == true && File.Exists(DependencyUpdater.GetWhisperModelPath(TierDefaultModel)))
             settings.WhisperModel = TierDefaultModel;
@@ -447,6 +455,8 @@ public partial class FirstRunWindow : Window
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            AppLog.Write("First run: the settings could not be saved", ex);
+
             // The folder cannot be written to: the choices still hold for this session, and the window
             // will come back next time.
             MessageBox.Show(this, $"The settings could not be saved, so this window will be shown again next time.\n\n{ex.Message}",

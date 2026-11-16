@@ -3,9 +3,6 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
-    <LangVersion>14.0</LangVersion>
-    <Nullable>enable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
 
     <!-- The program is HandPeg.exe; the project, its folder and the namespace keep their working name. -->
@@ -20,20 +17,18 @@
     <!-- Main is written by hand in Program.cs, so that the updater's bootstrap runs before WPF starts. -->
     <StartupObject>HandPegApp.Program</StartupObject>
 
-    <!-- No ApplicationIcon (5.3, the user's answer): HandPeg ships with no custom .ico until the user provides a human-designed one. -->
+    <!-- No ApplicationIcon: HandPeg ships with no custom .ico until a human-designed one is provided (docs/DECISIONS.md D-11). -->
 
     <!-- Windows Forms is referenced for two things WPF lacks: the system colour picker and tray notifications. -->
     <UseWindowsForms>true</UseWindowsForms>
 
-    <!-- 64-bit Intel/AMD, or 64-bit ARM when published for win-arm64 (4.3D): the tools HandPeg downloads are the builds
-         for the processor it runs on (DependencyUpdater.IsArm64). -->
-    <PlatformTarget>x64</PlatformTarget>
-    <!-- A build that names no runtime is for the machine it is made on: on an ARM64 PC the debug build and the tools'
-         builds (golden tests, SeekBench, AvSync) run natively, without an x64 .NET beside the ARM64 one. -->
-    <PlatformTarget Condition="'$(RuntimeIdentifier)' == 'win-arm64' or ('$(RuntimeIdentifier)' == '' and '$(NETCoreSdkRuntimeIdentifier)' == 'win-arm64')">ARM64</PlatformTarget>
     <!-- For the native calls: the compositor's COM by hand (function pointers), Windows through generated [LibraryImport] code. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+
+  <!-- Language, warnings-as-errors, analysis level and the x64/ARM64 platform rule (the tools HandPeg downloads match the processor
+       it runs on: DependencyUpdater.IsArm64). -->
+  <Import Project="build\HandPeg.Common.props" />
 
   <!--
       Start-up and memory. A published build is compiled to machine code ahead of time (one composite image,
@@ -43,7 +38,7 @@
       5.4D-TabPerf: GarbageCollectionAdaptationMode (DATAS, "the heap shrinks again when the work is done") was set here and did
       nothing: DATAS adapts the Server heap's count of heaps, and a workstation heap has one. It is gone. Its full collections run in
       the background, and a background collection never compacts, so the large-object heap's free space stays committed until a
-      blocking compacting one: HandPeg asks for one at chosen quiet moments (MemoryHygiene: after a tab is closed or let go, and
+      blocking compacting one: HandPeg asks for one at chosen quiet moments (MemoryHygiene: after a tab is closed or released, and
       once after the start, GiveBackStartupMemory). System.GC.ConserveMemory=5 (compact the large-object heap when it is
       fragmented) was measured and left out: on the XPS 13, ten tabs opened, cycled and closed (2 runs each, alternating), the
       heap's commit came 16 MB lower (138/119 against 120/105 MB) and the main process's private bytes 60 MB lower (1323/1283
@@ -55,16 +50,10 @@
     <TieredPGO>true</TieredPGO>
     <ServerGarbageCollection>false</ServerGarbageCollection>
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
-
-    <!-- No CET shadow stacks (Pass 5.3-Stage2, the user's answer, a security trade-off): .NET 9 and later mark an x64 HandPeg.exe
-         CET-compatible, and Windows then keeps a shadow stack of every call, which cost about 16 ms of start-up on the Desktop's Zen 4.
-         ARM64 has no such mark. This is the build's own HandPeg.exe (and a raw publish's); the released HandPeg.exe is the bootstrapper,
-         which says the same (tools\PortableBootstrap). It takes effect from a clean obj only (CLAUDE.md section 4). -->
-    <CETCompat>false</CETCompat>
   </PropertyGroup>
 
   <!--
-      The youngest generation may grow to 64 MB before it is collected (5.3, measured on .NET 10): the ~18 MB a start allocates before
+      The youngest generation may grow to 64 MB before it is collected (measured on .NET 10): the ~18 MB a start allocates before
       its first frame then costs no pause. Left to .NET 10 (or held to 16 MB) it cost the XPS three collections and 18 ms of pauses and
       the Desktop one of 12 ms. First frame, medians of 9 alternating starts: XPS 433 ms with none, 423 with 16 MB, 417 with 64 MB;
       Desktop 440, 442, 440 (no change there). The heap 10 s after the first frame is unchanged (the start-up collection after it compacts).
@@ -104,10 +93,16 @@
   </ItemGroup>
 
   <!--
-      The GPU compositor's shaders (Pass 5.0-Core): every .hlsl under src\Compositor\Shaders is compiled at build time by
-      Windows' own d3dcompiler_47.dll (System32; no SDK, no NuGet), one blob per entry point named VS* (vs_5_0) or PS*
-      (ps_5_0), optimised, warnings as errors, and embedded as HandPegApp.Shaders.<entry>.cso. Nothing compiles at run
-      time. Incremental: only when a shader source changed.
+      The GPU compositor's shaders: every .hlsl under src\Compositor\Shaders is compiled at build time by Windows' own
+      d3dcompiler_47.dll (System32; no SDK, no NuGet), one blob per entry point named VS* (vs_5_0) or PS* (ps_5_0), optimized,
+      warnings as errors, and embedded as HandPegApp.Shaders.<entry>.cso. Nothing compiles at run time. The compile reruns only
+      when a shader source changes (every entry, since every file includes Common.hlsli). Errors:
+        HLSL0001/0002  an entry point failed to compile
+        HLSL0004       two shader files define the same entry point (the second blob would overwrite the first)
+        HLSL0005       a VS*/PS* function the entry-point pattern does not recognise (a return type other than float4 or VsOut)
+        HLSL0006       a shader file with no entry point
+        HLSL0007       a "VS*"/"PS*" string literal in src\ names no compiled entry point (CheckShaderNames, below), so renaming an
+                       entry cannot silently disable an effect behind a ShaderLibrary.Has check
   -->
   <ItemGroup>
     <HlslSource Include="src\Compositor\Shaders\*.hlsl" />
@@ -122,20 +117,20 @@
   <UsingTask TaskName="CompileHlsl" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
     <ParameterGroup>
       <Sources ParameterType="Microsoft.Build.Framework.ITaskItem[]" Required="true" />
-      <WpfEffects ParameterType="Microsoft.Build.Framework.ITaskItem[]" />
       <OutputDirectory ParameterType="System.String" Required="true" />
     </ParameterGroup>
     <Task>
       <Code Type="Class" Language="cs"><![CDATA[
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 
 public class CompileHlsl : Microsoft.Build.Utilities.Task
 {
     [Microsoft.Build.Framework.Required] public Microsoft.Build.Framework.ITaskItem[] Sources { get; set; }
-    public Microsoft.Build.Framework.ITaskItem[] WpfEffects { get; set; }
     [Microsoft.Build.Framework.Required] public string OutputDirectory { get; set; }
 
     [DllImport("d3dcompiler_47.dll", CharSet = CharSet.Unicode)]
@@ -163,35 +158,33 @@ public class CompileHlsl : Microsoft.Build.Utilities.Task
         const uint flags = (1u << 11) | (1u << 15) | (1u << 18);
         var include = new IntPtr(1);
         var entryPoint = new Regex(@"^\s*(?:float4|VsOut)\s+((?:VS|PS)\w+)\s*\(", RegexOptions.Multiline);
+        var anyVsPs = new Regex(@"^\s*\w+\s+((?:VS|PS)\w+)\s*\(", RegexOptions.Multiline);
         Directory.CreateDirectory(OutputDirectory);
         foreach (var stale in Directory.GetFiles(OutputDirectory, "*.cso"))
             File.Delete(stale);
 
         var ok = true;
-        foreach (var effect in WpfEffects ?? new Microsoft.Build.Framework.ITaskItem[0])
-        {
-            // ps_2_0 for WPF: its older syntax, so not strict; warnings as errors all the same.
-            var path = effect.GetMetadata("FullPath");
-            IntPtr code, errors;
-            var hr = D3DCompileFromFile(path, IntPtr.Zero, include, "main", "ps_2_0", (1u << 15) | (1u << 18), 0, out code, out errors);
-            if (hr < 0)
-            {
-                ok = false;
-                var text = errors != IntPtr.Zero ? System.Text.Encoding.ASCII.GetString(Bytes(errors)).TrimEnd('\0', '\r', '\n') : hr.ToString("X8");
-                Log.LogError("HLSL", "HLSL0003", null, path, 0, 0, 0, 0, "main (ps_2_0): {0}", text);
-                continue;
-            }
-
-            File.WriteAllBytes(Path.Combine(OutputDirectory, Path.GetFileNameWithoutExtension(path) + ".ps"), Bytes(code));
-            Marshal.Release(code);
-        }
-
+        var compiled = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var source in Sources)
         {
             var path = source.GetMetadata("FullPath");
-            foreach (Match match in entryPoint.Matches(File.ReadAllText(path)))
+            var shader = File.ReadAllText(path);
+            var entries = entryPoint.Matches(shader).Cast<Match>().Select(m => m.Groups[1].Value).ToList();
+            if (entries.Count == 0)
+                Log.LogError("HLSL", "HLSL0006", null, path, 0, 0, 0, 0, "no VS*/PS* entry point in this shader file");
+            foreach (var skipped in anyVsPs.Matches(shader).Cast<Match>().Select(m => m.Groups[1].Value).Where(name => !entries.Contains(name)))
+                Log.LogError("HLSL", "HLSL0005", null, path, 0, 0, 0, 0, "{0} looks like an entry point but returns neither float4 nor VsOut, so it is not compiled", skipped);
+
+            foreach (var entry in entries)
             {
-                var entry = match.Groups[1].Value;
+                string first;
+                if (compiled.TryGetValue(entry, out first))
+                {
+                    Log.LogError("HLSL", "HLSL0004", null, path, 0, 0, 0, 0, "{0} is also defined in {1}", entry, first);
+                    continue;
+                }
+
+                compiled[entry] = path;
                 var profile = entry.StartsWith("VS", StringComparison.Ordinal) ? "vs_5_0" : "ps_5_0";
                 IntPtr code, errors;
                 var hr = D3DCompileFromFile(path, IntPtr.Zero, include, entry, profile, flags, 0, out code, out errors);
@@ -225,20 +218,69 @@ public class CompileHlsl : Microsoft.Build.Utilities.Task
     </Task>
   </UsingTask>
 
-  <Target Name="CompileShaders" BeforeTargets="BeforeBuild" Inputs="@(HlslSource);@(HlslHeader);@(WpfEffectSource)" Outputs="$(HlslOutput)shaders.stamp">
-    <CompileHlsl Sources="@(HlslSource)" WpfEffects="@(WpfEffectSource)" OutputDirectory="$(HlslOutput)" />
+  <UsingTask TaskName="CheckShaderNames" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <Sources ParameterType="Microsoft.Build.Framework.ITaskItem[]" Required="true" />
+      <ShaderDirectory ParameterType="System.String" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <Code Type="Class" Language="cs"><![CDATA[
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text.RegularExpressions;
+
+public class CheckShaderNames : Microsoft.Build.Utilities.Task
+{
+    [Microsoft.Build.Framework.Required] public Microsoft.Build.Framework.ITaskItem[] Sources { get; set; }
+    [Microsoft.Build.Framework.Required] public string ShaderDirectory { get; set; }
+
+    public override bool Execute()
+    {
+        var compiled = new HashSet<string>(Directory.GetFiles(ShaderDirectory, "*.cso").Select(Path.GetFileNameWithoutExtension), StringComparer.Ordinal);
+        var literal = new Regex("\"((?:VS|PS)[A-Z]\\w*)\"");
+        foreach (var source in Sources)
+        {
+            var path = source.GetMetadata("FullPath");
+            var lines = File.ReadAllLines(path);
+            for (var i = 0; i < lines.Length; i++)
+            {
+                foreach (Match match in literal.Matches(lines[i]))
+                {
+                    if (!compiled.Contains(match.Groups[1].Value))
+                        Log.LogError("HLSL", "HLSL0007", null, path, i + 1, match.Index + 1, 0, 0, "\"{0}\" names no compiled shader entry point", match.Groups[1].Value);
+                }
+            }
+        }
+
+        return !Log.HasLoggedErrors;
+    }
+}
+]]></Code>
+    </Task>
+  </UsingTask>
+
+  <Target Name="CompileShaders" BeforeTargets="BeforeBuild" Inputs="@(HlslSource);@(HlslHeader)" Outputs="$(HlslOutput)shaders.stamp">
+    <CompileHlsl Sources="@(HlslSource)" OutputDirectory="$(HlslOutput)" />
     <Touch Files="$(HlslOutput)shaders.stamp" AlwaysCreate="true" />
   </Target>
 
   <Target Name="EmbedShaders" AfterTargets="CompileShaders" BeforeTargets="BeforeBuild">
     <ItemGroup>
-      <_CompiledShader Include="$(HlslOutput)*.cso;$(HlslOutput)*.ps" />
+      <_CompiledShader Include="$(HlslOutput)*.cso" />
       <EmbeddedResource Include="@(_CompiledShader)" LogicalName="HandPegApp.Shaders.%(Filename)%(Extension)" />
     </ItemGroup>
   </Target>
 
+  <!-- HLSL0007: reruns when a C# source or the compiled shaders change (cheap: a regex over src\), never recompiling a shader. -->
+  <Target Name="CheckShaderNames" AfterTargets="EmbedShaders" BeforeTargets="BeforeBuild" Inputs="@(Compile);$(HlslOutput)shaders.stamp" Outputs="$(HlslOutput)names.stamp">
+    <CheckShaderNames Sources="@(Compile)" ShaderDirectory="$(HlslOutput)" />
+    <Touch Files="$(HlslOutput)names.stamp" AlwaysCreate="true" />
+  </Target>
+
   <!--
-      The Explorer thumbnail handler (Pass 5.2D, src\ShellThumbnails; NativeAOT since Pass 5.3-Stage2): a native COM library that Windows
+      The Explorer thumbnail handler (src\ShellThumbnails; NativeAOT since v5.3.0): a native COM library that Windows
       Explorer loads to show the thumbnail a .hproj or .hpb carries as its preview, with no .NET needed. No part of HandPeg's assembly and
       no reference of it (Explorer loads it alone): published after HandPeg for the same processor (the runtime being built, else this
       machine's: an ARM64 Explorer loads only an ARM64 handler), by a Release build or publish only (a Debug build stays quick and has

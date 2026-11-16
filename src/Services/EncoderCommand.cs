@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.IO;
+using System.Text;
 using HandPegApp.Models;
 using HandPegApp.Models.Timeline;
 using HandPegApp.Services.Audio;
@@ -465,21 +466,27 @@ public static class EncoderCommand
         var copy = SequenceSpans.CopyCutOf(state.Timeline);
         var input = copy is { Path.Length: > 0 } ? copy.Path : "<source>";
         var cut = copy is { IsCut: true };
-        var args = new List<string> { state.FfmpegExecutable, "-hide_banner", "-y" };
-        args.Add(cut ? $"-f concat -safe 0 -i {Quote(state.CutsFilePath)}" : $"-i {Quote(input)}");
+
+        // One item per argument: a title (from the user, a project or the media file's own stream tag) is one argument however it is
+        // written, and the line is made of them with QuoteArgument, which FFmpeg splits back exactly.
+        var args = new List<string> { "-hide_banner", "-y" };
+        if (cut)
+            args.AddRange(["-f", "concat", "-safe", "0", "-i", state.CutsFilePath]);
+        else
+            args.AddRange(["-i", input]);
 
         var chaptersFromList = (state.ChaptersAtCuts && copy is { Pieces.Count: > 1 }) || state.ChaptersAtMarkers;
         if (chaptersFromList)
-            args.Add($"-i {Quote(state.ChaptersFilePath)}");
+            args.AddRange(["-i", state.ChaptersFilePath]);
 
-        args.Add("-map 0:v:0");
+        args.AddRange(["-map", "0:v:0"]);
         var tracks = copy is null ? [] : CopiedStreams(state, copy);
         for (var k = 0; k < tracks.Count; k++)
         {
             var (stream, title, _, _) = tracks[k];
-            args.Add(string.Create(CultureInfo.InvariantCulture, $"-map 0:a:{stream}?"));
+            args.AddRange(["-map", string.Create(CultureInfo.InvariantCulture, $"0:a:{stream}?")]);
             if (!string.IsNullOrWhiteSpace(title))
-                args.Add($"-metadata:s:a:{k} title=\"{title.Trim().Replace('"', '\'')}\"");
+                args.AddRange([string.Create(CultureInfo.InvariantCulture, $"-metadata:s:a:{k}"), "title=" + title.Trim()]);
         }
 
         // The stream source's own subtitles and chapters, while the copy is that whole file as the whole Sequence.
@@ -488,31 +495,31 @@ public static class EncoderCommand
                       && SequenceSpans.WholeFiles(state.Timeline).Contains(streamSource);
         var soft = ownFile ? state.SoftSubtitleStreams : [];
         foreach (var subtitle in soft)
-            args.Add(string.Create(CultureInfo.InvariantCulture, $"-map 0:s:{subtitle}?"));
+            args.AddRange(["-map", string.Create(CultureInfo.InvariantCulture, $"0:s:{subtitle}?")]);
 
-        args.Add("-c:v copy");
+        args.AddRange(["-c:v", "copy"]);
         for (var k = 0; k < tracks.Count; k++)
         {
             var (_, _, codec, bitrate) = tracks[k];
-            args.Add(codec == "copy" || AudioTrack.IsLossless(codec)
-                ? string.Create(CultureInfo.InvariantCulture, $"-c:a:{k} {codec}")
-                : string.Create(CultureInfo.InvariantCulture, $"-c:a:{k} {codec} -b:a:{k} {bitrate}"));
+            args.AddRange([string.Create(CultureInfo.InvariantCulture, $"-c:a:{k}"), codec]);
+            if (codec != "copy" && !AudioTrack.IsLossless(codec))
+                args.AddRange([string.Create(CultureInfo.InvariantCulture, $"-b:a:{k}"), bitrate]);
         }
 
         if (soft.Count > 0)
-            args.Add("-c:s copy");
+            args.AddRange(["-c:s", "copy"]);
 
-        // The whole file copied (no cuts list to end it) while its sound runs on past its picture (5.4A: a padded container, its clip
+        // The whole file copied (no cuts list to end it) while its sound runs on past its picture (5.4.0: a padded container, its clip
         // ending with the picture, TimelineClip.PictureDuration): the output ends with the picture, as a GPU export's does (-t is the
         // muxer's; nothing is filtered).
         if (!cut && tracks.Count > 0 && copy is { Pieces: [var only] } && state.Timeline.FindClip(only.ClipId) is { PictureDuration: > 0 } held
             && held.SourceDuration - only.Duration > 0.001)
-            args.Add(string.Create(CultureInfo.InvariantCulture, $"-t {only.Duration:0.######}"));
-        args.Add(chaptersFromList ? "-map_chapters 1" : state.ChapterMarkers && ownFile ? "-map_chapters 0" : "-map_chapters -1");
+            args.AddRange(["-t", string.Create(CultureInfo.InvariantCulture, $"{only.Duration:0.######}")]);
+        args.AddRange(["-map_chapters", chaptersFromList ? "1" : state.ChapterMarkers && ownFile ? "0" : "-1"]);
         if (state.WebOptimized && Extension(state) is "mp4" or "mov" or "m4v")
-            args.Add("-movflags +faststart");
-        args.Add(Quote(state.OutputPath));
-        return new ExportCommand(string.Join(" ", args), cut, chaptersFromList);
+            args.AddRange(["-movflags", "+faststart"]);
+        args.Add(state.OutputPath);
+        return new ExportCommand(state.FfmpegExecutable + " " + string.Join(" ", args.Select(QuoteArgument)), cut, chaptersFromList);
     }
 
     // The copied file's sound tracks in a Copy export, by stream place: the stream of the file that a Sub-Lane of each place plays
@@ -648,8 +655,33 @@ public static class EncoderCommand
     }
 
     /// <summary>An argument as the command box shows it: quoted where it holds a space or a quote, or is empty.</summary>
-    public static string QuoteArgument(string a) =>
-        a.Length == 0 || a.Any(c => c is ' ' or '"' or '\t') ? $"\"{a.Replace("\"", "\\\"", StringComparison.Ordinal)}\"" : a;
+    /// <summary>
+    /// One argument written for a Windows command line so that <c>CommandLineToArgvW</c> (FfmpegRunner.SplitArguments, and FFmpeg's own
+    /// C runtime) reads it back exactly: left as it is unless it is empty or holds a space, tab, newline or quote; otherwise quoted, every
+    /// quote escaped, and each run of backslashes doubled where it comes right before a quote or before the closing quote (a title
+    /// ending in a backslash, "My Mic\", must not swallow the rest of the line).
+    /// </summary>
+    public static string QuoteArgument(string a)
+    {
+        if (a.Length > 0 && a.IndexOfAny([' ', '\t', '\n', '\v', '"']) < 0)
+            return a;
+
+        var quoted = new StringBuilder(a.Length + 2).Append('"');
+        var backslashes = 0;
+        foreach (var c in a)
+        {
+            if (c == '\\')
+            {
+                backslashes++;
+                continue;
+            }
+
+            quoted.Append('\\', c == '"' ? backslashes * 2 + 1 : backslashes).Append(c);
+            backslashes = 0;
+        }
+
+        return quoted.Append('\\', backslashes * 2).Append('"').ToString();
+    }
 
     // ----- What the frames are piped as -----
 
@@ -732,6 +764,4 @@ public static class EncoderCommand
     }
 
     private static string Clean(string path) => path.Trim().Trim('"');
-
-    private static string Quote(string value) => $"\"{value}\"";
 }

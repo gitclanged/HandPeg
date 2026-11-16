@@ -23,6 +23,9 @@ public static class ExportLoopbackTests
 {
     public static IEnumerable<GraphResult> All()
     {
+        if (!GoldenFilter.WantedAny("export-loopback", "export-hdr-readback"))
+            yield break;
+
         var loopback = Start("# The Export Quality Preview's encode loopback (5.4B): settings, the off path, the compare pass, a real hardware round trip, its lifetime.");
         var hdr = Start("# An HDR export's frames read back as P010 (5.4B): BT.2020 non-constant luminance, limited range, 10 bits in the top of 16; NV12 unchanged.");
         try
@@ -118,8 +121,8 @@ public static class ExportLoopbackTests
             "the loupe's view over the compare: a 640 x 360 picture at 4x about the point (25.6, 14.4) lies at (-37.4, 7.4), 2560 x 1440, the point in the middle of a 130-pixel view");
         var bounds = SceneRenderer.LoupeBounds((0, 0, 640, 360), 640, 360, 130);
         expect(bounds == (12, 498, 12, 218), "and it stands 12 pixels in from the picture's edges: its corner between (12, 12) and (498, 218) on a 640 x 360 picture");
-        var source = File.ReadAllText(Path.Combine(Root(), "src", "Compositor", "Shaders", "Loopback.hlsl"));
-        var worker = File.ReadAllText(Path.Combine(Root(), "src", "Compositor", "CompositorWorker.cs"));
+        var source = File.ReadAllText(Path.Combine(SourceProbe.Root, "src", "Compositor", "Shaders", "Loopback.hlsl"));
+        var worker = File.ReadAllText(Path.Combine(SourceProbe.Root, "src", "Compositor", "CompositorWorker.cs"));
         var draw = worker[worker.IndexOf("private static bool DrawLoopback", StringComparison.Ordinal)..];
         draw = draw[..draw.IndexOf("\n    }", StringComparison.Ordinal)];
         var acquire = draw.IndexOf("Dxgi.AcquireSync", StringComparison.Ordinal);
@@ -133,17 +136,6 @@ public static class ExportLoopbackTests
     }
 
     // The repository's folder (where HandPegApp.csproj is), found upwards from the built program.
-    private static string Root()
-    {
-        for (var folder = new DirectoryInfo(AppContext.BaseDirectory); folder is not null; folder = folder.Parent)
-        {
-            if (File.Exists(Path.Combine(folder.FullName, "HandPegApp.csproj")))
-                return folder.FullName;
-        }
-
-        throw new DirectoryNotFoundException("HandPegApp.csproj was not found above the golden tests' program.");
-    }
-
     private sealed class Harness(CompositorClient client, CompositorFrameReader reader, Action<bool, string> expect)
     {
         private const int W = 640, H = 360;

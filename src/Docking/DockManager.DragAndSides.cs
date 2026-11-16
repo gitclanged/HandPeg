@@ -53,7 +53,7 @@ public sealed partial class DockManager
 
             if (shown.Count > 1)
             {
-                var more = new System.Windows.Controls.Primitives.ToggleButton { Content = "", FontFamily = new FontFamily("Segoe MDL2 Assets"), FontSize = 10, Padding = new Thickness(6, 2, 6, 2), ToolTip = "The other panes of this group" };
+                var more = new System.Windows.Controls.Primitives.ToggleButton { Content = Glyphs.ChevronDown, FontFamily = new FontFamily("Segoe MDL2 Assets"), FontSize = 10, Padding = new Thickness(6, 2, 6, 2), ToolTip = "The other panes of this group" };
                 OverflowStrip.SetIsOverflowButton(more, true);
                 strip.Children.Add(more);
                 strip.MenuEntryFor = child => tabs.TryGetValue(child, out var mate) ? (_panes[mate].Title, () => Activate(mate)) : null;
@@ -899,6 +899,12 @@ public sealed partial class DockManager
             CloseSide(host, closeWindow: true);
     }
 
+    /// <summary>The id of the side window holding a pane (Pass 5.6A: Open Color Studio brings it forward); null when the main window holds it, or none does.</summary>
+    public string? SideIdOf(string pane) => Find(pane).Side?.State.Id;
+
+    /// <summary>Whether a pane is in a group that has a host on screen now (Pass 5.6A: a group <see cref="BringForward"/> can show it in).</summary>
+    public bool IsInShownGroup(string pane) => GroupAnywhere(pane) is { } group && _groupHosts.Any(g => ReferenceEquals(g.Group, group));
+
     /// <summary>Brings a side window to the front (the Layout Selector's row for it), restored if it was minimized.</summary>
     public void BringSideWindowForward(string id)
     {
@@ -1086,9 +1092,4 @@ public sealed partial class DockManager
         }
     }
 
-    private static Brush Frozen(Brush brush)
-    {
-        brush.Freeze();
-        return brush;
-    }
 }

@@ -184,7 +184,7 @@ internal readonly unsafe struct D3D11Device(nint pointer)
     {
         nint result;
         fixed (BufferDesc* d = &desc)
-            Com.Check(((delegate* unmanaged<nint, BufferDesc*, SubresourceData*, nint*, int>)T[3])(Pointer, d, initial, &result), "CreateBuffer");
+            Com.Check(((delegate* unmanaged<nint, BufferDesc*, SubresourceData*, nint*, int>)T[ID3D11DeviceSlot.CreateBuffer])(Pointer, d, initial, &result), "CreateBuffer");
         return result;
     }
 
@@ -192,7 +192,7 @@ internal readonly unsafe struct D3D11Device(nint pointer)
     {
         nint result;
         fixed (Texture2DDesc* d = &desc)
-            Com.Check(((delegate* unmanaged<nint, Texture2DDesc*, SubresourceData*, nint*, int>)T[5])(Pointer, d, initial, &result), "CreateTexture2D");
+            Com.Check(((delegate* unmanaged<nint, Texture2DDesc*, SubresourceData*, nint*, int>)T[ID3D11DeviceSlot.CreateTexture2D])(Pointer, d, initial, &result), "CreateTexture2D");
         return result;
     }
 
@@ -200,21 +200,21 @@ internal readonly unsafe struct D3D11Device(nint pointer)
     {
         nint result;
         fixed (Texture3DDesc* d = &desc)
-            Com.Check(((delegate* unmanaged<nint, Texture3DDesc*, SubresourceData*, nint*, int>)T[6])(Pointer, d, initial, &result), "CreateTexture3D");
+            Com.Check(((delegate* unmanaged<nint, Texture3DDesc*, SubresourceData*, nint*, int>)T[ID3D11DeviceSlot.CreateTexture3D])(Pointer, d, initial, &result), "CreateTexture3D");
         return result;
     }
 
     public nint CreateShaderResourceView(nint resource, ShaderResourceViewDesc* desc = null)
     {
         nint result;
-        Com.Check(((delegate* unmanaged<nint, nint, ShaderResourceViewDesc*, nint*, int>)T[7])(Pointer, resource, desc, &result), "CreateShaderResourceView");
+        Com.Check(((delegate* unmanaged<nint, nint, ShaderResourceViewDesc*, nint*, int>)T[ID3D11DeviceSlot.CreateShaderResourceView])(Pointer, resource, desc, &result), "CreateShaderResourceView");
         return result;
     }
 
     public nint CreateRenderTargetView(nint resource, RenderTargetViewDesc* desc = null)
     {
         nint result;
-        Com.Check(((delegate* unmanaged<nint, nint, RenderTargetViewDesc*, nint*, int>)T[9])(Pointer, resource, desc, &result), "CreateRenderTargetView");
+        Com.Check(((delegate* unmanaged<nint, nint, RenderTargetViewDesc*, nint*, int>)T[ID3D11DeviceSlot.CreateRenderTargetView])(Pointer, resource, desc, &result), "CreateRenderTargetView");
         return result;
     }
 
@@ -222,7 +222,7 @@ internal readonly unsafe struct D3D11Device(nint pointer)
     {
         nint result;
         fixed (byte* c = code)
-            Com.Check(((delegate* unmanaged<nint, byte*, nuint, nint, nint*, int>)T[12])(Pointer, c, (nuint)code.Length, 0, &result), "CreateVertexShader");
+            Com.Check(((delegate* unmanaged<nint, byte*, nuint, nint, nint*, int>)T[ID3D11DeviceSlot.CreateVertexShader])(Pointer, c, (nuint)code.Length, 0, &result), "CreateVertexShader");
         return result;
     }
 
@@ -230,7 +230,7 @@ internal readonly unsafe struct D3D11Device(nint pointer)
     {
         nint result;
         fixed (byte* c = code)
-            Com.Check(((delegate* unmanaged<nint, byte*, nuint, nint, nint*, int>)T[15])(Pointer, c, (nuint)code.Length, 0, &result), "CreatePixelShader");
+            Com.Check(((delegate* unmanaged<nint, byte*, nuint, nint, nint*, int>)T[ID3D11DeviceSlot.CreatePixelShader])(Pointer, c, (nuint)code.Length, 0, &result), "CreatePixelShader");
         return result;
     }
 
@@ -238,7 +238,7 @@ internal readonly unsafe struct D3D11Device(nint pointer)
     {
         nint result;
         fixed (BlendDesc* d = &desc)
-            Com.Check(((delegate* unmanaged<nint, BlendDesc*, nint*, int>)T[20])(Pointer, d, &result), "CreateBlendState");
+            Com.Check(((delegate* unmanaged<nint, BlendDesc*, nint*, int>)T[ID3D11DeviceSlot.CreateBlendState])(Pointer, d, &result), "CreateBlendState");
         return result;
     }
 
@@ -246,7 +246,7 @@ internal readonly unsafe struct D3D11Device(nint pointer)
     {
         nint result;
         fixed (RasterizerDesc* d = &desc)
-            Com.Check(((delegate* unmanaged<nint, RasterizerDesc*, nint*, int>)T[22])(Pointer, d, &result), "CreateRasterizerState");
+            Com.Check(((delegate* unmanaged<nint, RasterizerDesc*, nint*, int>)T[ID3D11DeviceSlot.CreateRasterizerState])(Pointer, d, &result), "CreateRasterizerState");
         return result;
     }
 
@@ -254,7 +254,7 @@ internal readonly unsafe struct D3D11Device(nint pointer)
     {
         nint result;
         fixed (SamplerDesc* d = &desc)
-            Com.Check(((delegate* unmanaged<nint, SamplerDesc*, nint*, int>)T[23])(Pointer, d, &result), "CreateSamplerState");
+            Com.Check(((delegate* unmanaged<nint, SamplerDesc*, nint*, int>)T[ID3D11DeviceSlot.CreateSamplerState])(Pointer, d, &result), "CreateSamplerState");
         return result;
     }
 
@@ -262,16 +262,16 @@ internal readonly unsafe struct D3D11Device(nint pointer)
     {
         var desc = new QueryDesc { Query = query };
         nint result;
-        Com.Check(((delegate* unmanaged<nint, QueryDesc*, nint*, int>)T[24])(Pointer, &desc, &result), "CreateQuery");
+        Com.Check(((delegate* unmanaged<nint, QueryDesc*, nint*, int>)T[ID3D11DeviceSlot.CreateQuery])(Pointer, &desc, &result), "CreateQuery");
         return result;
     }
 
-    public int GetDeviceRemovedReason() => ((delegate* unmanaged<nint, int>)T[39])(Pointer);
+    public int GetDeviceRemovedReason() => ((delegate* unmanaged<nint, int>)T[ID3D11DeviceSlot.GetDeviceRemovedReason])(Pointer);
 
     public nint GetImmediateContext()
     {
         nint result;
-        ((delegate* unmanaged<nint, nint*, void>)T[40])(Pointer, &result);
+        ((delegate* unmanaged<nint, nint*, void>)T[ID3D11DeviceSlot.GetImmediateContext])(Pointer, &result);
         return result;
     }
 
@@ -282,7 +282,7 @@ internal readonly unsafe struct D3D11Device(nint pointer)
         int hr;
         fixed (char* n = name)
         fixed (Guid* id = &interfaceId)
-            hr = ((delegate* unmanaged<nint, char*, uint, Guid*, nint*, int>)T[49])(Pointer, n, access, id, &result);
+            hr = ((delegate* unmanaged<nint, char*, uint, Guid*, nint*, int>)T[ID3D11Device1Slot.OpenSharedResourceByName])(Pointer, n, access, id, &result);
         resource = result;
         return hr;
     }
@@ -294,86 +294,86 @@ internal readonly unsafe struct D3D11Context(nint pointer)
     public readonly nint Pointer = pointer;
     private void** T => Com.Table(Pointer);
 
-    public void VSSetConstantBuffers(uint slot, nint buffer) => ((delegate* unmanaged<nint, uint, uint, nint*, void>)T[7])(Pointer, slot, 1, &buffer);
+    public void VSSetConstantBuffers(uint slot, nint buffer) => ((delegate* unmanaged<nint, uint, uint, nint*, void>)T[ID3D11DeviceContextSlot.VSSetConstantBuffers])(Pointer, slot, 1, &buffer);
 
-    public void PSSetShaderResources(uint slot, uint count, nint* views) => ((delegate* unmanaged<nint, uint, uint, nint*, void>)T[8])(Pointer, slot, count, views);
+    public void PSSetShaderResources(uint slot, uint count, nint* views) => ((delegate* unmanaged<nint, uint, uint, nint*, void>)T[ID3D11DeviceContextSlot.PSSetShaderResources])(Pointer, slot, count, views);
 
-    public void PSSetShader(nint shader) => ((delegate* unmanaged<nint, nint, nint*, uint, void>)T[9])(Pointer, shader, null, 0);
+    public void PSSetShader(nint shader) => ((delegate* unmanaged<nint, nint, nint*, uint, void>)T[ID3D11DeviceContextSlot.PSSetShader])(Pointer, shader, null, 0);
 
-    public void PSSetSamplers(uint slot, uint count, nint* samplers) => ((delegate* unmanaged<nint, uint, uint, nint*, void>)T[10])(Pointer, slot, count, samplers);
+    public void PSSetSamplers(uint slot, uint count, nint* samplers) => ((delegate* unmanaged<nint, uint, uint, nint*, void>)T[ID3D11DeviceContextSlot.PSSetSamplers])(Pointer, slot, count, samplers);
 
-    public void VSSetShader(nint shader) => ((delegate* unmanaged<nint, nint, nint*, uint, void>)T[11])(Pointer, shader, null, 0);
+    public void VSSetShader(nint shader) => ((delegate* unmanaged<nint, nint, nint*, uint, void>)T[ID3D11DeviceContextSlot.VSSetShader])(Pointer, shader, null, 0);
 
-    public void Draw(uint vertexCount, uint startVertex) => ((delegate* unmanaged<nint, uint, uint, void>)T[13])(Pointer, vertexCount, startVertex);
+    public void Draw(uint vertexCount, uint startVertex) => ((delegate* unmanaged<nint, uint, uint, void>)T[ID3D11DeviceContextSlot.Draw])(Pointer, vertexCount, startVertex);
 
     public int Map(nint resource, uint subresource, uint mapType, uint flags, out MappedSubresource mapped)
     {
         MappedSubresource result;
-        var hr = ((delegate* unmanaged<nint, nint, uint, uint, uint, MappedSubresource*, int>)T[14])(Pointer, resource, subresource, mapType, flags, &result);
+        var hr = ((delegate* unmanaged<nint, nint, uint, uint, uint, MappedSubresource*, int>)T[ID3D11DeviceContextSlot.Map])(Pointer, resource, subresource, mapType, flags, &result);
         mapped = result;
         return hr;
     }
 
-    public void Unmap(nint resource, uint subresource) => ((delegate* unmanaged<nint, nint, uint, void>)T[15])(Pointer, resource, subresource);
+    public void Unmap(nint resource, uint subresource) => ((delegate* unmanaged<nint, nint, uint, void>)T[ID3D11DeviceContextSlot.Unmap])(Pointer, resource, subresource);
 
-    public void PSSetConstantBuffers(uint slot, nint buffer) => ((delegate* unmanaged<nint, uint, uint, nint*, void>)T[16])(Pointer, slot, 1, &buffer);
+    public void PSSetConstantBuffers(uint slot, nint buffer) => ((delegate* unmanaged<nint, uint, uint, nint*, void>)T[ID3D11DeviceContextSlot.PSSetConstantBuffers])(Pointer, slot, 1, &buffer);
 
-    public void IASetInputLayout(nint layout) => ((delegate* unmanaged<nint, nint, void>)T[17])(Pointer, layout);
+    public void IASetInputLayout(nint layout) => ((delegate* unmanaged<nint, nint, void>)T[ID3D11DeviceContextSlot.IASetInputLayout])(Pointer, layout);
 
-    public void IASetPrimitiveTopology(uint topology) => ((delegate* unmanaged<nint, uint, void>)T[24])(Pointer, topology);
+    public void IASetPrimitiveTopology(uint topology) => ((delegate* unmanaged<nint, uint, void>)T[ID3D11DeviceContextSlot.IASetPrimitiveTopology])(Pointer, topology);
 
-    public void Begin(nint query) => ((delegate* unmanaged<nint, nint, void>)T[27])(Pointer, query);
+    public void Begin(nint query) => ((delegate* unmanaged<nint, nint, void>)T[ID3D11DeviceContextSlot.Begin])(Pointer, query);
 
-    public void End(nint query) => ((delegate* unmanaged<nint, nint, void>)T[28])(Pointer, query);
+    public void End(nint query) => ((delegate* unmanaged<nint, nint, void>)T[ID3D11DeviceContextSlot.EndQuery])(Pointer, query);
 
-    public int GetData(nint query, void* data, uint size, uint flags) => ((delegate* unmanaged<nint, nint, void*, uint, uint, int>)T[29])(Pointer, query, data, size, flags);
+    public int GetData(nint query, void* data, uint size, uint flags) => ((delegate* unmanaged<nint, nint, void*, uint, uint, int>)T[ID3D11DeviceContextSlot.GetData])(Pointer, query, data, size, flags);
 
     public void OMSetRenderTargets(nint renderTarget)
     {
         if (renderTarget == 0)
-            ((delegate* unmanaged<nint, uint, nint*, nint, void>)T[33])(Pointer, 0, null, 0);
+            ((delegate* unmanaged<nint, uint, nint*, nint, void>)T[ID3D11DeviceContextSlot.OMSetRenderTargets])(Pointer, 0, null, 0);
         else
-            ((delegate* unmanaged<nint, uint, nint*, nint, void>)T[33])(Pointer, 1, &renderTarget, 0);
+            ((delegate* unmanaged<nint, uint, nint*, nint, void>)T[ID3D11DeviceContextSlot.OMSetRenderTargets])(Pointer, 1, &renderTarget, 0);
     }
 
     public void OMSetBlendState(nint state)
     {
         var factor = stackalloc float[4] { 0, 0, 0, 0 };
-        ((delegate* unmanaged<nint, nint, float*, uint, void>)T[35])(Pointer, state, factor, 0xFFFFFFFF);
+        ((delegate* unmanaged<nint, nint, float*, uint, void>)T[ID3D11DeviceContextSlot.OMSetBlendState])(Pointer, state, factor, 0xFFFFFFFF);
     }
 
-    public void RSSetState(nint state) => ((delegate* unmanaged<nint, nint, void>)T[43])(Pointer, state);
+    public void RSSetState(nint state) => ((delegate* unmanaged<nint, nint, void>)T[ID3D11DeviceContextSlot.RSSetState])(Pointer, state);
 
     /// <summary>RSSetScissorRects with one rectangle (left, top, right, bottom in target pixels).</summary>
     public void RSSetScissor(int left, int top, int right, int bottom)
     {
         var rect = stackalloc int[4] { left, top, right, bottom };
-        ((delegate* unmanaged<nint, uint, int*, void>)T[45])(Pointer, 1, rect);
+        ((delegate* unmanaged<nint, uint, int*, void>)T[ID3D11DeviceContextSlot.RSSetScissorRects])(Pointer, 1, rect);
     }
 
     public void RSSetViewport(in Viewport viewport)
     {
         fixed (Viewport* v = &viewport)
-            ((delegate* unmanaged<nint, uint, Viewport*, void>)T[44])(Pointer, 1, v);
+            ((delegate* unmanaged<nint, uint, Viewport*, void>)T[ID3D11DeviceContextSlot.RSSetViewports])(Pointer, 1, v);
     }
 
     public void CopySubresourceRegion(nint destination, uint destinationSubresource, uint x, uint y, nint source, uint sourceSubresource, Box* box) =>
-        ((delegate* unmanaged<nint, nint, uint, uint, uint, uint, nint, uint, Box*, void>)T[46])(Pointer, destination, destinationSubresource, x, y, 0, source, sourceSubresource, box);
+        ((delegate* unmanaged<nint, nint, uint, uint, uint, uint, nint, uint, Box*, void>)T[ID3D11DeviceContextSlot.CopySubresourceRegion])(Pointer, destination, destinationSubresource, x, y, 0, source, sourceSubresource, box);
 
-    public void CopyResource(nint destination, nint source) => ((delegate* unmanaged<nint, nint, nint, void>)T[47])(Pointer, destination, source);
+    public void CopyResource(nint destination, nint source) => ((delegate* unmanaged<nint, nint, nint, void>)T[ID3D11DeviceContextSlot.CopyResource])(Pointer, destination, source);
 
     public void UpdateSubresource(nint resource, uint subresource, Box* box, void* data, uint rowPitch, uint depthPitch) =>
-        ((delegate* unmanaged<nint, nint, uint, Box*, void*, uint, uint, void>)T[48])(Pointer, resource, subresource, box, data, rowPitch, depthPitch);
+        ((delegate* unmanaged<nint, nint, uint, Box*, void*, uint, uint, void>)T[ID3D11DeviceContextSlot.UpdateSubresource])(Pointer, resource, subresource, box, data, rowPitch, depthPitch);
 
     public void ClearRenderTargetView(nint view, float r, float g, float b, float a)
     {
         var color = stackalloc float[4] { r, g, b, a };
-        ((delegate* unmanaged<nint, nint, float*, void>)T[50])(Pointer, view, color);
+        ((delegate* unmanaged<nint, nint, float*, void>)T[ID3D11DeviceContextSlot.ClearRenderTargetView])(Pointer, view, color);
     }
 
-    public void ClearState() => ((delegate* unmanaged<nint, void>)T[110])(Pointer);
+    public void ClearState() => ((delegate* unmanaged<nint, void>)T[ID3D11DeviceContextSlot.ClearState])(Pointer);
 
-    public void Flush() => ((delegate* unmanaged<nint, void>)T[111])(Pointer);
+    public void Flush() => ((delegate* unmanaged<nint, void>)T[ID3D11DeviceContextSlot.Flush])(Pointer);
 }
 
 /// <summary>DXGI: the factory, the cards, shared handles and keyed mutexes.</summary>
@@ -401,7 +401,7 @@ internal static unsafe partial class Dxgi
     public static nint EnumAdapter(nint factory, uint index)
     {
         nint adapter;
-        var hr = ((delegate* unmanaged<nint, uint, nint*, int>)Com.Table(factory)[12])(factory, index, &adapter);
+        var hr = ((delegate* unmanaged<nint, uint, nint*, int>)Com.Table(factory)[IDXGIFactory1Slot.EnumAdapters1])(factory, index, &adapter);
         return hr < 0 ? 0 : adapter;
     }
 
@@ -415,7 +415,7 @@ internal static unsafe partial class Dxgi
         {
             nint adapter;
             var id = Iid.DxgiAdapter1;
-            var hr = ((delegate* unmanaged<nint, uint, uint, Guid*, nint*, int>)Com.Table(factory6)[29])(factory6, 0, GpuPreferenceHighPerformance, &id, &adapter);
+            var hr = ((delegate* unmanaged<nint, uint, uint, Guid*, nint*, int>)Com.Table(factory6)[IDXGIFactory6Slot.EnumAdapterByGpuPreference])(factory6, 0, GpuPreferenceHighPerformance, &id, &adapter);
             return hr < 0 ? 0 : adapter;
         }
         finally
@@ -428,7 +428,7 @@ internal static unsafe partial class Dxgi
     public static AdapterDesc1 Describe(nint adapter)
     {
         AdapterDesc1 desc;
-        Com.Check(((delegate* unmanaged<nint, AdapterDesc1*, int>)Com.Table(adapter)[10])(adapter, &desc), "GetDesc1");
+        Com.Check(((delegate* unmanaged<nint, AdapterDesc1*, int>)Com.Table(adapter)[IDXGIAdapter1Slot.GetDesc1])(adapter, &desc), "GetDesc1");
         return desc;
     }
 
@@ -448,7 +448,7 @@ internal static unsafe partial class Dxgi
         {
             nint handle;
             fixed (char* n = name)
-                Com.Check(((delegate* unmanaged<nint, nint, uint, char*, nint*, int>)Com.Table(resource1)[13])(resource1, 0, D3D11.SharedRead | D3D11.SharedWrite, n, &handle), "CreateSharedHandle");
+                Com.Check(((delegate* unmanaged<nint, nint, uint, char*, nint*, int>)Com.Table(resource1)[IDXGIResource1Slot.CreateSharedHandle])(resource1, 0, D3D11.SharedRead | D3D11.SharedWrite, n, &handle), "CreateSharedHandle");
             return handle;
         }
         finally
@@ -460,16 +460,16 @@ internal static unsafe partial class Dxgi
     /// <summary>IDXGIKeyedMutex::AcquireSync: S_OK, or <see cref="Com.WaitTimeout"/>.</summary>
     public static int AcquireSync(nint keyedMutex, ulong key, uint milliseconds)
     {
-        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("AcquireSync", milliseconds);
-        var hr = ((delegate* unmanaged<nint, ulong, uint, int>)Com.Table(keyedMutex)[8])(keyedMutex, key, milliseconds);
+        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.EnterHot("AcquireSync", milliseconds);
+        var hr = ((delegate* unmanaged<nint, ulong, uint, int>)Com.Table(keyedMutex)[IDXGIKeyedMutexSlot.AcquireSync])(keyedMutex, key, milliseconds);
         crumb.Leave(hr);
         return hr;
     }
 
     public static int ReleaseSync(nint keyedMutex, ulong key)
     {
-        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("ReleaseSync");
-        var hr = ((delegate* unmanaged<nint, ulong, int>)Com.Table(keyedMutex)[9])(keyedMutex, key);
+        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.EnterHot("ReleaseSync");
+        var hr = ((delegate* unmanaged<nint, ulong, int>)Com.Table(keyedMutex)[IDXGIKeyedMutexSlot.ReleaseSync])(keyedMutex, key);
         crumb.Leave(hr);
         return hr;
     }
@@ -497,7 +497,7 @@ internal static unsafe partial class Dxgi
         try
         {
             var iid = Iid.DxgiFactory2;
-            Com.Check(((delegate* unmanaged<nint, Guid*, nint*, int>)Com.Table(adapter)[6])(adapter, &iid, &factory), "IDXGIObject::GetParent");
+            Com.Check(((delegate* unmanaged<nint, Guid*, nint*, int>)Com.Table(adapter)[IDXGIObjectSlot.GetParent])(adapter, &iid, &factory), "IDXGIObject::GetParent");
             var desc = new SwapChainDesc1
             {
                 Width = (uint)Math.Max(width, 8),
@@ -512,11 +512,11 @@ internal static unsafe partial class Dxgi
                 Flags = SwapChainFlagFrameLatencyWaitable,
             };
             nint swapChain;
-            Com.Check(((delegate* unmanaged<nint, nint, nint, SwapChainDesc1*, nint, nint, nint*, int>)Com.Table(factory)[15])(factory, device, window, &desc, 0, 0, &swapChain),
+            Com.Check(((delegate* unmanaged<nint, nint, nint, SwapChainDesc1*, nint, nint, nint*, int>)Com.Table(factory)[IDXGIFactory2Slot.CreateSwapChainForHwnd])(factory, device, window, &desc, 0, 0, &swapChain),
                 "CreateSwapChainForHwnd");
 
             // No Alt+Enter to full screen (Alt is the 3D view's orbit), no Print Screen handling of DXGI's.
-            _ = ((delegate* unmanaged<nint, nint, uint, int>)Com.Table(factory)[8])(factory, window, 0x2 | 0x4);
+            _ = ((delegate* unmanaged<nint, nint, uint, int>)Com.Table(factory)[IDXGIFactorySlot.MakeWindowAssociation])(factory, window, 0x2 | 0x4);
             return swapChain;
         }
         finally
@@ -534,8 +534,8 @@ internal static unsafe partial class Dxgi
             return 0;
         try
         {
-            _ = ((delegate* unmanaged<nint, uint, int>)Com.Table(swapChain2)[31])(swapChain2, 1);
-            return ((delegate* unmanaged<nint, nint>)Com.Table(swapChain2)[33])(swapChain2);
+            _ = ((delegate* unmanaged<nint, uint, int>)Com.Table(swapChain2)[IDXGISwapChain2Slot.SetMaximumFrameLatency])(swapChain2, 1);
+            return ((delegate* unmanaged<nint, nint>)Com.Table(swapChain2)[IDXGISwapChain2Slot.GetFrameLatencyWaitableObject])(swapChain2);
         }
         finally
         {
@@ -548,15 +548,15 @@ internal static unsafe partial class Dxgi
     {
         var iid = Iid.D3D11Texture2D;
         nint texture;
-        Com.Check(((delegate* unmanaged<nint, uint, Guid*, nint*, int>)Com.Table(swapChain)[9])(swapChain, 0, &iid, &texture), "GetBuffer");
+        Com.Check(((delegate* unmanaged<nint, uint, Guid*, nint*, int>)Com.Table(swapChain)[IDXGISwapChainSlot.GetBuffer])(swapChain, 0, &iid, &texture), "GetBuffer");
         return texture;
     }
 
     /// <summary>IDXGISwapChain::Present: S_OK, DXGI_STATUS_OCCLUDED, or a device-lost code.</summary>
     public static int Present(nint swapChain, uint syncInterval, uint flags)
     {
-        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("Present", syncInterval);
-        var hr = ((delegate* unmanaged<nint, uint, uint, int>)Com.Table(swapChain)[8])(swapChain, syncInterval, flags);
+        var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.EnterHot("Present", syncInterval);
+        var hr = ((delegate* unmanaged<nint, uint, uint, int>)Com.Table(swapChain)[IDXGISwapChainSlot.Present])(swapChain, syncInterval, flags);
         crumb.Leave(hr);
         return hr;
     }
@@ -574,7 +574,7 @@ internal static unsafe partial class Dxgi
         if (swapChain == 0)
             return 0;
         uint count = 0;
-        var hr = ((delegate* unmanaged<nint, uint*, int>)Com.Table(swapChain)[17])(swapChain, &count);
+        var hr = ((delegate* unmanaged<nint, uint*, int>)Com.Table(swapChain)[IDXGISwapChainSlot.GetLastPresentCount])(swapChain, &count);
         return hr >= 0 ? count : 0;
     }
 
@@ -588,7 +588,7 @@ internal static unsafe partial class Dxgi
         if (swapChain == 0)
             return false;
         FrameStatisticsData data;
-        var hr = ((delegate* unmanaged<nint, FrameStatisticsData*, int>)Com.Table(swapChain)[16])(swapChain, &data);
+        var hr = ((delegate* unmanaged<nint, FrameStatisticsData*, int>)Com.Table(swapChain)[IDXGISwapChainSlot.GetFrameStatistics])(swapChain, &data);
         if (hr < 0 || data.PresentCount == 0 || data.SyncQpcTime == 0)
             return false;
         (presentCount, syncQpc) = (data.PresentCount, data.SyncQpcTime);
@@ -599,7 +599,7 @@ internal static unsafe partial class Dxgi
     public static int ResizeBuffers(nint swapChain, int width, int height)
     {
         var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("ResizeBuffers", $"{width}x{height}");
-        var hr = ((delegate* unmanaged<nint, uint, uint, uint, uint, uint, int>)Com.Table(swapChain)[13])(swapChain, 0, (uint)Math.Max(width, 8), (uint)Math.Max(height, 8), 0, SwapChainFlagFrameLatencyWaitable);
+        var hr = ((delegate* unmanaged<nint, uint, uint, uint, uint, uint, int>)Com.Table(swapChain)[IDXGISwapChainSlot.ResizeBuffers])(swapChain, 0, (uint)Math.Max(width, 8), (uint)Math.Max(height, 8), 0, SwapChainFlagFrameLatencyWaitable);
         crumb.Leave(hr);
         return hr;
     }
@@ -611,7 +611,7 @@ internal static unsafe partial class Dxgi
     public static bool QueryVideoMemory(nint adapter3, out VideoMemoryInfo info)
     {
         VideoMemoryInfo result;
-        var hr = ((delegate* unmanaged<nint, uint, uint, VideoMemoryInfo*, int>)Com.Table(adapter3)[14])(adapter3, 0, 0, &result);
+        var hr = ((delegate* unmanaged<nint, uint, uint, VideoMemoryInfo*, int>)Com.Table(adapter3)[IDXGIAdapter3Slot.QueryVideoMemoryInfo])(adapter3, 0, 0, &result);
         info = result;
         return hr >= 0;
     }
@@ -625,7 +625,7 @@ internal static unsafe partial class Dxgi
         try
         {
             nint adapter;
-            var hr = ((delegate* unmanaged<nint, nint*, int>)Com.Table(dxgiDevice)[7])(dxgiDevice, &adapter);
+            var hr = ((delegate* unmanaged<nint, nint*, int>)Com.Table(dxgiDevice)[IDXGIDeviceSlot.GetAdapter])(dxgiDevice, &adapter);
             return hr < 0 ? 0 : adapter;
         }
         finally
@@ -634,7 +634,4 @@ internal static unsafe partial class Dxgi
         }
     }
 
-    [LibraryImport("kernel32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static partial bool CloseHandle(nint handle);
 }

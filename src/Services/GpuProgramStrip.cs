@@ -247,7 +247,9 @@ public sealed class GpuProgramStrip : IDisposable
             return await Enqueue(job);
     }
 
-    private async void Draw(SequenceExportState state, object? mark)
+    private void Draw(SequenceExportState state, object? mark) => Faults.Forget(DrawAsync(state, mark), nameof(Draw));
+
+    private async Task DrawAsync(SequenceExportState state, object? mark)
     {
         var asked = Interlocked.Increment(ref _asked);
         var cancellation = new CancellationTokenSource();

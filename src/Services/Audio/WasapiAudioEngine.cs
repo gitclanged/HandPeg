@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using HandPegApp.Compositor.Native;
+using HandPegApp.Native;
 
 namespace HandPegApp.Services.Audio;
 
@@ -72,8 +73,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
     private int _bufferMs;
     private long _syncOffsetBits;
     private int _wantPlaying;
-    private long _seekSerial, _seekLock;
-    private double _seekTarget;
+    private long _seekSerial;
     private long _rateBits = BitConverter.DoubleToInt64Bits(1);
     private int _volumeBits = BitConverter.SingleToInt32Bits(1);
     private int _muted;
@@ -149,7 +149,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         _deviceId = deviceId ?? "";
         _bufferMs = Math.Clamp(bufferMs, 3, 40);
         _syncOffsetBits = BitConverter.DoubleToInt64Bits(Math.Clamp(syncOffsetMs, -250, 250) / 1000);
-        _commands = AudioNative.CreateEventW(0, 0, 0, 0);
+        _commands = Kernel32.CreateEventW(0, 0, 0, 0);
         _thread = new Thread(Run) { IsBackground = true, Name = "HandPeg sound mixer", Priority = ThreadPriority.Highest };
         _thread.Start();
     }
@@ -214,9 +214,6 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
     private void SeekCore(double at)
     {
         Volatile.Write(ref _pausedBits, BitConverter.DoubleToInt64Bits(at));
-        Interlocked.Increment(ref _seekLock);
-        _seekTarget = at;
-        Volatile.Write(ref _seekLock, _seekLock + 1);
         Interlocked.Increment(ref _seekSerial);
         Wake();
     }
@@ -413,14 +410,26 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         if (_stopping)
             return;
         _stopping = true;
-        Wake();
-        _thread.Join(3000);
-        AudioNative.CloseHandle(_commands);
+        Kernel32.SetEvent(_commands);
+
+        // The mixer thread unregisters the device watch (whose callbacks signal _commands) in its finally block. If it has not stopped,
+        // the event stays open: closing it would let a late callback, or a Wake from a resumed pump, signal a recycled handle.
+        if (!ThreadStop.Join(_thread, 3000, "Sound engine mixer"))
+            return;
+        Kernel32.CloseHandle(_commands);
+        Volatile.Write(ref _closed, 1);
     }
+
+    // Set once _commands is closed: a late Wake (a pump still running after its join timed out) must not signal a recycled handle.
+    private int _closed;
 
     private double SyncOffset => BitConverter.Int64BitsToDouble(Volatile.Read(ref _syncOffsetBits));
 
-    private void Wake() => AudioNative.SetEvent(_commands);
+    private void Wake()
+    {
+        if (Volatile.Read(ref _closed) == 0)
+            Kernel32.SetEvent(_commands);
+    }
 
     // ----- The mixer's thread -----
 
@@ -429,8 +438,8 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         _ = Com.CoInitializeEx(0, Com.CoInitMultithreaded);
         uint task = 0;
         var mmcss = AudioNative.AvSetMmThreadCharacteristicsW("Pro Audio", &task);
-        _audioEvent = AudioNative.CreateEventW(0, 0, 0, 0);
-        _timer = AudioNative.CreateWaitableTimerExW(0, 0, AudioNative.HighResolutionTimer, AudioNative.TimerAllAccess);
+        _audioEvent = Kernel32.CreateEventW(0, 0, 0, 0);
+        _timer = Kernel32.CreateWaitableTimerExW(0, 0, Kernel32.HighResolutionTimer, Kernel32.TimerAllAccess);
         try
         {
             Enumerate();
@@ -459,12 +468,14 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         }
         finally
         {
-            Close();
+            // The device watch goes first: its callbacks signal _commands, and the teardown below (the mixer and its feeders) can take
+            // up to 2 s, during which Dispose may already be deciding whether to close that event.
             _watch?.Dispose(_enumerator);
+            Close();
             Com.Release(ref _enumerator);
-            AudioNative.CloseHandle(_audioEvent);
+            Kernel32.CloseHandle(_audioEvent);
             if (_timer != 0)
-                AudioNative.CloseHandle(_timer);
+                Kernel32.CloseHandle(_timer);
             if (mmcss != 0)
                 AudioNative.AvRevertMmThreadCharacteristics(mmcss);
         }
@@ -500,7 +511,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         else if (_playing && _timer != 0)
         {
             var due = -50_000L; // 5 ms, relative
-            AudioNative.SetWaitableTimer(_timer, &due, 0, 0, 0, 0);
+            Kernel32.SetWaitableTimer(_timer, &due, 0, 0, 0, 0);
             handles[count++] = _timer;
             timeout = 50;
         }
@@ -509,7 +520,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
             timeout = 5;
         }
 
-        AudioNative.WaitForMultipleObjects(count, handles, 0, timeout);
+        Kernel32.WaitForMultipleObjects(count, handles, 0, timeout);
     }
 
     private void Commands()
@@ -548,21 +559,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
             _loudness.Restart();
     }
 
-    private double ReadSeek()
-    {
-        for (var attempt = 0; attempt < 16; attempt++)
-        {
-            var before = Volatile.Read(ref _seekLock);
-            if ((before & 1) != 0)
-                continue;
-            var target = _seekTarget;
-            Interlocked.MemoryBarrier();
-            if (Volatile.Read(ref _seekLock) == before)
-                return target;
-        }
-
-        return BitConverter.Int64BitsToDouble(Volatile.Read(ref _pausedBits));
-    }
+    private double ReadSeek() => BitConverter.Int64BitsToDouble(Volatile.Read(ref _pausedBits));
 
     private void StartPlaying()
     {
@@ -849,7 +846,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
                 }
                 catch (Exception ex) when (ex is not OutOfMemoryException)
                 {
-                    AppLog.Write($"Sound engine: the device could not be opened ({ex.Message}); it runs on the processor's clock");
+                    AppLog.Write("Sound engine: the device could not be opened; it runs on the processor's clock", ex);
                     CloseStream();
                 }
             }
@@ -1095,7 +1092,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
                 if (flow == AudioNative.Render && role == AudioNative.Console && Of(self) is { } watch)
                 {
                     Volatile.Write(ref watch._defaultChanged, 1);
-                    AudioNative.SetEvent(watch._wake);
+                    Kernel32.SetEvent(watch._wake);
                 }
             }
             catch
@@ -1117,7 +1114,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
                 {
                     Volatile.Write(ref watch._changedId, id == null ? "" : new string(id));
                     Volatile.Write(ref watch._devicesChanged, 1);
-                    AudioNative.SetEvent(watch._wake);
+                    Kernel32.SetEvent(watch._wake);
                 }
             }
             catch

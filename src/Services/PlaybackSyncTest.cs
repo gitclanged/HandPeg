@@ -49,7 +49,7 @@ public sealed class PlaybackSyncResult
     /// <summary>The display's refresh rate as DWM gave it (0 not known).</summary>
     public double RefreshHz { get; set; }
 
-    /// <summary>The measured time from the pump's turn to the frame on the screen (GpuViewportControl.DisplayLeadSeconds), ms; null not measured.</summary>
+    /// <summary>The measured time from the pump's turn to the frame on the screen (GpuViewport.DisplayLeadSeconds), ms; null not measured.</summary>
     public double? DisplayLeadMs { get; set; }
 
     /// <summary>Whether the swap chain reported when its frames were shown (DXGI frame statistics), rather than DWM's grid being assumed.</summary>
@@ -185,7 +185,8 @@ public static class PlaybackSyncTest
             }
             catch (InvalidOperationException ex)
             {
-                return new PlaybackSyncResult { MeasuredAt = Now(), Error = $"The player stopped: {ex.Message}" };
+                AppLog.Write("Playback & A/V Sync Test: the player stopped", ex);
+            return new PlaybackSyncResult { MeasuredAt = Now(), Error = $"The player stopped: {ex.Message}" };
             }
             finally
             {

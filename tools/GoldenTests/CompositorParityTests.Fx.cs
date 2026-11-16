@@ -265,7 +265,7 @@ public static partial class CompositorParityTests
             client.SetSource(2, moving);
             const int frame = 15;
             var moment = (frame + 0.5) / 30;
-            int EdgeWidth(string what, bool card, double before)
+            int EdgeWidth(string what, bool card, double before, float amount = 100)
             {
                 // The frame before first, as playing does: the cache holds it, and nothing is ever decoded for a shutter.
                 Begin();
@@ -284,7 +284,7 @@ public static partial class CompositorParityTests
                 {
                     video.Flags |= GpuLayerDescriptor.FlagPreviousMoment;
                     video.PreviousMoment = before;
-                    Add(ref video, new(GpuShaderSlot.MotionBlur, 180, 12, 1, 0, 100, 40, 0, 0));
+                    Add(ref video, new(GpuShaderSlot.MotionBlur, 180, 12, 1, 0, amount, 40, 0, 0));
                 }
 
                 if (Render(what) is not { } image)
@@ -305,6 +305,101 @@ public static partial class CompositorParityTests
             var frozen = EdgeWidth("motion blur on a frozen moment", true, moment);
             var numbers = Numbers($"edges {sharp} px sharp, {blurred} px at 180 degrees, {ramped} px at twice the speed, {frozen} px frozen");
             Holds(blurred >= sharp + 4 && ramped >= blurred + 3 && frozen == sharp, $"motion blur: the flow of a real clip, by its own speed (22)", numbers);
+
+            // Pass 5.6A, the boosted top end (MotionBoost): at 50 % a quarter of a frame's move (2 px), at 100 % 2.5 times half a frame (10 px, not 4).
+            var half = EdgeWidth("motion blur at half its amount on a moving bar", true, moment - 1.0 / 30, 50);
+            Holds(half >= sharp && blurred >= half + 6 && blurred >= sharp + 10, $"motion blur at 100 %: the streak reaches 2.5 times as far as half a frame (5.6A)",
+                Numbers($"edges {sharp} px sharp, {half} px at 50 %, {blurred} px at 100 %"));
+
+            Interpolated(frame);
+        }
+
+        /// <summary>
+        /// Publishes the scene and reads back the frame once it is exact: the first one presented may lack a frame being decoded (Smooth Slow-Mo's
+        /// next frame, the first time it is asked for), and the worker draws the scene again when it comes, as an export waits for it.
+        /// </summary>
+        private RefImage? RenderExact(string what)
+        {
+            var sequence = client.Publish();
+            ref var control = ref client.Memory.Control;
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            var presented = false;
+            while (clock.ElapsedMilliseconds < 10_000)
+            {
+                if (Volatile.Read(ref control.PresentedSequence) >= sequence)
+                {
+                    presented = true;
+                    if (Volatile.Read(ref control.PresentedExact) != 0)
+                        break;
+                }
+
+                Thread.Sleep(1);
+            }
+
+            if (!presented || Volatile.Read(ref control.PresentedExact) == 0)
+            {
+                problems.Add($"{what}: no exact frame within 10 s ({client.State}: {client.Message})");
+                return null;
+            }
+
+            if (!reader.TryRead(out var bgra, out var width, out var height))
+            {
+                problems.Add($"{what}: the frame could not be read back");
+                return null;
+            }
+
+            var image = new RefImage(width, height);
+            for (var i = 0; i < width * height; i++)
+                (image.Rgba[i * 4], image.Rgba[i * 4 + 1], image.Rgba[i * 4 + 2], image.Rgba[i * 4 + 3]) =
+                    (bgra[i * 4 + 2] / 255f, bgra[i * 4 + 1] / 255f, bgra[i * 4] / 255f, bgra[i * 4 + 3] / 255f);
+            return image;
+        }
+
+        /// <summary>
+        /// Smooth Slow-Mo (5.6A, GpuLayerDescriptor.FlagInterpolate) on the same bar: between frames 15 and 16 its edges are where the motion puts
+        /// them (8 px a frame), sharp, each seen once; held (no flag) the frame shows as it is.
+        /// </summary>
+        private void Interpolated(int frame)
+        {
+            (double Left, double Right, int Soft, int Crossings)? Bar(string what, double share, bool smooth)
+            {
+                Begin();
+                ref var video = ref Layer(0, GpuSourceKind.Media);
+                (video.SourceId, video.MediaSeconds, video.ClipKey) = (2, (frame + share) / 30, 12);
+                if (smooth)
+                    video.Flags |= GpuLayerDescriptor.FlagInterpolate;
+                if (RenderExact(what) is not { } image)
+                    return null;
+
+                // Where the row crosses half its level (to a part of a pixel), how many crossings there are, and how many pixels lie between dark and light.
+                var (left, right, soft, crossings) = (double.NaN, double.NaN, 0, 0);
+                for (var x = 1; x < W; x++)
+                {
+                    var (was, now) = (image.Get(x - 1, H / 2).X, image.Get(x, H / 2).X);
+                    soft += now is > 0.15f and < 0.85f ? 1 : 0;
+                    if ((was < 0.5f) == (now < 0.5f))
+                        continue;
+                    crossings++;
+                    var at = x - 1 + (0.5f - was) / (now - was) + 0.5;
+                    if (was < 0.5f && double.IsNaN(left))
+                        left = at;
+                    else if (was >= 0.5f)
+                        right = at;
+                }
+
+                return (left, right, soft, crossings);
+            }
+
+            foreach (var share in new[] { 0.5, 0.25 })
+            {
+                var (held, smooth) = (Bar($"a held frame {share:0.##} of the way to the next", share, false), Bar($"Smooth Slow-Mo {share:0.##} of the way to the next", share, true));
+                if (held is not { } h || smooth is not { } s)
+                    continue;
+                var (left, right) = (8 * (frame + share), 8 * (frame + share) + 40);
+                var numbers = Numbers($"held: edges at {h.Left:0.0} and {h.Right:0.0}; smooth: at {s.Left:0.0} and {s.Right:0.0} ({left:0.0}, {right:0.0} wanted), {s.Soft} px soft, {s.Crossings} crossings");
+                Holds(Math.Abs(h.Left - 8 * frame) <= 1.5 && Math.Abs(s.Left - left) <= 1.5 && Math.Abs(s.Right - right) <= 1.5 && s.Crossings == 2 && s.Soft <= h.Soft + 4,
+                    $"Smooth Slow-Mo {share:0.##} of the way between two frames: the bar's edges where the motion puts them, each once (5.6A)", numbers);
+            }
         }
 
         // ----- The depth rails (5.2: the 5.1 Studio Stage's mirror floor, reflections and gathered light are gone) -----

@@ -597,7 +597,7 @@ public static class MigrationTests
         var window = OpenIn(path, savesConverted: true);
         text.Append("opened by the window: ").Append(window.StatusText).Append('\n');
         var header = ProjectStore.PeekHeader(path);
-        Expect(header is { Format: ProjectFile.FormatName, Version: ProjectFile.CurrentVersion } && header.Value.WrittenBy == ProjectStore.WriterName,
+        Expect(header is { Format: ProjectFile.FormatName, Version: ProjectFile.BaseVersion } && header.Value.WrittenBy == ProjectStore.WriterName,
             "the window wrote the converted project over its own file: format 6, written by this version");
         Expect(Files().SequenceEqual(before) && window.CurrentProjectPath == path,
             "under the same name, and nothing beside it (no second project, no part-written file): Save goes on writing to it");
