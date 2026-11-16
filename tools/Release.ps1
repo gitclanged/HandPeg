@@ -38,7 +38,8 @@ function Git([string[]]$arguments) {
     $previous = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     # git.exe, not git: PowerShell resolves names to functions before programs (case-insensitively), so 'git' is this function.
     try { $output = & git.exe -C $repo @arguments 2>$null } finally { $ErrorActionPreference = $previous }
-    return @($output)
+    # Always an array of lines (empty when git printed nothing): a bare return unrolls one line into a string, whose [0] is a character.
+    return , @($output | Where-Object { $null -ne $_ })
 }
 
 # ----- Gate 1: one version -----
