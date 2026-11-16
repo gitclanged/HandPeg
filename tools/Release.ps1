@@ -36,7 +36,8 @@ function Run([string]$exe, [string[]]$arguments) {
 
 function Git([string[]]$arguments) {
     $previous = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    try { $output = & git -C $repo @arguments 2>$null } finally { $ErrorActionPreference = $previous }
+    # git.exe, not git: PowerShell resolves names to functions before programs (case-insensitively), so 'git' is this function.
+    try { $output = & git.exe -C $repo @arguments 2>$null } finally { $ErrorActionPreference = $previous }
     return @($output)
 }
 
